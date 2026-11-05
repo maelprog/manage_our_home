@@ -13,7 +13,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::agenda::{EventResponse, UpdateEventRequest};
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{
-    parse_rrule, validate_event_form, EventFormError, Recurrence,
+    parse_rrule, validate_event_form, EventFormError,
 };
 use uuid::Uuid;
 
@@ -25,7 +25,7 @@ use crate::state::{api_request_auth, AppState};
 use super::new::{
     assignee_checkboxes, assignee_ids_from_raw_form, error_message, is_form_urlencoded,
     private_checkbox, raw_is_private, recurrence_picker, rrule_from_form, schedule_fields,
-    EventForm,
+    EventForm, RecurrenceFields,
 };
 use super::{
     agenda_cookie, all_day_field_values, can_modify, event_not_found_page, family_context,
@@ -62,7 +62,7 @@ fn page(
     starts_local: &str,
     ends_local: &str,
     all_day: bool,
-    recurrence: Option<&Recurrence>,
+    recurrence: &RecurrenceFields,
     error: Option<&str>,
     members: &[GroupMember],
     selected_assignees: &[Uuid],
@@ -145,7 +145,12 @@ pub async fn get(
         .map(|g| g.members)
         .unwrap_or_default();
 
-    let recurrence = event.rrule.as_deref().and_then(parse_rrule);
+    let recurrence = event
+        .rrule
+        .as_deref()
+        .and_then(parse_rrule)
+        .map(|r| RecurrenceFields::from_recurrence(&r))
+        .unwrap_or_default();
     // An all-day event is edited as two dates, Fin being its last day: the
     // stored exclusive end shown as `datetime-local` read as one day too
     // many, and "correcting" it lost a day (#117).
@@ -167,7 +172,7 @@ pub async fn get(
         &starts_value,
         &ends_value,
         event.all_day,
-        recurrence.as_ref(),
+        &recurrence,
         None,
         &members,
         &event.assignee_ids,
@@ -217,7 +222,7 @@ pub async fn post(
                 "",
                 "",
                 false,
-                None,
+                &RecurrenceFields::default(),
                 Some(error_message("invalid_form")),
                 &members,
                 &assignee_ids,
@@ -227,14 +232,10 @@ pub async fn post(
             .into_response();
     };
 
-    // Reconstruct the recurrence for re-rendering the picker on an inline
-    // error, tolerating a bad picker value (falls back to "Aucune").
-    let rrule_result = rrule_from_form(&form);
-    let rec_for_render: Option<Recurrence> = rrule_result
-        .as_ref()
-        .ok()
-        .and_then(|o| o.as_deref())
-        .and_then(parse_rrule);
+    // An inline error gives the picker back as it was submitted, a value
+    // the rule refused included: read through the rule, it fell back to
+    // « Aucune » and the recurrence had to be chosen again (#696).
+    let rec_for_render = RecurrenceFields::from_form(&form);
 
     let render_error = |code: &str| {
         Html(page(
@@ -250,7 +251,7 @@ pub async fn post(
             &form.starts_at,
             &form.ends_at,
             form.all_day.is_some(),
-            rec_for_render.as_ref(),
+            &rec_for_render,
             Some(error_message(code)),
             &members,
             &assignee_ids,
@@ -267,7 +268,7 @@ pub async fn post(
         Err(EventFormError::EndsBeforeStarts) => return render_error("ends_before_starts"),
         Ok(()) => {}
     }
-    let Ok(rrule_opt) = rrule_result else {
+    let Ok(rrule_opt) = rrule_from_form(&form) else {
         return render_error("invalid_rrule");
     };
     // "Aucune" clears an existing rule: the backend treats an empty string
@@ -356,12 +357,69 @@ mod tests {
             "2026-09-05T10:00",
             "2026-09-05T11:00",
             false,
-            None,
+            &RecurrenceFields::default(),
             None,
             &[member("Camille")],
             &[],
             is_private,
         )
+    }
+
+    /// #696: under an error the edit form gives back what was submitted —
+    /// the place, the description and the recurrence, the value the rule
+    /// refused (`invalid_rrule`) included.
+    #[test]
+    fn the_edit_form_comes_back_with_what_was_submitted() {
+        let form: EventForm = serde_urlencoded::from_str(
+            "title=D%C3%AEner&location=Chez+L%C3%A9a&description=Apporter+le+vin\
+             &starts_at=2026-09-05T20:00&ends_at=2026-09-05T21:00\
+             &freq=weekly&interval=2&byday_mo=on&byday_we=on&end_kind=count&count=0",
+        )
+        .unwrap();
+        assert!(rrule_from_form(&form).is_err());
+        let html = page(
+            "",
+            Uuid::from_u128(9),
+            false,
+            &form.title,
+            &form.description,
+            &form.location,
+            &form.starts_at,
+            &form.ends_at,
+            false,
+            &RecurrenceFields::from_form(&form),
+            Some(error_message("invalid_rrule")),
+            &[member("Camille")],
+            &[],
+            false,
+        );
+        assert!(
+            html.contains(r#"name="title" required value="Dîner"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="location" value="Chez Léa"/>"#),
+            "{html}"
+        );
+        assert!(html.contains(">Apporter le vin</textarea>"), "{html}");
+        assert!(
+            html.contains(r#"<option value="weekly" selected>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="interval" min="1" max="99" value="2""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="byday_mo" checked/>"#), "{html}");
+        assert!(html.contains(r#"name="byday_we" checked/>"#), "{html}");
+        assert!(
+            html.contains(r#"<option value="count" selected>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="count" min="1" max="730" value="0""#),
+            "{html}"
+        );
     }
 
     /// #621: the edit form carries the « Privé » box under who it is for,
