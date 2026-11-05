@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT g.id, g.name, gm.role AS \"role: String\", gm.joined_at,\n                  (g.created_by = $1) AS \"created_by_me!\",\n                  gm.ownership_inherited_at, gm.ownership_inherited_reason,\n                  gm.ownership_notice_seen_at, gm.ownership_email_sent_at\n           FROM group_members gm\n           JOIN groups g ON g.id = gm.group_id\n           WHERE gm.user_id = $1\n           ORDER BY g.name",
+  "query": "SELECT g.id, g.name, g.school_zone, g.alsace_moselle,\n                  gm.role AS \"role: String\", gm.joined_at,\n                  (g.created_by = $1) AS \"created_by_me!\",\n                  gm.ownership_inherited_at, gm.ownership_inherited_reason,\n                  gm.ownership_notice_seen_at, gm.ownership_email_sent_at\n           FROM group_members gm\n           JOIN groups g ON g.id = gm.group_id\n           WHERE gm.user_id = $1\n           ORDER BY g.name",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,28 @@
       },
       {
         "ordinal": 2,
+        "name": "school_zone",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "school_zone"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "alsace_moselle",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "alsace_moselle"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "role: String",
         "type_info": {
           "Custom": {
@@ -48,7 +70,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 5,
         "name": "joined_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -59,13 +81,13 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "created_by_me!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "ownership_inherited_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -76,7 +98,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "ownership_inherited_reason",
         "type_info": "Text",
         "origin": {
@@ -87,7 +109,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 9,
         "name": "ownership_notice_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -98,7 +120,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "ownership_email_sent_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -117,6 +139,8 @@
     "nullable": [
       false,
       false,
+      true,
+      false,
       false,
       false,
       null,
@@ -126,5 +150,5 @@
       true
     ]
   },
-  "hash": "27ae57fb4888c1835c51a1c0f42f4060b913e4db4aeb5666a37a0f0b0b28ec1d"
+  "hash": "5bffd0a0b892b4f808b9b4de6110395798781bd61843c6c3868a11534135cf46"
 }

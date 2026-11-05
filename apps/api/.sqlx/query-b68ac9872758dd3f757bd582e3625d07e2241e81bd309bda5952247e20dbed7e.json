@@ -1,0 +1,81 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE groups SET name = COALESCE($1, name), accent = COALESCE($2, accent),\n                  school_zone = CASE WHEN $3 THEN $4 ELSE school_zone END,\n                  alsace_moselle = COALESCE($5, alsace_moselle)\n           WHERE id = $6 RETURNING id, name, accent, school_zone, alsace_moselle",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "accent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "accent"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "school_zone",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "school_zone"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "alsace_moselle",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "alsace_moselle"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool",
+        "Text",
+        "Bool",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "b68ac9872758dd3f757bd582e3625d07e2241e81bd309bda5952247e20dbed7e"
+}

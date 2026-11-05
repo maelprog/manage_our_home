@@ -402,6 +402,8 @@ mod tests {
         let group = GroupDetailResponse {
             id: g,
             name: "Foyer".to_string(),
+            school_zone: None,
+            alsace_moselle: false,
             members: vec![
                 member(alice, "Alice", "owner"),
                 member(bob, "Bob", "standard"),
@@ -424,6 +426,8 @@ mod tests {
         let group = GroupDetailResponse {
             id: g,
             name: "Foyer".to_string(),
+            school_zone: None,
+            alsace_moselle: false,
             members: vec![
                 member(alice, "Alice", "owner"),
                 member(bob, "Bob", "standard"),
@@ -458,6 +462,8 @@ mod tests {
         let group = GroupDetailResponse {
             id: g,
             name: "Foyer".to_string(),
+            school_zone: None,
+            alsace_moselle: false,
             members: vec![member(alice, "Alice", "owner"), with_photo],
         };
         let html = page("", &me(alice), &group, None, None, None);

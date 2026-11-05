@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO groups (id, name, created_by)\n        VALUES ($1, $2, $3)\n        RETURNING id, name, accent\n        ",
+  "query": "\n        INSERT INTO groups (id, name, created_by)\n        VALUES ($1, $2, $3)\n        RETURNING id, name, accent, school_zone, alsace_moselle\n        ",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,28 @@
             "name": "accent"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "school_zone",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "school_zone"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "alsace_moselle",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "alsace_moselle"
+          }
+        }
       }
     ],
     "parameters": {
@@ -47,8 +69,10 @@
     "nullable": [
       false,
       false,
+      false,
+      true,
       false
     ]
   },
-  "hash": "e66217ba18ab0df6e6b7a59be59789846df06160409ef663a14f75f4e2074a4e"
+  "hash": "c220c4199e406d9d6bb73c12755a82079f6616dae0bb12155b4787b3b6bc4c0b"
 }

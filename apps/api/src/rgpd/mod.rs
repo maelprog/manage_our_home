@@ -107,7 +107,8 @@ pub async fn export_account(
     // below.
     let mut group_tx = user_scoped_tx(&state.db, auth.user_id).await?;
     let memberships = sqlx::query!(
-        r#"SELECT g.id, g.name, gm.role AS "role: String", gm.joined_at,
+        r#"SELECT g.id, g.name, g.school_zone, g.alsace_moselle,
+                  gm.role AS "role: String", gm.joined_at,
                   (g.created_by = $1) AS "created_by_me!",
                   gm.ownership_inherited_at, gm.ownership_inherited_reason,
                   gm.ownership_notice_seen_at, gm.ownership_email_sent_at
@@ -167,6 +168,9 @@ pub async fn export_account(
             "ownership_inherited_reason": m.ownership_inherited_reason,
             "ownership_notice_seen_at": m.ownership_notice_seen_at,
             "ownership_email_sent_at": m.ownership_email_sent_at,
+            // #561: the family's calendar settings.
+            "school_zone": m.school_zone,
+            "alsace_moselle": m.alsace_moselle,
         }));
     }
     // (storage_key, the attachment's JSON) — presigned once every group has

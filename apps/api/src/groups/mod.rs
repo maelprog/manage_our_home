@@ -6,7 +6,7 @@ use axum::{http::StatusCode, Json};
 use chrono::{Duration, Utc};
 use manage_our_home_shared::dto::groups::GroupMemberProfile;
 use manage_our_home_shared::validation::auth::{normalize_email, validate_email_ascii};
-use manage_our_home_shared::validation::groups::Accent;
+use manage_our_home_shared::validation::groups::{Accent, SchoolZone};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -32,6 +32,10 @@ pub struct GroupResponse {
     pub id: Uuid,
     pub name: String,
     pub accent: String,
+    /// #561: the family's school-holiday zone, `A`, `B`, `C`, or `None`.
+    pub school_zone: Option<String>,
+    /// #561: whether the family keeps the Alsace-Moselle public holidays.
+    pub alsace_moselle: bool,
 }
 
 /// AC #9: the creator becomes owner+admin immediately; blocked at 10
@@ -65,7 +69,7 @@ pub async fn create_group(
         r#"
         INSERT INTO groups (id, name, created_by)
         VALUES ($1, $2, $3)
-        RETURNING id, name, accent
+        RETURNING id, name, accent, school_zone, alsace_moselle
         "#,
         group_id,
         body.name,
@@ -93,6 +97,8 @@ pub async fn create_group(
             id: group.id,
             name: group.name,
             accent: group.accent,
+            school_zone: group.school_zone,
+            alsace_moselle: group.alsace_moselle,
         }),
     ))
 }
@@ -178,7 +184,7 @@ pub async fn get_group(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let group = sqlx::query!(
         r#"
-        SELECT g.id, g.name
+        SELECT g.id, g.name, g.school_zone, g.alsace_moselle
         FROM groups g
         JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = $2
         WHERE g.id = $1
@@ -213,6 +219,9 @@ pub async fn get_group(
     Ok(Json(json!({
         "id": group.id,
         "name": group.name,
+        // #561: the family's calendar settings, read by every member.
+        "school_zone": group.school_zone,
+        "alsace_moselle": group.alsace_moselle,
         "members": members.iter().map(|m| json!({
             "user_id": m.user_id,
             "role": m.role,
@@ -302,6 +311,45 @@ pub struct RenameGroupRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub accent: Option<String>,
+    /// #561: `None` when the key is absent (kept), `Some(Value::Null)` when
+    /// it is `null` (cleared). Taken as a raw value so that a wrong type is
+    /// a 400 `invalid_school_zone` too, not axum's plain-text 422.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub school_zone: Option<serde_json::Value>,
+    /// #561: same reason; `null` is kept apart from absence to be refused.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub alsace_moselle: Option<serde_json::Value>,
+}
+
+/// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
+/// as a missing key; this `deserialize_with` only runs when the key is
+/// present, so `null` arrives as `Some(Value::Null)` (same pattern as
+/// `grocery_list/items.rs`).
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// `PATCH /groups/:id`'s `school_zone` (#561): a `SchoolZone` letter, or
+/// `null` for no zone (no school holidays shown). Anything else, a wrong
+/// type included, is `invalid_school_zone`.
+fn parse_school_zone(value: &serde_json::Value) -> Result<Option<SchoolZone>, &'static str> {
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(text) => SchoolZone::parse(text)
+            .map(Some)
+            .ok_or("invalid_school_zone"),
+        _ => Err("invalid_school_zone"),
+    }
+}
+
+/// `PATCH /groups/:id`'s `alsace_moselle` (#561): a JSON boolean. `null` is
+/// refused like any other non-boolean: the column is `NOT NULL`.
+fn parse_alsace_moselle(value: &serde_json::Value) -> Result<bool, &'static str> {
+    value.as_bool().ok_or("invalid_alsace_moselle")
 }
 
 /// `PATCH /groups/:id`: changes the group's settings, its name, its accent
@@ -313,6 +361,12 @@ pub struct RenameGroupRequest {
 /// deserialization rejection (`missing field name`, plain text). The accent
 /// must be one of `Accent`'s identifiers (400 `invalid_accent`); the
 /// migration's `CHECK` holds the same list.
+///
+/// #561 adds the calendar settings, under the same bar: `school_zone`, a
+/// `SchoolZone` letter or `null` to clear it (400 `invalid_school_zone`
+/// otherwise), and `alsace_moselle`, a boolean (400
+/// `invalid_alsace_moselle` otherwise, `null` included). Either one alone
+/// is a body with a setting.
 pub async fn rename_group(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -320,7 +374,11 @@ pub async fn rename_group(
     Json(body): Json<RenameGroupRequest>,
 ) -> AppResult<impl IntoResponse> {
     let name = body.name.as_deref().map(str::trim);
-    if name.is_some_and(str::is_empty) || (name.is_none() && body.accent.is_none()) {
+    let no_setting = name.is_none()
+        && body.accent.is_none()
+        && body.school_zone.is_none()
+        && body.alsace_moselle.is_none();
+    if name.is_some_and(str::is_empty) || no_setting {
         return Err(AppError::Unprocessable("name_required".into()));
     }
     let accent = match body.accent.as_deref() {
@@ -331,6 +389,21 @@ pub async fn rename_group(
         ),
         None => None,
     };
+    let bad_request = |code: &'static str| AppError::BadRequest(code.into());
+    // `None`: kept; `Some(None)`: cleared.
+    let school_zone = body
+        .school_zone
+        .as_ref()
+        .map(parse_school_zone)
+        .transpose()
+        .map_err(bad_request)?
+        .map(|zone| zone.map(SchoolZone::as_str));
+    let alsace_moselle = body
+        .alsace_moselle
+        .as_ref()
+        .map(parse_alsace_moselle)
+        .transpose()
+        .map_err(bad_request)?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
@@ -338,11 +411,18 @@ pub async fn rename_group(
         return Err(AppError::Forbidden);
     }
 
+    // `school_zone` cannot be a `COALESCE`: `NULL` is one of its values, so
+    // whether the key was sent travels apart, in `$3`.
     let group = sqlx::query!(
-        r#"UPDATE groups SET name = COALESCE($1, name), accent = COALESCE($2, accent)
-           WHERE id = $3 RETURNING id, name, accent"#,
+        r#"UPDATE groups SET name = COALESCE($1, name), accent = COALESCE($2, accent),
+                  school_zone = CASE WHEN $3 THEN $4 ELSE school_zone END,
+                  alsace_moselle = COALESCE($5, alsace_moselle)
+           WHERE id = $6 RETURNING id, name, accent, school_zone, alsace_moselle"#,
         name,
         accent,
+        school_zone.is_some(),
+        school_zone.flatten(),
+        alsace_moselle,
         group_id
     )
     .fetch_one(&mut *tx)
@@ -353,6 +433,8 @@ pub async fn rename_group(
         id: group.id,
         name: group.name,
         accent: group.accent,
+        school_zone: group.school_zone,
+        alsace_moselle: group.alsace_moselle,
     }))
 }
 
@@ -858,5 +940,69 @@ mod tests {
         assert!(!actor_can_act_on("standard", "standard"));
         assert!(!actor_can_act_on("standard", "admin"));
         assert!(!actor_can_act_on("standard", "owner"));
+    }
+
+    // -- calendar settings (#561) ---------------------------------------------
+
+    use super::{parse_alsace_moselle, parse_school_zone};
+    use manage_our_home_shared::validation::groups::SchoolZone;
+    use serde_json::json;
+
+    #[test]
+    fn a_school_zone_is_one_of_the_three_letters() {
+        assert_eq!(parse_school_zone(&json!("A")), Ok(Some(SchoolZone::A)));
+        assert_eq!(parse_school_zone(&json!("B")), Ok(Some(SchoolZone::B)));
+        assert_eq!(parse_school_zone(&json!("C")), Ok(Some(SchoolZone::C)));
+    }
+
+    /// `null` is a value of its own: the family shows no school holidays.
+    #[test]
+    fn a_null_school_zone_clears_it() {
+        assert_eq!(parse_school_zone(&json!(null)), Ok(None));
+    }
+
+    #[test]
+    fn anything_else_is_an_invalid_school_zone() {
+        for value in [
+            json!("D"),
+            json!("b"),
+            json!(""),
+            json!("zone B"),
+            json!(2),
+            json!(true),
+            json!(["B"]),
+            json!({"zone": "B"}),
+        ] {
+            assert_eq!(
+                parse_school_zone(&value),
+                Err("invalid_school_zone"),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn alsace_moselle_is_a_boolean() {
+        assert_eq!(parse_alsace_moselle(&json!(true)), Ok(true));
+        assert_eq!(parse_alsace_moselle(&json!(false)), Ok(false));
+    }
+
+    /// The column is `NOT NULL`: `null` does not clear it, it is refused.
+    #[test]
+    fn anything_else_is_an_invalid_alsace_moselle() {
+        for value in [
+            json!(null),
+            json!("true"),
+            json!("oui"),
+            json!(1),
+            json!(0),
+            json!([true]),
+        ] {
+            assert_eq!(
+                parse_alsace_moselle(&value),
+                Err("invalid_alsace_moselle"),
+                "{value}"
+            );
+        }
     }
 }
