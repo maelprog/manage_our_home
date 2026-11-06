@@ -35,6 +35,14 @@ chrono-tz = "0.10"
 unicode-properties = { version = "0.1", default-features = false, features = [
     "general-category",
 ] }
+# `ToSchema` on the DTOs, for apps/api's OpenAPI documentation (#626).
+# Behind the `openapi` feature, which only apps/api turns on: apps/web
+# never builds utoipa. `chrono` and `uuid` map those types to their
+# OpenAPI formats.
+utoipa = { version = "6.0.0", optional = true, features = ["chrono", "uuid"] }
+
+[features]
+openapi = ["dep:utoipa"]
 
 [dev-dependencies]
 # The invitation email's time-vocabulary guard (`time_words_outside`, a test

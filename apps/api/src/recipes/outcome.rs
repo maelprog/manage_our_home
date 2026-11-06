@@ -112,7 +112,7 @@ pub(crate) struct Ingredient<'a> {
 
 /// Why a proposed quantity is not the recipe's. On the wire: `"no_stock"`,
 /// `"unit_mismatch"`, `"no_quantity"`, `"capped"`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RemovalWarning {
     /// No stock line has the ingredient's name: nothing to remove.
@@ -144,7 +144,7 @@ pub(crate) struct Proposal {
 
 /// One corrected line of a `done` request: the quantity to take from a
 /// stock line, in its unit.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct Removal {
     pub stock_item_id: Uuid,
     pub quantity: f64,
@@ -317,7 +317,7 @@ pub(crate) fn check_grocery_ids(ids: &[Uuid]) -> AppResult<()> {
 
 /// A product used that the recipe does not call for (#540): the quantity
 /// to take from a stock line, in its unit.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct OtherRemoval {
     pub stock_item_id: Uuid,
     pub quantity: f64,
@@ -417,7 +417,7 @@ pub(crate) fn ingredients_to_add(
 /// What a `done` request changes in one of the recipe's ingredients
 /// (#558). On the wire, beside `ingredient_id`: `"action": "set_quantity"`
 /// with `"quantity"`, `"action": "remove"` or `"action": "make_optional"`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum RecipeChange {
     /// The ingredient's new quantity, for the recipe's number of people,
@@ -430,7 +430,7 @@ pub enum RecipeChange {
 }
 
 /// One change to the recipe a `done` request carries (#558).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, utoipa::ToSchema)]
 pub struct RecipeUpdate {
     pub ingredient_id: Uuid,
     #[serde(flatten)]
@@ -577,7 +577,7 @@ async fn ingredients(
 }
 
 /// One ingredient of the `done` preview.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DoneLineResponse {
     pub ingredient_id: Uuid,
     pub name: String,
@@ -597,7 +597,7 @@ pub struct DoneLineResponse {
 }
 
 /// One stock line of a `done` preview, and what is proposed from it.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DoneLotResponse {
     pub stock_item: StockItemResponse,
     /// In the stock line's unit.
@@ -605,6 +605,21 @@ pub struct DoneLotResponse {
 }
 
 /// `GET …/selection/done`: what marking the recipe done would remove.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/{recipe_id}/selection/done",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 200, description = "What marking the planned recipe as cooked would take from the stock", body = crate::api_docs::schemas::DonePreview),
+        (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn preview_done(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -689,7 +704,7 @@ pub async fn preview_done(
 }
 
 /// `POST …/selection/done` body.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DoneRequest {
     /// One line per stock line to take from; a line left out is untouched.
     #[serde(default)]
@@ -710,7 +725,7 @@ pub struct DoneRequest {
 }
 
 /// An ingredient added by `add_to_recipe`.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AddedIngredientResponse {
     pub id: Uuid,
     pub name: String,
@@ -720,6 +735,24 @@ pub struct AddedIngredientResponse {
 
 /// `POST …/selection/done`: takes the corrected quantities from the stock,
 /// logs the meal and closes the selection, in one transaction.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes/{recipe_id}/selection/done",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    request_body = DoneRequest,
+    responses(
+        (status = 200, description = "Cooked: stock taken, meal logged, selection closed", body = crate::api_docs::schemas::DoneOutcome),
+        (status = 400, description = "`stock_item_not_in_recipe`, `duplicate_stock_item`, `duplicate_ingredient` or `invalid_quantity`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`stock_item_gone` or `insufficient_stock`, with the stock item concerned next to `error`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn apply_done(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -945,7 +978,7 @@ pub async fn apply_done(
 }
 
 /// One grocery item of the `abandoned` preview.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AbandonLineResponse {
     pub id: Uuid,
     pub name: String,
@@ -955,6 +988,21 @@ pub struct AbandonLineResponse {
 
 /// `GET …/selection/abandoned`: the unchecked grocery items generated for
 /// the recipe, each proposed for removal.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/{recipe_id}/selection/abandoned",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 200, description = "The grocery items abandoning the planned recipe could remove", body = crate::api_docs::schemas::AbandonPreview),
+        (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn preview_abandoned(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -982,7 +1030,7 @@ pub async fn preview_abandoned(
 }
 
 /// `POST …/selection/abandoned` body.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct AbandonRequest {
     /// The grocery items to remove; the preview's others are kept. Required,
     /// so that a request that forgot it does not keep everything silently.
@@ -991,6 +1039,24 @@ pub struct AbandonRequest {
 
 /// `POST …/selection/abandoned`: removes the chosen grocery items and
 /// closes the selection, in one transaction.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes/{recipe_id}/selection/abandoned",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    request_body = AbandonRequest,
+    responses(
+        (status = 200, description = "Abandoned: selection closed, the named grocery items removed", body = crate::api_docs::schemas::AbandonOutcome),
+        (status = 400, description = "`duplicate_grocery_item`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`grocery_item_changed`, with the grocery item concerned next to `error`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn apply_abandoned(
     State(state): State<AppState>,
     auth: AuthUser,

@@ -15,7 +15,7 @@ use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateEventRequest {
     pub title: String,
     pub description: Option<String>,
@@ -39,7 +39,7 @@ pub struct CreateEventRequest {
     pub is_private: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateEventRequest {
     pub title: Option<String>,
     pub description: Option<String>,
@@ -64,7 +64,7 @@ pub struct UpdateEventRequest {
     pub is_private: Option<bool>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct EventResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -147,6 +147,21 @@ fn normalized_bounds(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/events",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateEventRequest,
+    responses(
+        (status = 201, description = "Event created", body = EventResponse),
+        (status = 400, description = "`title_required`, `ends_at_before_starts_at` or `invalid_rrule`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_event(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -381,6 +396,21 @@ fn event_response(r: EventRow, assignee_ids: Vec<Uuid>) -> EventResponse {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/events/{event_id}",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+    ),
+    responses(
+        (status = 200, description = "The event", body = EventResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_event(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -408,13 +438,14 @@ pub async fn get_event(
     Ok(Json(event_response(event, assignee_ids)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct RangeQuery {
     pub from: DateTime<Utc>,
     pub to: DateTime<Utc>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct OccurrenceResponse {
     #[serde(flatten)]
     pub event: EventResponse,
@@ -467,6 +498,21 @@ fn row_spans(
 /// AC: lists events (and tasks, since tasks are events) visible in
 /// `[from, to]`, expanding any recurring event's occurrences on the fly
 /// rather than materializing them in the DB.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/events",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        RangeQuery,
+    ),
+    responses(
+        (status = 200, description = "The occurrences between `from` and `to`, recurrences expanded", body = crate::api_docs::schemas::OccurrenceList),
+        (status = 400, description = "`to_before_from`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_events(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -592,6 +638,23 @@ pub async fn list_events(
     Ok(Json(json!({ "occurrences": occurrences })))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/events/{event_id}",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+    ),
+    request_body = UpdateEventRequest,
+    responses(
+        (status = 200, description = "Event updated", body = EventResponse),
+        (status = 400, description = "`title_required`, `ends_at_before_starts_at` or `invalid_rrule`, `completed_only_valid_for_tasks` or `occurrence_at_required_for_recurring_task`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_event(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -797,6 +860,21 @@ pub async fn update_event(
     Ok(Json(event_response(event, assignee_ids)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/events/{event_id}",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+    ),
+    responses(
+        (status = 204, description = "Event deleted, with its attachments"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_event(
     State(state): State<AppState>,
     auth: AuthUser,

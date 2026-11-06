@@ -20,7 +20,7 @@ use crate::error::{AppError, AppResult};
 use crate::stocks::items::day_or_today;
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateBudgetEntryRequest {
     pub name: String,
     pub amount: f64,
@@ -40,7 +40,7 @@ pub struct CreateBudgetEntryRequest {
     pub paid_by: Option<Uuid>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateBudgetEntryRequest {
     pub name: Option<String>,
     pub amount: Option<f64>,
@@ -73,20 +73,20 @@ where
 /// Attaches a price to an existing grocery item, e.g. once it's been
 /// checked off/bought — the item's name is denormalized onto the entry so
 /// it survives the grocery item being deleted later.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SetGroceryItemPriceRequest {
     pub amount: f64,
     pub spent_at: Option<NaiveDate>,
 }
 
 /// A grocery item an expense links to, under its current name.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct LinkedGroceryItem {
     pub id: Uuid,
     pub name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct BudgetEntryResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -268,6 +268,23 @@ async fn set_links(
     Ok(())
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/budget-entries",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateBudgetEntryRequest,
+    responses(
+        (status = 201, description = "Budget entry created", body = BudgetEntryResponse),
+        (status = 400, description = "`name_required`, `paid_by_not_a_member`, `too_many_grocery_items`, `invalid_spent_at` or an invalid amount", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`grocery_item_already_priced`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_budget_entry(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -380,6 +397,24 @@ async fn require_payer(
 /// off/bought (docs/v1-scope.md epic #6). Same bar as creating a manual
 /// entry: an owner or an admin (#531); a standard member gets 404, since a
 /// price is a budget entry.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/grocery-items/{item_id}/price",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    request_body = SetGroceryItemPriceRequest,
+    responses(
+        (status = 201, description = "Budget entry created for the item", body = BudgetEntryResponse),
+        (status = 400, description = "Invalid amount", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`grocery_item_priced_with_others` or `grocery_item_already_priced`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn set_grocery_item_price(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -493,6 +528,21 @@ pub async fn set_grocery_item_price(
     Ok((StatusCode::CREATED, Json(entry)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/budget-entries/{entry_id}",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("entry_id" = uuid::Uuid, Path, description = "Budget entry id"),
+    ),
+    responses(
+        (status = 200, description = "The entry", body = BudgetEntryResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_budget_entry(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -517,6 +567,20 @@ pub async fn get_budget_entry(
     Ok(Json(entry))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/budget-entries",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The group's budget entries", body = crate::api_docs::schemas::BudgetEntryList),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_budget_entries(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -552,6 +616,24 @@ pub async fn list_budget_entries(
     Ok(Json(json!({ "entries": entries })))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/budget-entries/{entry_id}",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("entry_id" = uuid::Uuid, Path, description = "Budget entry id"),
+    ),
+    request_body = UpdateBudgetEntryRequest,
+    responses(
+        (status = 200, description = "Entry updated", body = BudgetEntryResponse),
+        (status = 400, description = "`name_required`, `paid_by_not_a_member`, `too_many_grocery_items`, `invalid_spent_at` or an invalid amount", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`grocery_item_already_priced`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_budget_entry(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -646,6 +728,21 @@ pub async fn update_budget_entry(
     Ok(Json(entry))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/budget-entries/{entry_id}",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("entry_id" = uuid::Uuid, Path, description = "Budget entry id"),
+    ),
+    responses(
+        (status = 204, description = "Entry deleted"),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_budget_entry(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -679,14 +776,15 @@ pub async fn delete_budget_entry(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct BudgetPeriodTotal {
     /// First day of the period (month), e.g. "2026-07-01".
     pub period: NaiveDate,
     pub total: f64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SummaryQuery {
     /// `YYYY-MM`: the month the `month` member reports on (#532). Left out,
     /// the current month in Paris.
@@ -702,6 +800,22 @@ pub struct SummaryQuery {
 /// category its total, its cap and the share of it spent
 /// (`validation::budget::cap_usage`). Since #638, per member who paid some
 /// of it, their total, and what nobody is named as having paid.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/budget-entries/summary",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        SummaryQuery,
+    ),
+    responses(
+        (status = 200, description = "Totals per month, and the detail of one month", body = crate::api_docs::schemas::BudgetSummary),
+        (status = 400, description = "`invalid_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn budget_summary(
     State(state): State<AppState>,
     auth: AuthUser,

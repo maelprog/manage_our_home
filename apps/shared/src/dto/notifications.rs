@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// `GET /account/notifications`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NotificationSettings {
     /// `push`, `email` or `both` (`users.reminder_channel`).
     pub reminder_channel: String,
@@ -25,6 +26,7 @@ pub struct NotificationSettings {
 
 /// `PUT /account/notifications`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateNotificationSettings {
     pub reminder_channel: String,
     /// The recap's hour, 0 to 23 (#700); left as it is when absent.
@@ -35,12 +37,14 @@ pub struct UpdateNotificationSettings {
 /// `POST /account/push-subscriptions`: the endpoint of the browser's
 /// `PushSubscription`, and nothing else of it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PushSubscriptionRequest {
     pub endpoint: String,
 }
 
 /// One entry of the notification centre (#534), `GET /notifications`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NotificationResponse {
     pub id: uuid::Uuid,
     /// The family the event happened in — for an invitation, the family the
@@ -63,6 +67,7 @@ pub struct NotificationResponse {
 /// `GET /notifications`: newest first. The next page is asked with the
 /// last entry's `created_at` and `id` as `before_created_at`/`before_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NotificationPage {
     pub notifications: Vec<NotificationResponse>,
     pub has_more: bool,
@@ -70,6 +75,7 @@ pub struct NotificationPage {
 
 /// `GET /notifications/unread_count`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UnreadNotificationCount {
     pub unread_count: i64,
 }

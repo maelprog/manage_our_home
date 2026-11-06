@@ -85,6 +85,20 @@ impl From<CategoryRow> for BudgetCategory {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/budget-categories",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The group's categories", body = BudgetCategoryList),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_budget_categories(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -108,6 +122,23 @@ pub async fn list_budget_categories(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/budget-categories",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateBudgetCategoryRequest,
+    responses(
+        (status = 201, description = "Category created", body = BudgetCategory),
+        (status = 400, description = "Invalid name, colour or cap (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`category_limit_reached` or `category_name_taken`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_budget_category(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -164,6 +195,24 @@ pub async fn create_budget_category(
     Ok((StatusCode::CREATED, Json(BudgetCategory::from(row))))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/budget-categories/{category_id}",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("category_id" = uuid::Uuid, Path, description = "Budget category id"),
+    ),
+    request_body = UpdateBudgetCategoryRequest,
+    responses(
+        (status = 200, description = "Category updated", body = BudgetCategory),
+        (status = 400, description = "Invalid name, colour or cap (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`category_name_taken`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_budget_category(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -213,6 +262,21 @@ pub async fn update_budget_category(
 
 /// Its entries stay, under « Sans catégorie »: the key's
 /// `ON DELETE SET NULL (category_id)` clears theirs.
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/budget-categories/{category_id}",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("category_id" = uuid::Uuid, Path, description = "Budget category id"),
+    ),
+    responses(
+        (status = 204, description = "Category deleted"),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_budget_category(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -248,6 +312,20 @@ pub(crate) async fn family_cap_cents(
     .flatten())
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/budget-settings",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The family's monthly cap", body = BudgetSettings),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_budget_settings(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -265,6 +343,22 @@ pub async fn get_budget_settings(
 
 /// Replaces the family's monthly cap: a number sets it, `null` or no
 /// `monthly_cap` at all removes it.
+#[utoipa::path(
+    put,
+    path = "/groups/{id}/budget-settings",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = BudgetSettings,
+    responses(
+        (status = 200, description = "Cap saved", body = BudgetSettings),
+        (status = 400, description = "Invalid cap", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn put_budget_settings(
     State(state): State<AppState>,
     auth: AuthUser,

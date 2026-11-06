@@ -36,14 +36,14 @@ use crate::stocks::items::{today, StockItemResponse, StockItemRow};
 use crate::AppState;
 
 /// `POST /groups/:id/stock-items/reception` body.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ReceiveRequest {
     pub items: Vec<ReceivedItem>,
 }
 
 /// One received article. Every field but the grocery item's id is optional:
 /// an absent one takes the grocery item's value (see `received_line`).
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ReceivedItem {
     pub grocery_item_id: Uuid,
     pub name: Option<String>,
@@ -58,7 +58,7 @@ pub struct ReceivedItem {
 /// and the stock line concerned — on `GET` the existing line a merge would
 /// add to (`null` for `new`, and for a merge into the line an earlier
 /// article of the lot creates), on `POST` the line as the reception left it.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ReceptionLineResponse {
     pub grocery_item_id: Uuid,
     pub name: String,
@@ -211,6 +211,19 @@ fn candidates(stock: &[StockItemRow]) -> Vec<StockCandidate<'_>> {
 
 /// The default proposal for each checked item of the list, pre-filled with
 /// the item's values and no date.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/stock-items/reception",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The checked grocery items waiting to be put in stock", body = crate::api_docs::schemas::ReceptionList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_reception(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -285,6 +298,23 @@ pub async fn get_reception(
 /// item of another group (or already gone) is a 404 and an invalid one a
 /// 400/409, and either leaves the list and the stock untouched. Open to any
 /// group member, whoever added the items (see the module doc).
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/stock-items/reception",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = ReceiveRequest,
+    responses(
+        (status = 200, description = "Items put in stock; what is left to receive", body = crate::api_docs::schemas::ReceptionList),
+        (status = 400, description = "`items_required`, `duplicate_grocery_item`, `name_required`, `quantity_must_be_positive` or `quantity_too_large`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such grocery item", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`no_stock_to_merge`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn receive(
     State(state): State<AppState>,
     auth: AuthUser,

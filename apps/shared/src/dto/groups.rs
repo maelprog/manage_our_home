@@ -19,12 +19,14 @@ fn default_accent() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateGroupRequest {
     pub name: String,
 }
 
 /// `POST /groups` (201) and `PATCH /groups/:id` (200) response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GroupResponse {
     pub id: Uuid,
     pub name: String,
@@ -43,6 +45,7 @@ pub struct GroupResponse {
 /// One element of the `GET /groups` array: a group the caller belongs to,
 /// with the caller's role in it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GroupSummary {
     pub group_id: Uuid,
     pub name: String,
@@ -60,6 +63,7 @@ pub struct GroupSummary {
 /// `GroupSummary::ownership_notice`: why and when the group came to the
 /// caller. `reason` is a `validation::groups::OwnershipReason` value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnershipNotice {
     pub reason: String,
     pub inherited_at: DateTime<Utc>,
@@ -67,6 +71,7 @@ pub struct OwnershipNotice {
 
 /// One element of `GroupDetailResponse::members`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GroupMember {
     pub user_id: Uuid,
     pub role: String,
@@ -81,6 +86,7 @@ pub struct GroupMember {
 
 /// `GET /groups/:id` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GroupDetailResponse {
     pub id: Uuid,
     pub name: String,
@@ -101,6 +107,7 @@ pub struct GroupDetailResponse {
 /// the issue): the profile is reachable from every name on the messagerie
 /// and the agenda, wider than the member list that does show it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GroupMemberProfile {
     pub user_id: Uuid,
     pub display_name: String,
@@ -115,6 +122,7 @@ pub struct GroupMemberProfile {
 /// the accent (#537), the calendar settings (#561), in any combination.
 /// Owner or admin only.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RenameGroupRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -146,27 +154,32 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TransferOwnershipRequest {
     pub new_owner_id: Uuid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChangeRoleRequest {
     pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LeaveGroupRequest {
     pub new_owner_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateInvitationRequest {
     pub invited_email: Option<String>,
 }
 
 /// `POST /groups/:id/invitations` (201) response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct InvitationCreatedResponse {
     pub id: Uuid,
     pub token: String,
@@ -177,6 +190,7 @@ pub struct InvitationCreatedResponse {
 
 /// `POST /groups/invitations/:token/accept` (200) response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AcceptInvitationResponse {
     pub group_id: Uuid,
 }

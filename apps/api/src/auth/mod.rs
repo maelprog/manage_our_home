@@ -61,6 +61,16 @@ fn unprocessable(code: &'static str) -> AppError {
 /// 200 with the shape below if extraction succeeds, 401
 /// `{"error":"unauthorized"}` otherwise (identical to every other
 /// `AuthUser`-gated handler, see `session.rs`'s `FromRequestParts` impl).
+#[utoipa::path(
+    get,
+    path = "/auth/me",
+    tag = "auth",
+    responses(
+        (status = 200, description = "The signed-in account", body = MeResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn me(auth: AuthUser) -> Json<MeResponse> {
     Json(MeResponse {
         user_id: auth.user_id,
@@ -139,6 +149,17 @@ fn register_action(existing: Option<ExistingAccount>) -> RegisterAction {
 /// #571: once the fields are valid, the answer is held until the response
 /// floor (`response_floor`) has passed, whichever branch was taken: a 422
 /// says nothing about any account and leaves at once.
+#[utoipa::path(
+    post,
+    path = "/auth/register",
+    tag = "auth",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "Accepted. The same answer whether or not the address already has an account; a verification email is sent when one is due"),
+        (status = 422, description = "Invalid field: an email, password, display-name, age or CGU validation code", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn register(
     State(state): State<AppState>,
     Json(mut body): Json<RegisterRequest>,
@@ -321,11 +342,26 @@ async fn send_verification_email(state: &AppState, email: &str, token: &str) {
     .await;
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct VerifyEmailQuery {
     pub token: String,
 }
 
+#[utoipa::path(
+    get,
+    path = "/auth/verify-email",
+    tag = "auth",
+    params(
+        VerifyEmailQuery,
+    ),
+    responses(
+        (status = 200, description = "Address verified"),
+        (status = 404, description = "`not_found`: unknown token", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 410, description = "`gone`: expired or already used token", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn verify_email(
     State(state): State<AppState>,
     Query(query): Query<VerifyEmailQuery>,
@@ -388,6 +424,18 @@ pub async fn verify_email(
 /// or absent `content-type` (415) all answer before `login` runs. The
 /// instrument measures the handler, so the requests it never sees are
 /// outside it.
+#[utoipa::path(
+    post,
+    path = "/auth/login",
+    tag = "auth",
+    request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Signed in: the session cookie is set", body = crate::api_docs::schemas::LoginResponse),
+        (status = 401, description = "`unauthorized`: one answer for every refusal (unknown email, wrong or no password, unverified address)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 429, description = "`too_many_attempts`: this (address, email) pair is locked for now", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn login(
     State(state): State<AppState>,
     ClientIp(client_ip): ClientIp,
@@ -553,6 +601,16 @@ async fn login_inner(
 /// Ends the caller's session, full or restricted (#289), or that of an
 /// account awaiting its age declaration (#318): the one route every live
 /// session shares.
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Session revoked and cookie cleared"),
+        crate::api_docs::RestrictedSessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn logout(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -566,6 +624,16 @@ pub async fn logout(
 /// `GET /auth/sessions` (#225): the caller's live sessions, the one the
 /// request was made with marked `current`. Dates only — the table keeps no
 /// IP and no user-agent — and the internal id, never the token (#222).
+#[utoipa::path(
+    get,
+    path = "/auth/sessions",
+    tag = "auth",
+    responses(
+        (status = 200, description = "The account's active sessions", body = Vec<ActiveSession>),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_sessions(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -579,6 +647,20 @@ pub async fn list_sessions(
 /// sessions. 404 when the caller has no such unrevoked session, someone
 /// else's included. Ending the current one also clears its cookie, as
 /// `logout` does.
+#[utoipa::path(
+    post,
+    path = "/auth/sessions/{id}/revoke",
+    tag = "auth",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Session id"),
+    ),
+    responses(
+        (status = 204, description = "Session revoked"),
+        (status = 404, description = "`not_found`: no such session of this account", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn revoke_one_session(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -598,6 +680,16 @@ pub async fn revoke_one_session(
 /// caller, the current one included (arbitrated 2026-10-02), and clears
 /// its cookie: the caller is logged out everywhere, here too. The one way
 /// out for a Google-only account, which has no password to change.
+#[utoipa::path(
+    post,
+    path = "/auth/sessions/revoke-all",
+    tag = "auth",
+    responses(
+        (status = 204, description = "Every session of the account revoked, this one included"),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn revoke_every_session(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -621,6 +713,16 @@ fn password_reset_link(frontend_base_url: &str, token: &str) -> String {
 /// AC #4: identical response whether or not the account exists, to avoid
 /// leaking which emails are registered (anti-enumeration) — and, since
 /// #571, no sooner than the response floor either way.
+#[utoipa::path(
+    post,
+    path = "/auth/password/forgot",
+    tag = "auth",
+    request_body = ForgotPasswordRequest,
+    responses(
+        (status = 200, description = "Accepted, whether or not the address has an account"),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn forgot_password(
     State(state): State<AppState>,
     Json(mut body): Json<ForgotPasswordRequest>,
@@ -688,6 +790,16 @@ async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
 /// button counts it down, #420), the whole operation is a silent no-op (no
 /// new token, no email). #571: whichever it is, the answer is held until
 /// the response floor has passed.
+#[utoipa::path(
+    post,
+    path = "/auth/verify-email/resend",
+    tag = "auth",
+    request_body = ResendVerificationRequest,
+    responses(
+        (status = 200, description = "Accepted, whether or not an email was sent"),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn resend_verification(
     State(state): State<AppState>,
     Json(mut body): Json<ResendVerificationRequest>,
@@ -768,6 +880,19 @@ async fn issue_verification(state: &AppState, user_id: Uuid, email: &str) -> App
 }
 
 /// AC #4: consuming a valid reset token revokes every active session.
+#[utoipa::path(
+    post,
+    path = "/auth/password/reset",
+    tag = "auth",
+    request_body = ResetPasswordRequest,
+    responses(
+        (status = 200, description = "Password reset; every session revoked"),
+        (status = 404, description = "`not_found`: unknown token", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 410, description = "`gone`: expired or already used token", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "Invalid password (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn reset_password(
     State(state): State<AppState>,
     Json(body): Json<ResetPasswordRequest>,
@@ -825,6 +950,19 @@ pub async fn reset_password(
 
 /// AC #5: requires the current password; keeps the calling session alive
 /// and revokes every other active session.
+#[utoipa::path(
+    post,
+    path = "/settings/password/change",
+    tag = "account",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 200, description = "Password changed"),
+        (status = 401, description = "`unauthorized`: wrong current password, or no session", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`no_password_set`, or an invalid new password (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn change_password(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -863,6 +1001,19 @@ pub async fn change_password(
 /// `email_verified` to false and sends a fresh verification link; `login`
 /// refuses password auth until that link is consumed, so the password is
 /// inert in the meantime.
+#[utoipa::path(
+    post,
+    path = "/settings/password/set",
+    tag = "account",
+    request_body = SetPasswordRequest,
+    responses(
+        (status = 200, description = "Password set"),
+        (status = 409, description = "`password_already_set`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "Invalid password (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn set_password(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -934,6 +1085,19 @@ struct BlockingGroup {
 
 /// AC #6: blocked (409, with the list of owned groups) while the user
 /// owns any group; otherwise schedules deletion at now()+30d.
+#[utoipa::path(
+    post,
+    path = "/account/delete",
+    tag = "account",
+    request_body = DeleteAccountRequest,
+    responses(
+        (status = 200, description = "Deletion requested"),
+        (status = 401, description = "`unauthorized`: wrong password, or no session", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`owner_of_groups`: the account still owns groups, listed in `groups` next to `error`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_account(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -1009,6 +1173,17 @@ pub async fn delete_account(
     Ok(StatusCode::OK)
 }
 
+#[utoipa::path(
+    post,
+    path = "/account/delete/cancel",
+    tag = "account",
+    responses(
+        (status = 200, description = "Deletion request cancelled"),
+        (status = 404, description = "`not_found`: no deletion pending", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn cancel_delete_account(
     State(state): State<AppState>,
     auth: AuthUser,

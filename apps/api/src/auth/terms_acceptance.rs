@@ -43,6 +43,18 @@ pub fn terms_in_force_now() -> &'static str {
 /// `YYYY-MM-DD` dates, so comparing them as text in the `"C"` collation
 /// orders them as dates. A restricted session, or one awaiting its age
 /// declaration, is a 401.
+#[utoipa::path(
+    post,
+    path = "/auth/terms-acceptance",
+    tag = "auth",
+    request_body = TermsAcceptanceRequest,
+    responses(
+        (status = 204, description = "CGU accepted"),
+        (status = 422, description = "Not the current version, or not accepted (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::RestrictedSessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn accept(
     State(state): State<AppState>,
     session: TermsSession,

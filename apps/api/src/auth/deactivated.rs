@@ -22,6 +22,16 @@ use super::session::DeactivatedSession;
 /// reactivation request is pending or was refused since, and whether the
 /// holder had asked for the deletion — what the page needs to say when the
 /// account will be purged.
+#[utoipa::path(
+    get,
+    path = "/account/deactivated",
+    tag = "account",
+    responses(
+        (status = 200, description = "The deactivated account and its reactivation request, if any", body = DeactivatedAccountResponse),
+        crate::api_docs::RestrictedSessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn status(
     State(state): State<AppState>,
     session: DeactivatedSession,
@@ -58,6 +68,19 @@ pub async fn status(
 /// The `users` row is locked first, as the purge and the superadmin's
 /// actions lock it: a request can land neither on an account being purged
 /// nor on one reactivated in the meantime.
+#[utoipa::path(
+    post,
+    path = "/account/deactivated/reactivation-request",
+    tag = "account",
+    request_body = ReactivationRequestBody,
+    responses(
+        (status = 201, description = "Reactivation requested"),
+        (status = 409, description = "`reactivation_already_requested`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "Invalid message (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::RestrictedSessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn request_reactivation(
     State(state): State<AppState>,
     session: DeactivatedSession,

@@ -1,0 +1,66 @@
+/* Swagger UI's `dist/index.css` (5.32.6), served in its place by
+ * `api_docs::swagger_file`. The first three rules are the archive's own. */
+html {
+    box-sizing: border-box;
+    overflow: -moz-scrollbars-vertical;
+    overflow-y: scroll;
+}
+
+*,
+*:before,
+*:after {
+    box-sizing: inherit;
+}
+
+body {
+    margin: 0;
+    background: #fafafa;
+}
+
+/* Swagger UI's stylesheet draws four icons as `data:` SVG backgrounds: the
+ * select arrow, the checked checkbox, the copy and download buttons and the
+ * model toggle. Caddy's CSP has no `img-src`, so `default-src 'self'`
+ * blocks `data:` and every one of them was a violation reported to
+ * /api/csp-report. This sheet is linked after swagger-ui.css, so these
+ * rules win at equal specificity: a background that is never computed is
+ * never fetched. The select gets the browser's own arrow back; the other
+ * three are drawn with text instead. */
+.swagger-ui select,
+html.dark-mode .swagger-ui select {
+    background-image: none;
+    -webkit-appearance: auto;
+    -moz-appearance: auto;
+    appearance: auto;
+}
+
+.swagger-ui .checkbox input[type=checkbox]:checked + label > .item,
+html.dark-mode .swagger-ui .dialog-ux .modal-ux .checkbox input[type=checkbox]:checked + label > .item {
+    background-image: none;
+}
+
+.swagger-ui .checkbox input[type=checkbox]:checked + label > .item::after {
+    content: "\2713";
+    display: block;
+    line-height: 16px;
+    text-align: center;
+}
+
+.swagger-ui .copy-to-clipboard button,
+.swagger-ui .download-contents button,
+html.dark-mode .swagger-ui .copy-to-clipboard button,
+html.dark-mode .swagger-ui .download-contents button {
+    background-image: none;
+}
+
+.swagger-ui .copy-to-clipboard button::after {
+    content: "\29C9";
+    color: #fff;
+}
+
+.swagger-ui .model-toggle:after,
+html.dark-mode .swagger-ui .model-toggle:after {
+    background-image: none;
+    content: "\25BE";
+    line-height: 20px;
+    text-align: center;
+}

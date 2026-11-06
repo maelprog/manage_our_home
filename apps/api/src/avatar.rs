@@ -631,6 +631,20 @@ pub fn reencode_avatar(bytes: &[u8]) -> Result<Vec<u8>, AvatarError> {
 /// key back, and the previous photo stays. The previous object is deleted
 /// after the commit; if that fails, it is an orphan the reconciliation pass
 /// removes.
+#[utoipa::path(
+    put,
+    path = "/me/avatar",
+    tag = "account",
+    request_body(content = inline(crate::api_docs::schemas::FileUpload), content_type = "multipart/form-data", description = "One `file` field: a JPEG or PNG picture"),
+    responses(
+        (status = 204, description = "Avatar stored, re-encoded as JPEG"),
+        (status = 400, description = "`invalid_multipart`, `missing_file` or `multiple_files`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "Not a picture the avatar takes (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 503, description = "`uploads_busy`: too many uploads at once; `Retry-After` says when to retry", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn put_avatar(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -718,6 +732,16 @@ pub async fn put_avatar(
 /// storage failure answers 500 and leaves the photo in place for a retry,
 /// rather than a key cleared over an object nothing points at any more
 /// (the order `agenda::attachments::delete_objects` follows, #54).
+#[utoipa::path(
+    delete,
+    path = "/me/avatar",
+    tag = "account",
+    responses(
+        (status = 204, description = "Avatar removed"),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_avatar(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -747,6 +771,17 @@ pub async fn delete_avatar(
 }
 
 /// `GET /me/avatar` — the caller's own photo, 404 when there is none.
+#[utoipa::path(
+    get,
+    path = "/me/avatar",
+    tag = "account",
+    responses(
+        (status = 200, description = "The JPEG", body = Vec<u8>, content_type = "image/jpeg"),
+        (status = 404, description = "`not_found`: no avatar", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_own_avatar(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -763,6 +798,21 @@ pub async fn get_own_avatar(
 /// be members of `:id`, both checks written in the query. Every refusal is
 /// 404, like a member with no photo, so the answer never tells who belongs
 /// to which group.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/members/{user_id}/avatar",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("user_id" = uuid::Uuid, Path, description = "Member's user id"),
+    ),
+    responses(
+        (status = 200, description = "The JPEG", body = Vec<u8>, content_type = "image/jpeg"),
+        (status = 404, description = "`not_found`: no avatar, not a member, or the caller is not a member", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_member_avatar(
     State(state): State<AppState>,
     auth: AuthUser,

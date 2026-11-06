@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
@@ -34,6 +35,7 @@ pub struct RegisterRequest {
 /// acknowledging a new version. A missing field accepts nothing, answered
 /// with the same 422 `terms_acceptance_required`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TermsAcceptanceRequest {
     #[serde(default)]
     pub accepts_terms: bool,
@@ -45,40 +47,47 @@ pub struct TermsAcceptanceRequest {
 /// #137. A missing field declares nothing, answered with the same 422
 /// `age_declaration_required`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AgeDeclarationRequest {
     #[serde(default)]
     pub declares_minimum_age: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ForgotPasswordRequest {
     pub email: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ResendVerificationRequest {
     pub email: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ResetPasswordRequest {
     pub token: String,
     pub new_password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SetPasswordRequest {
     pub new_password: String,
 }
@@ -88,6 +97,7 @@ pub struct SetPasswordRequest {
 /// account that has a password; a Google-only account sends `None` (see
 /// `validation::rgpd::validate_deletion_confirmation`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeleteAccountRequest {
     pub current_password: Option<String>,
 }
@@ -97,6 +107,7 @@ pub struct DeleteAccountRequest {
 /// `me` handler (`apps/api/src/auth/mod.rs::me`) is a straight reshape of
 /// that extractor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MeResponse {
     pub user_id: Uuid,
     pub email: String,
@@ -137,6 +148,7 @@ pub struct MeResponse {
 /// (409 with an extra `groups` array) which isn't relevant to the Auth epic's
 /// pages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ErrorResponse {
     pub error: String,
 }
@@ -144,6 +156,7 @@ pub struct ErrorResponse {
 /// Response of `GET /account/deactivated` (#289), the one read a restricted
 /// session — opened by a correct login on a deactivated account — may make.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeactivatedAccountResponse {
     pub deactivated_at: DateTime<Utc>,
     /// When the pending reactivation request was made; `None` if there is
@@ -162,6 +175,7 @@ pub struct DeactivatedAccountResponse {
 /// Body of `POST /account/deactivated/reactivation-request` (#289). The
 /// note is optional (`validation::user_admin::validate_reactivation_message`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReactivationRequestBody {
     #[serde(default)]
     pub message: Option<String>,
@@ -173,6 +187,7 @@ pub struct ReactivationRequestBody {
 /// internal `sessions.id`, which opens nothing since #222, and is what
 /// `POST /auth/sessions/:id/revoke` takes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ActiveSession {
     pub id: Uuid,
     pub created_at: DateTime<Utc>,

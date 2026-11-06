@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 /// `POST /groups/:id/events` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateEventRequest {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,6 +40,7 @@ pub struct CreateEventRequest {
 /// optional; `completed` + `occurrence_at` drive per-occurrence completion
 /// of a recurring task (see `apps/api/src/agenda/events.rs::update_event`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateEventRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -74,6 +76,7 @@ pub struct UpdateEventRequest {
 /// recurring task, `completed_at` on this base row is *not* authoritative —
 /// per-occurrence completion is reported by `OccurrenceResponse` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EventResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -146,6 +149,7 @@ pub struct EventResponse {
 /// recurring task, overrides `completed_at` with *that occurrence's*
 /// completion (from `event_occurrence_completions`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OccurrenceResponse {
     #[serde(flatten)]
     pub event: EventResponse,
@@ -155,18 +159,21 @@ pub struct OccurrenceResponse {
 
 /// `GET /groups/:id/events?from&to` response envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OccurrenceList {
     pub occurrences: Vec<OccurrenceResponse>,
 }
 
 /// `POST /groups/:id/events/:event_id/reminders` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateReminderRequest {
     pub offset_minutes: i32,
 }
 
 /// `POST /groups/:id/events/:event_id/reminders` (201) response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReminderResponse {
     pub id: Uuid,
     pub event_id: Uuid,
@@ -176,6 +183,7 @@ pub struct ReminderResponse {
 /// One element of `GET /groups/:id/events/:event_id/attachments`, and the
 /// `POST …/attachments` (201) response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AttachmentResponse {
     pub id: Uuid,
     pub event_id: Uuid,
@@ -194,6 +202,7 @@ pub struct AttachmentResponse {
 /// outside the range asked for. The other kinds are one day and carry no
 /// `end`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NationalDayResponse {
     pub date: NaiveDate,
     pub kind: String,
@@ -204,6 +213,7 @@ pub struct NationalDayResponse {
 
 /// `GET /groups/:id/national-days?from&to` response envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NationalDayList {
     pub days: Vec<NationalDayResponse>,
 }

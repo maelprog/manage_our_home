@@ -53,14 +53,14 @@ struct IngredientRow {
     seasonal_months: Option<Vec<i32>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MissingIngredient {
     pub name: String,
     pub quantity: Option<f64>,
     pub unit: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct RecipeSuggestion {
     pub recipe_id: Uuid,
     pub name: String,
@@ -72,7 +72,8 @@ pub struct RecipeSuggestion {
     pub last_eaten_on: Option<NaiveDate>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct SuggestionsQuery {
     pub limit: Option<i64>,
     /// `true` keeps only the recipes the stock covers entirely
@@ -81,6 +82,20 @@ pub struct SuggestionsQuery {
     pub possible: bool,
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/suggestions",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        SuggestionsQuery,
+    ),
+    responses(
+        (status = 200, description = "Recipes ranked by what the stock covers", body = crate::api_docs::schemas::SuggestionList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn suggest_recipes(
     State(state): State<AppState>,
     auth: AuthUser,

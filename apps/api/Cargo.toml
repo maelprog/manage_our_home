@@ -25,7 +25,8 @@ name = "manage_our_home"
 path = "src/lib.rs"
 
 [dependencies]
-manage_our_home_shared = { path = "../shared" }
+# `openapi`: `ToSchema` on the DTOs, for the documentation below (#626).
+manage_our_home_shared = { path = "../shared", features = ["openapi"] }
 manage_our_home_http_guard = { path = "../http_guard" }
 axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 tokio = { version = "1", features = ["full"] }
@@ -97,6 +98,20 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 # colour component of its own (`worker/multithreaded.rs`) once the reduced
 # frame is over 128 pixels wide (it squares the width, not width × height).
 jpeg-decoder = { version = "0.3.2", default-features = false }
+# The OpenAPI documentation (#626, `src/api_docs`): the spec is derived
+# from the handlers' `#[utoipa::path]` annotations. `chrono` and `uuid`
+# map those types to their OpenAPI formats.
+utoipa = { version = "6.0.0", features = ["chrono", "uuid"] }
+# Swagger UI, served from the binary. `vendored`: the build takes the
+# Swagger UI archive from the `utoipa-swagger-ui-vendored` crate — fetched
+# by Cargo like any crate and checked against its `Cargo.lock` checksum —
+# instead of letting `build.rs` download it from GitHub (curl, at build
+# time, with nothing pinning its content). No `axum` feature: its router
+# redirects `/docs` to the absolute `/docs/`, which behind Caddy's
+# `strip_prefix /api` lands on apps/web; `src/api_docs` serves the files
+# itself through `utoipa_swagger_ui::serve`. No default `url` feature
+# either: it only parses `SWAGGER_UI_DOWNLOAD_URL`, unused here.
+utoipa-swagger-ui = { version = "10.0.2", default-features = false, features = ["vendored"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -108,3 +123,8 @@ tokio-tungstenite = "0.21"
 # Progressive and CMYK JPEG fixtures for the avatar's decode (#588), which
 # `image`'s encoder does not write. The release `image` already pulls.
 jpeg-encoder = "0.7.1"
+# The OpenAPI completeness test (#626, tests/openapi_flow.rs) reads the
+# `(method, path)` pairs `build_router` registers from `src/lib.rs`
+# itself: an axum `Router` does not list its routes. Parsing only, no
+# proc-macro or printing; the 3.x line, already in Cargo.lock.
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
