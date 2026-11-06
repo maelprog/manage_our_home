@@ -1828,6 +1828,23 @@ mod tests {
         assert!(!html.contains("« Les Martin »"), "{html}");
     }
 
+    /// Another family alone that fails, the active one not shown: one
+    /// family on screen, the same generic notice.
+    #[tokio::test]
+    async fn another_family_alone_failing_keeps_the_generic_notice() {
+        let state = fake_families_api().await;
+        let groups = two_families();
+        let asked = FamilySelection::Only(vec![Uuid::from_u128(2)]);
+        let (html, _) = body(&state, None, &groups, &groups[0], Some(&asked), &OCTOBER)
+            .await
+            .expect("the page is drawn");
+        assert!(
+            html.contains("Impossible de charger les événements pour le moment."),
+            "{html}"
+        );
+        assert!(!html.contains("« Les Martin »"), "{html}");
+    }
+
     /// An id of a family the visitor does not belong to, in the URL or the
     /// cookie, shows nothing of that family: it is never asked for.
     #[tokio::test]
