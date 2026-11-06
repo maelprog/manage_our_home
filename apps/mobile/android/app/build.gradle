@@ -16,6 +16,22 @@ if (!syncedConfigFile.exists()) {
 def syncedConfig = new JsonSlurper().parse(syncedConfigFile)
 def stagingUrl = 'https://staging.watallo.fr'
 
+// A signed release (#666, .github/workflows/mobile-release.yml): its
+// version comes from the tag, through -PmhomeVersionName and
+// -PmhomeVersionCode (scripts/release-version.mjs); its key from two
+// environment variables, never from a file of the repository. A debug
+// build needs none of them, and keeps version 1 / "1.0".
+def releaseVersionName = findProperty('mhomeVersionName') as String
+def releaseVersionCode = findProperty('mhomeVersionCode') as String
+// Android takes a versionCode from 1 to 2 100 000 000.
+def releaseVersionCodeOk = releaseVersionCode ==~ /[1-9][0-9]{0,9}/ && releaseVersionCode.toLong() <= 2_100_000_000L
+def keystorePath = System.getenv('MHOME_KEYSTORE_FILE')
+def keystorePassword = System.getenv('MHOME_KEYSTORE_PASSWORD')
+// The alias the README's keytool command gives the key. A PKCS12 keystore
+// (keytool's default) has one password, for the store and the key alike.
+def keyAliasName = 'mhome'
+def signingReady = keystorePath && keystorePassword && file(keystorePath).isFile()
+
 def brandDir = file('../../../web/src/brand')
 def brandSource = file('../../../web/src/brand.rs').getText('UTF-8')
 def brandColour = { String name ->
@@ -33,8 +49,8 @@ android {
         applicationId "fr.watallo.mhome"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode releaseVersionCodeOk ? releaseVersionCode.toInteger() : 1
+        versionName releaseVersionName ?: "1.0"
         resValue "string", "app_name", syncedConfig.appName
         resValue "color", "brand_theme", brandColour('THEME_COLOR')
         resValue "color", "brand_background", brandColour('BACKGROUND_COLOR')
@@ -66,8 +82,21 @@ android {
             res.srcDirs += layout.buildDirectory.dir('generated/brand-res').get().asFile
         }
     }
+    signingConfigs {
+        if (signingReady) {
+            release {
+                storeFile file(keystorePath)
+                storePassword keystorePassword
+                keyAlias keyAliasName
+                keyPassword keystorePassword
+            }
+        }
+    }
     buildTypes {
         release {
+            if (signingReady) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
@@ -115,12 +144,46 @@ def checkSyncedTarget = { String flavor ->
                 : "run `MHOME_TARGET=prod MHOME_PROD_URL=https://… npx cap sync android`"))
     }
 }
+// A release is what families install: the prod flavour only, signed with
+// the release key, and numbered from its tag. Without one of them the
+// build stops here, saying which, rather than produce an unsigned APK, a
+// staging one (it opens the test server, reachable by the VPN only), or a
+// versionCode 1 that no update could follow.
+def checkRelease = { String flavor ->
+    def problems = []
+    if (flavor != 'prod') {
+        problems << "the ${flavor} flavour has no release build: release the prod flavour (assembleProdRelease)"
+    }
+    if (!keystorePath) {
+        problems << 'MHOME_KEYSTORE_FILE is not set: the path of the release keystore (apps/mobile/README.md, signed APK)'
+    } else if (!file(keystorePath).isFile()) {
+        problems << "MHOME_KEYSTORE_FILE=${keystorePath}: no such file"
+    }
+    if (!keystorePassword) {
+        problems << 'MHOME_KEYSTORE_PASSWORD is not set: the password of the release keystore'
+    }
+    if (!releaseVersionName || !releaseVersionCode) {
+        problems << '-PmhomeVersionName and -PmhomeVersionCode are required: run `node scripts/release-version.mjs mobile-vX.Y.Z` in apps/mobile'
+    } else if (!releaseVersionCodeOk) {
+        problems << "-PmhomeVersionCode=${releaseVersionCode}: expected an integer from 1 to 2100000000"
+    }
+    if (problems) {
+        throw new GradleException("cannot build a release APK:\n- " + problems.join('\n- '))
+    }
+}
 android.applicationVariants.all { variant ->
     def flavor = variant.flavorName
-    def check = tasks.register("check${flavor.capitalize()}${variant.buildType.name.capitalize()}SyncedTarget") {
+    def buildType = variant.buildType.name
+    def check = tasks.register("check${flavor.capitalize()}${buildType.capitalize()}SyncedTarget") {
         doLast { checkSyncedTarget(flavor) }
     }
     variant.preBuildProvider.configure { dependsOn check }
+    if (buildType == 'release') {
+        def releaseCheck = tasks.register("check${flavor.capitalize()}Release") {
+            doLast { checkRelease(flavor) }
+        }
+        variant.preBuildProvider.configure { dependsOn releaseCheck }
+    }
 }
 
 repositories {

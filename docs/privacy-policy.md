@@ -623,6 +623,47 @@ invitation. Pour accéder à votre adresse sans compte, la faire rectifier ou
 effacer, ou vous opposer à son traitement, adressez la demande au
 responsable de traitement.
 
+## Application Android
+
+L'application Android de MHome est une fenêtre sur ce même site : elle
+ouvre ses pages à son adresse, et toutes vos données restent servies et
+conservées par le même serveur, aux conditions décrites sur cette page.
+Elle ne contient aucune logique du service, aucun outil de mesure
+d'audience, aucun SDK publicitaire ni de statistiques, et ne contacte aucun
+autre serveur que celui du site : les liens vers un autre site s'ouvrent
+dans le navigateur du téléphone.
+
+Elle demande au téléphone :
+
+- **l'accès à Internet**, pour ouvrir le site. Android l'accorde à
+  l'installation, sans rien vous demander ;
+- **l'appareil photo**, pour photographier le code-barres d'un article de
+  stock. Android vous le demande la première fois, et vous pouvez refuser :
+  le reste de l'application fonctionne sans. La photo suit le même chemin
+  que depuis un navigateur : envoyée au serveur, lue puis oubliée (voir
+  « Quelles données sont collectées, et pourquoi », Stocks).
+
+Elle ne demande ni votre position, ni vos contacts, ni vos fichiers, ni le
+micro. Les notifications et les alarmes exactes (rappels programmés sur le
+téléphone, sans réseau) ne sont pas encore demandées : elles le seront avec
+les rappels locaux, et cette section dira alors ce qu'elles font.
+
+Votre session est un cookie gardé par l'application, à part de votre
+navigateur : se connecter dans l'une ne connecte pas l'autre. L'application
+est exclue de la sauvegarde Android vers votre compte Google et du transfert
+vers un nouveau téléphone, pour que ce cookie n'en sorte pas : sur un
+nouveau téléphone, il faut se reconnecter.
+
+L'application ne s'installe pas depuis le Play Store, mais depuis la page
+des versions publiées du projet, chez l'hébergeur de son code, une société
+établie aux États-Unis. Cet hébergeur voit l'adresse IP et le navigateur
+de qui télécharge le fichier, selon sa propre politique de
+confidentialité ; le service ne reçoit rien de ce téléchargement. Sur le téléphone, la
+vérification des applications installées (Play Protect) et la fenêtre web
+du système (Android System WebView) sont des composants de Google : ce
+qu'ils transmettent à Google dépend des réglages de votre téléphone, pas de
+l'application.
+
 ## Sécurité
 
 Les données sensibles (contenu des messages, jetons OAuth, URL de flux
