@@ -49,8 +49,15 @@ const anchors = (nsc) => elements(nsc, 'certificates').map((attrs) => attrs.src)
 // What the manifest of `main` sets and no other source set may touch: a
 // flavour or build type manifest is merged over main's, and can set,
 // replace (tools:replace) or remove (tools:remove) any of them.
-const POLICY_ATTRIBUTES = /\b(networkSecurityConfig|usesCleartextTraffic|allowBackup|fullBackupContent)\b/;
-const POLICY_RESOURCES = ['res/xml/network_security_config.xml'];
+const POLICY_ATTRIBUTES = /\b(networkSecurityConfig|usesCleartextTraffic|allowBackup|fullBackupContent|dataExtractionRules)\b/;
+const POLICY_RESOURCES = ['res/xml/network_security_config.xml', 'res/xml/data_extraction_rules.xml'];
+
+// Every domain a backup or transfer rule can name (Android's
+// data-extraction-rules).
+const STORAGE_DOMAINS = [
+  'root', 'file', 'database', 'sharedpref', 'external',
+  'device_root', 'device_file', 'device_database', 'device_sharedpref',
+];
 
 // The source sets under `src`, other than main, that redefine the network
 // or backup policy.
@@ -89,7 +96,8 @@ test('a source set redefines the policy through its manifest or its resources', 
     );
     put('prodDebug/AndroidManifest.xml', '<application tools:remove="android:usesCleartextTraffic"/>');
     put('prod/res/xml/network_security_config.xml', '<network-security-config/>');
-    assert.deepEqual(policyOverrides(src).sort(), ['prod', 'prodDebug', 'staging']);
+    put('stagingDebug/res/xml/data_extraction_rules.xml', '<data-extraction-rules/>');
+    assert.deepEqual(policyOverrides(src).sort(), ['prod', 'prodDebug', 'staging', 'stagingDebug']);
   } finally {
     rmSync(src, { recursive: true, force: true });
   }
@@ -120,6 +128,21 @@ test('the manifest applies that policy, keeps the session off backups, and asks 
   assert.equal(app['android:networkSecurityConfig'], '@xml/network_security_config');
   assert.equal(app['android:usesCleartextTraffic'], 'false');
   assert.equal(app['android:allowBackup'], 'false');
+  // On Android 12 and later, allowBackup false stops the cloud backup but
+  // not the transfer to a new phone: data_extraction_rules.xml excludes
+  // every storage domain from both.
+  assert.equal(app['android:dataExtractionRules'], '@xml/data_extraction_rules');
+  const rules = uncommented(read(`${res}/xml/data_extraction_rules.xml`));
+  assert.doesNotMatch(rules, /<include\b/);
+  for (const section of ['cloud-backup', 'device-transfer']) {
+    const bodies = [...rules.matchAll(new RegExp(`<${section}\\b[^>]*>([\\s\\S]*?)</${section}>`, 'g'))];
+    assert.equal(bodies.length, 1, section);
+    assert.deepEqual(
+      elements(bodies[0][1], 'exclude').map((e) => `${e.domain}:${e.path}`).sort(),
+      STORAGE_DOMAINS.map((domain) => `${domain}:.`).sort(),
+      section,
+    );
+  }
   assert.ok(elements(manifest, 'uses-permission').some((p) => p['android:name'] === 'android.permission.CAMERA'));
   assert.deepEqual(
     elements(manifest, 'uses-feature').filter((f) => f['android:name'] === 'android.hardware.camera'),
