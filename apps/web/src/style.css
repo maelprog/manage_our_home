@@ -609,6 +609,10 @@ dialog:modal { margin: auto; }
 .m8 { background: color-mix(in srgb, var(--surface), var(--m8) 16%); }
 /* The initials in a chip: the avatar at the height of the chip's line. */
 .chip .avatar { width: var(--s4); height: var(--s4); margin-right: var(--s1); vertical-align: top; }
+/* A chip of an agenda showing several families (#622): its family's colour
+   as its edge — `[data-accent]` points --accent at it — beside the member's
+   tint; the family's name is in the link's, `.sr-only`. */
+.chip[data-accent] { border-left: var(--s1) solid var(--accent); }
 /* -- The home page (#524) ------------------------------------------------
    The mock-up's "Accueil": the date over "Bonjour", then the cards. A
    capitalised micro-label first — the date, a day of the week card. */

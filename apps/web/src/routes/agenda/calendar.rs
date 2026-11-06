@@ -74,30 +74,55 @@
 //! name written out joins a phone's list and is a link of the mini grid.
 //! The call is decoration, like the roster: when it fails, the agenda
 //! renders without national days.
+//!
+//! # Several families at once (#622)
+//!
+//! A visitor of more than one family gets a selector above the grid
+//! (`family_selector`): a box per family, and « Toutes ». It is a `GET`
+//! form, `?familles=<id>&familles=<id>` or `?familles=toutes`; the cookie
+//! `agenda_familles` remembers it, apart from the active family, which it
+//! never changes (`family::resolve_selection` and its neighbours). Without
+//! either, the agenda shows the active family alone, as before. apps/api
+//! answers per family, so each family shown is read on its own, all at
+//! once, and their occurrences merged (`merge_occurrences`); one that
+//! fails is named above the grid, and the others are shown. In a view of
+//! several, a chip wears its family (`FamilyTag`): its colour as its edge,
+//! its name in `.sr-only`, and — for a family that is not the active one —
+//! `?famille=` in its link, which the event's pages work in
+//! (`super::family_context_for`). The national days are one family's: the
+//! active one when it is shown, the first shown otherwise.
 
 use std::collections::BTreeMap;
 
-use axum::extract::{Query, State};
-use axum::http::HeaderMap;
+use axum::extract::{Query, RawQuery, State};
+use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::{Datelike, NaiveDate};
 use leptos::prelude::*;
 use manage_our_home_shared::dto::agenda::{
     NationalDayList, NationalDayResponse, OccurrenceResponse,
 };
-use manage_our_home_shared::dto::groups::GroupMember;
+use manage_our_home_shared::dto::groups::{GroupMember, GroupSummary};
 use manage_our_home_shared::validation::agenda::{month_grid, week_days};
+use manage_our_home_shared::validation::groups::Accent;
+use uuid::Uuid;
 
 use crate::app::{html_escape, member_avatar, member_index, shell_with_header, Width};
+use crate::family::{
+    accent_of, active_group_id_from_headers, families_cookie, families_query, resolve_active_group,
+    resolve_selection, selection_from_headers, selection_from_query, shown_families,
+    FamilySelection, ShownFamilies, ALL_FAMILIES, FAMILIES_PARAM,
+};
 use crate::icons::{icon, icon_link, Icon};
 use crate::layout::CurrentUser;
+use crate::routes::groups::header_with_groups;
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    agenda_cookie, family_context, fmt_paris, json_from_response, occurrences_from_response,
-    paris_local_to_utc, private_mark, read_or_log, service_unavailable_page, today_paris,
-    DISPLAY_TZ,
+    agenda_cookie, fmt_paris, json_from_response, occurrences_from_response, paris_local_to_utc,
+    private_mark, read_or_log, service_unavailable_page, today_paris, with_family, DISPLAY_TZ,
 };
 
 const FR_MONTHS: [&str; 12] = [
@@ -176,22 +201,224 @@ fn notices_html(notice: Option<&str>, load_error: bool) -> String {
     success + error
 }
 
+/// The occurrences of every family shown, as one list in time order (#622).
+/// `lists` comes in the order the families are listed; occurrences that
+/// start together keep it, so two families' events at the same hour are
+/// always drawn in the same order.
+fn merge_occurrences(lists: Vec<Vec<OccurrenceResponse>>) -> Vec<OccurrenceResponse> {
+    let mut merged: Vec<OccurrenceResponse> = lists.into_iter().flatten().collect();
+    // A stable sort: equal starts keep the order of the families.
+    merged.sort_by_key(|o| o.occurrence_starts_at);
+    merged
+}
+
+/// The errors that name a family whose events could not be read, in a view
+/// of several (#622): the agenda shows the others, and says which one is
+/// missing rather than letting its absence read as "nothing planned".
+fn missing_families_html(names: &[&str]) -> String {
+    names
+        .iter()
+        .map(|name| {
+            format!(
+                r#"<p class="notice error">Impossible de charger les événements de « {} » pour le moment.</p>"#,
+                html_escape(name)
+            )
+        })
+        .collect()
+}
+
+/// A family of a view of several (#622): what its chips wear — its colour
+/// (`data-accent`, the rule of `[data-accent]` pointing `--accent` at it)
+/// and its name, said to a screen reader since the selector above shows
+/// which colour is whose: never the colour alone (WCAG 1.4.1).
+pub(crate) struct FamilyTag<'a> {
+    gid: Uuid,
+    name: &'a str,
+    accent: Accent,
+    /// Its id when it is not the active family: its events' links carry
+    /// it (`with_family`), so that their page works in that family.
+    carried: Option<Uuid>,
+}
+
+/// The tags of the families shown, none for one family alone: a view of
+/// the active family is the agenda as it was.
+fn family_tags<'a>(shown: &[&'a GroupSummary], active: &GroupSummary) -> Vec<FamilyTag<'a>> {
+    if shown.len() < 2 {
+        return Vec::new();
+    }
+    shown
+        .iter()
+        .map(|g| FamilyTag {
+            gid: g.group_id,
+            name: &g.name,
+            accent: accent_of(g),
+            carried: (g.group_id != active.group_id).then_some(g.group_id),
+        })
+        .collect()
+}
+
+/// The family an occurrence belongs to, among `families`.
+fn family_of<'t, 'a>(
+    occ: &OccurrenceResponse,
+    families: &'t [FamilyTag<'a>],
+) -> Option<&'t FamilyTag<'a>> {
+    families.iter().find(|f| f.gid == occ.event.group_id)
+}
+
+/// The selector of the families the agenda shows (#622), when the visitor
+/// has more than one: a `GET` form without a script, a pill per family in
+/// its colour (`.pick` and the `.swatch` its `[data-accent]` paints) and
+/// « Toutes ». It keeps the view and the day on screen. The empty
+/// `familles` field makes a form with every box unticked an answer — an
+/// empty selection, the active family again — rather than no answer.
+fn family_selector(
+    groups: &[GroupSummary],
+    shown: &[&GroupSummary],
+    all: bool,
+    is_week: bool,
+    focus: NaiveDate,
+) -> String {
+    if groups.len() < 2 {
+        return String::new();
+    }
+    let checked = |on: bool| if on { " checked" } else { "" };
+    let boxes: String = groups
+        .iter()
+        .map(|g| {
+            format!(
+                r#"<label class="field inline pick" data-accent="{accent}"><input type="checkbox" name="{FAMILIES_PARAM}" value="{id}"{on}/><span class="swatch"></span>{name}</label>"#,
+                accent = accent_of(g).as_str(),
+                id = g.group_id,
+                on = checked(shown.iter().any(|s| s.group_id == g.group_id)),
+                name = html_escape(&g.name),
+            )
+        })
+        .collect();
+    format!(
+        r#"<form class="actions" method="get" action="/agenda" aria-label="Familles affichées">
+<input type="hidden" name="view" value="{view}"/><input type="hidden" name="date" value="{focus}"/><input type="hidden" name="{FAMILIES_PARAM}" value=""/>
+{boxes}<label class="field inline pick"><input type="checkbox" name="{FAMILIES_PARAM}" value="{ALL_FAMILIES}"{all}/>Toutes</label>
+<button type="submit" class="secondary">Afficher</button>
+</form>"#,
+        view = if is_week { "week" } else { "month" },
+        all = checked(all),
+    )
+}
+
+/// What a family's events answer came to.
+enum FamilyEvents {
+    Read(Vec<OccurrenceResponse>),
+    /// An answer that is not an occurrence list (#455), logged.
+    Unreadable,
+    /// No answer at all.
+    Unreachable,
+}
+
+/// One family's events in the window and its roster, read together. The
+/// roster is decoration: one that cannot be read leaves its chips neutral.
+async fn fetch_family(
+    state: AppState,
+    cookie: Option<String>,
+    gid: Uuid,
+    window: String,
+) -> (FamilyEvents, Vec<GroupMember>) {
+    let path = format!("/groups/{gid}/events?{window}");
+    let (events, roster) = tokio::join!(
+        api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None),
+        fetch_group_detail(&state, cookie.as_deref(), gid),
+    );
+    let events = match events {
+        Ok(resp) => match read_or_log(
+            occurrences_from_response(resp.status, resp.body),
+            gid,
+            "agenda",
+        ) {
+            Some(occurrences) => FamilyEvents::Read(occurrences),
+            None => FamilyEvents::Unreadable,
+        },
+        Err(error) => {
+            tracing::warn!(group_id = %gid, %error, "could not reach apps/api for the agenda");
+            FamilyEvents::Unreachable
+        }
+    };
+    let members = roster.ok().flatten().map(|g| g.members).unwrap_or_default();
+    (events, members)
+}
+
+/// What `body` needs to know of the request beyond the families.
+struct View<'q> {
+    is_week: bool,
+    focus: NaiveDate,
+    notice: Option<&'q str>,
+}
+
+impl<'q> View<'q> {
+    fn of(query: &'q CalendarQuery) -> Self {
+        Self {
+            is_week: query.view.as_deref() == Some("week"),
+            focus: query
+                .date
+                .as_deref()
+                .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                .unwrap_or_else(today_paris),
+            notice: query.notice.as_deref(),
+        }
+    }
+}
+
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<CalendarQuery>,
+    RawQuery(raw_query): RawQuery,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, "/agenda").await else {
+    let (groups, header) = header_with_groups(&state, &headers, &me, "/agenda").await;
+    let Some(active) = resolve_active_group(&groups, active_group_id_from_headers(&headers)) else {
         return Redirect::to("/groups/new").into_response();
     };
+    // The families shown (#622): those the URL asks for, else those the
+    // cookie remembers, checked against `GET /groups`.
+    let from_url = selection_from_query(raw_query.as_deref());
+    let requested = from_url
+        .clone()
+        .or_else(|| selection_from_headers(&headers));
+    let cookie = agenda_cookie(&headers);
+    let Some((body, shown)) = body(
+        &state,
+        cookie.as_deref(),
+        &groups,
+        active,
+        requested.as_ref(),
+        &View::of(&query),
+    )
+    .await
+    else {
+        return service_unavailable_page().into_response();
+    };
+    let page = Html(shell_with_header(Width::Full, "Agenda", &header, &body));
+    // A selection the URL made is remembered, and the default forgets it.
+    match from_url.map(|_| families_cookie(&shown).parse::<HeaderValue>()) {
+        Some(Ok(value)) => ([(SET_COOKIE, value)], page).into_response(),
+        _ => page.into_response(),
+    }
+}
 
-    let is_week = query.view.as_deref() == Some("week");
-    let focus = query
-        .date
-        .as_deref()
-        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
-        .unwrap_or_else(today_paris);
+/// The page's body for `active`'s visitor, showing the families `requested`
+/// resolves to among `groups` — and how that selection is carried on.
+/// `None` when the page cannot be drawn: an impossible window, or no family
+/// shown that apps/api could be reached for.
+async fn body(
+    state: &AppState,
+    cookie: Option<&str>,
+    groups: &[GroupSummary],
+    active: &GroupSummary,
+    requested: Option<&FamilySelection>,
+    view: &View<'_>,
+) -> Option<(String, ShownFamilies)> {
+    let shown = resolve_selection(groups, Some(active), requested);
+    let carried = shown_families(requested, &shown, Some(active));
+    let (is_week, focus) = (view.is_week, view.focus);
 
     // The civil dates the grid shows, and the [from, to] UTC window covering
     // them (Paris start-of-first-day .. Paris end-of-last-day).
@@ -201,19 +428,16 @@ pub async fn get(
         month_grid(focus.year(), focus.month())
     };
     let (Some(first), Some(last)) = (days.first(), days.last()) else {
-        return service_unavailable_page().into_response();
+        return None;
     };
     let (Some(from), Some(to)) = (
         paris_local_to_utc(&format!("{first}T00:00")),
         paris_local_to_utc(&format!("{last}T23:59:59")),
     ) else {
-        return service_unavailable_page().into_response();
+        return None;
     };
-
-    let cookie = agenda_cookie(&headers);
-    let path = format!(
-        "/groups/{}/events?from={}&to={}",
-        fam.gid,
+    let window = format!(
+        "from={}&to={}",
         from.format("%Y-%m-%dT%H:%M:%SZ"),
         to.format("%Y-%m-%dT%H:%M:%SZ"),
     );
@@ -222,32 +446,75 @@ pub async fn get(
     // navigation stays usable, but under an error notice: an empty grid alone
     // would say "nothing planned" (#455).
     //
-    // The roster is read alongside, for the chips' tints and initials
-    // (#525). It is decoration: a roster that cannot be read leaves every
-    // chip neutral rather than taking the page down.
+    // Each family shown is read on its own (#622) — apps/api answers per
+    // family — and all of them at once. Its roster is read alongside, for
+    // the chips' tints and initials (#525); it is decoration: a roster that
+    // cannot be read leaves its chips neutral rather than taking the page
+    // down.
     //
     // The national days of the grid (#565) are read alongside too, and are
     // decoration as well: a call that fails renders the agenda without them.
-    let (events, roster, national) = tokio::join!(
-        api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None,),
-        fetch_group_detail(&state, cookie.as_deref(), fam.gid),
-        fetch_national_days(&state, cookie.as_deref(), fam.gid, *first, *last),
+    // They are one family's — the school holidays depend on its zone — the
+    // active family's when it is shown, else the first one shown.
+    let calls: Vec<_> = shown
+        .iter()
+        .map(|g| {
+            tokio::spawn(fetch_family(
+                state.clone(),
+                cookie.map(str::to_string),
+                g.group_id,
+                window.clone(),
+            ))
+        })
+        .collect();
+    let zone_family = shown
+        .iter()
+        .find(|g| g.group_id == active.group_id)
+        .unwrap_or(&shown[0]);
+    let (answers, national) = tokio::join!(
+        async {
+            let mut answers = Vec::with_capacity(calls.len());
+            for call in calls {
+                answers.push(
+                    call.await
+                        .unwrap_or((FamilyEvents::Unreachable, Vec::new())),
+                );
+            }
+            answers
+        },
+        fetch_national_days(state, cookie, zone_family.group_id, *first, *last),
     );
     let marks = marks_by_day(&days, &national);
-    let members: Vec<GroupMember> = roster.ok().flatten().map(|g| g.members).unwrap_or_default();
-    let (occurrences, load_error): (Vec<OccurrenceResponse>, bool) = match events {
-        Ok(resp) => match read_or_log(
-            occurrences_from_response(resp.status, resp.body),
-            fam.gid,
-            "agenda",
-        ) {
-            Some(occurrences) => (occurrences, false),
-            None => (Vec::new(), true),
-        },
-        Err(_) => return service_unavailable_page().into_response(),
-    };
+    // apps/api out of reach for every family shown: the page it would be
+    // is only errors, as it was before #622 for the active family alone.
+    if answers
+        .iter()
+        .all(|(events, _)| matches!(events, FamilyEvents::Unreachable))
+    {
+        return None;
+    }
+    let mut lists = Vec::with_capacity(answers.len());
+    let mut members: Vec<GroupMember> = Vec::new();
+    let mut failed: Vec<&str> = Vec::new();
+    for (family, (events, roster)) in shown.iter().zip(answers) {
+        match events {
+            FamilyEvents::Read(occurrences) => lists.push(occurrences),
+            FamilyEvents::Unreadable | FamilyEvents::Unreachable => failed.push(&family.name),
+        }
+        // A member of two families shown is the same person, with the same
+        // tint and initial: the first roster that names them is enough.
+        members.extend(
+            roster
+                .into_iter()
+                .filter(|m| !members.iter().any(|known| known.user_id == m.user_id))
+                .collect::<Vec<_>>(),
+        );
+    }
+    let occurrences = merge_occurrences(lists);
+    let load_error = !failed.is_empty();
+    let families = family_tags(&shown, active);
 
-    // Bucket each occurrence into its Paris civil date.
+    // Bucket each occurrence into its Paris civil date, in time order.
     let mut by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
     for occ in &occurrences {
         let day = occ
@@ -256,9 +523,12 @@ pub async fn get(
             .date_naive();
         by_day.entry(day).or_default().push(occ);
     }
-    for list in by_day.values_mut() {
-        list.sort_by_key(|o| o.occurrence_starts_at);
-    }
+    let cells = Cells {
+        by_day: &by_day,
+        members: &members,
+        marks: &marks,
+        families: &families,
+    };
 
     let today = today_paris();
     // One grid for both views: the month shows six weeks of it, the week
@@ -274,23 +544,28 @@ pub async fn get(
     // The page's `<h1>` and the grid's `<caption>` (#145) say the same
     // thing, so they are computed once.
     let title = view_title(is_week, focus);
-    let grid_html = render_grid(
-        &days,
-        &by_day,
-        focus_month,
-        today,
-        cap,
-        &title,
-        &members,
-        &marks,
-    );
+    let grid_html = render_grid(&days, &cells, focus_month, today, cap, &title);
     let panel_html = day_panel(
         focus,
         by_day.get(&focus).map(|v| v.as_slice()).unwrap_or(&[]),
         &members,
+        &families,
     );
-    let nav_html = render_nav(is_week, focus, &title);
-    let notice_html = notices_html(query.notice.as_deref(), load_error);
+    let nav_html = render_nav(is_week, focus, &title, &families_query(&carried))
+        + &family_selector(
+            groups,
+            &shown,
+            carried == ShownFamilies::All,
+            is_week,
+            focus,
+        );
+    // One family's events that could not be read: the generic notice of
+    // #455. Several families shown: the one that is missing, by name.
+    let notice_html = if families.is_empty() {
+        notices_html(view.notice, load_error)
+    } else {
+        notices_html(view.notice, false) + &missing_families_html(&failed)
+    };
     // The head of a phone's list (#675): the period at a glance, then what
     // the list says when it is empty.
     let mini_html = render_mini(&days, &by_day, focus_month, today, &title, &marks)
@@ -301,13 +576,7 @@ pub async fn get(
         <div inner_html=notice_html + &mini_html></div>
         <div class="agenda" inner_html=grid_html + &panel_html></div>
     };
-    Html(shell_with_header(
-        Width::Full,
-        "Agenda",
-        &fam.header,
-        &body.to_html(),
-    ))
-    .into_response()
+    Some((body.to_html(), carried))
 }
 
 /// What the view is called: "juillet 2026" for a month, "Semaine du 13
@@ -335,7 +604,15 @@ fn view_title(is_week: bool, focus: NaiveDate) -> String {
 /// The toggle is a `<nav>` of two links, `.segment` like the kitchen's
 /// (#523); the view on screen carries `aria-current`, so its position is
 /// said in markup and not only drawn.
-fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
+///
+/// `kept` is the selection of families shown (#622, `families_query`): the
+/// arrows, « Aujourd'hui » and the toggle keep it, empty for the default.
+fn render_nav(is_week: bool, focus: NaiveDate, title: &str, kept: &str) -> String {
+    let kept = if kept.is_empty() {
+        String::new()
+    } else {
+        format!("&{kept}")
+    };
     let (prev, next) = if is_week {
         (
             focus - chrono::Duration::days(7),
@@ -368,7 +645,7 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
     let arrow = |date: NaiveDate, label: &str, icon: Icon| {
         icon_link(
             "btn secondary",
-            &format!("/agenda?view={view_q}&date={date}"),
+            &format!("/agenda?view={view_q}&date={date}{kept}"),
             label,
             icon,
         )
@@ -382,13 +659,13 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
         } else {
             ""
         };
-        format!(r#"<a href="/agenda?view={view}&date={focus}"{current}>{label}</a>"#)
+        format!(r#"<a href="/agenda?view={view}&date={focus}{kept}"{current}>{label}</a>"#)
     };
     format!(
         r#"<div class="page-header">
 <h1>{title}</h1>
 <span class="actions">
-<span class="actions">{prev_link}<a class="btn secondary" href="/agenda?view={view_q}&date={today}">Aujourd'hui</a>{next_link}</span>
+<span class="actions">{prev_link}<a class="btn secondary" href="/agenda?view={view_q}&date={today}{kept}">Aujourd'hui</a>{next_link}</span>
 <nav class="segment views" aria-label="Affichage">{week}{month}</nav>
 <a class="btn secondary" href="/agenda/imports">Agendas Google</a>
 <a class="btn pc" href="/agenda/new">{plus} Nouvel événement</a>
@@ -408,6 +685,19 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
     )
 }
 
+/// What the days of the grid carry.
+struct Cells<'a> {
+    /// Each day's occurrences, in time order.
+    by_day: &'a BTreeMap<NaiveDate, Vec<&'a OccurrenceResponse>>,
+    /// The rosters of the families shown, for the chips' tints and initials.
+    members: &'a [GroupMember],
+    /// The national days of the grid (#565, `marks_by_day`): a head line
+    /// under a day's number, and a band on a school holiday.
+    marks: &'a BTreeMap<NaiveDate, DayMarks<'a>>,
+    /// The families of a view of several (#622, `family_tags`), none for one.
+    families: &'a [FamilyTag<'a>],
+}
+
 /// The calendar, as many whole weeks as `days` holds: six for the month
 /// view, one for the week view.
 ///
@@ -425,19 +715,21 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
 /// every day of a week view is the week the reader asked for — muting the
 /// three that fall after the 31st would say something false about them.
 ///
-/// `marks` are the national days of the grid (#565, `marks_by_day`): a
-/// head line under a day's number, and a band on a school holiday.
-#[allow(clippy::too_many_arguments)]
+/// `cells` is what the days carry (`Cells`).
 fn render_grid(
     days: &[NaiveDate],
-    by_day: &BTreeMap<NaiveDate, Vec<&OccurrenceResponse>>,
+    cells: &Cells,
     focus_month: Option<u32>,
     today: NaiveDate,
     cap: Option<usize>,
     caption: &str,
-    members: &[GroupMember],
-    marks: &BTreeMap<NaiveDate, DayMarks>,
 ) -> String {
+    let Cells {
+        by_day,
+        members,
+        marks,
+        families,
+    } = cells;
     let headers: String = FR_WEEKDAYS
         .iter()
         .map(|d| format!(r#"<th scope="col">{d}</th>"#))
@@ -467,7 +759,7 @@ fn render_grid(
             } else {
                 String::new()
             };
-            let chips = render_chips(occs, cap, *day, members);
+            let chips = render_chips(occs, cap, *day, members, families);
             rows.push_str(&format!(
                 r#"<td class="cal-cell{today_class}{hol_class}"{id}>
 <div class="cal-day{outside_class}">{num}</div>{marks_line}{chips}</td>"#,
@@ -671,11 +963,17 @@ fn initials(people: &[&GroupMember]) -> String {
 ///
 /// A private event (#621) wears `private_mark` before its time: the lock,
 /// and « Privé » at the head of the link's name.
+///
+/// In a view of several families (#622, `families` not empty), a chip also
+/// wears its family: its colour as the chip's edge (`data-accent`), its name
+/// at the end of the link's name, and the family in its link when it is not
+/// the active one, so that the event's page works in that family.
 pub(crate) fn render_chips(
     occs: &[&OccurrenceResponse],
     cap: Option<usize>,
     day: NaiveDate,
     members: &[GroupMember],
+    families: &[FamilyTag],
 ) -> String {
     let (shown, hidden) = day_split(occs.len(), cap);
     let mut out: String = occs[..shown]
@@ -702,10 +1000,20 @@ pub(crate) fn render_chips(
                 Some(first) if done.is_empty() => format!(" {}", member_tint(first.user_id)),
                 _ => String::new(),
             };
+            let family = family_of(occ, families);
+            let (accent, family_name) = match family {
+                Some(f) => (
+                    format!(r#" data-accent="{}""#, f.accent.as_str()),
+                    format!(r#"<span class="sr-only"> ({})</span>"#, html_escape(f.name)),
+                ),
+                None => (String::new(), String::new()),
+            };
             format!(
-                r#"<a href="/agenda/{id}?occ={occ}" class="chip{done}{tint}">{initials}{private}{marker}<strong>{time}</strong> {title}</a>"#,
-                id = e.id,
-                occ = occ_param,
+                r#"<a href="{href}" class="chip{done}{tint}"{accent}>{initials}{private}{marker}<strong>{time}</strong> {title}{family_name}</a>"#,
+                href = with_family(
+                    &format!("/agenda/{}?occ={occ_param}", e.id),
+                    family.and_then(|f| f.carried)
+                ),
                 done = done,
                 initials = initials(&people),
                 private = private_mark(e.is_private),
@@ -859,7 +1167,15 @@ fn long_day(day: NaiveDate) -> String {
 /// The rows are not links. The chip of the same occurrence is one, right
 /// beside it in the grid: a second link would be a second tab stop and a
 /// second "Dentiste" for whoever looks the event up by name.
-fn day_panel(day: NaiveDate, occs: &[&OccurrenceResponse], members: &[GroupMember]) -> String {
+///
+/// In a view of several families (#622), each row says its family in
+/// words, before the people.
+fn day_panel(
+    day: NaiveDate,
+    occs: &[&OccurrenceResponse],
+    members: &[GroupMember],
+    families: &[FamilyTag],
+) -> String {
     let body = if occs.is_empty() {
         r#"<p class="muted">Rien de prévu ce jour-là.</p>"#.to_string()
     } else {
@@ -873,12 +1189,17 @@ fn day_panel(day: NaiveDate, occs: &[&OccurrenceResponse], members: &[GroupMembe
                 };
                 let people = people(occ, members);
                 let names: Vec<&str> = people.iter().map(|m| m.display_name.as_str()).collect();
+                let names = match family_of(occ, families) {
+                    Some(f) if names.is_empty() => f.name.to_string(),
+                    Some(f) => format!("{} · {}", f.name, names.join(", ")),
+                    None => names.join(", "),
+                };
                 format!(
                     r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{private}{title}</strong><span class="muted">{names}</span></span>{initials}</li>"#,
                     when = html_escape(&when),
                     private = private_mark(occ.event.is_private),
                     title = html_escape(&occ.event.title),
-                    names = html_escape(&names.join(", ")),
+                    names = html_escape(&names),
                     initials = initials(&people),
                 )
             })
@@ -1008,7 +1329,7 @@ mod tests {
             .map(|i| occurrence(8 + i, &format!("Événement {i}")))
             .collect();
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15), &[]);
+        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15), &[], &[]);
         assert!(html.contains("Événement 0"), "{html}");
         assert!(html.contains("Événement 1"), "{html}");
         assert!(!html.contains("Événement 2"), "{html}");
@@ -1025,7 +1346,7 @@ mod tests {
     fn an_uncrowded_month_cell_carries_no_indicator() {
         let occs = [occurrence(9, "Dentiste")];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15), &[]);
+        let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15), &[], &[]);
         assert!(html.contains("Dentiste"), "{html}");
         assert!(!html.contains("autre"), "{html}");
         assert!(!html.contains("view=week"), "{html}");
@@ -1037,11 +1358,446 @@ mod tests {
             .map(|i| occurrence(8 + i, &format!("Événement {i}")))
             .collect();
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15), &[]);
+        let html = render_chips(&refs, None, day(15), &[], &[]);
         for i in 0..5 {
             assert!(html.contains(&format!("Événement {i}")), "{html}");
         }
         assert!(!html.contains("autres"), "{html}");
+    }
+
+    // -- several families in one view (#622) ----------------------------
+
+    fn in_family(hour: u32, title: &str, family: u128) -> OccurrenceResponse {
+        let mut occ = occurrence(hour, title);
+        occ.event.group_id = Uuid::from_u128(family);
+        occ
+    }
+
+    fn titles(occs: &[OccurrenceResponse]) -> Vec<&str> {
+        occs.iter().map(|o| o.event.title.as_str()).collect()
+    }
+
+    #[test]
+    fn the_families_occurrences_merge_in_time_order() {
+        let merged = merge_occurrences(vec![
+            vec![in_family(9, "A9", 1), in_family(14, "A14", 1)],
+            vec![in_family(8, "B8", 2), in_family(11, "B11", 2)],
+            vec![in_family(10, "C10", 3)],
+        ]);
+        assert_eq!(titles(&merged), ["B8", "A9", "C10", "B11", "A14"]);
+    }
+
+    #[test]
+    fn occurrences_at_the_same_time_keep_the_order_of_the_families() {
+        let merged = merge_occurrences(vec![
+            vec![in_family(9, "Second", 2)],
+            vec![in_family(9, "Premier", 1)],
+        ]);
+        assert_eq!(titles(&merged), ["Second", "Premier"]);
+    }
+
+    #[test]
+    fn a_family_with_nothing_adds_nothing() {
+        assert!(merge_occurrences(vec![]).is_empty());
+        assert!(merge_occurrences(vec![vec![], vec![]]).is_empty());
+        let merged = merge_occurrences(vec![vec![], vec![in_family(9, "Seul", 2)]]);
+        assert_eq!(titles(&merged), ["Seul"]);
+    }
+
+    /// The grid as `body` draws it, from the pieces the tests hold.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_grid(
+        days: &[NaiveDate],
+        by_day: &BTreeMap<NaiveDate, Vec<&OccurrenceResponse>>,
+        focus_month: Option<u32>,
+        today: NaiveDate,
+        cap: Option<usize>,
+        caption: &str,
+        members: &[GroupMember],
+        marks: &BTreeMap<NaiveDate, DayMarks>,
+    ) -> String {
+        let cells = Cells {
+            by_day,
+            members,
+            marks,
+            families: &[],
+        };
+        render_grid(days, &cells, focus_month, today, cap, caption)
+    }
+
+    fn summary(n: u128, name: &str, accent: &str) -> GroupSummary {
+        GroupSummary {
+            group_id: Uuid::from_u128(n),
+            name: name.to_string(),
+            role: "owner".to_string(),
+            accent: accent.to_string(),
+            ownership_notice: None,
+        }
+    }
+
+    fn two_families() -> [GroupSummary; 2] {
+        [
+            summary(1, "Les Dupont", "sarcelle"),
+            summary(2, "Les Martin", "ocean"),
+        ]
+    }
+
+    #[test]
+    fn one_family_shown_wears_no_tag() {
+        let groups = two_families();
+        assert!(family_tags(&[&groups[0]], &groups[0]).is_empty());
+        assert!(family_tags(&[&groups[1]], &groups[0]).is_empty());
+    }
+
+    #[test]
+    fn each_family_shown_is_tagged_and_only_another_one_is_carried() {
+        let groups = two_families();
+        let tags = family_tags(&[&groups[0], &groups[1]], &groups[0]);
+        let read: Vec<(Uuid, &str, Accent, Option<Uuid>)> = tags
+            .iter()
+            .map(|t| (t.gid, t.name, t.accent, t.carried))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                (Uuid::from_u128(1), "Les Dupont", Accent::Sarcelle, None),
+                (
+                    Uuid::from_u128(2),
+                    "Les Martin",
+                    Accent::Ocean,
+                    Some(Uuid::from_u128(2))
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chip_of_another_family_wears_its_colour_its_name_and_its_link() {
+        let groups = two_families();
+        let tags = family_tags(&[&groups[0], &groups[1]], &groups[0]);
+        let occ = in_family(9, "Piscine", 2);
+        let time = fmt_paris(occ.occurrence_starts_at, "%H:%M");
+        let refs = [&occ];
+        let html = render_chips(&refs, None, day(15), &[], &tags);
+        assert!(
+            html.contains(&format!(
+                r#"href="/agenda/{}?occ=2026-07-15T09:00:00Z&famille={}" class="chip" data-accent="ocean">"#,
+                occ.event.id,
+                Uuid::from_u128(2)
+            )),
+            "{html}"
+        );
+        // Never the colour alone: the name is in the link's.
+        assert_eq!(
+            chip_name(&html),
+            format!("{time} Piscine (Les Martin)"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_chip_of_the_active_family_in_a_view_of_several_keeps_its_link() {
+        let groups = two_families();
+        let tags = family_tags(&[&groups[0], &groups[1]], &groups[0]);
+        let occ = in_family(9, "Dentiste", 1);
+        let refs = [&occ];
+        let html = render_chips(&refs, None, day(15), &[], &tags);
+        assert!(!html.contains("famille="), "{html}");
+        assert!(html.contains(r#"data-accent="sarcelle""#), "{html}");
+        assert!(
+            chip_name(&html).ends_with("Dentiste (Les Dupont)"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_chip_of_one_family_alone_is_as_it_was() {
+        let occ = in_family(9, "Dentiste", 1);
+        let refs = [&occ];
+        let html = render_chips(&refs, None, day(15), &[], &[]);
+        assert!(!html.contains("data-accent"), "{html}");
+        assert!(!html.contains("sr-only"), "{html}");
+        assert!(!html.contains("famille="), "{html}");
+    }
+
+    #[test]
+    fn a_family_name_on_a_chip_is_escaped() {
+        let groups = [summary(1, "A", "sarcelle"), summary(2, "<b>", "ocean")];
+        let tags = family_tags(&[&groups[0], &groups[1]], &groups[0]);
+        let occ = in_family(9, "x", 2);
+        let refs = [&occ];
+        let html = render_chips(&refs, None, day(15), &[], &tags);
+        assert!(html.contains("(&lt;b&gt;)"), "{html}");
+    }
+
+    #[test]
+    fn the_day_panel_of_several_families_names_each_rows_family() {
+        let groups = two_families();
+        let tags = family_tags(&[&groups[0], &groups[1]], &groups[0]);
+        let members = [named(7, "Chloé")];
+        let mut with_people = in_family(9, "Piscine", 2);
+        with_people.event.assignee_ids = vec![Uuid::from_u128(7)];
+        let mut nobody = in_family(14, "Dentiste", 1);
+        nobody.event.assignee_ids = vec![Uuid::from_u128(99)];
+        let refs = [&with_people, &nobody];
+        let html = day_panel(day(15), &refs, &members, &tags);
+        assert!(
+            html.contains(r#"<span class="muted">Les Martin · Chloé</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="muted">Les Dupont</span>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_visitor_of_one_family_gets_no_selector() {
+        let groups = [summary(1, "Seule", "sarcelle")];
+        assert_eq!(
+            family_selector(&groups, &[&groups[0]], false, false, day(15)),
+            ""
+        );
+    }
+
+    #[test]
+    fn the_selector_is_a_get_form_of_a_box_per_family_and_toutes() {
+        let groups = two_families();
+        let html = family_selector(&groups, &[&groups[1]], false, true, day(15));
+        assert!(
+            html.starts_with(
+                r#"<form class="actions" method="get" action="/agenda" aria-label="Familles affichées">"#
+            ),
+            "{html}"
+        );
+        // It keeps the view and the day, and answers even unticked.
+        assert!(
+            html.contains(r#"<input type="hidden" name="view" value="week"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="date" value="2026-07-15"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="familles" value=""/>"#),
+            "{html}"
+        );
+        // A pill per family in its colour, the shown one ticked.
+        assert!(
+            html.contains(&format!(
+                r#"<label class="field inline pick" data-accent="sarcelle"><input type="checkbox" name="familles" value="{}"/><span class="swatch"></span>Les Dupont</label>"#,
+                Uuid::from_u128(1)
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<label class="field inline pick" data-accent="ocean"><input type="checkbox" name="familles" value="{}" checked/><span class="swatch"></span>Les Martin</label>"#,
+                Uuid::from_u128(2)
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<input type="checkbox" name="familles" value="toutes"/>Toutes</label>"#
+            ),
+            "{html}"
+        );
+        assert!(html.contains(r#"<button type="submit" class="secondary">Afficher</button>"#));
+    }
+
+    #[test]
+    fn toutes_is_ticked_when_it_was_asked_for() {
+        let groups = two_families();
+        let html = family_selector(&groups, &[&groups[0], &groups[1]], true, false, day(15));
+        assert!(html.contains(r#"value="toutes" checked/>Toutes"#), "{html}");
+        assert_eq!(html.matches(" checked").count(), 3, "{html}");
+    }
+
+    #[test]
+    fn a_family_whose_events_failed_is_named() {
+        let html = missing_families_html(&["Les <Martin>"]);
+        assert_eq!(
+            html,
+            r#"<p class="notice error">Impossible de charger les événements de « Les &lt;Martin&gt; » pour le moment.</p>"#
+        );
+        assert_eq!(missing_families_html(&[]), "");
+    }
+
+    #[test]
+    fn the_head_keeps_the_selection_on_every_way_out() {
+        let kept = "familles=toutes";
+        let html = render_nav(false, day(15), "juillet 2026", kept);
+        let today = today_paris();
+        for href in [
+            "/agenda?view=month&date=2026-06-01&familles=toutes".to_string(),
+            "/agenda?view=month&date=2026-08-01&familles=toutes".to_string(),
+            format!("/agenda?view=month&date={today}&familles=toutes"),
+            "/agenda?view=week&date=2026-07-15&familles=toutes".to_string(),
+            "/agenda?view=month&date=2026-07-15&familles=toutes".to_string(),
+        ] {
+            assert!(
+                html.contains(&format!(r#"href="{href}""#)),
+                "{href}: {html}"
+            );
+        }
+        assert!(!render_nav(false, day(15), "x", "").contains("familles"));
+    }
+
+    // -- the page of several families against a stand-in apps/api ---------
+
+    /// apps/api answering the events of family 1 with a "Piscine", of
+    /// family 2 with a 500, and of family 7 — not one of the visitor's —
+    /// with a "Secret"; no roster; no national day.
+    async fn fake_families_api() -> AppState {
+        use axum::extract::Path;
+        use axum::routing::get;
+        let app = axum::Router::new()
+            .route(
+                "/groups/{gid}/events",
+                get(|Path(gid): Path<Uuid>| async move {
+                    let occurrence = |title: &str| {
+                        serde_json::json!({
+                            "id": Uuid::from_u128(gid.as_u128() + 100),
+                            "group_id": gid,
+                            "created_by": gid,
+                            "title": title,
+                            "description": null,
+                            "location": null,
+                            "starts_at": "2026-10-20T08:00:00Z",
+                            "ends_at": "2026-10-20T09:00:00Z",
+                            "all_day": false,
+                            "is_task": false,
+                            "completed_at": null,
+                            "rrule": null,
+                            "assignee_ids": [],
+                            "occurrence_starts_at": "2026-10-20T08:00:00Z",
+                            "occurrence_ends_at": "2026-10-20T09:00:00Z",
+                        })
+                    };
+                    let (status, body) = match gid.as_u128() {
+                        1 => (
+                            200,
+                            serde_json::json!({ "occurrences": [occurrence("Piscine")] }),
+                        ),
+                        7 => (
+                            200,
+                            serde_json::json!({ "occurrences": [occurrence("Secret")] }),
+                        ),
+                        _ => (500, serde_json::json!({ "error": "internal" })),
+                    };
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        axum::Json(body),
+                    )
+                }),
+            )
+            .route(
+                "/groups/{gid}",
+                get(|| async { axum::http::StatusCode::NOT_FOUND }),
+            )
+            .route(
+                "/groups/{gid}/national-days",
+                get(|| async { axum::Json(serde_json::json!({ "days": [] })) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        state_at(format!("http://{addr}"))
+    }
+
+    const OCTOBER: View<'static> = View {
+        is_week: false,
+        focus: match NaiveDate::from_ymd_opt(2026, 10, 15) {
+            Some(d) => d,
+            None => panic!(),
+        },
+        notice: None,
+    };
+
+    /// The acceptance criterion of #622: one family failing at apps/api,
+    /// the others are shown, under a notice naming the one missing.
+    #[tokio::test]
+    async fn a_family_that_fails_is_named_and_the_others_are_shown() {
+        let state = fake_families_api().await;
+        let groups = two_families();
+        let (html, shown) = body(
+            &state,
+            Some("session=s"),
+            &groups,
+            &groups[0],
+            Some(&FamilySelection::All),
+            &OCTOBER,
+        )
+        .await
+        .expect("the page is drawn");
+        assert_eq!(shown, ShownFamilies::All);
+        assert!(
+            html.contains(r#"Piscine<span class="sr-only"> (Les Dupont)</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("Impossible de charger les événements de « Les Martin » pour le moment."),
+            "{html}"
+        );
+        assert!(!html.contains("Les Dupont » pour"), "{html}");
+        // The generic notice of one family is not repeated over it.
+        assert!(
+            !html.contains("Impossible de charger les événements pour le moment."),
+            "{html}"
+        );
+        // Nor does the phone say "nothing planned" with a family missing.
+        assert!(!html.contains("Rien de prévu ce mois-ci"), "{html}");
+    }
+
+    /// One family alone that fails keeps the notice it had before #622.
+    #[tokio::test]
+    async fn the_active_family_alone_failing_keeps_its_notice() {
+        let state = fake_families_api().await;
+        let groups = two_families();
+        let (html, shown) = body(&state, None, &groups, &groups[1], None, &OCTOBER)
+            .await
+            .expect("the page is drawn");
+        assert_eq!(shown, ShownFamilies::Default);
+        assert!(
+            html.contains("Impossible de charger les événements pour le moment."),
+            "{html}"
+        );
+        assert!(!html.contains("« Les Martin »"), "{html}");
+    }
+
+    /// An id of a family the visitor does not belong to, in the URL or the
+    /// cookie, shows nothing of that family: it is never asked for.
+    #[tokio::test]
+    async fn a_foreign_family_in_the_selection_shows_nothing_of_it() {
+        let state = fake_families_api().await;
+        let groups = two_families();
+        let asked = FamilySelection::Only(vec![Uuid::from_u128(7), Uuid::from_u128(1)]);
+        let (html, shown) = body(&state, None, &groups, &groups[0], Some(&asked), &OCTOBER)
+            .await
+            .expect("the page is drawn");
+        assert!(!html.contains("Secret"), "{html}");
+        assert!(html.contains("Piscine"), "{html}");
+        // Family 1 alone, the active one: the agenda as it was.
+        assert_eq!(shown, ShownFamilies::Default);
+        assert!(!html.contains("(Les Dupont)"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn no_family_reachable_is_no_page() {
+        let groups = two_families();
+        let state = state_at("http://127.0.0.1:1".into());
+        assert!(body(
+            &state,
+            None,
+            &groups,
+            &groups[0],
+            Some(&FamilySelection::All),
+            &OCTOBER
+        )
+        .await
+        .is_none());
     }
 
     // -- the markup the phone reading depends on -----------------------
@@ -1056,7 +1812,7 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(
+        let html = draw_grid(
             &week,
             &by_day,
             None,
@@ -1085,7 +1841,7 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         // 2026-07-27 (Monday) .. 2026-08-02: four July days, three August.
         let week: Vec<NaiveDate> = week_days(day(29));
-        let html = render_grid(
+        let html = draw_grid(
             &week,
             &by_day,
             None,
@@ -1102,7 +1858,7 @@ mod tests {
     fn the_month_grid_marks_today_and_the_days_of_the_neighbouring_months() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(
+        let html = draw_grid(
             &days,
             &by_day,
             Some(7),
@@ -1140,7 +1896,7 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(
+        let html = draw_grid(
             &days,
             &by_day,
             Some(7),
@@ -1386,7 +2142,7 @@ mod tests {
         // weekdays and no month. The caption is the table's own name.
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(
+        let html = draw_grid(
             &days,
             &by_day,
             Some(7),
@@ -1406,7 +2162,7 @@ mod tests {
     fn the_caption_is_escaped_like_the_heading() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(
+        let html = draw_grid(
             &week,
             &by_day,
             None,
@@ -1423,7 +2179,7 @@ mod tests {
     fn every_weekday_header_heads_a_column() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(
+        let html = draw_grid(
             &week,
             &by_day,
             None,
@@ -1479,7 +2235,7 @@ mod tests {
 
     #[test]
     fn the_month_arrows_are_an_icon_named_for_the_month_they_reach() {
-        let html = render_nav(false, day(15), "juillet 2026");
+        let html = render_nav(false, day(15), "juillet 2026", "");
         let prev = nav_link(&html, "month", "2026-06-01");
         let next = nav_link(&html, "month", "2026-08-01");
         assert!(prev.contains(r#"aria-label="Mois précédent""#), "{prev}");
@@ -1498,7 +2254,7 @@ mod tests {
     fn the_week_arrows_are_named_for_the_week_they_reach() {
         // They step seven days: calling them "Mois précédent" would announce
         // a jump the link does not make.
-        let html = render_nav(true, day(15), "Semaine du 13 juillet");
+        let html = render_nav(true, day(15), "Semaine du 13 juillet", "");
         let prev = nav_link(&html, "week", "2026-07-08");
         let next = nav_link(&html, "week", "2026-07-22");
         assert!(
@@ -1513,7 +2269,7 @@ mod tests {
     #[test]
     fn no_literal_quote_reaches_the_nav_text() {
         // Attribute values are quoted; text between tags never is.
-        let html = render_nav(false, day(15), "juillet 2026");
+        let html = render_nav(false, day(15), "juillet 2026", "");
         for text in html.split('>').filter_map(|s| s.split('<').next()) {
             assert!(!text.contains('"'), "quoted text node: {text:?}");
         }
@@ -1535,7 +2291,7 @@ mod tests {
         // Mois and Semaine are one control with two positions, on a phone
         // as on a PC: the one on screen says so, in markup and not only in
         // colour.
-        let month = render_nav(false, day(15), "juillet 2026");
+        let month = render_nav(false, day(15), "juillet 2026", "");
         let toggle = views_toggle(&month);
         assert!(
             toggle.contains(
@@ -1547,7 +2303,7 @@ mod tests {
             toggle.contains(r#"<a href="/agenda?view=week&date=2026-07-15">Semaine</a>"#),
             "{toggle}"
         );
-        let week = render_nav(true, day(15), "Semaine du 13 juillet");
+        let week = render_nav(true, day(15), "Semaine du 13 juillet", "");
         let toggle = views_toggle(&week);
         assert!(
             toggle.contains(
@@ -1562,7 +2318,7 @@ mod tests {
     fn today_keeps_the_view_it_was_pressed_in() {
         let today = today_paris();
         for (is_week, view) in [(false, "month"), (true, "week")] {
-            let html = render_nav(is_week, day(15), "x");
+            let html = render_nav(is_week, day(15), "x", "");
             assert!(
                 html.contains(&format!(
                     r#"href="/agenda?view={view}&date={today}">Aujourd'hui</a>"#
@@ -1576,7 +2332,7 @@ mod tests {
     fn a_new_event_is_a_button_on_a_pc_and_the_floating_plus_on_a_phone() {
         // The home's floating "+" (#524), the same `.fab`: the mock-up of
         // the phone agenda draws it where the PC has its button.
-        let html = render_nav(false, day(15), "juillet 2026");
+        let html = render_nav(false, day(15), "juillet 2026", "");
         assert!(
             html.contains(r#"<a class="btn pc" href="/agenda/new">"#),
             "{html}"
@@ -1635,7 +2391,7 @@ mod tests {
         let members = [named(7, "Chloé"), named(8, "Alex")];
         let occs = [assigned(9, "Piscine", &[7])];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15), &members);
+        let html = render_chips(&refs, None, day(15), &members, &[]);
         let tint = member_tint(Uuid::from_u128(7));
         assert!(html.contains(&format!(r#"class="chip {tint}">"#)), "{html}");
         // The hue is never alone (WCAG 1.4.1): the initial rides with it.
@@ -1655,7 +2411,7 @@ mod tests {
         let members = [named(7, "Chloé"), named(8, "Alex")];
         let occs = [assigned(9, "Pédiatre", &[8, 7])];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15), &members);
+        let html = render_chips(&refs, None, day(15), &members, &[]);
         let tint = member_tint(Uuid::from_u128(8));
         assert!(html.contains(&format!(r#"class="chip {tint}">"#)), "{html}");
         let alex = html.find(">A</span>").expect("Alex's initial");
@@ -1671,7 +2427,7 @@ mod tests {
         let occs = [assigned(9, "Dentiste", &[99])];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
         for members in [vec![named(7, "Chloé")], vec![]] {
-            let html = render_chips(&refs, None, day(15), &members);
+            let html = render_chips(&refs, None, day(15), &members, &[]);
             assert!(html.contains(r#"class="chip">"#), "{html}");
             assert!(!html.contains("avatar"), "{html}");
         }
@@ -1686,7 +2442,7 @@ mod tests {
         occ.event.created_by = Uuid::from_u128(7);
         let occs = [occ];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15), &members);
+        let html = render_chips(&refs, None, day(15), &members, &[]);
         assert!(html.contains(">C</span>"), "{html}");
     }
 
@@ -1701,7 +2457,7 @@ mod tests {
         occ.event.completed_at = Some(occ.occurrence_starts_at);
         let occs = [occ];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15), &members);
+        let html = render_chips(&refs, None, day(15), &members, &[]);
         assert!(html.contains(r#"class="chip done">"#), "{html}");
         assert!(html.contains(">C</span>"), "{html}");
     }
@@ -1722,7 +2478,7 @@ mod tests {
         let time = fmt_paris(occ.occurrence_starts_at, "%H:%M");
         let occs = [occ];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15), &members);
+        let html = render_chips(&refs, None, day(15), &members, &[]);
         assert!(html.contains(icon(Icon::Lock)), "{html}");
         assert_eq!(chip_name(&html), format!("Privé {time} Dentiste"), "{html}");
     }
@@ -1734,7 +2490,7 @@ mod tests {
         let time = fmt_paris(occ.occurrence_starts_at, "%H:%M");
         let occs = [occ];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = render_chips(&refs, None, day(15), &members);
+        let html = render_chips(&refs, None, day(15), &members, &[]);
         assert!(!html.contains(icon(Icon::Lock)), "{html}");
         assert_eq!(chip_name(&html), format!("{time} Dentiste"), "{html}");
     }
@@ -1747,7 +2503,7 @@ mod tests {
         private.event.is_private = true;
         let occs = [private, assigned(14, "Piscine", &[])];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = day_panel(day(15), &refs, &[]);
+        let html = day_panel(day(15), &refs, &[], &[]);
         let rows: Vec<&str> = html.split(r#"<li class="list-row">"#).skip(1).collect();
         assert_eq!(rows.len(), 2, "{html}");
         assert!(
@@ -1893,7 +2649,7 @@ mod tests {
     fn a_national_day_is_a_head_line_of_its_cell_not_a_link_nor_a_chip() {
         let (grid, national) = october_2026();
         let marks = marks_by_day(&grid, &national);
-        let html = render_grid(
+        let html = draw_grid(
             &grid,
             &BTreeMap::new(),
             Some(10),
@@ -1921,7 +2677,7 @@ mod tests {
     fn a_school_holiday_day_wears_the_band_and_names_it_in_words() {
         let (grid, national) = october_2026();
         let marks = marks_by_day(&grid, &national);
-        let html = render_grid(
+        let html = draw_grid(
             &grid,
             &BTreeMap::new(),
             Some(10),
@@ -1963,7 +2719,7 @@ mod tests {
         let grid = month_grid(2026, 7);
         let national = [one_day(ymd(2026, 7, 14), "public_holiday", "<b>Fête</b>")];
         let marks = marks_by_day(&grid, &national);
-        let html = render_grid(
+        let html = draw_grid(
             &grid,
             &BTreeMap::new(),
             Some(7),
@@ -2104,7 +2860,7 @@ mod tests {
         )
         .await;
         let marks = marks_by_day(&grid, &national);
-        render_grid(
+        draw_grid(
             &grid,
             &BTreeMap::new(),
             Some(10),
@@ -2147,7 +2903,7 @@ mod tests {
 
     #[test]
     fn the_day_panel_is_named_by_the_day_it_shows() {
-        let html = day_panel(day(14), &[], &[]);
+        let html = day_panel(day(14), &[], &[], &[]);
         assert!(html.contains("<h2>Mardi 14 juillet</h2>"), "{html}");
         assert!(html.starts_with(r#"<section class="card pc">"#), "{html}");
     }
@@ -2160,7 +2916,7 @@ mod tests {
             assigned(14, "Pédiatre", &[8, 7]),
         ];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = day_panel(day(15), &refs, &members);
+        let html = day_panel(day(15), &refs, &members, &[]);
         assert_eq!(
             html.matches(r#"<li class="list-row">"#).count(),
             2,
@@ -2192,7 +2948,7 @@ mod tests {
         occ.event.all_day = true;
         let occs = [occ];
         let refs: Vec<&OccurrenceResponse> = occs.iter().collect();
-        let html = day_panel(day(15), &refs, &[]);
+        let html = day_panel(day(15), &refs, &[], &[]);
         assert!(
             html.contains(r#"<span class="when">Journée</span>"#),
             "{html}"
@@ -2201,7 +2957,7 @@ mod tests {
 
     #[test]
     fn an_empty_day_panel_says_nothing_is_planned() {
-        let html = day_panel(day(15), &[], &[]);
+        let html = day_panel(day(15), &[], &[], &[]);
         assert!(
             html.contains(r#"<p class="muted">Rien de prévu ce jour-là.</p>"#),
             "{html}"

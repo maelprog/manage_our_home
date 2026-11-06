@@ -28,8 +28,9 @@ use super::new::{
     EventForm, RecurrenceFields,
 };
 use super::{
-    agenda_cookie, all_day_field_values, can_modify, event_not_found_page, family_context,
-    forbidden_page, form_bounds, service_unavailable_page, to_datetime_local,
+    agenda_cookie, all_day_field_values, can_modify, event_not_found_page, family_context_for,
+    forbidden_page, form_bounds, service_unavailable_page, to_datetime_local, with_family,
+    EventFamily,
 };
 
 /// The line under the assignee picker explaining what an empty selection
@@ -67,7 +68,12 @@ fn page(
     members: &[GroupMember],
     selected_assignees: &[Uuid],
     is_private: bool,
+    family: Option<Uuid>,
 ) -> String {
+    // The family the event was opened in, when it is not the active one
+    // (#622): the form posts to it and the way back returns to it.
+    let action = with_family(&format!("/agenda/{id}/edit"), family);
+    let back = with_family(&format!("/agenda/{id}"), family);
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
@@ -81,7 +87,7 @@ fn page(
         r#"<h1>Modifier — {title_esc}</h1>
 <p class="muted">{kind} (le type ne peut pas être changé après création)</p>
 {error_html}
-<form method="post" action="/agenda/{id}/edit">
+<form method="post" action="{action}">
 <label>Titre <input type="text" name="title" required value="{title_attr}"/></label>
 {schedule}
 <label>Lieu <input type="text" name="location" value="{location_attr}"/></label>
@@ -92,7 +98,7 @@ fn page(
 {private}
 <button type="submit">Enregistrer</button>
 </form>
-<div class="links"><a href="/agenda/{id}">Retour au détail</a></div>"#,
+<div class="links"><a href="{back}">Retour au détail</a></div>"#,
         title_esc = html_escape(title),
         title_attr = html_escape(title),
         location_attr = html_escape(location),
@@ -106,9 +112,16 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
 ) -> Response {
-    let Some(fam) =
-        family_context(&state, &headers, &me, &format!("/agenda/{event_id}/edit")).await
+    let Some(fam) = family_context_for(
+        &state,
+        &headers,
+        &me,
+        &format!("/agenda/{event_id}/edit"),
+        requested,
+    )
+    .await
     else {
         return Redirect::to("/groups/new").into_response();
     };
@@ -177,6 +190,7 @@ pub async fn get(
         &members,
         &event.assignee_ids,
         event.is_private,
+        fam.carried,
     ))
     .into_response()
 }
@@ -186,13 +200,20 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
     raw_body: axum::body::Bytes,
 ) -> Response {
     if !is_form_urlencoded(&headers) {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
     }
-    let Some(fam) =
-        family_context(&state, &headers, &me, &format!("/agenda/{event_id}/edit")).await
+    let Some(fam) = family_context_for(
+        &state,
+        &headers,
+        &me,
+        &format!("/agenda/{event_id}/edit"),
+        requested,
+    )
+    .await
     else {
         return Redirect::to("/groups/new").into_response();
     };
@@ -227,6 +248,7 @@ pub async fn post(
                 &members,
                 &assignee_ids,
                 raw_is_private(&raw),
+                fam.carried,
             )),
         )
             .into_response();
@@ -256,6 +278,7 @@ pub async fn post(
             &members,
             &assignee_ids,
             form.is_private.is_some(),
+            fam.carried,
         ))
         .into_response()
     };
@@ -317,10 +340,10 @@ pub async fn post(
 
     match result {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            Redirect::to(&format!("/agenda/{event_id}?notice=updated")).into_response()
+            Redirect::to(&fam.url(&format!("/agenda/{event_id}?notice=updated"))).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
-            Redirect::to(&format!("/agenda/{event_id}?error=forbidden")).into_response()
+            Redirect::to(&fam.url(&format!("/agenda/{event_id}?error=forbidden"))).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             event_not_found_page().into_response()
@@ -362,7 +385,45 @@ mod tests {
             &[member("Camille")],
             &[],
             is_private,
+            None,
         )
+    }
+
+    /// #622: another family's event is edited in that family — the form
+    /// posts to it and the way back returns to it.
+    #[test]
+    fn another_familys_edit_form_posts_in_that_family() {
+        let g = Uuid::from_u128(2);
+        let html = page(
+            "",
+            Uuid::from_u128(9),
+            false,
+            "Dentiste",
+            "",
+            "",
+            "2026-09-05T10:00",
+            "2026-09-05T11:00",
+            false,
+            &RecurrenceFields::default(),
+            None,
+            &[member("Camille")],
+            &[],
+            false,
+            Some(g),
+        );
+        let id = Uuid::from_u128(9);
+        assert!(
+            html.contains(&format!(
+                r#"<form method="post" action="/agenda/{id}/edit?famille={g}">"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"<a href="/agenda/{id}?famille={g}">Retour"#)),
+            "{html}"
+        );
+        let own = edit_page(false);
+        assert!(!own.contains("famille="), "{own}");
     }
 
     /// #696: under an error the edit form gives back what was submitted —
@@ -392,6 +453,7 @@ mod tests {
             &[member("Camille")],
             &[],
             false,
+            None,
         );
         assert!(
             html.contains(r#"name="title" required value="Dîner"/>"#),
@@ -442,6 +504,7 @@ mod tests {
             &[member("Camille")],
             &[],
             false,
+            None,
         );
         assert!(
             html.contains(r#"name="recurring" checked aria-expanded="true""#),

@@ -592,6 +592,38 @@ Ce que ça ne rattrape pas : le jour de la semaine n'est toujours pas écrit
 dans une entrée de la liste (première concession ci-dessus) — la mini-grille
 le donne au-dessus, par la colonne où tombe le numéro.
 
+#### Plusieurs familles à la fois (#622)
+
+Arbitrage du 2026-10-28 : l'agenda montre une famille, plusieurs ou toutes.
+Un membre de plus d'une famille a, sous l'en-tête de la page, un formulaire
+`GET` sans script : une pastille `.pick` par famille, cochée si elle est
+affichée, dans la couleur de sa famille (`data-accent` sur la pastille, sa
+`.swatch` peinte par `[data-accent] > .swatch`), puis « Toutes » et
+« Afficher ». La sélection va dans l'URL (`?familles=<id>`, répété, ou
+`?familles=toutes`) et dans un cookie distinct de la famille active, qui ne
+change pas. Sans l'un ni l'autre : la famille active seule, l'agenda d'avant.
+Avec une seule famille, pas de formulaire.
+
+Dans une vue de plusieurs familles, chaque pastille d'événement porte **sa
+famille** : sa couleur en liseré gauche (`.chip[data-accent]`, `--s1` en
+`--accent`, la règle `[data-accent]` de #538 pointant `--accent` sur la
+teinte) et son nom en `.sr-only` à la fin du nom du lien — jamais la couleur
+seule (WCAG 1.4.1), le formulaire au-dessus disant quelle couleur est à qui.
+Le panneau du jour d'un PC écrit le nom en clair avant les personnes. La
+teinte du membre reste le fond de la pastille. Une famille dont les
+événements n'ont pas pu être lus est nommée dans une notice d'erreur ; les
+autres s'affichent.
+
+La feuille gagne une règle. Le document, lui, gagne le formulaire et, par
+pastille d'une vue de plusieurs, l'attribut, le nom et — pour une famille
+qui n'est pas l'active — `famille=<id>` dans son lien. Mesuré le 2026-11-06
+sur `/agenda` avec `npm run seed` (40 événements) puis deux familles de plus
+portant chacune une copie de ce mois, gzip de Node (`node:zlib`, niveau par
+défaut) : une famille, 21 912 o bruts / 5 151 o compressés ; les trois
+familles semées, vue par défaut (l'active seule, le formulaire affiché),
+22 891 / 5 424 ; `?familles=toutes`, 38 884 / 6 489, pour 84 éléments
+`.chip` (les « +N autres » compris) au lieu de 40.
+
 ### Plancher typographique sur téléphone
 
 `--t-xs` (0.8125rem / 13 px) est trop petit pour un écran consulté à bout de

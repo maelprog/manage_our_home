@@ -32,9 +32,9 @@ use crate::state::{api_request_auth, AppState};
 
 use super::new::{reminder_push_block, reminder_select};
 use super::{
-    agenda_cookie, can_modify, event_not_found_page, family_context, fmt_paris, forbidden_page,
+    agenda_cookie, can_modify, event_not_found_page, family_context_for, fmt_paris, forbidden_page,
     json_from_response, occurrences_from_response, private_line, read_or_log,
-    service_unavailable_page, today_paris,
+    service_unavailable_page, today_paris, with_family, EventFamily,
 };
 
 #[derive(serde::Deserialize)]
@@ -152,9 +152,17 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
     LenientQuery(query): LenientQuery<DetailQuery>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/agenda/{event_id}")).await
+    let Some(fam) = family_context_for(
+        &state,
+        &headers,
+        &me,
+        &format!("/agenda/{event_id}"),
+        requested,
+    )
+    .await
     else {
         return Redirect::to("/groups/new").into_response();
     };
@@ -263,10 +271,36 @@ pub async fn get(
         error,
         reminder,
         &push,
+        fam.carried.map(|gid| (gid, fam.name.as_str())),
     ))
     .into_response()
 }
 
+/// Where the page's forms and links lead: the event's own URLs, in the
+/// family it was opened in (#622). The active family's carry nothing.
+#[derive(Clone, Copy)]
+struct EventUrls {
+    id: Uuid,
+    family: Option<Uuid>,
+}
+
+impl EventUrls {
+    /// `/agenda/<id><rest>`, carrying the family.
+    fn to(self, rest: &str) -> String {
+        with_family(&format!("/agenda/{}{rest}", self.id), self.family)
+    }
+}
+
+/// An event of the active family.
+impl From<Uuid> for EventUrls {
+    fn from(id: Uuid) -> Self {
+        Self { id, family: None }
+    }
+}
+
+/// `other_family` is the family the event was opened in when it is not the
+/// active one (#622): its id, which every URL of the page carries, and its
+/// name, which the page says — the header names the active family.
 #[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
@@ -280,8 +314,15 @@ fn page(
     error: Option<&str>,
     reminder: Option<(Uuid, i32)>,
     push: &str,
+    other_family: Option<(Uuid, &str)>,
 ) -> String {
-    let id = event.id;
+    let urls = EventUrls {
+        id: event.id,
+        family: other_family.map(|(gid, _)| gid),
+    };
+    let family_html = other_family
+        .map(|(_, name)| format!("<p><strong>Famille :</strong> {}</p>", html_escape(name)))
+        .unwrap_or_default();
     let notice_html = notice
         .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
         .unwrap_or_default();
@@ -333,9 +374,9 @@ fn page(
     // Completion UI.
     let completion_html = if event.is_task {
         if event.rrule.is_some() {
-            render_occurrence_completions(id, occurrences, focus_occ)
+            render_occurrence_completions(urls, occurrences, focus_occ)
         } else {
-            render_oneoff_completion(id, event)
+            render_oneoff_completion(urls, event)
         }
     } else {
         String::new()
@@ -345,11 +386,13 @@ fn page(
     let controls_html = if can_edit {
         format!(
             r#"<div class="actions">
-<a class="btn secondary" href="/agenda/{id}/edit">Modifier</a>
-<form method="post" action="/agenda/{id}/delete">
+<a class="btn secondary" href="{edit}">Modifier</a>
+<form method="post" action="{delete}">
 <button type="submit" class="secondary danger">Supprimer</button>
 </form>
-</div>"#
+</div>"#,
+            edit = urls.to("/edit"),
+            delete = urls.to("/delete"),
         )
     } else {
         r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cet événement.</p>"#.to_string()
@@ -358,14 +401,15 @@ fn page(
     // Reminders: add form + one-shot display of a just-created reminder
     // (backend exposes no list endpoint — documented v1 limitation).
     let just_created = reminder
-        .map(|(rid, offset)| render_reminder_created(id, rid, offset))
+        .map(|(rid, offset)| render_reminder_created(urls, rid, offset))
         .unwrap_or_default();
     let reminder_select_html = reminder_select("reminder", None);
+    let add_reminder = urls.to("/reminders");
     let reminders_html = format!(
         r#"<h2>Rappels</h2>
 <p class="muted">Ajoute un rappel avant l'événement. Il est envoyé au créateur de l'événement, par notification ou par email selon son choix (le vôtre se règle dans <a href="/account/notifications">Notifications de rappel</a>). La liste des rappels existants n'est pas affichable (limitation v1).</p>
 {just_created}
-<form method="post" action="/agenda/{id}/reminders">
+<form method="post" action="{add_reminder}">
 <label>Nouveau rappel {reminder_select_html}</label>
 {push}
 <button type="submit">Ajouter le rappel</button>
@@ -373,13 +417,14 @@ fn page(
     );
 
     // Attachments.
-    let attachments_html = render_attachments(id, attachments, can_edit);
+    let attachments_html = render_attachments(urls, attachments, can_edit);
 
     let body = format!(
         r#"<h1>{title}</h1>
 {notice_html}{error_html}
 <p class="muted">{kind}</p>
 {private}
+{family_html}
 <p><strong>Quand :</strong> {when}</p>
 {assignees}
 {location_html}{description_html}{recurrence_html}
@@ -397,7 +442,7 @@ fn page(
 /// The one-shot notice shown after a reminder is created, with its delete
 /// button. `offset` is the minutes-before value echoed in the redirect.
 /// The API refuses a negative offset; a forged one in the query reads as 0.
-fn render_reminder_created(id: Uuid, rid: Uuid, offset: i32) -> String {
+fn render_reminder_created(urls: impl Into<EventUrls>, rid: Uuid, offset: i32) -> String {
     let minutes = u32::try_from(offset).unwrap_or(0);
     let when = if minutes == 0 {
         format_reminder_offset(0)
@@ -407,13 +452,14 @@ fn render_reminder_created(id: Uuid, rid: Uuid, offset: i32) -> String {
     format!(
         r#"<p class="notice success split">
 <span>Rappel actif : {when}.</span>
-<form method="post" action="/agenda/{id}/reminders/{rid}/delete">
+<form method="post" action="{delete}">
 <button type="submit" class="secondary">Supprimer ce rappel</button>
-</form></p>"#
+</form></p>"#,
+        delete = urls.into().to(&format!("/reminders/{rid}/delete")),
     )
 }
 
-fn render_oneoff_completion(id: Uuid, event: &EventResponse) -> String {
+fn render_oneoff_completion(urls: EventUrls, event: &EventResponse) -> String {
     let done = event.completed_at.is_some();
     let (label, next, status) = if done {
         ("Marquer à faire", "false", "✅ Fait")
@@ -423,20 +469,22 @@ fn render_oneoff_completion(id: Uuid, event: &EventResponse) -> String {
     format!(
         r#"<div class="actions">
 <span><strong>{status}</strong></span>
-<form method="post" action="/agenda/{id}/complete">
+<form method="post" action="{complete}">
 <input type="hidden" name="completed" value="{next}"/>
 <button type="submit" class="secondary">{label}</button>
-</form></div>"#
+</form></div>"#,
+        complete = urls.to("/complete"),
     )
 }
 
 /// `occurrences` is `None` when the API's answer could not be read: that
 /// renders as an error, never as "no upcoming occurrence" (#455).
 fn render_occurrence_completions(
-    id: Uuid,
+    urls: impl Into<EventUrls>,
     occurrences: Option<&[OccurrenceResponse]>,
     focus_occ: Option<&str>,
 ) -> String {
+    let complete = urls.into().to("/complete");
     let Some(occurrences) = occurrences else {
         return r#"<p class="notice error">Impossible de charger les occurrences pour le moment.</p>"#
             .to_string();
@@ -466,7 +514,7 @@ fn render_occurrence_completions(
             format!(
                 r#"<li class="list-row{highlight}">
 <span>{status} {when}</span>
-<form method="post" action="/agenda/{id}/complete">
+<form method="post" action="{complete}">
 <input type="hidden" name="completed" value="{next}"/>
 <input type="hidden" name="occurrence_at" value="{occ_param}"/>
 <button type="submit" class="secondary">{label}</button>
@@ -486,10 +534,11 @@ fn render_occurrence_completions(
 /// list renders as an error, never as "no attachment", and the upload form
 /// stays (#455).
 fn render_attachments(
-    id: Uuid,
+    urls: impl Into<EventUrls>,
     attachments: Option<&[AttachmentResponse]>,
     can_edit: bool,
 ) -> String {
+    let urls = urls.into();
     let rows: String = attachments
         .unwrap_or_default()
         .iter()
@@ -497,19 +546,19 @@ fn render_attachments(
             let size_kb = (a.size_bytes as f64 / 1024.0).round() as i64;
             let delete = if can_edit {
                 format!(
-                    r#"<form method="post" action="/agenda/{id}/attachments/{aid}/delete">
+                    r#"<form method="post" action="{delete}">
 <button type="submit" class="secondary">Supprimer</button></form>"#,
-                    aid = a.id,
+                    delete = urls.to(&format!("/attachments/{}/delete", a.id)),
                 )
             } else {
                 String::new()
             };
             format!(
                 r#"<li class="list-row">
-<a href="/agenda/{id}/attachments/{aid}/download">{name}</a>
+<a href="{download}">{name}</a>
 <span class="muted">{size_kb} Ko</span>
 {delete}</li>"#,
-                aid = a.id,
+                download = urls.to(&format!("/attachments/{}/download", a.id)),
                 name = html_escape(&a.filename),
             )
         })
@@ -521,11 +570,12 @@ fn render_attachments(
         Some(_) => format!(r#"<ul class="list">{rows}</ul>"#),
     };
     let upload = format!(
-        r#"<form method="post" action="/agenda/{id}/attachments" enctype="multipart/form-data">
+        r#"<form method="post" action="{action}" enctype="multipart/form-data">
 <label>Ajouter une pièce jointe (png, jpg, webp, pdf — max 20 Mo)
 <input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf" required/></label>
 <button type="submit">Envoyer</button>
-</form>"#
+</form>"#,
+        action = urls.to("/attachments"),
     );
     format!(
         r#"<h2>Pièces jointes</h2>
@@ -548,13 +598,13 @@ pub async fn complete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
     Form(form): Form<CompleteForm>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &_me, &format!("/agenda/{event_id}")).await
-    else {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(&state, &headers, &_me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
-    let detail = format!("/agenda/{event_id}");
     let completed = form.completed == "true";
     let occurrence_at: Option<DateTime<Utc>> = if form.occurrence_at.trim().is_empty() {
         None
@@ -562,7 +612,8 @@ pub async fn complete(
         match DateTime::parse_from_rfc3339(form.occurrence_at.trim()) {
             Ok(dt) => Some(dt.with_timezone(&Utc)),
             Err(_) => {
-                return Redirect::to(&format!("{detail}?error=occurrence_required")).into_response()
+                return Redirect::to(&fam.url(&format!("{detail}?error=occurrence_required")))
+                    .into_response()
             }
         }
     };
@@ -597,7 +648,7 @@ pub async fn complete(
         }
         Ok(_) | Err(_) => format!("{detail}?error=unavailable"),
     };
-    Redirect::to(&target).into_response()
+    Redirect::to(&fam.url(&target)).into_response()
 }
 
 pub async fn delete(
@@ -605,9 +656,10 @@ pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &_me, &format!("/agenda/{event_id}")).await
-    else {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(&state, &headers, &_me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
     let cookie = agenda_cookie(&headers);
@@ -916,7 +968,77 @@ mod tests {
             None,
             None,
             "",
+            None,
         )
+    }
+
+    // -- an event of another family (#622) ----------------------------------
+
+    /// A one-off task with an attachment and a just-created reminder: every
+    /// form and link the page can hold.
+    fn full_detail(other_family: Option<(Uuid, &str)>) -> String {
+        let mut task = event(false);
+        task.is_task = true;
+        let attachment = AttachmentResponse {
+            id: uid(5),
+            event_id: uid(7),
+            filename: "ordonnance.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size_bytes: 2048,
+        };
+        page(
+            "",
+            &task,
+            Some(&[]),
+            Some(&[attachment]),
+            &[member(uid(1), "Alice")],
+            true,
+            None,
+            None,
+            None,
+            Some((uid(3), 10)),
+            "",
+            other_family,
+        )
+    }
+
+    /// Every URL of the page that leads back to the event, in `html`.
+    fn event_urls(html: &str) -> Vec<&str> {
+        html.split(['"'])
+            .filter(|s| s.starts_with("/agenda/"))
+            .collect()
+    }
+
+    #[test]
+    fn every_url_of_another_familys_event_carries_that_family() {
+        let html = full_detail(Some((uid(2), "Les Martin")));
+        let urls = event_urls(&html);
+        // Edit, delete, completion, reminder add and delete, attachment
+        // download, delete and upload.
+        assert_eq!(urls.len(), 8, "{urls:?}");
+        let family = format!("famille={}", uid(2));
+        for url in &urls {
+            assert!(url.ends_with(&family), "{url}");
+        }
+    }
+
+    #[test]
+    fn another_familys_event_names_its_family() {
+        let html = full_detail(Some((uid(2), "Les <Martin>")));
+        assert!(
+            html.contains("<p><strong>Famille :</strong> Les &lt;Martin&gt;</p>"),
+            "{html}"
+        );
+    }
+
+    /// The active family's event: its URLs as they were, and no line.
+    #[test]
+    fn the_active_familys_event_carries_no_family() {
+        let html = full_detail(None);
+        let urls = event_urls(&html);
+        assert_eq!(urls.len(), 8, "{urls:?}");
+        assert!(urls.iter().all(|u| !u.contains("famille")), "{urls:?}");
+        assert!(!html.contains("Famille :"), "{html}");
     }
 
     #[test]

@@ -24,6 +24,8 @@ pub mod imports;
 pub mod new;
 pub mod reminders;
 
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use axum::response::Html;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
@@ -54,23 +56,130 @@ pub(crate) struct FamilyContext {
     /// The family's name, which the event sheet is headed with (#525).
     pub name: String,
     pub header: String,
+    /// What the page's links carry on (#622, `with_family`): the family's
+    /// id when it is not the active one, `None` when it is.
+    pub carried: Option<Uuid>,
 }
 
+impl FamilyContext {
+    /// `url`, carrying the family the page works in (`with_family`).
+    pub(crate) fn url(&self, url: &str) -> String {
+        with_family(url, self.carried)
+    }
+}
+
+/// The active family's context.
 pub(crate) async fn family_context(
     state: &AppState,
     headers: &HeaderMap,
     me: &MeResponse,
     redirect_to: &str,
 ) -> Option<FamilyContext> {
+    family_context_for(state, headers, me, redirect_to, None).await
+}
+
+/// The context of the family a page's URL names (`?famille=`, #622), once
+/// `GET /groups` has said the visitor belongs to it; the active family's
+/// otherwise (`resolve_event_family`). The header, its switcher and the
+/// page's colour stay the active family's either way.
+pub(crate) async fn family_context_for(
+    state: &AppState,
+    headers: &HeaderMap,
+    me: &MeResponse,
+    redirect_to: &str,
+    requested: Option<Uuid>,
+) -> Option<FamilyContext> {
+    family_context_choosing(state, headers, me, redirect_to, |_, _| requested)
+        .await
+        .map(|(fam, _)| fam)
+}
+
+/// `family_context_for`, the family requested being chosen from the
+/// visitor's families and their active one (`choose`), which are returned
+/// with the context.
+pub(crate) async fn family_context_choosing(
+    state: &AppState,
+    headers: &HeaderMap,
+    me: &MeResponse,
+    redirect_to: &str,
+    choose: impl FnOnce(&[GroupSummary], Option<&GroupSummary>) -> Option<Uuid>,
+) -> Option<(FamilyContext, Vec<GroupSummary>)> {
     let (groups, header) = header_with_groups(state, headers, me, redirect_to).await;
     let preferred = active_group_id_from_headers(headers);
-    let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
-    active.map(|g| FamilyContext {
-        gid: g.group_id,
-        role: g.role.clone(),
-        name: g.name.clone(),
-        header,
-    })
+    let requested = choose(&groups, resolve_active_group(&groups, preferred));
+    let fam =
+        resolve_event_family(&groups, preferred, requested).map(|(g, carried)| FamilyContext {
+            gid: g.group_id,
+            role: g.role.clone(),
+            name: g.name.clone(),
+            header,
+            carried,
+        })?;
+    Some((fam, groups))
+}
+
+/// The family a request's URL names (`?famille=`, `family_param`), as an
+/// extractor: it never rejects, a malformed value reads as none.
+pub(crate) struct EventFamily(pub Option<Uuid>);
+
+impl<S: Send + Sync> FromRequestParts<S> for EventFamily {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self(family_param(parts.uri.query())))
+    }
+}
+
+// -- an event of another family (#622) ----------------------------------------
+
+/// The query key naming the family an event page works in, when it is not
+/// the active one: the agenda can show several families (#622), and a chip
+/// of a family that is not active links to its event with that family.
+pub(crate) const FAMILY_PARAM: &str = "famille";
+
+/// The family a query string names (`?famille=`): its first occurrence,
+/// `None` when absent or malformed — the page then works in the active
+/// family, as before #622.
+pub(crate) fn family_param(query: Option<&str>) -> Option<Uuid> {
+    let pairs: Vec<(String, String)> = serde_urlencoded::from_str(query?).ok()?;
+    pairs
+        .into_iter()
+        .find(|(key, _)| key == FAMILY_PARAM)
+        .and_then(|(_, value)| value.parse().ok())
+}
+
+/// `url` with the family it works in, when that is not the active one
+/// (`family` is then `Some`): what every link, form and redirect of an
+/// event page goes through, so that its next page works in the same family.
+pub(crate) fn with_family(url: &str, family: Option<Uuid>) -> String {
+    match family {
+        None => url.to_string(),
+        Some(gid) => {
+            let separator = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{separator}{FAMILY_PARAM}={gid}")
+        }
+    }
+}
+
+/// The family an event page works in: the one its URL names when the
+/// visitor belongs to it — `GET /groups` is the membership check — and the
+/// active family otherwise, an unknown or foreign id included. The second
+/// half is what the page's own links carry on: the family's id when it is
+/// not the active one, `None` when it is.
+///
+/// The active family is never changed here: opening another family's event
+/// from the agenda leaves the switcher, the page's colour and every other
+/// page where they were.
+pub(crate) fn resolve_event_family(
+    groups: &[GroupSummary],
+    preferred: Option<Uuid>,
+    requested: Option<Uuid>,
+) -> Option<(&GroupSummary, Option<Uuid>)> {
+    let active = resolve_active_group(groups, preferred)?;
+    match requested.and_then(|id| groups.iter().find(|g| g.group_id == id)) {
+        Some(other) if other.group_id != active.group_id => Some((other, Some(other.group_id))),
+        _ => Some((active, None)),
+    }
 }
 
 /// Mirror of `apps/api/src/agenda/mod.rs::can_modify`: the event's creator,
@@ -337,6 +446,94 @@ pub(crate) fn agenda_cookie(headers: &HeaderMap) -> Option<String> {
 mod tests {
     use super::*;
     use manage_our_home_shared::validation::agenda::{validate_event_form, EventFormError};
+
+    // -- an event of another family (#622) ----------------------------------
+
+    fn uid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn group(n: u128) -> GroupSummary {
+        GroupSummary {
+            group_id: uid(n),
+            name: format!("F{n}"),
+            role: if n == 1 { "owner" } else { "standard" }.to_string(),
+            accent: "sarcelle".to_string(),
+            ownership_notice: None,
+        }
+    }
+
+    #[test]
+    fn the_family_param_is_read_from_the_query() {
+        let raw = format!("occ=2026-07-15T08:00:00Z&famille={}", uid(2));
+        assert_eq!(family_param(Some(&raw)), Some(uid(2)));
+        assert_eq!(family_param(None), None);
+        assert_eq!(family_param(Some("")), None);
+        assert_eq!(family_param(Some("famille=")), None);
+        assert_eq!(family_param(Some("famille=x")), None);
+        assert_eq!(family_param(Some("familles=toutes")), None);
+        // A repeated key keeps its first occurrence (#582's rule).
+        let twice = format!("famille={}&famille={}", uid(2), uid(3));
+        assert_eq!(family_param(Some(&twice)), Some(uid(2)));
+    }
+
+    #[test]
+    fn the_active_family_adds_nothing_to_a_url() {
+        assert_eq!(with_family("/agenda/x", None), "/agenda/x");
+        assert_eq!(
+            with_family("/agenda/x?notice=updated", None),
+            "/agenda/x?notice=updated"
+        );
+    }
+
+    #[test]
+    fn another_family_is_added_to_a_url_with_or_without_a_query() {
+        let g = uid(2);
+        assert_eq!(
+            with_family("/agenda/x/edit", Some(g)),
+            format!("/agenda/x/edit?famille={g}")
+        );
+        assert_eq!(
+            with_family("/agenda/x?error=forbidden", Some(g)),
+            format!("/agenda/x?error=forbidden&famille={g}")
+        );
+        // And read back from it.
+        let url = with_family("/agenda/x?occ=a", Some(g));
+        assert_eq!(family_param(url.split_once('?').map(|(_, q)| q)), Some(g));
+    }
+
+    #[test]
+    fn no_family_named_is_the_active_one() {
+        let groups = [group(1), group(2)];
+        let (g, carried) = resolve_event_family(&groups, Some(uid(1)), None).unwrap();
+        assert_eq!((g.group_id, carried), (uid(1), None));
+        assert!(resolve_event_family(&[], None, Some(uid(1))).is_none());
+    }
+
+    #[test]
+    fn a_family_of_the_visitor_is_the_one_the_page_works_in() {
+        let groups = [group(1), group(2)];
+        let (g, carried) = resolve_event_family(&groups, Some(uid(1)), Some(uid(2))).unwrap();
+        assert_eq!((g.group_id, carried), (uid(2), Some(uid(2))));
+        // Its own role, not the active family's.
+        assert_eq!(g.role, "standard");
+    }
+
+    #[test]
+    fn naming_the_active_family_carries_nothing() {
+        let groups = [group(1), group(2)];
+        let (g, carried) = resolve_event_family(&groups, Some(uid(1)), Some(uid(1))).unwrap();
+        assert_eq!((g.group_id, carried), (uid(1), None));
+    }
+
+    /// A family the visitor does not belong to is never worked in: the page
+    /// falls back on the active family, where apps/api answers 404.
+    #[test]
+    fn a_foreign_family_falls_back_on_the_active_one() {
+        let groups = [group(1), group(2)];
+        let (g, carried) = resolve_event_family(&groups, Some(uid(2)), Some(uid(7))).unwrap();
+        assert_eq!((g.group_id, carried), (uid(2), None));
+    }
 
     // -- private_mark / private_line (#621) ---------------------------------
 
