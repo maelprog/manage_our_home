@@ -39,7 +39,7 @@ pub fn active_group_id_from_headers(headers: &HeaderMap) -> Option<Uuid> {
 /// marked `HttpOnly` anyway since no client-side JS needs it (apps/web is
 /// SSR-only), plus `SameSite=Lax` matching the session cookie's posture.
 pub fn set_active_group_cookie(group_id: Uuid) -> String {
-    format!("{ACTIVE_GROUP_COOKIE}={group_id}; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Lax")
+    format!("{ACTIVE_GROUP_COOKIE}={group_id}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax")
 }
 
 /// Resolves the preference against the groups the user actually belongs
