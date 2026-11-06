@@ -438,7 +438,6 @@ fn render_grid(
     members: &[GroupMember],
     marks: &BTreeMap<NaiveDate, DayMarks>,
 ) -> String {
-    let grid_first = days.first().copied().unwrap_or(today);
     let headers: String = FR_WEEKDAYS
         .iter()
         .map(|d| format!(r#"<th scope="col">{d}</th>"#))
@@ -459,12 +458,12 @@ fn render_grid(
                 _ => "",
             };
             let marks_line = day_marks
-                .map(|m| marks_html(m, *day, grid_first))
+                .map(|m| marks_html(m, *day))
                 .unwrap_or_default();
             // The mini grid's target on a phone (#675): only a day the
             // list shows is one — an event, or a national day written out.
             let listed = !occs.is_empty()
-                || day_marks.is_some_and(|m| !shown_labels(m, *day, grid_first).is_empty());
+                || day_marks.is_some_and(|m| !shown_labels(m, *day).is_empty());
             let id = if listed {
                 format!(r#" id="{}""#, day_anchor(*day))
             } else {
@@ -530,7 +529,6 @@ fn render_mini(
     title: &str,
     marks: &BTreeMap<NaiveDate, DayMarks>,
 ) -> String {
-    let grid_first = days.first().copied().unwrap_or(today);
     let headers: String = FR_LONG_WEEKDAYS
         .iter()
         .map(|d| format!(r#"<th scope="col" aria-label="{d}">{}</th>"#, &d[..1]))
@@ -551,7 +549,7 @@ fn render_mini(
             // days written out (#565), then its count of events.
             let mut said: Vec<String> = marks
                 .get(day)
-                .map(|m| shown_labels(m, *day, grid_first))
+                .map(|m| shown_labels(m, *day))
                 .unwrap_or_default()
                 .into_iter()
                 .map(html_escape)
@@ -761,20 +759,21 @@ fn marks_by_day<'a>(
 }
 
 /// Whether a school holiday's label is written on `day`, rather than said
-/// to a screen reader only: on the period's first day, on the grid's first
-/// day and on every Monday — so each row of the band is named once, and
-/// the other days do not repeat it.
-fn holiday_label_shown(day: NaiveDate, starts: NaiveDate, grid_first: NaiveDate) -> bool {
-    day == starts || day == grid_first || day.weekday() == chrono::Weekday::Mon
+/// to a screen reader only: on the period's first day and on every Monday
+/// — so each row of the band is named once, and the other days do not
+/// repeat it. A grid starts on a Monday (`month_grid`, `week_days`): a
+/// period that began before it is named on its first day too.
+fn holiday_label_shown(day: NaiveDate, starts: NaiveDate) -> bool {
+    day == starts || day.weekday() == chrono::Weekday::Mon
 }
 
 /// The labels a day shows in writing — the ones that put it in a phone's
 /// list and make it a link of the mini grid.
-fn shown_labels<'a>(marks: &DayMarks<'a>, day: NaiveDate, grid_first: NaiveDate) -> Vec<&'a str> {
+fn shown_labels<'a>(marks: &DayMarks<'a>, day: NaiveDate) -> Vec<&'a str> {
     let holidays = marks
         .holidays
         .iter()
-        .filter(|(_, starts)| holiday_label_shown(day, *starts, grid_first))
+        .filter(|(_, starts)| holiday_label_shown(day, *starts))
         .map(|(label, _)| *label);
     marks.days.iter().copied().chain(holidays).collect()
 }
@@ -782,7 +781,7 @@ fn shown_labels<'a>(marks: &DayMarks<'a>, day: NaiveDate, grid_first: NaiveDate)
 /// A day's head line (#565), between its number and its chips: each label
 /// a `.nat` paragraph — not a link, not a chip — and a school holiday that
 /// is not written that day an `.sr-only` mention.
-fn marks_html(marks: &DayMarks, day: NaiveDate, grid_first: NaiveDate) -> String {
+fn marks_html(marks: &DayMarks, day: NaiveDate) -> String {
     let mut out: String = marks
         .days
         .iter()
@@ -790,7 +789,7 @@ fn marks_html(marks: &DayMarks, day: NaiveDate, grid_first: NaiveDate) -> String
         .collect();
     for (label, starts) in &marks.holidays {
         let label = html_escape(label);
-        out.push_str(&if holiday_label_shown(day, *starts, grid_first) {
+        out.push_str(&if holiday_label_shown(day, *starts) {
             format!(r#"<p class="nat">{label}</p>"#)
         } else {
             format!(r#"<span class="sr-only">{label}</span>"#)
@@ -1820,18 +1819,19 @@ mod tests {
     }
 
     #[test]
-    fn a_school_holiday_is_written_on_its_first_day_the_grids_first_and_on_mondays() {
+    fn a_school_holiday_is_written_on_its_first_day_and_on_mondays() {
         let start = ymd(2026, 10, 17); // a Saturday
-        let first = ymd(2026, 9, 28);
-        assert!(holiday_label_shown(start, start, first));
-        assert!(holiday_label_shown(ymd(2026, 10, 19), start, first)); // Monday
-        assert!(holiday_label_shown(ymd(2026, 10, 26), start, first)); // Monday
-        assert!(!holiday_label_shown(ymd(2026, 10, 18), start, first));
-        assert!(!holiday_label_shown(ymd(2026, 10, 21), start, first));
-        // A period that started before the grid is named on its first day.
+        assert!(holiday_label_shown(start, start));
+        assert!(holiday_label_shown(ymd(2026, 10, 19), start)); // Monday
+        assert!(holiday_label_shown(ymd(2026, 10, 26), start)); // Monday
+        assert!(!holiday_label_shown(ymd(2026, 10, 18), start));
+        assert!(!holiday_label_shown(ymd(2026, 10, 21), start));
+        // A period that started before the grid is named on the grid's
+        // first day, a Monday: January 2027's grid starts on 28 December.
         let noel = ymd(2026, 12, 19);
-        let jan_first = ymd(2026, 12, 28);
-        assert!(holiday_label_shown(jan_first, noel, jan_first));
+        let grid_first = month_grid(2027, 1)[0];
+        assert_eq!(grid_first, ymd(2026, 12, 28));
+        assert!(holiday_label_shown(grid_first, noel));
     }
 
     #[test]
