@@ -229,10 +229,12 @@ fn missing_families_html(names: &[&str]) -> String {
 
 /// A family shown (#622). In a view of several, what its chips wear — its
 /// colour (`data-accent`, the rule of `[data-accent]` pointing `--accent`
-/// at it) and its name, said to a screen reader since the selector above
-/// shows which colour is whose: never the colour alone (WCAG 1.4.1). A
-/// family that is not the active one, even alone on screen, is also
-/// carried in its chips' links.
+/// at it) and its name, said to a screen reader only, the selector above
+/// showing which colour is whose. On screen the colour is alone on the
+/// chip: an exception to DESIGN.md's rule of a name or an initial beside
+/// every colour (WCAG 1.4.1), arbitrated in the issue, not a conformance
+/// to it. A family that is not the active one, even alone on screen, is
+/// also carried in its chips' links.
 pub(crate) struct FamilyTag<'a> {
     gid: Uuid,
     name: &'a str,
@@ -1414,25 +1416,19 @@ mod tests {
         assert_eq!(titles(&merged), ["Seul"]);
     }
 
-    /// The grid as `body` draws it, from the pieces the tests hold.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_grid(
-        days: &[NaiveDate],
-        by_day: &BTreeMap<NaiveDate, Vec<&OccurrenceResponse>>,
-        focus_month: Option<u32>,
-        today: NaiveDate,
-        cap: Option<usize>,
-        caption: &str,
-        members: &[GroupMember],
-        marks: &BTreeMap<NaiveDate, DayMarks>,
-    ) -> String {
-        let cells = Cells {
+    /// What `body` hands the grid, from the pieces the tests hold, with no
+    /// family worn.
+    fn cells<'a>(
+        by_day: &'a BTreeMap<NaiveDate, Vec<&'a OccurrenceResponse>>,
+        members: &'a [GroupMember],
+        marks: &'a BTreeMap<NaiveDate, DayMarks<'a>>,
+    ) -> Cells<'a> {
+        Cells {
             by_day,
             members,
             marks,
             families: &[],
-        };
-        render_grid(days, &cells, focus_month, today, cap, caption)
+        }
     }
 
     fn summary(n: u128, name: &str, accent: &str) -> GroupSummary {
@@ -1552,7 +1548,7 @@ mod tests {
             )),
             "{html}"
         );
-        // Never the colour alone: the name is in the link's.
+        // The name rides with the colour for a screen reader, in the link's.
         assert_eq!(
             chip_name(&html),
             format!("{time} Piscine (Les Martin)"),
@@ -1877,15 +1873,13 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = draw_grid(
+        let html = render_grid(
             &week,
-            &by_day,
+            &cells(&by_day, &[], &BTreeMap::new()),
             None,
             day(1),
             None,
             "Semaine du 13 juillet",
-            &[],
-            &BTreeMap::new(),
         );
         assert!(html.starts_with(r#"<table class="cal">"#), "{html}");
         // Seven weekday headers, and seven cells in one row: a day with
@@ -1906,15 +1900,13 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         // 2026-07-27 (Monday) .. 2026-08-02: four July days, three August.
         let week: Vec<NaiveDate> = week_days(day(29));
-        let html = draw_grid(
+        let html = render_grid(
             &week,
-            &by_day,
+            &cells(&by_day, &[], &BTreeMap::new()),
             None,
             day(29),
             None,
             "Semaine du 27 juillet",
-            &[],
-            &BTreeMap::new(),
         );
         assert_eq!(html.matches("cal-day outside").count(), 0, "{html}");
     }
@@ -1923,15 +1915,13 @@ mod tests {
     fn the_month_grid_marks_today_and_the_days_of_the_neighbouring_months() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = draw_grid(
+        let html = render_grid(
             &days,
-            &by_day,
+            &cells(&by_day, &[], &BTreeMap::new()),
             Some(7),
             day(15),
             None,
             "juillet 2026",
-            &[],
-            &BTreeMap::new(),
         );
         assert_eq!(html.matches("cal-cell current").count(), 1, "{html}");
         // July 2026 starts on a Wednesday: two June days lead the grid, and
@@ -1961,15 +1951,13 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = draw_grid(
+        let html = render_grid(
             &days,
-            &by_day,
+            &cells(&by_day, &[], &BTreeMap::new()),
             Some(7),
             day(1),
             None,
             "juillet 2026",
-            &[],
-            &BTreeMap::new(),
         );
         assert!(
             html.contains(r#"<td class="cal-cell" id="j2026-07-15">"#),
@@ -2207,15 +2195,13 @@ mod tests {
         // weekdays and no month. The caption is the table's own name.
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = draw_grid(
+        let html = render_grid(
             &days,
-            &by_day,
+            &cells(&by_day, &[], &BTreeMap::new()),
             Some(7),
             day(15),
             None,
             "juillet 2026",
-            &[],
-            &BTreeMap::new(),
         );
         assert!(
             html.starts_with(r#"<table class="cal"><caption>juillet 2026</caption><thead>"#),
@@ -2227,15 +2213,13 @@ mod tests {
     fn the_caption_is_escaped_like_the_heading() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = draw_grid(
+        let html = render_grid(
             &week,
-            &by_day,
+            &cells(&by_day, &[], &BTreeMap::new()),
             None,
             day(1),
             None,
             "<b>",
-            &[],
-            &BTreeMap::new(),
         );
         assert!(html.contains("<caption>&lt;b&gt;</caption>"), "{html}");
     }
@@ -2244,15 +2228,13 @@ mod tests {
     fn every_weekday_header_heads_a_column() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = draw_grid(
+        let html = render_grid(
             &week,
-            &by_day,
+            &cells(&by_day, &[], &BTreeMap::new()),
             None,
             day(1),
             None,
             "x",
-            &[],
-            &BTreeMap::new(),
         );
         // Every `<th` but the one opening `<thead>` is a weekday header.
         assert_eq!(html.matches("<th").count(), 7 + 1, "{html}");
@@ -2714,15 +2696,13 @@ mod tests {
     fn a_national_day_is_a_head_line_of_its_cell_not_a_link_nor_a_chip() {
         let (grid, national) = october_2026();
         let marks = marks_by_day(&grid, &national);
-        let html = draw_grid(
+        let html = render_grid(
             &grid,
-            &BTreeMap::new(),
+            &cells(&BTreeMap::new(), &[], &marks),
             Some(10),
             ymd(2026, 1, 1),
             Some(3),
             "octobre 2026",
-            &[],
-            &marks,
         );
         let cell = grid_cell(&html, ymd(2026, 10, 25), &grid);
         // Under the number, before the chips; a paragraph, not an `<a>`.
@@ -2742,15 +2722,13 @@ mod tests {
     fn a_school_holiday_day_wears_the_band_and_names_it_in_words() {
         let (grid, national) = october_2026();
         let marks = marks_by_day(&grid, &national);
-        let html = draw_grid(
+        let html = render_grid(
             &grid,
-            &BTreeMap::new(),
+            &cells(&BTreeMap::new(), &[], &marks),
             Some(10),
             ymd(2026, 1, 1),
             Some(3),
             "octobre 2026",
-            &[],
-            &marks,
         );
         // Written out on its first day: in the phone's list.
         let first = grid_cell(&html, ymd(2026, 10, 17), &grid);
@@ -2784,15 +2762,13 @@ mod tests {
         let grid = month_grid(2026, 7);
         let national = [one_day(ymd(2026, 7, 14), "public_holiday", "<b>Fête</b>")];
         let marks = marks_by_day(&grid, &national);
-        let html = draw_grid(
+        let html = render_grid(
             &grid,
-            &BTreeMap::new(),
+            &cells(&BTreeMap::new(), &[], &marks),
             Some(7),
             ymd(2026, 1, 1),
             None,
             "x",
-            &[],
-            &marks,
         );
         assert!(html.contains("&lt;b&gt;Fête&lt;/b&gt;"), "{html}");
         assert!(!html.contains("<b>"), "{html}");
@@ -2925,15 +2901,13 @@ mod tests {
         )
         .await;
         let marks = marks_by_day(&grid, &national);
-        draw_grid(
+        render_grid(
             &grid,
-            &BTreeMap::new(),
+            &cells(&BTreeMap::new(), &[], &marks),
             Some(10),
             ymd(2026, 1, 1),
             Some(3),
             "octobre 2026",
-            &[],
-            &marks,
         )
     }
 

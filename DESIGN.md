@@ -607,8 +607,11 @@ Avec une seule famille, pas de formulaire.
 Dans une vue de plusieurs familles, chaque pastille d'événement porte **sa
 famille** : sa couleur en liseré gauche (`.chip[data-accent]`, `--s1` en
 `--accent`, la règle `[data-accent]` de #538 pointant `--accent` sur la
-teinte) et son nom en `.sr-only` à la fin du nom du lien — jamais la couleur
-seule (WCAG 1.4.1), le formulaire au-dessus disant quelle couleur est à qui.
+teinte) et son nom en `.sr-only` à la fin du nom du lien, le formulaire
+au-dessus disant quelle couleur est à qui. À l'écran, le liseré est donc une
+couleur sans nom à côté : **exception** à la règle « la couleur n'est jamais
+le seul porteur d'information » (WCAG 1.4.1, voir les teintes des membres),
+arbitrée dans #622, et non conformité à cette règle.
 Le panneau du jour d'un PC écrit le nom en clair avant les personnes. La
 teinte du membre reste le fond de la pastille. Une famille dont les
 événements n'ont pas pu être lus est nommée dans une notice d'erreur ; les
