@@ -39,7 +39,7 @@ pub fn active_group_id_from_headers(headers: &HeaderMap) -> Option<Uuid> {
 /// marked `HttpOnly` anyway since no client-side JS needs it (apps/web is
 /// SSR-only), plus `SameSite=Lax` matching the session cookie's posture.
 pub fn set_active_group_cookie(group_id: Uuid) -> String {
-    format!("{ACTIVE_GROUP_COOKIE}={group_id}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax")
+    format!("{ACTIVE_GROUP_COOKIE}={group_id}; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Lax")
 }
 
 /// Resolves the preference against the groups the user actually belongs
@@ -212,8 +212,8 @@ fn joined(ids: &[Uuid], separator: &str) -> String {
 
 /// The `Set-Cookie` value remembering the selection for a year, or removing
 /// the cookie when the selection is back to the default. Same posture as
-/// the active family's: a UI preference, `HttpOnly` since no script reads
-/// it, `SameSite=Lax`.
+/// the theme's (`theme.rs`): a UI preference, `Secure`, `HttpOnly` since
+/// no script reads it, `SameSite=Lax`.
 pub fn families_cookie(shown: &ShownFamilies) -> String {
     // `.` and not `,` between ids: a comma is no cookie-octet (RFC 6265).
     let (value, max_age) = match shown {
@@ -221,7 +221,7 @@ pub fn families_cookie(shown: &ShownFamilies) -> String {
         ShownFamilies::All => (ALL_FAMILIES.to_string(), 31_536_000),
         ShownFamilies::Only(ids) => (joined(ids, "."), 31_536_000),
     };
-    format!("{AGENDA_FAMILIES_COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; SameSite=Lax")
+    format!("{AGENDA_FAMILIES_COOKIE}={value}; Path=/; Max-Age={max_age}; Secure; HttpOnly; SameSite=Lax")
 }
 
 tokio::task_local! {
@@ -585,18 +585,18 @@ mod tests {
         assert_eq!(
             only,
             format!(
-                "agenda_familles={}.{}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax",
+                "agenda_familles={}.{}; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Lax",
                 id(1),
                 id(2)
             )
         );
         assert_eq!(
             families_cookie(&ShownFamilies::All),
-            "agenda_familles=toutes; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
+            "agenda_familles=toutes; Path=/; Max-Age=31536000; Secure; HttpOnly; SameSite=Lax"
         );
         assert_eq!(
             families_cookie(&ShownFamilies::Default),
-            "agenda_familles=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+            "agenda_familles=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax"
         );
         // What it sets is what it reads back.
         let value = only.split(';').next().unwrap();
