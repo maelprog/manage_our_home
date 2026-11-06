@@ -1,6 +1,8 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-11-06 (application Android : permissions, aucun SDK tiers, APK
+diffusé en release GitHub, #666) ;
 2026-11-06 (limites de débit en base, `rate_limit_log` et
 `csp_report_throttle` : pseudonymes HMAC et horaires, #602) ;
 2026-11-04 (accès au serveur de test par le VPN Tailscale, coordinateur
@@ -369,6 +371,43 @@ ligne.
 | — | Accès au serveur de test (VPN Tailscale, #684) | pour chaque personne dont un appareil est inscrit au tailnet du staging (famille, administration) : adresse et nom de son compte Google, groupe d'accès (`famille` ou `admin`) ; pour chaque appareil : nom, nom d'hôte, système, version du client, *user agent*, langue, adresse IP publique, clé publique, adresse dans le tailnet, dates et heures de connexion, journaux de ses connexions avec les autres appareils (ouverture, fermeture, volumes) | Restreindre l'accès au serveur de test aux appareils inscrits, sans port ouvert sur la box | Intérêt légitime (sécurité du serveur de test) | Appareil : tant qu'il est inscrit ; il perd l'accès 90 jours après sa dernière authentification, ou aussitôt retiré de la console. Journal d'audit de la configuration : 90 jours chez Tailscale, non réglable. Journaux des connexions entre appareils (Inter-Node Traffic Logs, journaux des clients envoyés à `log.tailscale.com`) : durée inconnue, non publiée. Après le retrait d'un appareil, Tailscale ne donne pas de durée (voir « Sous-traitants (destinataires) ») | Tailscale (coordinateur, hors UE : voir « Transferts hors de l'Union européenne ») ; Google (authentification de la personne, pour son propre compte) |
 | — | Journaux techniques (transverse) | ce que les conteneurs du cluster de production écrivent sur leur sortie — api, web, Postgres, MinIO, Traefik et les composants de la plateforme : messages de fonctionnement et d'erreur, horodatés, rattachés à leur namespace, leur pod et leur conteneur (#437). Les applications n'y écrivent pas l'adresse IP des clients, mais un message peut citer l'identifiant d'un compte ou d'un groupe, ou une valeur reprise d'une erreur (celle du relais email ou de Postgres, par exemple) ; ceux de Traefik et de Postgres peuvent contenir une adresse IP | Diagnostiquer une panne, détecter et comprendre un incident de sécurité | Intérêt légitime (fonctionnement et sécurité du service) | 14 jours dans Loki (`retention_period: 336h`, `platform/components/observability/loki.yaml` de la branche de déploiement), après quoi son compacteur les supprime à son passage suivant, dans les heures qui suivent ; le nœud garde aussi les derniers journaux de chaque conteneur jusqu'à leur rotation par kubelet. La purge d'un compte ne les touche pas : ils s'effacent à ce terme | Aucun tiers : Loki tourne dans le cluster, sur le VPS (voir « Hébergeur du VPS ») |
 | 12 | RGPD (export/suppression) | export à la demande (Art. 20), demande/annulation de suppression (Art. 17) | Exercice des droits RGPD | Obligation légale | L'export n'est pas persisté côté serveur (généré à la demande, retourné directement) | Aucun tiers |
+
+## Application Android
+
+L'application Android (#665, `apps/mobile/`) n'est pas un traitement à
+part : c'est une coquille Capacitor dont la WebView ouvre le site à son
+adresse https (modèle A de `docs/front-stack-study.md` § 2). Les données
+qu'elle montre et saisit sont celles des catégories ci-dessus, servies et
+conservées par le même serveur. L'APK n'embarque aucun SDK tiers
+d'analytics, de publicité ni de rapport de plantage : ses seules
+dépendances sont Capacitor (`@capacitor/android`, `@capacitor/app`) et les
+bibliothèques AndroidX (`apps/mobile/package.json`,
+`apps/mobile/android/app/build.gradle`), et il ne contacte que l'origine du
+site. Diffusé signé, en release GitHub, hors Play Store (#666,
+`.github/workflows/mobile-release.yml`) ; la variante `staging`, qui ouvre
+le serveur de test, n'est jamais publiée.
+
+| Permission (manifeste) | Usage | Demandée à la personne |
+|---|---|---|
+| `INTERNET` | ouvrir le site | non : accordée à l'installation |
+| `CAMERA` | photographier le code-barres d'un article de stock (ligne 3) ; la photo suit le chemin du navigateur, lue sans être conservée | oui, au premier usage ; refusable, le reste fonctionne sans |
+| `fr.watallo.mhome.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | permission interne ajoutée par AndroidX (`androidx.core`), propre à l'application : aucune autre application ne peut l'obtenir ; aucune donnée | non |
+
+Notifications (`POST_NOTIFICATIONS`) et alarmes exactes : pas encore
+demandées ; elles viennent avec les rappels locaux (#668), qui compléteront
+ce tableau. Ni position, ni contacts, ni stockage partagé, ni micro.
+
+La session est un cookie de la WebView, propre à l'application.
+`allowBackup="false"` et `dataExtractionRules` (tous les domaines exclus)
+la tiennent hors de la sauvegarde Android et du transfert d'appareil
+(`apps/mobile/android/app/src/main/AndroidManifest.xml`).
+
+Le téléchargement de l'APK passe par GitHub (GitHub, Inc., États-Unis),
+qui voit l'adresse IP et le *user agent* de qui le télécharge ; le service
+n'en reçoit rien. [qualification de ce flux et mécanisme de transfert —
+à établir avant la diffusion aux familles]. Play Protect et Android System
+WebView, composants de Google sur le téléphone, transmettent à Google selon
+les réglages du téléphone, hors du contrôle de l'application.
 
 ## Droit à l'effacement — modalités de purge
 
