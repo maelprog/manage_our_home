@@ -457,13 +457,11 @@ fn render_grid(
                 Some(m) if !m.holidays.is_empty() => " hol",
                 _ => "",
             };
-            let marks_line = day_marks
-                .map(|m| marks_html(m, *day))
-                .unwrap_or_default();
+            let marks_line = day_marks.map(|m| marks_html(m, *day)).unwrap_or_default();
             // The mini grid's target on a phone (#675): only a day the
             // list shows is one — an event, or a national day written out.
-            let listed = !occs.is_empty()
-                || day_marks.is_some_and(|m| !shown_labels(m, *day).is_empty());
+            let listed =
+                !occs.is_empty() || day_marks.is_some_and(|m| !shown_labels(m, *day).is_empty());
             let id = if listed {
                 format!(r#" id="{}""#, day_anchor(*day))
             } else {
@@ -591,7 +589,10 @@ fn empty_state(
     load_error: bool,
 ) -> String {
     let listed = |d: &NaiveDate| {
-        by_day.contains_key(d) || marks.get(d).is_some_and(|m| !shown_labels(m, *d).is_empty())
+        by_day.contains_key(d)
+            || marks
+                .get(d)
+                .is_some_and(|m| !shown_labels(m, *d).is_empty())
     };
     if load_error || days.iter().any(listed) {
         return String::new();
@@ -1324,7 +1325,16 @@ mod tests {
         let occs = [occurrence(9, "Dentiste")];
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
-        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, &BTreeMap::new(), false, false), "");
+        assert_eq!(
+            empty_state(
+                &month_grid(2026, 7),
+                &by_day,
+                &BTreeMap::new(),
+                false,
+                false
+            ),
+            ""
+        );
     }
 
     #[test]
@@ -1361,7 +1371,10 @@ mod tests {
         // The error notice (#455) already says so; "Rien de prévu" under it
         // would say something false.
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
-        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, &BTreeMap::new(), false, true), "");
+        assert_eq!(
+            empty_state(&month_grid(2026, 7), &by_day, &BTreeMap::new(), false, true),
+            ""
+        );
     }
 
     // -- what the grid is called (#145) ----------------------------------
