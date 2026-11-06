@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!--
+  The app's name is not here: app/build.gradle takes it from the synced
+  capacitor.config.json (appName), which capacitor.config.ts takes from
+  apps/web/src/brand.rs, the name the web manifest gives.
+-->
+<resources>
+    <string name="package_name">fr.watallo.mhome</string>
+    <string name="custom_url_scheme">fr.watallo.mhome</string>
+</resources>

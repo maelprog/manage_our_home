@@ -10,5 +10,9 @@ target/
 .claude/orchestrator-history.md
 .playwright-mcp/
 
+# Le paquet npm de la coquille Android (#665) ; ce qu'android/ produit ou
+# recopie à chaque `npx cap sync` est ignoré par apps/mobile/android/.gitignore.
+apps/mobile/node_modules/
+
 # Guides locaux (propres à la machine)
 docs/guides/

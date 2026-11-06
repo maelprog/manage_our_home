@@ -18,6 +18,7 @@ mod heap_count;
 mod icons;
 mod layout;
 mod lenient_query;
+mod mobile_app;
 mod return_to;
 mod routes;
 mod state;

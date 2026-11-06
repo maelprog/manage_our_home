@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Whom the app trusts for TLS (#665): the authorities of the system, and no
+  one else. Not those a user installs in the phone's settings (Android's
+  default since 7, written out here so it does not hang on the target SDK),
+  and none shipped in the APK: the staging server, https://staging.watallo.fr,
+  holds a Let's Encrypt certificate since #683, as production will. No plain
+  http either, to any host. Both flavours, staging and prod, use this file.
+  scripts/check-shell.test.mjs holds it to all of that.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

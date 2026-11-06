@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher icon of Android 8 and later: the maskable icon of the web
+  manifest (apps/web/src/brand/icon-maskable-512.png, copied into the build
+  by the Gradle task copyBrandIcons), over the accent. That image is drawn
+  for a mask that keeps a circle of 40 % of its side in radius; an adaptive
+  icon keeps one of 33 dp out of 108. Inset by 12 % on each side, the image
+  is 82 dp wide and its safe circle 32.8 dp in radius, inside the 33.
+  ic_launcher_round.xml is the same file.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/brand_theme"/>
+    <foreground>
+        <inset android:drawable="@drawable/brand_maskable" android:inset="12%"/>
+    </foreground>
+</adaptive-icon>

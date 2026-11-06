@@ -72,6 +72,38 @@ jobs:
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit
 
+  # The Android shell, apps/mobile (#665): the npm graph Capacitor brings,
+  # audited like the Rust one is above, with no ignore list
+  # (.claude/CLAUDE.md, Dependency policy); the shell's own checks (trust
+  # anchors, targets, the name and User-Agent marker taken from apps/web);
+  # then the staging APK, built the way apps/mobile/README.md tells a
+  # person to. The runner image carries the Android SDK (ANDROID_HOME);
+  # what the build lacks of it, the Android Gradle plugin downloads.
+  mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      # Capacitor 8 builds with Java 21 (its capacitor.build.gradle sets
+      # sourceCompatibility 21).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm test
+      - run: npx cap sync android
+      - run: ./gradlew assembleStagingDebug --no-daemon
+        working-directory: apps/mobile/android
+
   # The handlers under test connect as a `NOSUPERUSER NOBYPASSRLS` role
   # that owns no table, the role apps/api/README.md prescribes for
   # `DATABASE_URL` (#213, #311). Served as `postgres`, a superuser, they
