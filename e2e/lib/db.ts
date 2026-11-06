@@ -298,6 +298,34 @@ export async function fetchEventBounds(
   }
 }
 
+/**
+ * Puts a school holiday period in apps/api's cache (`school_holidays`,
+ * #563), as `jobs::school_holidays` would from the Éducation nationale's
+ * open data. The suite cannot count on that job: it reaches out to
+ * data.education.gouv.fr, which a test must not depend on. A row already
+ * there — from the job or an earlier test — is left as it is.
+ */
+export async function seedSchoolHoliday(period: {
+  zone: "A" | "B" | "C";
+  label: string;
+  startsOn: string; // YYYY-MM-DD, first day off
+  endsOn: string; // YYYY-MM-DD, last day off, included
+  schoolYear: string; // e.g. 2026-2027
+}): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    await client.query(
+      `INSERT INTO school_holidays (zone, label, starts_on, ends_on, school_year)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (zone, starts_on, label) DO NOTHING`,
+      [period.zone, period.label, period.startsOn, period.endsOn, period.schoolYear],
+    );
+  } finally {
+    await client.end();
+  }
+}
+
 function requireDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {

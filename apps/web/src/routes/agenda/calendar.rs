@@ -61,6 +61,19 @@
 //! it does not undo that refusal: what #71 would not pay was a list growing
 //! with what the family has stored. The mini grid holds 42 days at most and
 //! counts occurrences without listing them.
+//!
+//! # The national days (#565)
+//!
+//! A third call beside the events and the roster reads the grid's national
+//! days (`GET /groups/:gid/national-days`): public holidays, clock changes,
+//! Mother's and Father's Day, and the school holidays of the family's zone.
+//! Each one-day kind is a head line of its day (`.nat`), between its number
+//! and its chips, not a link; a school holiday is a band (`.hol`) on every
+//! day it covers, its name written on its first day, the grid's first and
+//! each Monday, and said to a screen reader on the others. A day with a
+//! name written out joins a phone's list and is a link of the mini grid.
+//! The call is decoration, like the roster: when it fails, the agenda
+//! renders without national days.
 
 use std::collections::BTreeMap;
 
@@ -69,7 +82,9 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::{Datelike, NaiveDate};
 use leptos::prelude::*;
-use manage_our_home_shared::dto::agenda::OccurrenceResponse;
+use manage_our_home_shared::dto::agenda::{
+    NationalDayList, NationalDayResponse, OccurrenceResponse,
+};
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{month_grid, week_days};
 
@@ -80,8 +95,9 @@ use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::{
-    agenda_cookie, family_context, fmt_paris, occurrences_from_response, paris_local_to_utc,
-    private_mark, read_or_log, service_unavailable_page, today_paris, DISPLAY_TZ,
+    agenda_cookie, family_context, fmt_paris, json_from_response, occurrences_from_response,
+    paris_local_to_utc, private_mark, read_or_log, service_unavailable_page, today_paris,
+    DISPLAY_TZ,
 };
 
 const FR_MONTHS: [&str; 12] = [
@@ -209,10 +225,15 @@ pub async fn get(
     // The roster is read alongside, for the chips' tints and initials
     // (#525). It is decoration: a roster that cannot be read leaves every
     // chip neutral rather than taking the page down.
-    let (events, roster) = tokio::join!(
+    //
+    // The national days of the grid (#565) are read alongside too, and are
+    // decoration as well: a call that fails renders the agenda without them.
+    let (events, roster, national) = tokio::join!(
         api_request_auth(&state, reqwest::Method::GET, &path, cookie.as_deref(), None,),
         fetch_group_detail(&state, cookie.as_deref(), fam.gid),
+        fetch_national_days(&state, cookie.as_deref(), fam.gid, *first, *last),
     );
+    let marks = marks_by_day(&days, &national);
     let members: Vec<GroupMember> = roster.ok().flatten().map(|g| g.members).unwrap_or_default();
     let (occurrences, load_error): (Vec<OccurrenceResponse>, bool) = match events {
         Ok(resp) => match read_or_log(
@@ -253,7 +274,16 @@ pub async fn get(
     // The page's `<h1>` and the grid's `<caption>` (#145) say the same
     // thing, so they are computed once.
     let title = view_title(is_week, focus);
-    let grid_html = render_grid(&days, &by_day, focus_month, today, cap, &title, &members);
+    let grid_html = render_grid(
+        &days,
+        &by_day,
+        focus_month,
+        today,
+        cap,
+        &title,
+        &members,
+        &marks,
+    );
     let panel_html = day_panel(
         focus,
         by_day.get(&focus).map(|v| v.as_slice()).unwrap_or(&[]),
@@ -263,7 +293,7 @@ pub async fn get(
     let notice_html = notices_html(query.notice.as_deref(), load_error);
     // The head of a phone's list (#675): the period at a glance, then what
     // the list says when it is empty.
-    let mini_html = render_mini(&days, &by_day, focus_month, today, &title)
+    let mini_html = render_mini(&days, &by_day, focus_month, today, &title, &marks)
         + &empty_state(&days, &by_day, is_week, load_error);
 
     let body = view! {
@@ -394,6 +424,10 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str) -> String {
 /// carries days it did not ask for, because it is built of whole weeks, but
 /// every day of a week view is the week the reader asked for — muting the
 /// three that fall after the 31st would say something false about them.
+///
+/// `marks` are the national days of the grid (#565, `marks_by_day`): a
+/// head line under a day's number, and a band on a school holiday.
+#[allow(clippy::too_many_arguments)]
 fn render_grid(
     days: &[NaiveDate],
     by_day: &BTreeMap<NaiveDate, Vec<&OccurrenceResponse>>,
@@ -402,7 +436,9 @@ fn render_grid(
     cap: Option<usize>,
     caption: &str,
     members: &[GroupMember],
+    marks: &BTreeMap<NaiveDate, DayMarks>,
 ) -> String {
+    let grid_first = days.first().copied().unwrap_or(today);
     let headers: String = FR_WEEKDAYS
         .iter()
         .map(|d| format!(r#"<th scope="col">{d}</th>"#))
@@ -416,17 +452,28 @@ fn render_grid(
             let today_class = if *day == today { " current" } else { "" };
             let outside_class = if in_focus { "" } else { " outside" };
             let occs = by_day.get(day).map(|v| v.as_slice()).unwrap_or(&[]);
+            let day_marks = marks.get(day);
+            // A school holiday's band (#565), named in the cell's text.
+            let hol_class = match day_marks {
+                Some(m) if !m.holidays.is_empty() => " hol",
+                _ => "",
+            };
+            let marks_line = day_marks
+                .map(|m| marks_html(m, *day, grid_first))
+                .unwrap_or_default();
             // The mini grid's target on a phone (#675): only a day the
-            // list shows is one.
-            let id = if occs.is_empty() {
-                String::new()
-            } else {
+            // list shows is one — an event, or a national day written out.
+            let listed = !occs.is_empty()
+                || day_marks.is_some_and(|m| !shown_labels(m, *day, grid_first).is_empty());
+            let id = if listed {
                 format!(r#" id="{}""#, day_anchor(*day))
+            } else {
+                String::new()
             };
             let chips = render_chips(occs, cap, *day, members);
             rows.push_str(&format!(
-                r#"<td class="cal-cell{today_class}"{id}>
-<div class="cal-day{outside_class}">{num}</div>{chips}</td>"#,
+                r#"<td class="cal-cell{today_class}{hol_class}"{id}>
+<div class="cal-day{outside_class}">{num}</div>{marks_line}{chips}</td>"#,
                 today_class = today_class,
                 outside_class = outside_class,
                 num = day.day(),
@@ -481,7 +528,9 @@ fn render_mini(
     focus_month: Option<u32>,
     today: NaiveDate,
     title: &str,
+    marks: &BTreeMap<NaiveDate, DayMarks>,
 ) -> String {
+    let grid_first = days.first().copied().unwrap_or(today);
     let headers: String = FR_LONG_WEEKDAYS
         .iter()
         .map(|d| format!(r#"<th scope="col" aria-label="{d}">{}</th>"#, &d[..1]))
@@ -498,14 +547,27 @@ fn render_mini(
                 (true, true) => r#" class="outside current" aria-current="date""#,
             };
             let n = day.day();
-            let inner = match by_day.get(day).map(Vec::len) {
-                Some(count) if count > 0 => format!(
+            // What the day carries, in words (WCAG 1.4.1): its national
+            // days written out (#565), then its count of events.
+            let mut said: Vec<String> = marks
+                .get(day)
+                .map(|m| shown_labels(m, *day, grid_first))
+                .unwrap_or_default()
+                .into_iter()
+                .map(html_escape)
+                .collect();
+            if let Some(count) = by_day.get(day).map(Vec::len).filter(|c| *c > 0) {
+                said.push(events_label(count));
+            }
+            let inner = if said.is_empty() {
+                n.to_string()
+            } else {
+                format!(
                     r##"<a href="#{anchor}">{n}<span class="sr-only"> {month}, {label}</span></a>"##,
                     anchor = day_anchor(*day),
                     month = FR_MONTHS[(day.month() - 1) as usize],
-                    label = events_label(count),
-                ),
-                _ => n.to_string(),
+                    label = said.join(", "),
+                )
             };
             rows.push_str(&format!("<td{attrs}>{inner}</td>"));
         }
@@ -656,6 +718,115 @@ pub(crate) fn render_chips(
         ));
     }
     out
+}
+
+// -- the national days (#565) -------------------------------------------
+
+/// The `kind` of a school holiday period (apps/api, `SCHOOL_HOLIDAY`).
+const SCHOOL_HOLIDAY: &str = "school_holiday";
+
+/// What a day of the grid carries besides the family's events (#565):
+/// the labels of its one-day national days — public holiday, clock change,
+/// Mother's or Father's Day, and any kind apps/api adds later — and the
+/// school holiday periods covering it, each with its first day.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DayMarks<'a> {
+    days: Vec<&'a str>,
+    holidays: Vec<(&'a str, NaiveDate)>,
+}
+
+/// The national days of `grid`, by day. A school holiday marks every day
+/// of the grid from its `date` to its `end`, both included — a period that
+/// starts before the grid still covers its first days.
+fn marks_by_day<'a>(
+    grid: &[NaiveDate],
+    national: &'a [NationalDayResponse],
+) -> BTreeMap<NaiveDate, DayMarks<'a>> {
+    let mut marks: BTreeMap<NaiveDate, DayMarks<'a>> = BTreeMap::new();
+    for n in national {
+        if n.kind == SCHOOL_HOLIDAY {
+            let end = n.end.unwrap_or(n.date);
+            for day in grid.iter().filter(|d| (n.date..=end).contains(*d)) {
+                marks
+                    .entry(*day)
+                    .or_default()
+                    .holidays
+                    .push((n.label.as_str(), n.date));
+            }
+        } else if grid.contains(&n.date) {
+            marks.entry(n.date).or_default().days.push(n.label.as_str());
+        }
+    }
+    marks
+}
+
+/// Whether a school holiday's label is written on `day`, rather than said
+/// to a screen reader only: on the period's first day, on the grid's first
+/// day and on every Monday — so each row of the band is named once, and
+/// the other days do not repeat it.
+fn holiday_label_shown(day: NaiveDate, starts: NaiveDate, grid_first: NaiveDate) -> bool {
+    day == starts || day == grid_first || day.weekday() == chrono::Weekday::Mon
+}
+
+/// The labels a day shows in writing — the ones that put it in a phone's
+/// list and make it a link of the mini grid.
+fn shown_labels<'a>(marks: &DayMarks<'a>, day: NaiveDate, grid_first: NaiveDate) -> Vec<&'a str> {
+    let holidays = marks
+        .holidays
+        .iter()
+        .filter(|(_, starts)| holiday_label_shown(day, *starts, grid_first))
+        .map(|(label, _)| *label);
+    marks.days.iter().copied().chain(holidays).collect()
+}
+
+/// A day's head line (#565), between its number and its chips: each label
+/// a `.nat` paragraph — not a link, not a chip — and a school holiday that
+/// is not written that day an `.sr-only` mention.
+fn marks_html(marks: &DayMarks, day: NaiveDate, grid_first: NaiveDate) -> String {
+    let mut out: String = marks
+        .days
+        .iter()
+        .map(|label| format!(r#"<p class="nat">{}</p>"#, html_escape(label)))
+        .collect();
+    for (label, starts) in &marks.holidays {
+        let label = html_escape(label);
+        out.push_str(&if holiday_label_shown(day, *starts, grid_first) {
+            format!(r#"<p class="nat">{label}</p>"#)
+        } else {
+            format!(r#"<span class="sr-only">{label}</span>"#)
+        });
+    }
+    out
+}
+
+/// The national days an answer carries. Anything but a readable 200 is
+/// none: they are decoration, and the agenda renders without them (#565).
+fn national_days_from_response(
+    status: reqwest::StatusCode,
+    body: serde_json::Value,
+) -> Vec<NationalDayResponse> {
+    json_from_response::<NationalDayList>(status, body)
+        .map(|l| l.days)
+        .unwrap_or_default()
+}
+
+/// `GET /groups/:gid/national-days` for the days of the grid, `[first,
+/// last]`. A failed call, like an unreadable answer, is no national day.
+async fn fetch_national_days(
+    state: &AppState,
+    cookie: Option<&str>,
+    group_id: uuid::Uuid,
+    first: NaiveDate,
+    last: NaiveDate,
+) -> Vec<NationalDayResponse> {
+    let path = format!("/groups/{group_id}/national-days?from={first}&to={last}");
+    match api_request_auth(state, reqwest::Method::GET, &path, cookie, None).await {
+        Ok(resp) => national_days_from_response(resp.status, resp.body),
+        Err(error) => {
+            tracing::warn!(%group_id, %error, "could not read the national days");
+            Vec::new()
+        }
+    }
 }
 
 /// "Mardi 14 juillet": the day panel's heading.
@@ -880,6 +1051,7 @@ mod tests {
             None,
             "Semaine du 13 juillet",
             &[],
+            &BTreeMap::new(),
         );
         assert!(html.starts_with(r#"<table class="cal">"#), "{html}");
         // Seven weekday headers, and seven cells in one row: a day with
@@ -908,6 +1080,7 @@ mod tests {
             None,
             "Semaine du 27 juillet",
             &[],
+            &BTreeMap::new(),
         );
         assert_eq!(html.matches("cal-day outside").count(), 0, "{html}");
     }
@@ -916,7 +1089,16 @@ mod tests {
     fn the_month_grid_marks_today_and_the_days_of_the_neighbouring_months() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026", &[]);
+        let html = render_grid(
+            &days,
+            &by_day,
+            Some(7),
+            day(15),
+            None,
+            "juillet 2026",
+            &[],
+            &BTreeMap::new(),
+        );
         assert_eq!(html.matches("cal-cell current").count(), 1, "{html}");
         // July 2026 starts on a Wednesday: two June days lead the grid, and
         // the six weeks run into August.
@@ -945,7 +1127,16 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(&days, &by_day, Some(7), day(1), None, "juillet 2026", &[]);
+        let html = render_grid(
+            &days,
+            &by_day,
+            Some(7),
+            day(1),
+            None,
+            "juillet 2026",
+            &[],
+            &BTreeMap::new(),
+        );
         assert!(
             html.contains(r#"<td class="cal-cell" id="j2026-07-15">"#),
             "{html}"
@@ -969,7 +1160,14 @@ mod tests {
     fn the_mini_grid_shows_every_day_of_the_month_with_its_number() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_mini(&days, &by_day, Some(7), day(1), "juillet 2026");
+        let html = render_mini(
+            &days,
+            &by_day,
+            Some(7),
+            day(1),
+            "juillet 2026",
+            &BTreeMap::new(),
+        );
         // A phone-only table: out of sight, and of the accessibility tree,
         // on a PC.
         assert!(
@@ -995,7 +1193,14 @@ mod tests {
     #[test]
     fn the_mini_grid_heads_its_columns_with_the_initials_of_the_days() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
-        let html = render_mini(&week_days(day(15)), &by_day, None, day(1), "x");
+        let html = render_mini(
+            &week_days(day(15)),
+            &by_day,
+            None,
+            day(1),
+            "x",
+            &BTreeMap::new(),
+        );
         // The letter is what fits a seventh of a phone; the name is what
         // tells Mardi from Mercredi.
         assert!(
@@ -1009,7 +1214,14 @@ mod tests {
     fn the_mini_grid_of_a_week_is_one_row_and_mutes_nothing() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         // 2026-07-27 .. 2026-08-02: four July days, three August.
-        let html = render_mini(&week_days(day(29)), &by_day, None, day(1), "x");
+        let html = render_mini(
+            &week_days(day(29)),
+            &by_day,
+            None,
+            day(1),
+            "x",
+            &BTreeMap::new(),
+        );
         assert_eq!(html.matches("<td").count(), 7, "{html}");
         assert!(!html.contains("outside"), "{html}");
     }
@@ -1018,7 +1230,14 @@ mod tests {
     fn today_is_marked_in_the_mini_grid_by_class_and_by_aria_current() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_mini(&days, &by_day, Some(7), day(15), "juillet 2026");
+        let html = render_mini(
+            &days,
+            &by_day,
+            Some(7),
+            day(15),
+            "juillet 2026",
+            &BTreeMap::new(),
+        );
         assert_eq!(
             mini_cell(&html, 15),
             r#"<td class="current" aria-current="date">15</td>"#
@@ -1032,7 +1251,14 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_mini(&days, &by_day, Some(7), day(1), "juillet 2026");
+        let html = render_mini(
+            &days,
+            &by_day,
+            Some(7),
+            day(1),
+            "juillet 2026",
+            &BTreeMap::new(),
+        );
         // An anchor, no `view=day`, no script. Its name says the day and
         // that it carries something — not the hue of a dot alone (WCAG
         // 1.4.1): "15 juillet, 2 événements".
@@ -1052,7 +1278,14 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(june_30, occs.iter().collect())].into_iter().collect();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_mini(&days, &by_day, Some(7), day(1), "juillet 2026");
+        let html = render_mini(
+            &days,
+            &by_day,
+            Some(7),
+            day(1),
+            "juillet 2026",
+            &BTreeMap::new(),
+        );
         assert!(
             html.contains(r##"<td class="outside"><a href="#j2026-06-30">30<span class="sr-only"> juin, 1 événement</span></a></td>"##),
             "{html}"
@@ -1099,7 +1332,16 @@ mod tests {
         // weekdays and no month. The caption is the table's own name.
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let days: Vec<NaiveDate> = month_grid(2026, 7);
-        let html = render_grid(&days, &by_day, Some(7), day(15), None, "juillet 2026", &[]);
+        let html = render_grid(
+            &days,
+            &by_day,
+            Some(7),
+            day(15),
+            None,
+            "juillet 2026",
+            &[],
+            &BTreeMap::new(),
+        );
         assert!(
             html.starts_with(r#"<table class="cal"><caption>juillet 2026</caption><thead>"#),
             "{html}"
@@ -1110,7 +1352,16 @@ mod tests {
     fn the_caption_is_escaped_like_the_heading() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(&week, &by_day, None, day(1), None, "<b>", &[]);
+        let html = render_grid(
+            &week,
+            &by_day,
+            None,
+            day(1),
+            None,
+            "<b>",
+            &[],
+            &BTreeMap::new(),
+        );
         assert!(html.contains("<caption>&lt;b&gt;</caption>"), "{html}");
     }
 
@@ -1118,7 +1369,16 @@ mod tests {
     fn every_weekday_header_heads_a_column() {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let week: Vec<NaiveDate> = (13..=19).map(day).collect();
-        let html = render_grid(&week, &by_day, None, day(1), None, "x", &[]);
+        let html = render_grid(
+            &week,
+            &by_day,
+            None,
+            day(1),
+            None,
+            "x",
+            &[],
+            &BTreeMap::new(),
+        );
         // Every `<th` but the one opening `<thead>` is a weekday header.
         assert_eq!(html.matches("<th").count(), 7 + 1, "{html}");
         assert_eq!(html.matches(r#"<th scope="col">"#).count(), 7, "{html}");
@@ -1441,6 +1701,390 @@ mod tests {
             "{html}"
         );
         assert!(!rows[1].contains("Privé"), "{html}");
+    }
+
+    // -- the national days (#565) --------------------------------------
+
+    fn ymd(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn one_day(date: NaiveDate, kind: &str, label: &str) -> NationalDayResponse {
+        NationalDayResponse {
+            date,
+            kind: kind.to_string(),
+            label: label.to_string(),
+            end: None,
+        }
+    }
+
+    fn period(from: NaiveDate, to: NaiveDate, label: &str) -> NationalDayResponse {
+        NationalDayResponse {
+            date: from,
+            kind: "school_holiday".to_string(),
+            label: label.to_string(),
+            end: Some(to),
+        }
+    }
+
+    /// October 2026's grid (Monday 28 September .. Sunday 8 November), with
+    /// the clock change of the 25th and the zone B Toussaint, 17 October to
+    /// 1 November, and All Saints' Day.
+    fn october_2026() -> (Vec<NaiveDate>, Vec<NationalDayResponse>) {
+        let national = vec![
+            period(
+                ymd(2026, 10, 17),
+                ymd(2026, 11, 1),
+                "Vacances de la Toussaint",
+            ),
+            one_day(
+                ymd(2026, 10, 25),
+                "clock_change",
+                "Passage à l'heure d'hiver",
+            ),
+            one_day(ymd(2026, 11, 1), "public_holiday", "Toussaint"),
+        ];
+        (month_grid(2026, 10), national)
+    }
+
+    /// The `<td …>…</td>` of the `.cal` grid that holds `date`.
+    fn grid_cell(html: &str, date: NaiveDate, grid: &[NaiveDate]) -> String {
+        let at = grid.iter().position(|d| *d == date).expect("in the grid");
+        let cells: Vec<&str> = html.split("<td").skip(1).collect();
+        let cell = cells[at];
+        format!("<td{}", &cell[..cell.find("</td>").unwrap() + 5])
+    }
+
+    #[test]
+    fn a_one_day_national_day_marks_its_date_only() {
+        let (grid, national) = october_2026();
+        let marks = marks_by_day(&grid, &national);
+        assert_eq!(
+            marks[&ymd(2026, 10, 25)].days,
+            ["Passage à l'heure d'hiver"]
+        );
+        assert_eq!(marks[&ymd(2026, 11, 1)].days, ["Toussaint"]);
+        // A day with nothing national has no entry at all.
+        assert!(!marks.contains_key(&ymd(2026, 10, 16)));
+    }
+
+    #[test]
+    fn a_school_holiday_marks_every_day_it_covers_ends_included() {
+        let (grid, national) = october_2026();
+        let marks = marks_by_day(&grid, &national);
+        let covered: Vec<NaiveDate> = grid
+            .iter()
+            .copied()
+            .filter(|d| marks.get(d).is_some_and(|m| !m.holidays.is_empty()))
+            .collect();
+        let expected: Vec<NaiveDate> = (17..=31)
+            .map(|d| ymd(2026, 10, d))
+            .chain([ymd(2026, 11, 1)])
+            .collect();
+        assert_eq!(covered, expected);
+        assert_eq!(
+            marks[&ymd(2026, 10, 20)].holidays,
+            [("Vacances de la Toussaint", ymd(2026, 10, 17))]
+        );
+    }
+
+    #[test]
+    fn a_school_holiday_that_starts_before_the_grid_still_covers_its_first_days() {
+        // Christmas 2026 runs 19 December to 3 January: January 2027's grid
+        // opens on Monday 28 December, in the middle of it.
+        let grid = month_grid(2027, 1);
+        let national = [period(
+            ymd(2026, 12, 19),
+            ymd(2027, 1, 3),
+            "Vacances de Noël",
+        )];
+        let marks = marks_by_day(&grid, &national);
+        let covered: Vec<NaiveDate> = grid
+            .iter()
+            .copied()
+            .filter(|d| marks.contains_key(d))
+            .collect();
+        assert_eq!(covered.first(), Some(&ymd(2026, 12, 28)));
+        assert_eq!(covered.last(), Some(&ymd(2027, 1, 3)));
+        assert_eq!(covered.len(), 7);
+    }
+
+    #[test]
+    fn a_kind_added_later_is_shown_as_a_one_day_label() {
+        // `kind` is a string so a newer apps/api does not break this page:
+        // anything but a school holiday is a day with a label.
+        let grid = month_grid(2026, 7);
+        let national = [one_day(ymd(2026, 7, 14), "something_new", "Fête nationale")];
+        let marks = marks_by_day(&grid, &national);
+        assert_eq!(marks[&ymd(2026, 7, 14)].days, ["Fête nationale"]);
+    }
+
+    #[test]
+    fn a_school_holiday_is_written_on_its_first_day_the_grids_first_and_on_mondays() {
+        let start = ymd(2026, 10, 17); // a Saturday
+        let first = ymd(2026, 9, 28);
+        assert!(holiday_label_shown(start, start, first));
+        assert!(holiday_label_shown(ymd(2026, 10, 19), start, first)); // Monday
+        assert!(holiday_label_shown(ymd(2026, 10, 26), start, first)); // Monday
+        assert!(!holiday_label_shown(ymd(2026, 10, 18), start, first));
+        assert!(!holiday_label_shown(ymd(2026, 10, 21), start, first));
+        // A period that started before the grid is named on its first day.
+        let noel = ymd(2026, 12, 19);
+        let jan_first = ymd(2026, 12, 28);
+        assert!(holiday_label_shown(jan_first, noel, jan_first));
+    }
+
+    #[test]
+    fn a_national_day_is_a_head_line_of_its_cell_not_a_link_nor_a_chip() {
+        let (grid, national) = october_2026();
+        let marks = marks_by_day(&grid, &national);
+        let html = render_grid(
+            &grid,
+            &BTreeMap::new(),
+            Some(10),
+            ymd(2026, 1, 1),
+            Some(3),
+            "octobre 2026",
+            &[],
+            &marks,
+        );
+        let cell = grid_cell(&html, ymd(2026, 10, 25), &grid);
+        // Under the number, before the chips; a paragraph, not an `<a>`.
+        assert!(
+            cell.contains(
+                r#"<div class="cal-day">25</div><p class="nat">Passage à l'heure d'hiver</p>"#
+            ),
+            "{cell}"
+        );
+        assert!(!cell.contains("<a "), "{cell}");
+        assert!(!cell.contains("chip"), "{cell}");
+        // A day of the list on a phone, so the mini grid's target.
+        assert!(cell.contains(r#" id="j2026-10-25""#), "{cell}");
+    }
+
+    #[test]
+    fn a_school_holiday_day_wears_the_band_and_names_it_in_words() {
+        let (grid, national) = october_2026();
+        let marks = marks_by_day(&grid, &national);
+        let html = render_grid(
+            &grid,
+            &BTreeMap::new(),
+            Some(10),
+            ymd(2026, 1, 1),
+            Some(3),
+            "octobre 2026",
+            &[],
+            &marks,
+        );
+        // Written out on its first day: in the phone's list.
+        let first = grid_cell(&html, ymd(2026, 10, 17), &grid);
+        assert!(
+            first.starts_with(r#"<td class="cal-cell hol" id="j2026-10-17">"#),
+            "{first}"
+        );
+        assert!(
+            first.contains(r#"<p class="nat">Vacances de la Toussaint</p>"#),
+            "{first}"
+        );
+        // A Wednesday of the period: the band, and the words for a screen
+        // reader only — never the colour alone (WCAG 1.4.1).
+        let mid = grid_cell(&html, ymd(2026, 10, 21), &grid);
+        assert!(mid.starts_with(r#"<td class="cal-cell hol">"#), "{mid}");
+        assert!(
+            mid.contains(r#"<span class="sr-only">Vacances de la Toussaint</span>"#),
+            "{mid}"
+        );
+        assert!(!mid.contains("nat"), "{mid}");
+        // The day after the period: nothing.
+        let after = grid_cell(&html, ymd(2026, 11, 2), &grid);
+        assert!(
+            !after.contains("hol") && !after.contains("Toussaint"),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn a_label_is_escaped() {
+        let grid = month_grid(2026, 7);
+        let national = [one_day(ymd(2026, 7, 14), "public_holiday", "<b>Fête</b>")];
+        let marks = marks_by_day(&grid, &national);
+        let html = render_grid(
+            &grid,
+            &BTreeMap::new(),
+            Some(7),
+            ymd(2026, 1, 1),
+            None,
+            "x",
+            &[],
+            &marks,
+        );
+        assert!(html.contains("&lt;b&gt;Fête&lt;/b&gt;"), "{html}");
+        assert!(!html.contains("<b>"), "{html}");
+        let mini = render_mini(
+            &grid,
+            &BTreeMap::new(),
+            Some(7),
+            ymd(2026, 1, 1),
+            "x",
+            &marks,
+        );
+        assert!(!mini.contains("<b>"), "{mini}");
+    }
+
+    #[test]
+    fn a_national_day_is_a_link_of_the_mini_grid_named_by_its_label() {
+        let occs = [occurrence(9, "Dentiste")];
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
+            [(day(14), occs.iter().collect())].into_iter().collect();
+        let grid = month_grid(2026, 7);
+        let national = [
+            one_day(day(14), "public_holiday", "Fête nationale"),
+            one_day(day(15), "observance", "Rien"),
+        ];
+        let marks = marks_by_day(&grid, &national);
+        let html = render_mini(&grid, &by_day, Some(7), day(1), "juillet 2026", &marks);
+        assert_eq!(
+            mini_cell(&html, 14),
+            r##"<td><a href="#j2026-07-14">14<span class="sr-only"> juillet, Fête nationale, 1 événement</span></a></td>"##
+        );
+        assert_eq!(
+            mini_cell(&html, 15),
+            r##"<td><a href="#j2026-07-15">15<span class="sr-only"> juillet, Rien</span></a></td>"##
+        );
+    }
+
+    #[test]
+    fn a_school_holiday_day_not_written_out_is_no_link_of_the_mini_grid() {
+        let (grid, national) = october_2026();
+        let marks = marks_by_day(&grid, &national);
+        let html = render_mini(
+            &grid,
+            &BTreeMap::new(),
+            Some(10),
+            ymd(2026, 1, 1),
+            "x",
+            &marks,
+        );
+        // The 21st has no entry in the list: no anchor to point at.
+        assert!(html.contains("<td>21</td>"), "{html}");
+        assert!(html.contains(r##"<a href="#j2026-10-17">"##), "{html}");
+    }
+
+    /// The acceptance criterion of #565: an answer the page cannot read is
+    /// no national day, and the grid renders as it did before them.
+    #[test]
+    fn an_unreadable_national_days_answer_is_none() {
+        let ok = serde_json::json!({"days": [
+            {"date": "2026-10-25", "kind": "clock_change", "label": "Passage à l'heure d'hiver"}
+        ]});
+        assert_eq!(
+            national_days_from_response(reqwest::StatusCode::OK, ok).len(),
+            1
+        );
+        for (status, body) in [
+            (
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": "x"}),
+            ),
+            (
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                serde_json::Value::Null,
+            ),
+            (
+                reqwest::StatusCode::NOT_FOUND,
+                serde_json::json!({"days": []}),
+            ),
+            (reqwest::StatusCode::OK, serde_json::json!({"days": "nope"})),
+            (reqwest::StatusCode::OK, serde_json::json!("<html>")),
+        ] {
+            assert!(
+                national_days_from_response(status, body).is_empty(),
+                "{status}"
+            );
+        }
+    }
+
+    /// A stand-in for apps/api answering the national days with `status`
+    /// and `body`.
+    async fn fake_national_days_api(status: u16, body: &'static str) -> AppState {
+        use axum::routing::get;
+        let app = axum::Router::new().route(
+            "/groups/{gid}/national-days",
+            get(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    body,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        state_at(format!("http://{addr}"))
+    }
+
+    fn state_at(base: String) -> AppState {
+        AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: base,
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::new(8, 2),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        }
+    }
+
+    /// The grid of October 2026 rendered from what `state`'s apps/api
+    /// answers, as `get` renders it.
+    async fn october_grid_from(state: &AppState) -> String {
+        let grid = month_grid(2026, 10);
+        let national = fetch_national_days(
+            state,
+            Some("session=s"),
+            Uuid::from_u128(1),
+            grid[0],
+            grid[grid.len() - 1],
+        )
+        .await;
+        let marks = marks_by_day(&grid, &national);
+        render_grid(
+            &grid,
+            &BTreeMap::new(),
+            Some(10),
+            ymd(2026, 1, 1),
+            Some(3),
+            "octobre 2026",
+            &[],
+            &marks,
+        )
+    }
+
+    #[tokio::test]
+    async fn an_answering_api_puts_the_national_days_on_the_grid() {
+        let state = fake_national_days_api(
+            200,
+            r#"{"days":[{"date":"2026-10-25","kind":"clock_change","label":"Passage à l'heure d'hiver"}]}"#,
+        )
+        .await;
+        let html = october_grid_from(&state).await;
+        assert!(html.contains(r#"<p class="nat">"#), "{html}");
+        assert!(html.contains("heure d"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn a_failing_api_renders_the_agenda_without_national_days() {
+        for status in [500, 502, 503, 404] {
+            let state = fake_national_days_api(status, r#"{"error":"x"}"#).await;
+            let html = october_grid_from(&state).await;
+            assert!(html.starts_with(r#"<table class="cal">"#), "{status}");
+            assert!(!html.contains("nat"), "{status}: {html}");
+            assert!(!html.contains("hol"), "{status}: {html}");
+            assert!(!html.contains(" id="), "{status}: {html}");
+        }
+        // apps/api unreachable altogether.
+        let html = october_grid_from(&state_at("http://127.0.0.1:1".into())).await;
+        assert!(!html.contains("nat"), "{html}");
     }
 
     // -- the day panel of a PC (#525) ----------------------------------

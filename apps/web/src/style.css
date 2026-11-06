@@ -691,6 +691,13 @@ progress::-moz-progress-bar { background: currentColor; }
 .mini .current { border-radius: var(--r-sm); background: var(--accent); color: var(--accent-fg); }
 .mini a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); height: var(--s12); color: inherit; font-weight: 600; text-decoration: none; }
 .mini a::after { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; background: currentColor; }
+/* A day's national days (#565, `calendar::marks_html`): a head line under
+   its number, in --muted at the chip's size — a paragraph, not a link, so
+   it does not read as an event. It wraps, where a chip is cut: there is no
+   page behind it to read the rest on. A school holiday is a band along the
+   top of each day it covers, its name written in the cell or `.sr-only`. */
+.nat { margin: 0; color: var(--muted); font-size: var(--t-xs); white-space: normal; }
+.hol { box-shadow: inset 0 var(--s1) var(--accent); }
 /* The event form as the mock-up's sheet (#525). The fieldsets it holds are
    cards of their own elsewhere (the edit page); inside the sheet they are
    groups of fields, not a card on a card. */
@@ -1034,8 +1041,9 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
    twin, for the reason Layout gives above. */
 @media not all and (min-width: 861px) {
   .cal, .cal tbody, .cal tr, .cal-cell { display: block; }
-  /* `:has()` drops an empty day unaided: no document bytes. */
-  .cal thead, .cal-cell:not(:has(.chip)) { display: none; }
+  /* `:has()` drops an empty day unaided: no document bytes. A national
+     day written out (#565) is not empty. */
+  .cal thead, .cal-cell:not(:has(.chip, .nat)) { display: none; }
   .cal-cell { border-width: 0 0 1px; padding: var(--s2x) 0; }
   .cal-day { font-size: var(--t-lg); }
   /* --s12 is 48px, over Espacement's 44px; flex centres the text in it. */
