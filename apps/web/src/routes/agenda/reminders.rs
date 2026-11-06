@@ -16,7 +16,7 @@ use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
 use super::new::REMINDER_OPTIONS;
-use super::{agenda_cookie, event_not_found_page, family_context};
+use super::{agenda_cookie, event_not_found_page, family_context_for, EventFamily};
 
 #[derive(serde::Deserialize)]
 pub struct AddReminderForm {
@@ -29,20 +29,20 @@ pub async fn add(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
     Form(form): Form<AddReminderForm>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/agenda/{event_id}")).await
-    else {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(&state, &headers, &me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
-    let detail = format!("/agenda/{event_id}");
 
     // "Aucun rappel": nothing to do.
     let Some((_, _, minutes)) = REMINDER_OPTIONS
         .iter()
         .find(|(k, _, _)| *k == form.reminder)
     else {
-        return Redirect::to(&detail).into_response();
+        return Redirect::to(&fam.url(&detail)).into_response();
     };
 
     let cookie = agenda_cookie(&headers);
@@ -60,22 +60,22 @@ pub async fn add(
     )
     .await;
 
-    match result {
+    let target = match result {
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
             match serde_json::from_value::<ReminderResponse>(resp.body) {
-                Ok(r) => Redirect::to(&format!(
+                Ok(r) => format!(
                     "{detail}?notice=reminder_added&rid={}&offset={}",
                     r.id, r.offset_minutes
-                ))
-                .into_response(),
-                Err(_) => Redirect::to(&format!("{detail}?notice=reminder_added")).into_response(),
+                ),
+                Err(_) => format!("{detail}?notice=reminder_added"),
             }
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            event_not_found_page().into_response()
+            return event_not_found_page().into_response()
         }
-        Ok(_) | Err(_) => Redirect::to(&format!("{detail}?error=unavailable")).into_response(),
-    }
+        Ok(_) | Err(_) => format!("{detail}?error=unavailable"),
+    };
+    Redirect::to(&fam.url(&target)).into_response()
 }
 
 pub async fn delete(
@@ -83,12 +83,12 @@ pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((event_id, reminder_id)): Path<(Uuid, Uuid)>,
+    EventFamily(requested): EventFamily,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/agenda/{event_id}")).await
-    else {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(&state, &headers, &me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
-    let detail = format!("/agenda/{event_id}");
     let cookie = agenda_cookie(&headers);
     let result = api_request_auth(
         &state,
@@ -111,5 +111,5 @@ pub async fn delete(
         }
         Ok(_) | Err(_) => format!("{detail}?error=unavailable"),
     };
-    Redirect::to(&target).into_response()
+    Redirect::to(&fam.url(&target)).into_response()
 }

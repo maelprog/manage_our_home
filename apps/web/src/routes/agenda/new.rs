@@ -13,7 +13,7 @@
 //! not keep sends the browser to the event's page under the reason
 //! (`after_attachment`): the event is there, the file can be sent again.
 
-use axum::extract::State;
+use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::NaiveDate;
@@ -21,7 +21,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::agenda::{
     CreateEventRequest, CreateReminderRequest, EventResponse,
 };
-use manage_our_home_shared::dto::groups::GroupMember;
+use manage_our_home_shared::dto::groups::{GroupMember, GroupSummary};
 use manage_our_home_shared::validation::agenda::{
     build_rrule, validate_attachment, validate_event_form, AttachmentError, EventFormError, Freq,
     Recurrence, RecurrenceEnd, WEEKDAYS,
@@ -29,6 +29,10 @@ use manage_our_home_shared::validation::agenda::{
 use uuid::Uuid;
 
 use crate::app::{html_escape, member_avatar, shell_with_header, Width};
+use crate::family::{
+    accent_of, active_group_id_from_headers, resolve_active_group, resolve_selection,
+    selection_from_headers, selection_from_query,
+};
 use crate::icons::{icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::account::notifications::{fetch_settings, push_block};
@@ -38,7 +42,8 @@ use crate::state::{api_request_auth, AppState};
 use super::attachments::{relay, Relay};
 
 use super::{
-    agenda_cookie, date_only, family_context, forbidden_page, form_bounds, to_datetime_local,
+    agenda_cookie, date_only, family_context_choosing, family_context_for, forbidden_page,
+    form_bounds, to_datetime_local, with_family, EventFamily,
 };
 
 /// Reminder offset presets exposed by the "Rappel" select — key → minutes
@@ -117,14 +122,85 @@ pub(crate) fn form_body(pairs: &[(String, String)]) -> String {
 /// Where the browser goes once the event exists and its file was relayed.
 /// A file apps/api did not keep sends it to the event's page, where it can
 /// be sent again, under the reason it was refused.
-pub(crate) fn after_attachment(event_id: Uuid, relay: Relay) -> String {
+/// The event's page is the one of the family it was created in (#622).
+pub(crate) fn after_attachment(event_id: Uuid, relay: Relay, family: Option<Uuid>) -> String {
     match relay {
         Relay::Created => "/agenda?notice=event_created".to_string(),
-        Relay::Rejected(code) => format!("/agenda/{event_id}?error={code}"),
+        Relay::Rejected(code) => with_family(&format!("/agenda/{event_id}?error={code}"), family),
         Relay::NotFound | Relay::Unavailable | Relay::TimedOut | Relay::Failed => {
-            format!("/agenda/{event_id}?error=upload_failed")
+            with_family(&format!("/agenda/{event_id}?error=upload_failed"), family)
         }
     }
+}
+
+/// The family the sheet creates in, as `page` heads it (#622).
+pub(crate) struct SheetFamily<'a> {
+    /// Its name, over the title.
+    name: &'a str,
+    /// Its id when it is not the active family: the form posts with it.
+    carried: Option<Uuid>,
+    /// The « Famille » choice (`family_choice`), empty when the agenda
+    /// shows one family.
+    choice: String,
+}
+
+/// A family named, the active one, with no choice.
+impl<'a> From<&'a str> for SheetFamily<'a> {
+    fn from(name: &'a str) -> Self {
+        Self {
+            name,
+            carried: None,
+            choice: String::new(),
+        }
+    }
+}
+
+/// The family a new event goes to (#622), before the membership check of
+/// `resolve_event_family`: the one the URL names, else the active family
+/// when the agenda shows it, else the first family the agenda shows — the
+/// agenda of another family alone creates in that family.
+pub(crate) fn creation_family(
+    requested: Option<Uuid>,
+    shown: &[&GroupSummary],
+    active: Option<&GroupSummary>,
+) -> Option<Uuid> {
+    requested.or_else(|| match active {
+        Some(a) if shown.iter().any(|g| g.group_id == a.group_id) => Some(a.group_id),
+        _ => shown.first().map(|g| g.group_id),
+    })
+}
+
+/// The « Famille » choice of the sheet (#622): a link per family the agenda
+/// shows, the chosen one `aria-current`, each in its family's colour
+/// (`data-accent`). Links and not a field: « pour qui » lists the members
+/// of the chosen family, so choosing another one is loading the sheet
+/// again, without a script. Empty for one family.
+pub(crate) fn family_choice(
+    shown: &[&GroupSummary],
+    chosen: Uuid,
+    active: Option<&GroupSummary>,
+) -> String {
+    if shown.len() < 2 {
+        return String::new();
+    }
+    let links: String = shown
+        .iter()
+        .map(|g| {
+            let carried = (Some(g.group_id) != active.map(|a| a.group_id)).then_some(g.group_id);
+            let current = if g.group_id == chosen {
+                r#" aria-current="true""#
+            } else {
+                ""
+            };
+            format!(
+                r#"<a href="{href}" data-accent="{accent}"{current}>{name}</a>"#,
+                href = with_family("/agenda/new", carried),
+                accent = accent_of(g).as_str(),
+                name = html_escape(&g.name),
+            )
+        })
+        .collect();
+    format!(r#"<nav class="filters" aria-label="Famille">{links}</nav>"#)
 }
 
 /// Hidden field the assignee fieldset carries when it actually listed the
@@ -619,9 +695,9 @@ fn blank_form(starts_at: String, ends_at: String) -> EventForm {
 /// The sheet, filled with `form`: the defaults of a fresh create, or what
 /// was submitted when it comes back under an error (#696) — every field but
 /// the file, which a browser cannot be handed back.
-fn page(
+fn page<'a>(
     header: &str,
-    family: &str,
+    family: impl Into<SheetFamily<'a>>,
     error: Option<&str>,
     form: &EventForm,
     members: &[GroupMember],
@@ -647,11 +723,15 @@ fn page(
     // mock-up asks them — title, when, how often, the reminder, who for.
     // What it does not draw (a task, a place, a description) follows. It is
     // still a page and a plain `POST`: without JavaScript nothing changes.
+    //
+    // From a view of several families (#622), the « Famille » choice comes
+    // first: choosing loads the sheet again, so it is made before typing.
+    let family = family.into();
     let body = format!(
         r#"<section class="card sheet">
-<div class="page-header"><hgroup><p class="eyebrow">{family}</p><h1>Nouvel événement</h1></hgroup>{close}</div>
-{error_html}
-<form method="post" action="/agenda/new" enctype="multipart/form-data">
+<div class="page-header"><hgroup><p class="eyebrow">{name}</p><h1>Nouvel événement</h1></hgroup>{close}</div>
+{choice}{error_html}
+<form method="post" action="{action}" enctype="multipart/form-data">
 <label>Titre <input type="text" name="title" required value="{title}"/></label>
 {schedule}
 {picker}
@@ -669,7 +749,9 @@ fn page(
 <button type="submit">Créer l'événement</button>
 </form>
 </section>"#,
-        family = html_escape(family),
+        name = html_escape(family.name),
+        choice = family.choice,
+        action = with_family("/agenda/new", family.carried),
         title = html_escape(&form.title),
         task = if form.is_task.is_some() {
             " checked"
@@ -683,13 +765,33 @@ fn page(
     shell_with_header(Width::Form, "Nouvel événement", header, &body)
 }
 
+/// The sheet offers a « Famille » choice among the families the agenda
+/// shows (#622) — its selection, from the URL or the cookie, as `/agenda`
+/// reads it — and creates in the active family by default.
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
+    EventFamily(requested): EventFamily,
+    RawQuery(raw_query): RawQuery,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, "/agenda/new").await else {
+    let selection =
+        selection_from_query(raw_query.as_deref()).or_else(|| selection_from_headers(&headers));
+    let Some((fam, groups)) =
+        family_context_choosing(&state, &headers, &me, "/agenda/new", |groups, active| {
+            let shown = resolve_selection(groups, active, selection.as_ref());
+            creation_family(requested, &shown, active)
+        })
+        .await
+    else {
         return Redirect::to("/groups/new").into_response();
+    };
+    let active = resolve_active_group(&groups, active_group_id_from_headers(&headers));
+    let shown = resolve_selection(&groups, active, selection.as_ref());
+    let sheet_family = SheetFamily {
+        name: &fam.name,
+        carried: fam.carried,
+        choice: family_choice(&shown, fam.gid, active),
     };
     // Default to the next round hour, one-hour duration, in Paris.
     let now = chrono::Utc::now();
@@ -708,7 +810,7 @@ pub async fn get(
     let push = reminder_push_block(&state, cookie.as_deref()).await;
     Html(page(
         &fam.header,
-        &fam.name,
+        sheet_family,
         None,
         &blank_form(start, end),
         &members,
@@ -741,13 +843,25 @@ pub async fn post(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
+    EventFamily(requested): EventFamily,
     request: axum::extract::Request,
 ) -> Response {
     let Some(kind) = create_body_kind(&headers) else {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
     };
-    let Some(fam) = family_context(&state, &headers, &me, "/agenda/new").await else {
+    // The family the sheet was opened for (#622), once the visitor's
+    // membership is checked; the active one when the URL names none.
+    let Some(fam) = family_context_for(&state, &headers, &me, "/agenda/new", requested).await
+    else {
         return Redirect::to("/groups/new").into_response();
+    };
+    // The sheet coming back under an error posts in the same family. The
+    // choice is not offered again: changing family would drop what was
+    // typed, and the family stays named over the title.
+    let sheet = || SheetFamily {
+        name: &fam.name,
+        carried: fam.carried,
+        choice: String::new(),
     };
 
     // The file is held in memory whole, through the read and the relay,
@@ -790,7 +904,7 @@ pub async fn post(
                     let now = chrono::Utc::now();
                     return Html(page(
                         &fam.header,
-                        &fam.name,
+                        sheet(),
                         Some(error_message("upload_failed")),
                         &blank_form(
                             to_datetime_local(now),
@@ -827,7 +941,7 @@ pub async fn post(
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(page(
                 &fam.header,
-                &fam.name,
+                sheet(),
                 Some(error_message("invalid_form")),
                 &EventForm {
                     is_private: raw_is_private(&raw).then(String::new),
@@ -847,7 +961,7 @@ pub async fn post(
     let render_error = |code: &str| {
         Html(page(
             &fam.header,
-            &fam.name,
+            sheet(),
             Some(error_message(code)),
             &form,
             &members,
@@ -942,7 +1056,8 @@ pub async fn post(
                     bytes,
                 )
                 .await;
-                return Redirect::to(&after_attachment(event.id, relayed)).into_response();
+                return Redirect::to(&after_attachment(event.id, relayed, fam.carried))
+                    .into_response();
             }
             Redirect::to("/agenda?notice=event_created").into_response()
         }
@@ -1808,7 +1923,7 @@ mod tests {
     #[test]
     fn a_stored_attachment_ends_on_the_agenda_like_any_creation() {
         assert_eq!(
-            after_attachment(Uuid::from_u128(7), Relay::Created),
+            after_attachment(Uuid::from_u128(7), Relay::Created, None),
             "/agenda?notice=event_created"
         );
     }
@@ -1819,7 +1934,7 @@ mod tests {
     fn a_refused_attachment_ends_on_the_event_with_its_reason() {
         let id = Uuid::from_u128(7);
         assert_eq!(
-            after_attachment(id, Relay::Rejected("file_too_large")),
+            after_attachment(id, Relay::Rejected("file_too_large"), None),
             format!("/agenda/{id}?error=file_too_large")
         );
     }
@@ -1834,7 +1949,7 @@ mod tests {
             Relay::Failed,
         ] {
             assert_eq!(
-                after_attachment(id, relay),
+                after_attachment(id, relay, None),
                 format!("/agenda/{id}?error=upload_failed"),
                 "{relay:?}"
             );
@@ -1949,5 +2064,133 @@ mod tests {
         let half = "a".repeat(FORM_BODY_LIMIT / 2 + 1);
         let read = read(multipart_of(&[("title", &half), ("description", &half)])).await;
         assert_eq!(read, Err(MultipartError::TooLarge));
+    }
+
+    // -- creating from a view of several families (#622) -------------------
+
+    fn family(n: u128, accent: &str) -> GroupSummary {
+        GroupSummary {
+            group_id: Uuid::from_u128(n),
+            name: format!("F{n}"),
+            role: "owner".to_string(),
+            accent: accent.to_string(),
+            ownership_notice: None,
+        }
+    }
+
+    #[test]
+    fn the_family_the_url_names_is_the_one_created_in() {
+        let groups = [family(1, "sarcelle"), family(2, "ocean")];
+        let shown: Vec<&GroupSummary> = groups.iter().collect();
+        assert_eq!(
+            creation_family(Some(Uuid::from_u128(2)), &shown, Some(&groups[0])),
+            Some(Uuid::from_u128(2))
+        );
+    }
+
+    #[test]
+    fn by_default_the_active_family_when_the_agenda_shows_it() {
+        let groups = [family(1, "sarcelle"), family(2, "ocean")];
+        let shown: Vec<&GroupSummary> = groups.iter().collect();
+        assert_eq!(
+            creation_family(None, &shown, Some(&groups[1])),
+            Some(Uuid::from_u128(2))
+        );
+    }
+
+    /// The agenda of another family alone creates in that family, not in the
+    /// active one it does not show.
+    #[test]
+    fn by_default_the_first_family_shown_otherwise() {
+        let groups = [family(1, "sarcelle"), family(2, "ocean"), family(3, "miel")];
+        let shown = [&groups[2], &groups[1]];
+        assert_eq!(
+            creation_family(None, &shown, Some(&groups[0])),
+            Some(Uuid::from_u128(3))
+        );
+        assert_eq!(creation_family(None, &[], None), None);
+    }
+
+    #[test]
+    fn one_family_shown_offers_no_choice() {
+        let groups = [family(1, "sarcelle")];
+        let shown: Vec<&GroupSummary> = groups.iter().collect();
+        assert_eq!(
+            family_choice(&shown, Uuid::from_u128(1), Some(&groups[0])),
+            ""
+        );
+    }
+
+    #[test]
+    fn several_families_shown_are_a_choice_marking_the_chosen_one() {
+        let groups = [family(1, "sarcelle"), family(2, "ocean")];
+        let shown: Vec<&GroupSummary> = groups.iter().collect();
+        let html = family_choice(&shown, Uuid::from_u128(2), Some(&groups[0]));
+        assert!(
+            html.starts_with(r#"<nav class="filters" aria-label="Famille">"#),
+            "{html}"
+        );
+        // The active family's sheet carries nothing; another's names it.
+        assert!(
+            html.contains(r#"<a href="/agenda/new" data-accent="sarcelle">F1</a>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/agenda/new?famille={}" data-accent="ocean" aria-current="true">F2</a>"#,
+                Uuid::from_u128(2)
+            )),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-current").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_family_name_in_the_choice_is_escaped() {
+        let mut odd = family(2, "ocean");
+        odd.name = "<b>".to_string();
+        let groups = [family(1, "sarcelle"), odd];
+        let shown: Vec<&GroupSummary> = groups.iter().collect();
+        let html = family_choice(&shown, Uuid::from_u128(1), Some(&groups[0]));
+        assert!(html.contains("&lt;b&gt;"), "{html}");
+        assert!(!html.contains("<b>"), "{html}");
+    }
+
+    #[test]
+    fn another_familys_sheet_posts_in_that_family_under_its_choice() {
+        let g = Uuid::from_u128(2);
+        let html = page(
+            "",
+            SheetFamily {
+                name: "F2",
+                carried: Some(g),
+                choice: "<nav>choix</nav>".to_string(),
+            },
+            None,
+            &blank_form("2026-09-05T10:00".into(), "2026-09-05T11:00".into()),
+            &[member(1, "Alice")],
+            &[],
+            "",
+        );
+        let form = format!(
+            r#"<form method="post" action="/agenda/new?famille={g}" enctype="multipart/form-data">"#
+        );
+        assert!(html.contains(&form), "{html}");
+        let choice = html.find("<nav>choix</nav>").expect(&html);
+        assert!(choice < html.find(&form).unwrap(), "{html}");
+        assert!(html.contains(r#"<p class="eyebrow">F2</p>"#), "{html}");
+    }
+
+    #[test]
+    fn a_refused_file_returns_to_the_event_in_its_family() {
+        let (id, g) = (Uuid::from_u128(7), Uuid::from_u128(2));
+        assert_eq!(
+            after_attachment(id, Relay::Failed, Some(g)),
+            format!("/agenda/{id}?error=upload_failed&famille={g}")
+        );
+        assert_eq!(
+            after_attachment(id, Relay::Created, Some(g)),
+            "/agenda?notice=event_created"
+        );
     }
 }

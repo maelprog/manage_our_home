@@ -15,20 +15,24 @@ use uuid::Uuid;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::{agenda_cookie, event_not_found_page, family_context, service_unavailable_page};
+use super::{
+    agenda_cookie, event_not_found_page, family_context_for, service_unavailable_page, EventFamily,
+};
 
 pub async fn upload(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
     mut multipart: Multipart,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/agenda/{event_id}")).await
-    else {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(&state, &headers, &me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
-    let detail = format!("/agenda/{event_id}");
+    // Back to the event's page, in the family it was opened in (#622).
+    let back = |query: &str| Redirect::to(&fam.url(&format!("{detail}?{query}")));
 
     // Before a byte of the body (#219): the file is held in memory whole,
     // through the read and the relay below, so how many are held at once
@@ -59,8 +63,7 @@ pub async fn upload(
                     // buffer of the declared body while the first was still
                     // held.
                     if bytes.is_some() {
-                        return Redirect::to(&format!("{detail}?error=upload_failed"))
-                            .into_response();
+                        return back("error=upload_failed").into_response();
                     }
                     filename = field.file_name().map(|s| s.to_string());
                     let mut file = Vec::with_capacity(file_buffer_capacity(&headers));
@@ -68,10 +71,7 @@ pub async fn upload(
                         match field.chunk().await {
                             Ok(Some(chunk)) => file.extend_from_slice(&chunk),
                             Ok(None) => break,
-                            Err(_) => {
-                                return Redirect::to(&format!("{detail}?error=upload_failed"))
-                                    .into_response()
-                            }
+                            Err(_) => return back("error=upload_failed").into_response(),
                         }
                     }
                     // Takes the `Vec` over, no copy.
@@ -79,24 +79,20 @@ pub async fn upload(
                 }
             }
             Ok(None) => break,
-            Err(_) => {
-                return Redirect::to(&format!("{detail}?error=upload_failed")).into_response()
-            }
+            Err(_) => return back("error=upload_failed").into_response(),
         }
     }
 
     let (Some(filename), Some(bytes)) = (filename, bytes) else {
-        return Redirect::to(&format!("{detail}?error=upload_failed")).into_response();
+        return back("error=upload_failed").into_response();
     };
 
     // Client-side pre-check (extension + size) before touching the network.
     match validate_attachment(&filename, bytes.len() as u64) {
         Err(AttachmentError::UnsupportedType) => {
-            return Redirect::to(&format!("{detail}?error=unsupported_file_type")).into_response()
+            return back("error=unsupported_file_type").into_response()
         }
-        Err(AttachmentError::TooLarge) => {
-            return Redirect::to(&format!("{detail}?error=file_too_large")).into_response()
-        }
+        Err(AttachmentError::TooLarge) => return back("error=file_too_large").into_response(),
         Ok(()) => {}
     }
 
@@ -111,9 +107,7 @@ pub async fn upload(
     )
     .await
     {
-        Relay::Created => {
-            Redirect::to(&format!("{detail}?notice=attachment_added")).into_response()
-        }
+        Relay::Created => back("notice=attachment_added").into_response(),
         Relay::NotFound => event_not_found_page().into_response(),
         // apps/api has its own upload gate and its own body bounds (#219),
         // and its gate is also filled by calls reaching `/api/*` directly:
@@ -127,8 +121,8 @@ pub async fn upload(
         Relay::TimedOut => {
             manage_our_home_http_guard::request_timeout(crate::body_bounds::body_read_timeout_page())
         }
-        Relay::Rejected(code) => Redirect::to(&format!("{detail}?error={code}")).into_response(),
-        Relay::Failed => Redirect::to(&format!("{detail}?error=upload_failed")).into_response(),
+        Relay::Rejected(code) => back(&format!("error={code}")).into_response(),
+        Relay::Failed => back("error=upload_failed").into_response(),
     }
 }
 
@@ -219,9 +213,10 @@ pub async fn download(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((event_id, attachment_id)): Path<(Uuid, Uuid)>,
+    EventFamily(requested): EventFamily,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/agenda/{event_id}")).await
-    else {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(&state, &headers, &me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
     let cookie = agenda_cookie(&headers);
@@ -247,7 +242,7 @@ pub async fn download(
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             event_not_found_page().into_response()
         }
-        _ => Redirect::to(&format!("/agenda/{event_id}?error=unavailable")).into_response(),
+        _ => Redirect::to(&fam.url(&format!("{detail}?error=unavailable"))).into_response(),
     }
 }
 
@@ -256,12 +251,12 @@ pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((event_id, attachment_id)): Path<(Uuid, Uuid)>,
+    EventFamily(requested): EventFamily,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/agenda/{event_id}")).await
-    else {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(&state, &headers, &me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
-    let detail = format!("/agenda/{event_id}");
     let cookie = agenda_cookie(&headers);
     let result = api_request_auth(
         &state,
@@ -284,7 +279,7 @@ pub async fn delete(
         }
         Ok(_) | Err(_) => format!("{detail}?error=unavailable"),
     };
-    Redirect::to(&target).into_response()
+    Redirect::to(&fam.url(&target)).into_response()
 }
 
 /// The upload page under the body bounds and the upload gate (#219),

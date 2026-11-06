@@ -447,7 +447,7 @@ fn week_block(occurrences: Option<&[OccurrenceResponse]>, today: NaiveDate) -> S
                 format!(
                     r#"<li{class}><p class="eyebrow">{weekday} {num}{note}</p>{chips}</li>"#,
                     num = day.day(),
-                    chips = render_chips(&occs, Some(MONTH_CHIP_CAP), *day, &[]),
+                    chips = render_chips(&occs, Some(MONTH_CHIP_CAP), *day, &[], &[]),
                 )
             })
             .collect();
