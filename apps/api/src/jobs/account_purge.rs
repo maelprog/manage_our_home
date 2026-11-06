@@ -17,7 +17,8 @@
 //!   `group_members`, `message_read_state`, `event_assignees`,
 //!   `account_reactivation_requests` (#289), `push_subscriptions` (#306),
 //!   `notifications` (#534) — those it received, and those it caused,
-//!   whose text may carry its display name; and the
+//!   whose text may carry its display name, `stock_expiry_announcements`
+//!   (#700); and the
 //!   personal rows among the others: the account's own `audit_log`
 //!   entries, the `invitations` it sent (with the third-party addresses
 //!   they hold) and its `calendar_imports` (with their `feed_url`, a
@@ -336,6 +337,13 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<S
     .await?;
     sqlx::query!(
         "DELETE FROM password_reset_tokens WHERE user_id = $1",
+        user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    // What the expiry recaps announced to the account (#700).
+    sqlx::query!(
+        "DELETE FROM stock_expiry_announcements WHERE user_id = $1",
         user_id
     )
     .execute(&mut *tx)

@@ -509,7 +509,7 @@ async fn the_recap_notifies_every_member_once_a_day(db: PgPool) {
     stock_item(&db, &f.group, "Riz", 1.0, day(4)).await;
     stock_item(&db, &f.group, "Beurre", 0.0, day(1)).await;
 
-    let first = recap(&db, today).await.unwrap();
+    let first = recap(&db, today, 9).await.unwrap();
     assert_eq!(first.written, 2);
     let mut expected = vec![
         user_id(&db, "owner@example.test").await,
@@ -524,7 +524,7 @@ async fn the_recap_notifies_every_member_once_a_day(db: PgPool) {
         );
     }
 
-    let second = recap(&db, today).await.unwrap();
+    let second = recap(&db, today, 9).await.unwrap();
     assert_eq!((second.written, second.recipients.len()), (0, 0));
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM notifications")
         .fetch_one(&db)
@@ -534,7 +534,8 @@ async fn the_recap_notifies_every_member_once_a_day(db: PgPool) {
 }
 
 /// A row announced, its date moved to another day close by, is announced
-/// again — alone; a row of quantity 0 never is, whatever its date.
+/// again — alone, and once: the day after, nothing goes; a row of quantity 0
+/// never is, whatever its date.
 #[sqlx::test]
 async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPool) {
     let f = family(&db).await;
@@ -543,7 +544,7 @@ async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPoo
     let lait = stock_item(&db, &f.group, "Lait", 1.0, day(2)).await;
     stock_item(&db, &f.group, "Œufs", 6.0, day(1)).await;
     let beurre = stock_item(&db, &f.group, "Beurre", 0.0, day(1)).await;
-    assert_eq!(recap(&db, today).await.unwrap().written, 2);
+    assert_eq!(recap(&db, today, 9).await.unwrap().written, 2);
 
     for (id, n) in [(lait, 3), (beurre, 0)] {
         sqlx::query("UPDATE stock_items SET expires_on = $2 WHERE id = $1")
@@ -554,7 +555,7 @@ async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPoo
             .unwrap();
     }
     let next = day(1);
-    assert_eq!(recap(&db, next).await.unwrap().written, 2);
+    assert_eq!(recap(&db, next, 9).await.unwrap().written, 2);
     assert_eq!(
         recap_bodies(&list(&f.router, &f.member, "").await),
         [
@@ -562,13 +563,194 @@ async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPoo
             "2 produits périment bientôt : Œufs, Lait."
         ]
     );
-    let notified: Option<NaiveDate> =
-        sqlx::query_scalar("SELECT expiry_notified_on FROM stock_items WHERE id = $1")
-            .bind(beurre)
+    // The moved date is the one now marked announced: the next pass, with
+    // Lait still close by, has nothing new to say.
+    let after = recap(&db, day(2), 9).await.unwrap();
+    assert_eq!((after.written, after.recipients.len()), (0, 0));
+    let announced: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM stock_expiry_announcements WHERE stock_item_id = $1",
+    )
+    .bind(beurre)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(announced, 0);
+}
+
+// -- the recap's hour, per member (#700) -----------------------------------
+
+async fn set_digest_hour(db: &PgPool, email: &str, hour: i16) {
+    sqlx::query("UPDATE users SET expiry_digest_hour = $2 WHERE email = $1")
+        .bind(email)
+        .bind(hour)
+        .execute(db)
+        .await
+        .unwrap();
+}
+
+/// Two members of one family at two hours, 7 and 20: each gets the recap
+/// at theirs, once that day — a row added in between goes to the second
+/// that day and to the first the next day, alone.
+#[sqlx::test]
+async fn two_members_get_the_recap_at_their_own_hours_once_a_day(db: PgPool) {
+    let f = family(&db).await;
+    set_digest_hour(&db, "owner@example.test", 7).await;
+    set_digest_hour(&db, "member@example.test", 20).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let member = user_id(&db, "member@example.test").await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    let day = |n: i64| today + Duration::days(n);
+    stock_item(&db, &f.group, "Lait", 1.0, day(1)).await;
+
+    for hour in 0..7 {
+        let done = recap(&db, today, hour).await.unwrap();
+        assert_eq!((done.written, done.recipients.len()), (0, 0), "{hour} h");
+    }
+    let at_seven = recap(&db, today, 7).await.unwrap();
+    assert_eq!((at_seven.written, at_seven.recipients), (1, vec![owner]));
+
+    stock_item(&db, &f.group, "Riz", 1.0, day(2)).await;
+    for hour in 8..20 {
+        let done = recap(&db, today, hour).await.unwrap();
+        assert_eq!((done.written, done.recipients.len()), (0, 0), "{hour} h");
+    }
+    let at_eight_pm = recap(&db, today, 20).await.unwrap();
+    assert_eq!(
+        (at_eight_pm.written, at_eight_pm.recipients),
+        (1, vec![member])
+    );
+    for hour in 21..24 {
+        let done = recap(&db, today, hour).await.unwrap();
+        assert_eq!((done.written, done.recipients.len()), (0, 0), "{hour} h");
+    }
+
+    assert_eq!(
+        recap_bodies(&list(&f.router, &f.owner, "").await),
+        ["1 produit périme bientôt : Lait."]
+    );
+    assert_eq!(
+        recap_bodies(&list(&f.router, &f.member, "").await),
+        ["2 produits périment bientôt : Lait, Riz."]
+    );
+
+    // The next day: Riz, which the owner has not been told of yet.
+    let next = recap(&db, day(1), 7).await.unwrap();
+    assert_eq!((next.written, next.recipients), (1, vec![owner]));
+    assert_eq!(
+        recap_bodies(&list(&f.router, &f.owner, "").await)[0],
+        "1 produit périme bientôt : Riz."
+    );
+    // And the member, at 20, nothing new: no notification, the day marked.
+    assert_eq!(recap(&db, day(1), 20).await.unwrap().written, 0);
+    let sent_on: Option<NaiveDate> =
+        sqlx::query_scalar("SELECT expiry_digest_sent_on FROM users WHERE id = $1")
+            .bind(member)
             .fetch_one(&db)
             .await
             .unwrap();
-    assert_eq!(notified, None);
+    assert_eq!(sent_on, Some(day(1)));
+}
+
+/// A pass missed at the member's hour sends at the next one, that day, and
+/// once: the day of the last pass is in the database, so a restarted
+/// process, or a second one, does not send it again.
+#[sqlx::test]
+async fn a_missed_hour_sends_once_at_the_next_pass(db: PgPool) {
+    let f = family(&db).await;
+    set_digest_hour(&db, "owner@example.test", 9).await;
+    set_digest_hour(&db, "member@example.test", 9).await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+
+    assert_eq!(recap(&db, today, 14).await.unwrap().written, 2);
+    stock_item(&db, &f.group, "Œufs", 1.0, today).await;
+    assert_eq!(recap(&db, today, 14).await.unwrap().written, 0);
+    assert_eq!(recap(&db, today, 23).await.unwrap().written, 0);
+}
+
+/// The hour is read and written by `/account/notifications`: 9 by default,
+/// 0 to 23, anything else refused and the hour left as it was; a request
+/// without it leaves it too.
+#[sqlx::test]
+async fn the_recap_hour_is_set_from_0_to_23_and_9_by_default(db: PgPool) {
+    let f = family(&db).await;
+    let settings = |cookie: String| {
+        let router = f.router.clone();
+        async move {
+            let res = call(
+                &router,
+                Method::GET,
+                "/account/notifications",
+                Some(&cookie),
+                None,
+            )
+            .await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await
+        }
+    };
+    let put = |body: Value| {
+        let (router, cookie) = (f.router.clone(), f.owner.clone());
+        async move {
+            call(
+                &router,
+                Method::PUT,
+                "/account/notifications",
+                Some(&cookie),
+                Some(body),
+            )
+            .await
+        }
+    };
+    assert_eq!(settings(f.owner.clone()).await["expiry_digest_hour"], 9);
+
+    for hour in [24, -1, 100] {
+        let res = put(json!({"reminder_channel": "push", "expiry_digest_hour": hour})).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(res).await["error"],
+            "invalid_expiry_digest_hour",
+            "{hour}"
+        );
+    }
+    assert_eq!(settings(f.owner.clone()).await["expiry_digest_hour"], 9);
+
+    for hour in [0, 23, 7] {
+        let res = put(json!({"reminder_channel": "push", "expiry_digest_hour": hour})).await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+        assert_eq!(settings(f.owner.clone()).await["expiry_digest_hour"], hour);
+    }
+    let res = put(json!({"reminder_channel": "email"})).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let s = settings(f.owner.clone()).await;
+    assert_eq!(
+        (
+            s["reminder_channel"].clone(),
+            s["expiry_digest_hour"].clone()
+        ),
+        (json!("email"), json!(7))
+    );
+    // The other member's hour is theirs.
+    assert_eq!(settings(f.member.clone()).await["expiry_digest_hour"], 9);
+}
+
+/// The hourly pass skips a member a recap told of the row for its date,
+/// and still tells the member whose recap has not come yet.
+#[sqlx::test]
+async fn the_hourly_pass_skips_only_the_members_the_recap_told(db: PgPool) {
+    let f = family(&db).await;
+    set_digest_hour(&db, "member@example.test", 20).await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today + Duration::days(2)).await;
+    assert_eq!(recap(&db, today, 9).await.unwrap().written, 1);
+    assert_eq!(notify_expiring(&db, today).await.unwrap(), 1);
+    assert_eq!(
+        kinds_and_bodies(&list(&f.router, &f.member, "").await),
+        [(
+            "stock_expiry".to_string(),
+            "« Lait » est à consommer jusqu'au 01/11/2030.".to_string()
+        )]
+    );
 }
 
 /// Each family's recap names its own rows only, to its own members: the
@@ -582,7 +764,7 @@ async fn the_recap_stays_within_the_family(db: PgPool) {
     stock_item(&db, &f.group, "Lait", 1.0, today).await;
     stock_item(&db, &other_group, "Riz", 1.0, today + Duration::days(1)).await;
 
-    let done = recap(&db, today).await.unwrap();
+    let done = recap(&db, today, 9).await.unwrap();
     assert_eq!(done.written, 3);
     for cookie in [&f.owner, &f.member] {
         assert_eq!(
@@ -617,7 +799,7 @@ async fn the_recap_skips_a_deactivated_or_purged_member(db: PgPool) {
     let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
     stock_item(&db, &f.group, "Lait", 1.0, today).await;
 
-    let done = recap(&db, today).await.unwrap();
+    let done = recap(&db, today, 9).await.unwrap();
     assert_eq!((done.written, done.recipients), (1, vec![owner]));
     let notified: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM notifications")
         .fetch_all(&db)
@@ -657,7 +839,7 @@ async fn the_recap_push_follows_each_member_s_channel(db: PgPool) {
     let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
     stock_item(&db, &f.group, "Lait", 1.0, today).await;
 
-    let done = recap(&db, today).await.unwrap();
+    let done = recap(&db, today, 9).await.unwrap();
     assert_eq!(done.recipients.len(), 3);
     let pushed = std::sync::Mutex::new(Vec::new());
     let send_push = |endpoint: String, _ttl: i64| {
@@ -693,7 +875,7 @@ async fn the_recap_is_pushed_to_the_members_who_have_a_device(db: PgPool) {
     let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
     stock_item(&db, &f.group, "Lait", 1.0, today).await;
 
-    let done = recap(&db, today).await.unwrap();
+    let done = recap(&db, today, 9).await.unwrap();
     let pushed = std::sync::Mutex::new(Vec::new());
     let send_push = |endpoint: String, ttl: i64| {
         pushed.lock().unwrap().push((endpoint, ttl));
@@ -723,7 +905,7 @@ async fn the_hourly_pass_skips_a_row_the_recap_announced(db: PgPool) {
     let f = family(&db).await;
     let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
     let lait = stock_item(&db, &f.group, "Lait", 1.0, today + Duration::days(2)).await;
-    assert_eq!(recap(&db, today).await.unwrap().written, 2);
+    assert_eq!(recap(&db, today, 9).await.unwrap().written, 2);
     assert_eq!(notify_expiring(&db, today).await.unwrap(), 0);
 
     sqlx::query("UPDATE stock_items SET expires_on = $2 WHERE id = $1")

@@ -11,9 +11,9 @@
 //! notification is kept, so a purged key cannot let the same date be
 //! announced twice.
 //!
-//! The daily recap (`jobs::stock_expiry_recap`, #566) completes it: an item
-//! the recap already announced for its current date
-//! (`stock_items.expiry_notified_on`) is not announced again here.
+//! The daily recap (`jobs::stock_expiry_recap`, #566) completes it: a
+//! member a recap already told of an item for its current date
+//! (`stock_expiry_announcements`, #700) is not told again here.
 
 use std::time::Duration as StdDuration;
 
@@ -68,8 +68,7 @@ pub async fn notify_expiring(pool: &PgPool, today: NaiveDate) -> anyhow::Result<
     let items = sqlx::query!(
         r#"SELECT id, group_id, name, expires_on AS "expires_on!"
            FROM stock_items
-           WHERE expires_on BETWEEN $1 AND $2 AND quantity > 0
-             AND expiry_notified_on IS DISTINCT FROM expires_on"#,
+           WHERE expires_on BETWEEN $1 AND $2 AND quantity > 0"#,
         from,
         to,
     )
@@ -78,8 +77,26 @@ pub async fn notify_expiring(pool: &PgPool, today: NaiveDate) -> anyhow::Result<
 
     let mut written = 0;
     for item in items {
-        written += center::insert_for_members(
+        // The active members, but those a recap already told of this item
+        // for this date.
+        let members: Vec<uuid::Uuid> = sqlx::query_scalar!(
+            r#"SELECT gm.user_id FROM group_members gm
+               JOIN users u ON u.id = gm.user_id
+               WHERE gm.group_id = $1
+                 AND u.deactivated_at IS NULL AND u.deleted_at IS NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM stock_expiry_announcements a
+                     WHERE a.user_id = gm.user_id AND a.stock_item_id = $2
+                       AND a.expires_on = $3)"#,
+            item.group_id,
+            item.id,
+            item.expires_on,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        written += center::insert_for(
             &mut tx,
+            &members,
             &center::NewNotification {
                 group_id: item.group_id,
                 event: center::Event::StockExpiry {

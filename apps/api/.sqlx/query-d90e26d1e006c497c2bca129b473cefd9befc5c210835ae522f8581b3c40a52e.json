@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET expiry_digest_sent_on = $2 WHERE id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Date"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d90e26d1e006c497c2bca129b473cefd9befc5c210835ae522f8581b3c40a52e"
+}

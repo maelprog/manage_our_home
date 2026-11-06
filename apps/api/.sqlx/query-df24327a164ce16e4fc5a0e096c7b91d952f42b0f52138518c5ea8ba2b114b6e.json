@@ -1,10 +1,21 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, quantity, expires_on, expiry_notified_on\n           FROM stock_items\n           WHERE expires_on <= $1 AND quantity > 0\n             AND expiry_notified_on IS DISTINCT FROM expires_on\n           ORDER BY group_id, expires_on, name, id\n           FOR UPDATE",
+  "query": "SELECT gm.user_id, s.id, s.group_id, s.name, s.quantity,\n                  s.expires_on AS \"expires_on!\", a.expires_on AS \"announced?\"\n           FROM group_members gm\n           JOIN stock_items s ON s.group_id = gm.group_id\n           LEFT JOIN stock_expiry_announcements a\n                  ON a.user_id = gm.user_id AND a.stock_item_id = s.id\n           WHERE gm.user_id = ANY($1)\n             AND s.expires_on <= $2 AND s.quantity > 0\n             AND a.expires_on IS DISTINCT FROM s.expires_on\n           ORDER BY gm.user_id, s.group_id, s.expires_on, s.name, s.id",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
         "name": "id",
         "type_info": "Uuid",
         "origin": {
@@ -15,7 +26,7 @@
         }
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "group_id",
         "type_info": "Uuid",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "quantity",
         "type_info": "Float8",
         "origin": {
@@ -48,8 +59,8 @@
         }
       },
       {
-        "ordinal": 4,
-        "name": "expires_on",
+        "ordinal": 5,
+        "name": "expires_on!",
         "type_info": "Date",
         "origin": {
           "Table": {
@@ -59,19 +70,20 @@
         }
       },
       {
-        "ordinal": 5,
-        "name": "expiry_notified_on",
+        "ordinal": 6,
+        "name": "announced?",
         "type_info": "Date",
         "origin": {
           "Table": {
-            "table": "stock_items",
-            "name": "expiry_notified_on"
+            "table": "stock_expiry_announcements",
+            "name": "expires_on"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
+        "UuidArray",
         "Date"
       ]
     },
@@ -80,9 +92,10 @@
       false,
       false,
       false,
+      false,
       true,
-      true
+      false
     ]
   },
-  "hash": "807693cdb90bf4d1533d0a5882bbf8c46819b0a435962f5c23516e84ab63bd78"
+  "hash": "df24327a164ce16e4fc5a0e096c7b91d952f42b0f52138518c5ea8ba2b114b6e"
 }

@@ -94,6 +94,25 @@ test.describe("Reminder notifications", () => {
     await expect(page.getByText("« Rappel d'un événement à venir »")).toBeVisible();
   });
 
+  // The hour of the daily recap of the products nearing their expiry date
+  // (#700): 9 h for a new account, any hour of the day, saved with the
+  // channel by the same button.
+  test("the expiry recap's hour is 9 h by default and can be changed", async ({ page }) => {
+    await registerAndLogin(page, "notif-digest-hour");
+    await page.goto("/account/notifications");
+    const hour = page.getByLabel("Heure du récapitulatif");
+    await expect(hour).toHaveValue("9");
+    await expect(hour.locator("option")).toHaveCount(24);
+
+    await hour.selectOption({ label: "7 h" });
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(/\/account\/notifications\?notice=channel_saved$/);
+    await expect(page.getByText("Préférence enregistrée.")).toBeVisible();
+    await expect(page.getByLabel("Heure du récapitulatif")).toHaveValue("7");
+    // The channel was left as it was.
+    await expect(page.getByRole("radio", { name: "Par notification sur mes appareils" })).toBeChecked();
+  });
+
   test("the service worker is served from the root and shows a fixed text per kind", async ({
     request,
   }) => {

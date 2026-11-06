@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gm.user_id FROM group_members gm\n               JOIN users u ON u.id = gm.user_id\n               WHERE gm.group_id = $1\n                 AND u.deactivated_at IS NULL AND u.deleted_at IS NULL\n                 AND NOT EXISTS (\n                     SELECT 1 FROM stock_expiry_announcements a\n                     WHERE a.user_id = gm.user_id AND a.stock_item_id = $2\n                       AND a.expires_on = $3)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d45e3c2eeb69af8cbb7b1c4f036b7921fd2d96c4ad574a6fcc20b97bcf2e63e9"
+}

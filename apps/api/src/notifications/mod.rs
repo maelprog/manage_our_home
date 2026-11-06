@@ -50,9 +50,41 @@ impl ReminderChannel {
     }
 }
 
+/// The hour of the daily expiry recap a member may choose
+/// (`users.expiry_digest_hour`, #700): 0 to 23, Europe/Paris, as the
+/// `CHECK` of migration 0049 spells it. Anything else is refused.
+pub fn parse_expiry_digest_hour(hour: i64) -> Option<i16> {
+    i16::try_from(hour)
+        .ok()
+        .filter(|hour| (0..=23).contains(hour))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_hour_of_the_day_is_a_recap_hour() {
+        for hour in 0..=23 {
+            assert_eq!(parse_expiry_digest_hour(hour), Some(hour as i16), "{hour}");
+        }
+    }
+
+    #[test]
+    fn an_hour_outside_the_day_is_refused() {
+        for hour in [
+            -1,
+            24,
+            25,
+            100,
+            -24,
+            i64::from(i16::MAX) + 1,
+            i64::MIN,
+            i64::MAX,
+        ] {
+            assert_eq!(parse_expiry_digest_hour(hour), None, "{hour}");
+        }
+    }
 
     #[test]
     fn the_three_values_round_trip() {

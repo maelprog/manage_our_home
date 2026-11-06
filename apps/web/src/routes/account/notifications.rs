@@ -1,6 +1,7 @@
 //! `/account/notifications` — how reminders reach the member (#306): by
-//! notification on their devices, by email, or both; and this device's
-//! subscription.
+//! notification on their devices, by email, or both; the hour of their
+//! daily recap of the products nearing their expiry date (#700), saved by
+//! the same form; and this device's subscription.
 //!
 //! **No fallback** (controller's decision of 2026-10-01): a member on
 //! notifications with no device subscribed receives no reminder at all,
@@ -22,7 +23,8 @@
 //! device got and shows that kind's fixed text — « Rappel d'un événement à
 //! venir » for a reminder, never the event's title, the same choice as the
 //! reminder emails' subject (#146); « Alerte de budget » for a budget alert
-//! (#536); a neutral one when it cannot tell.
+//! (#536); « Produits bientôt périmés » for the daily expiry recap (#566),
+//! never an item's name; a neutral one when it cannot tell.
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -58,6 +60,12 @@ pub(crate) fn includes_push(channel: &str) -> bool {
 /// Whether `channel` is one the API takes.
 pub(crate) fn is_channel(channel: &str) -> bool {
     CHANNELS.iter().any(|(value, _)| *value == channel)
+}
+
+/// The recap's hour as the form sends it, if it is one of the day's, 0 to
+/// 23 — the API checks it too (`invalid_expiry_digest_hour`, #700).
+pub(crate) fn parse_digest_hour(text: &str) -> Option<i64> {
+    text.parse().ok().filter(|hour| (0..=23).contains(hour))
 }
 
 /// The link every warning ends on.
@@ -339,6 +347,7 @@ fn notice_html(notice: Option<&str>) -> String {
 fn error_html(error: Option<&str>) -> String {
     let text = match error {
         Some("invalid_channel") => "Choix invalide, merci de réessayer.",
+        Some("invalid_hour") => "Heure invalide : choisissez une heure entre 0 h et 23 h.",
         Some("unavailable") => "Service momentanément indisponible, merci de réessayer.",
         _ => return String::new(),
     };
@@ -366,6 +375,16 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
             )
         })
         .collect();
+    let hours: String = (0..24)
+        .map(|hour| {
+            let selected = if hour == settings.expiry_digest_hour {
+                " selected"
+            } else {
+                ""
+            };
+            format!(r#"<option value="{hour}"{selected}>{hour} h</option>"#)
+        })
+        .collect();
     let n = settings.push_subscriptions;
     let devices = match n {
         0 => "Aucun appareil n'est abonné aux notifications.".to_string(),
@@ -389,6 +408,11 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
 <fieldset class="card">
 <legend>Recevoir mes rappels</legend>
 {choices}</fieldset>
+<fieldset class="card">
+<legend>Produits bientôt périmés</legend>
+<p>Chaque jour, à l'heure choisie (heure de Paris), un récapitulatif des produits de vos familles qui périment bientôt arrive dans vos notifications.</p>
+<label class="field">Heure du récapitulatif <select name="expiry_digest_hour">{hours}</select></label>
+</fieldset>
 <button type="submit">Enregistrer</button>
 </form>
 <section class="card">
@@ -431,9 +455,11 @@ pub async fn get(
 pub struct ChannelForm {
     #[serde(default)]
     reminder_channel: String,
+    /// The recap's hour (#700). Absent, it stays as it is.
+    expiry_digest_hour: Option<String>,
 }
 
-/// `POST /account/notifications` — the channel form.
+/// `POST /account/notifications` — the channel form, with the recap's hour.
 pub async fn post(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
@@ -443,6 +469,13 @@ pub async fn post(
     if !is_channel(&form.reminder_channel) {
         return Redirect::to("/account/notifications?error=invalid_channel").into_response();
     }
+    let digest_hour = match form.expiry_digest_hour.as_deref().map(parse_digest_hour) {
+        None => None,
+        Some(Some(hour)) => Some(hour),
+        Some(None) => {
+            return Redirect::to("/account/notifications?error=invalid_hour").into_response()
+        }
+    };
     let cookie = account_cookie(&headers);
     let result = api_request_auth(
         &state,
@@ -452,6 +485,7 @@ pub async fn post(
         Some(
             serde_json::to_value(UpdateNotificationSettings {
                 reminder_channel: form.reminder_channel,
+                expiry_digest_hour: digest_hour,
             })
             .unwrap(),
         ),
@@ -535,6 +569,63 @@ mod tests {
             reminder_channel: channel.into(),
             push_subscriptions: devices,
             vapid_public_key: Some("BKey-_0".into()),
+            expiry_digest_hour: 9,
+        }
+    }
+
+    /// The `<option>`s of the recap's hour, and the value of the selected
+    /// ones.
+    fn hour_options(body: &str) -> (usize, Vec<String>) {
+        let select = body
+            .split(r#"<select name="expiry_digest_hour""#)
+            .nth(1)
+            .and_then(|rest| rest.split("</select>").next())
+            .expect("the page offers the recap's hour");
+        let options: Vec<&str> = select.split("<option").skip(1).collect();
+        let selected = options
+            .iter()
+            .filter(|o| o.contains(" selected"))
+            .filter_map(|o| o.split(r#"value=""#).nth(1)?.split('"').next())
+            .map(str::to_string)
+            .collect();
+        (options.len(), selected)
+    }
+
+    /// Every hour of the day, 0 to 23, the member's selected and no other.
+    #[test]
+    fn the_page_offers_every_hour_and_selects_the_members() {
+        for hour in [0, 9, 23] {
+            let mut s = settings("push", 0);
+            s.expiry_digest_hour = hour;
+            let (count, selected) = hour_options(&page_body(&s, "", ""));
+            assert_eq!(count, 24, "{hour}");
+            assert_eq!(selected, [hour.to_string()], "{hour}");
+        }
+        let body = page_body(&settings("push", 0), "", "");
+        assert!(body.contains(r#"<option value="7">7 h</option>"#), "{body}");
+        // Labelled, in the form that saves the channel: one button.
+        assert!(
+            body.contains(
+                r#"<label class="field">Heure du récapitulatif <select name="expiry_digest_hour">"#
+            ),
+            "{body}"
+        );
+        assert_eq!(
+            body.matches(r#"<button type="submit">"#).count(),
+            1,
+            "{body}"
+        );
+        assert!(body.contains("heure de Paris"), "{body}");
+        assert!(error_html(Some("invalid_hour")).contains("entre 0 h et 23 h"));
+    }
+
+    #[test]
+    fn only_an_hour_of_the_day_is_a_recap_hour() {
+        for hour in 0..=23 {
+            assert_eq!(parse_digest_hour(&hour.to_string()), Some(hour), "{hour}");
+        }
+        for text in ["", "24", "-1", "9.5", " 9", "neuf", "99999999999999999999"] {
+            assert_eq!(parse_digest_hour(text), None, "{text:?}");
         }
     }
 

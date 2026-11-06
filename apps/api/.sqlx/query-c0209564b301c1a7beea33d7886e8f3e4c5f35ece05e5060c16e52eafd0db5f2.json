@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET reminder_channel = $2,\n                  expiry_digest_hour = COALESCE($3, expiry_digest_hour)\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c0209564b301c1a7beea33d7886e8f3e4c5f35ece05e5060c16e52eafd0db5f2"
+}
