@@ -7,7 +7,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const mobile = fileURLToPath(new URL('..', import.meta.url));
@@ -29,6 +31,70 @@ function loadConfig(env) {
   return run.status === 0 ? { config: JSON.parse(run.stdout) } : { error: run.stderr };
 }
 
+const uncommented = (xml) => xml.replace(/<!--[\s\S]*?-->/g, '');
+
+// Each <tag …> of `xml`, comments aside, as its attributes (name → value),
+// whatever the spacing and the quotes around them.
+function elements(xml, tag) {
+  return [...uncommented(xml).matchAll(new RegExp(`<${tag}(?=[\\s/>])([^>]*)>`, 'g'))].map(([, body]) =>
+    Object.fromEntries(
+      [...body.matchAll(/([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map(([, name, dq, sq]) => [name, dq ?? sq]),
+    ),
+  );
+}
+
+// The `src` of each <certificates> of a network security config.
+const anchors = (nsc) => elements(nsc, 'certificates').map((attrs) => attrs.src);
+
+// What the manifest of `main` sets and no other source set may touch: a
+// flavour or build type manifest is merged over main's, and can set,
+// replace (tools:replace) or remove (tools:remove) any of them.
+const POLICY_ATTRIBUTES = /\b(networkSecurityConfig|usesCleartextTraffic|allowBackup|fullBackupContent)\b/;
+const POLICY_RESOURCES = ['res/xml/network_security_config.xml'];
+
+// The source sets under `src`, other than main, that redefine the network
+// or backup policy.
+function policyOverrides(src) {
+  return readdirSync(src).filter((set) => {
+    if (set === 'main') return false;
+    const manifest = join(src, set, 'AndroidManifest.xml');
+    return (
+      (existsSync(manifest) && POLICY_ATTRIBUTES.test(uncommented(readFileSync(manifest, 'utf8')))) ||
+      POLICY_RESOURCES.some((res) => existsSync(join(src, set, res)))
+    );
+  });
+}
+
+test('anchors are read whatever the spacing and quoting, comments aside', () => {
+  assert.deepEqual(anchors('<certificates src="system"/>'), ['system']);
+  assert.deepEqual(anchors('<certificates src = "user"/>'), ['user']);
+  assert.deepEqual(anchors("<certificates\n  src='user' />"), ['user']);
+  assert.deepEqual(anchors('<!-- <certificates src="user"/> -->'), []);
+});
+
+test('a source set redefines the policy through its manifest or its resources', () => {
+  const src = mkdtempSync(join(tmpdir(), 'check-shell-'));
+  try {
+    const put = (path, text) => {
+      mkdirSync(join(src, path, '..'), { recursive: true });
+      writeFileSync(join(src, path), text);
+    };
+    put('main/AndroidManifest.xml', '<application android:networkSecurityConfig="@xml/network_security_config"/>');
+    put('debug/AndroidManifest.xml', '<uses-permission android:name="android.permission.CAMERA" />');
+    assert.deepEqual(policyOverrides(src), []);
+    put(
+      'staging/AndroidManifest.xml',
+      '<manifest xmlns:tools="http://schemas.android.com/tools"><application' +
+        ' android:networkSecurityConfig="@xml/lax" tools:replace="android:networkSecurityConfig"/></manifest>',
+    );
+    put('prodDebug/AndroidManifest.xml', '<application tools:remove="android:usesCleartextTraffic"/>');
+    put('prod/res/xml/network_security_config.xml', '<network-security-config/>');
+    assert.deepEqual(policyOverrides(src).sort(), ['prod', 'prodDebug', 'staging']);
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
 function rustConst(file, name) {
   const found = read(`../web/src/${file}`).match(new RegExp(`^pub const ${name}: &str = "([^"]*)";$`, 'm'));
   assert.ok(found, `${name} in apps/web/src/${file}`);
@@ -36,30 +102,29 @@ function rustConst(file, name) {
 }
 
 test('the app trusts the system authorities only, and no plain http', () => {
-  const nsc = read(`${res}/xml/network_security_config.xml`).replace(/<!--[\s\S]*?-->/g, '');
-  const anchors = [...nsc.matchAll(/<certificates\s+src="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(anchors, ['system']);
-  assert.match(nsc, /<base-config cleartextTrafficPermitted="false">/);
+  const nsc = uncommented(read(`${res}/xml/network_security_config.xml`));
+  assert.deepEqual(anchors(nsc), ['system']);
+  assert.deepEqual(elements(nsc, 'base-config'), [{ cleartextTrafficPermitted: 'false' }]);
   // No exception for one host, no debug-only authority, no pinning that
   // could be left behind.
   assert.doesNotMatch(nsc, /domain-config|debug-overrides|pin-set|overridePins/);
   // No certificate shipped in the APK for a trust anchor to point at.
   assert.ok(!existsSync(`${mobile}/${res}/raw`), `${res}/raw holds no certificate`);
-  for (const flavor of readdirSync(`${mobile}/android/app/src`)) {
-    assert.ok(
-      !existsSync(`${mobile}/android/app/src/${flavor}/res/xml/network_security_config.xml`) || flavor === 'main',
-      `the ${flavor} flavour does not override the policy`,
-    );
-  }
+  assert.deepEqual(policyOverrides(`${mobile}/android/app/src`), [], 'no flavour overrides the policy');
 });
 
 test('the manifest applies that policy, keeps the session off backups, and asks for the camera', () => {
   const manifest = read('android/app/src/main/AndroidManifest.xml');
-  assert.match(manifest, /android:networkSecurityConfig="@xml\/network_security_config"/);
-  assert.match(manifest, /android:usesCleartextTraffic="false"/);
-  assert.match(manifest, /android:allowBackup="false"/);
-  assert.match(manifest, /<uses-permission android:name="android.permission.CAMERA" \/>/);
-  assert.match(manifest, /<uses-feature android:name="android.hardware.camera" android:required="false" \/>/);
+  const [app, ...others] = elements(manifest, 'application');
+  assert.equal(others.length, 0);
+  assert.equal(app['android:networkSecurityConfig'], '@xml/network_security_config');
+  assert.equal(app['android:usesCleartextTraffic'], 'false');
+  assert.equal(app['android:allowBackup'], 'false');
+  assert.ok(elements(manifest, 'uses-permission').some((p) => p['android:name'] === 'android.permission.CAMERA'));
+  assert.deepEqual(
+    elements(manifest, 'uses-feature').filter((f) => f['android:name'] === 'android.hardware.camera'),
+    [{ 'android:name': 'android.hardware.camera', 'android:required': 'false' }],
+  );
 });
 
 test('staging is the default target, and opens the staging server', () => {
