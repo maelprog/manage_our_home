@@ -223,8 +223,8 @@ const NOT_DOCUMENTED: [(&str, &str); 4] = [
     // API's format, not by a client of the API.
     ("POST", "/csp-report"),
     // `/openapi.json` and `/docs` are not in this list: they are merged
-    // from `api_docs::router`, not registered with `.route` in
-    // `build_router`, so the parse below never sees them.
+    // from `api_docs::router`, the one merge the parse below lets through
+    // without reading it.
 ];
 
 const METHODS: [&str; 8] = [
@@ -237,9 +237,25 @@ struct Route {
     handler: Vec<String>,
 }
 
+/// The `Router` methods that register routes some other way than `.route`.
+/// The parse reads none of them, so it refuses them all — but for the merge
+/// of `api_docs::router`, whose routes are the documentation's own.
+const OTHER_REGISTRATIONS: [&str; 7] = [
+    "nest",
+    "nest_service",
+    "route_service",
+    "merge",
+    "fallback",
+    "fallback_service",
+    "method_not_allowed_fallback",
+];
+
 /// Reads `build_router` in `src/lib.rs`: every `.route("<path>", <method
 /// router>)`, with the methods of its chain — `get(h)`, `.post(h)`,
 /// `axum::routing::patch(h)` — and what a `.layer(...)` wraps left out.
+/// Anything else that would register a route — another method router
+/// (`any`, `on`, a `.fallback` in the chain), or one of
+/// `OTHER_REGISTRATIONS` — fails the parse rather than going unseen.
 struct RouteCollector {
     routes: BTreeMap<(String, String), Route>,
 }
@@ -251,16 +267,21 @@ impl RouteCollector {
                 let method = call.method.to_string();
                 if METHODS.contains(&method.as_str()) {
                     self.add(path, &method, call.args.first());
+                } else if method != "layer" {
+                    panic!("{path}: `.{method}` is not a method router this parse reads");
                 }
                 self.methods(path, &call.receiver);
             }
             syn::Expr::Call(call) => {
-                if let syn::Expr::Path(func) = &*call.func {
-                    let method = func.path.segments.last().unwrap().ident.to_string();
-                    if METHODS.contains(&method.as_str()) {
-                        self.add(path, &method, call.args.first());
-                    }
-                }
+                let syn::Expr::Path(func) = &*call.func else {
+                    panic!("{path}: a method router whose function is not a path");
+                };
+                let method = func.path.segments.last().unwrap().ident.to_string();
+                assert!(
+                    METHODS.contains(&method.as_str()),
+                    "{path}: `{method}` is not a method router this parse reads"
+                );
+                self.add(path, &method, call.args.first());
             }
             _ => panic!("{path}: a method router that is neither a call nor a method chain"),
         }
@@ -295,9 +316,36 @@ impl<'ast> Visit<'ast> for RouteCollector {
                 panic!("a .route() whose path is not a string");
             };
             self.methods(&path.value(), methods);
+        } else {
+            let method = call.method.to_string();
+            if OTHER_REGISTRATIONS.contains(&method.as_str())
+                && !(method == "merge" && merges_the_documentation(call))
+            {
+                panic!(
+                    "build_router registers routes with `.{method}`, which this parse does \
+                     not read: read it here, or register them with `.route`"
+                );
+            }
         }
         syn::visit::visit_expr_method_call(self, call);
     }
+}
+
+/// Whether `call` is `.merge(api_docs::router(..))`.
+fn merges_the_documentation(call: &syn::ExprMethodCall) -> bool {
+    let Some(syn::Expr::Call(arg)) = call.args.first() else {
+        return false;
+    };
+    let syn::Expr::Path(func) = &*arg.func else {
+        return false;
+    };
+    let segments: Vec<String> = func
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    segments == ["api_docs", "router"]
 }
 
 fn src_dir() -> PathBuf {
@@ -305,8 +353,12 @@ fn src_dir() -> PathBuf {
 }
 
 fn build_router_routes() -> BTreeMap<(String, String), Route> {
-    let source = std::fs::read_to_string(src_dir().join("lib.rs")).unwrap();
-    let file = syn::parse_file(&source).unwrap();
+    routes_of(&std::fs::read_to_string(src_dir().join("lib.rs")).unwrap())
+}
+
+/// The routes of the `build_router` that `source` defines.
+fn routes_of(source: &str) -> BTreeMap<(String, String), Route> {
+    let file = syn::parse_file(source).unwrap();
     let build_router = file
         .items
         .iter()
@@ -320,6 +372,86 @@ fn build_router_routes() -> BTreeMap<(String, String), Route> {
     };
     collector.visit_item_fn(build_router);
     collector.routes
+}
+
+/// A `build_router` whose body is `body`, for the tests of the parse.
+fn routes_of_body(body: &str) -> BTreeSet<(String, String)> {
+    routes_of(&format!("fn build_router(state: AppState) -> Router {{ {body} }}"))
+        .into_keys()
+        .collect()
+}
+
+fn route(method: &str, path: &str) -> (String, String) {
+    (method.to_string(), path.to_string())
+}
+
+#[test]
+fn the_parse_reads_method_chains_and_skips_layers() {
+    assert_eq!(
+        routes_of_body(
+            r#"Router::new()
+                .route("/a", get(a::list).post(a::create))
+                .route("/b", axum::routing::patch(b::edit).layer(DefaultBodyLimit::max(1)))
+                .layer(CookieManagerLayer::new())"#
+        ),
+        BTreeSet::from([route("GET", "/a"), route("POST", "/a"), route("PATCH", "/b")])
+    );
+}
+
+#[test]
+fn the_parse_accepts_the_merge_of_the_documentation() {
+    assert_eq!(
+        routes_of_body(
+            r#"let router = Router::new().route("/a", get(a::list));
+            let router = if state.api_docs_enabled {
+                router.merge(api_docs::router(&api_docs::openapi(state.secure_cookies)))
+            } else {
+                router
+            };
+            router.with_state(state)"#
+        ),
+        BTreeSet::from([route("GET", "/a")])
+    );
+}
+
+#[test]
+#[should_panic(expected = "/mutant: `any` is not a method router this parse reads")]
+fn the_parse_refuses_a_method_router_it_does_not_know() {
+    routes_of_body(r#"Router::new().route("/mutant", axum::routing::any(m::h))"#);
+}
+
+#[test]
+#[should_panic(expected = "/mutant: `.fallback` is not a method router this parse reads")]
+fn the_parse_refuses_a_chained_method_it_does_not_know() {
+    routes_of_body(r#"Router::new().route("/mutant", get(m::h).fallback(m::other))"#);
+}
+
+#[test]
+#[should_panic(expected = "build_router registers routes with `.nest`")]
+fn the_parse_refuses_a_nested_router() {
+    routes_of_body(
+        r#"Router::new()
+            .route("/a", get(a::list))
+            .nest("/n", Router::new().route_service("/mutant", m::service()))"#,
+    );
+}
+
+#[test]
+#[should_panic(expected = "build_router registers routes with `.route_service`")]
+fn the_parse_refuses_a_route_service() {
+    routes_of_body(r#"Router::new().route_service("/mutant", m::service())"#);
+}
+
+#[test]
+#[should_panic(expected = "build_router registers routes with `.merge`")]
+fn the_parse_refuses_the_merge_of_another_router() {
+    routes_of_body(r#"Router::new().route("/a", get(a::list)).merge(m::router())"#);
+}
+
+#[test]
+#[should_panic(expected = "build_router registers routes with `.fallback`")]
+fn the_parse_refuses_a_fallback() {
+    routes_of_body(r#"Router::new().route("/a", get(a::list)).fallback(m::h)"#);
 }
 
 /// Every `(method, path)` operation of the spec.
