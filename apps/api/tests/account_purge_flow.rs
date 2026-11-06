@@ -128,6 +128,20 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
     .execute(db)
     .await
     .unwrap();
+    // A family item an expiry recap announced to the account (#700).
+    sqlx::query(
+        "WITH item AS (
+             INSERT INTO stock_items (group_id, created_by, name, quantity, expires_on)
+             VALUES ($1, $2, 'Lait', 1, current_date + 1) RETURNING id, expires_on
+         )
+         INSERT INTO stock_expiry_announcements (user_id, stock_item_id, expires_on)
+         SELECT $2, id, expires_on FROM item",
+    )
+    .bind(group)
+    .bind(user)
+    .execute(db)
+    .await
+    .unwrap();
     // A notification received (#534), and one caused: its text names the
     // account, so it goes too — from the centre of an account nobody purges.
     let reader = insert_user(db, &format!("lecteur-{tag}@example.test"), None).await;
@@ -194,6 +208,10 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
             "SELECT count(*) FROM push_subscriptions WHERE user_id = $1",
         ),
         (
+            "stock_expiry_announcements",
+            "SELECT count(*) FROM stock_expiry_announcements WHERE user_id = $1",
+        ),
+        (
             "notifications",
             "SELECT count(*) FROM notifications WHERE user_id = $1",
         ),
@@ -225,6 +243,7 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "invitations",
         "calendar_imports",
         "push_subscriptions",
+        "stock_expiry_announcements",
         "notifications",
         "notifications caused",
     ]
