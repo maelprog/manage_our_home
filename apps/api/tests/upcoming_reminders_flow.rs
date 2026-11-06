@@ -295,6 +295,21 @@ async fn a_reminder_beyond_the_horizon_is_not_listed_yet(db: PgPool) {
     assert_eq!(upcoming_titles(&router, &cookie).await, ["Demain"]);
 }
 
+/// Notifications overdue and still pending (the worker retries them) do
+/// not use up a family's 64: the one to come behind 64 of them is listed.
+#[sqlx::test]
+async fn overdue_notifications_do_not_crowd_out_the_one_to_come(db: PgPool) {
+    let router = test_router(db.clone());
+    let (me, cookie) = user(&db, "me@example.test", "push").await;
+    let home = family(&db, me, &[]).await;
+    for minutes in 1..=64 {
+        reminder(&db, home, me, "En retard", -minutes).await;
+    }
+    reminder(&db, home, me, "À venir", 30).await;
+
+    assert_eq!(upcoming_titles(&router, &cookie).await, ["À venir"]);
+}
+
 /// A reminder deleted, or its event, leaves the list.
 #[sqlx::test]
 async fn a_deleted_reminder_or_event_leaves_the_list(db: PgPool) {

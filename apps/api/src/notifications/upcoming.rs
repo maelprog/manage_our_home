@@ -68,8 +68,9 @@ pub async fn list_upcoming(
     let mut candidates = Vec::new();
     for group_id in groups {
         let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-        // The same bounds as `select_upcoming`, so that no family hands
-        // over more than can be listed.
+        // The same bounds as `select_upcoming`, before the `LIMIT`: without
+        // the lower one, overdue notifications still pending (being
+        // retried) would fill a family's 64 and hide the ones to come.
         let rows = sqlx::query!(
             r#"SELECT sn.id, sn.event_id, e.title, sn.occurrence_at, sn.fire_at, e.all_day
                FROM scheduled_notifications sn JOIN events e ON e.id = sn.event_id
