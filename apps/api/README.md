@@ -860,10 +860,16 @@ Every route of `build_router` is an operation of the spec, and the other
 way round, but for the four left out on purpose (Messagerie WebSocket,
 `/healthz`, `/readyz`, `/csp-report`): `tests/openapi_flow.rs` reads the
 routes from `src/lib.rs` and fails on a route added without its
-annotation. It reads `.route("<path>", get(h).post(h)…)` only, and fails
-on any other way of registering one (`any`, `nest`, `route_service`,
-`fallback`, a `merge` other than `api_docs::router`'s). A new handler takes a `#[utoipa::path]` and a line in
-`api_docs::ApiDoc`'s `paths(...)`; its DTOs derive `utoipa::ToSchema` (in
+annotation. It reads the `.route("<path>", get(h).post(h)…)` calls
+written in the body of `build_router`, and fails on the other `Router`
+methods that register routes there (`nest`, `nest_service`,
+`route_service`, `fallback`, `fallback_service`,
+`method_not_allowed_fallback`, a `merge` other than `api_docs::router`'s)
+and on a method router other than `get`, `post`… (`any`, `on`). It does
+not see routes registered outside that body: in
+`let r = hidden_routes(); r.route(..)`, the routes `hidden_routes`
+registers are not read. A new
+handler takes a `#[utoipa::path]` and a line in `api_docs::ApiDoc`'s `paths(...)`; its DTOs derive `utoipa::ToSchema` (in
 `apps/shared`, behind the `openapi` feature only apps/api turns on).
 
 Swagger UI comes from the `utoipa-swagger-ui-vendored` crate: the build

@@ -250,12 +250,14 @@ const OTHER_REGISTRATIONS: [&str; 7] = [
     "method_not_allowed_fallback",
 ];
 
-/// Reads `build_router` in `src/lib.rs`: every `.route("<path>", <method
-/// router>)`, with the methods of its chain — `get(h)`, `.post(h)`,
-/// `axum::routing::patch(h)` — and what a `.layer(...)` wraps left out.
-/// Anything else that would register a route — another method router
-/// (`any`, `on`, a `.fallback` in the chain), or one of
-/// `OTHER_REGISTRATIONS` — fails the parse rather than going unseen.
+/// Reads the body of `build_router` in `src/lib.rs`: every
+/// `.route("<path>", <method router>)`, with the methods of its chain —
+/// `get(h)`, `.post(h)`, `axum::routing::patch(h)` — and what a
+/// `.layer(...)` wraps left out. In that body, a method router other than
+/// `METHODS` (`any`, `on`, a `.fallback` in the chain) and a call to one of
+/// `OTHER_REGISTRATIONS` fail the parse. Routes registered outside that
+/// body — a router another function builds and `build_router` extends —
+/// are not seen.
 struct RouteCollector {
     routes: BTreeMap<(String, String), Route>,
 }
