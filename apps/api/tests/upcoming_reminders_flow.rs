@@ -275,6 +275,26 @@ async fn only_pending_notifications_still_to_come_are_listed(db: PgPool) {
     assert_eq!(upcoming_titles(&router, &cookie).await, ["À venir"]);
 }
 
+/// A one-off event's reminder is written whatever its date, but one due
+/// beyond the 30 days of the horizon is not listed yet.
+#[sqlx::test]
+async fn a_reminder_beyond_the_horizon_is_not_listed_yet(db: PgPool) {
+    let router = test_router(db.clone());
+    let (me, cookie) = user(&db, "me@example.test", "push").await;
+    let home = family(&db, me, &[]).await;
+    let far = reminder(&db, home, me, "Dans deux mois", 60 * 24 * 60).await;
+    reminder(&db, home, me, "Demain", 60 * 24).await;
+
+    let (status,): (String,) =
+        sqlx::query_as("SELECT status FROM scheduled_notifications WHERE id = $1")
+            .bind(far.notification)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+    assert_eq!(upcoming_titles(&router, &cookie).await, ["Demain"]);
+}
+
 /// A reminder deleted, or its event, leaves the list.
 #[sqlx::test]
 async fn a_deleted_reminder_or_event_leaves_the_list(db: PgPool) {

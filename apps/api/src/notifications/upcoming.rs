@@ -104,8 +104,13 @@ pub async fn list_upcoming(
 /// schedules on.
 pub const MAX_UPCOMING_REMINDERS: usize = 64;
 
-/// How far ahead the answer looks: the window `scheduled_notifications`
-/// is materialized over, beyond which there is nothing to list anyway.
+/// How far ahead the answer looks: the window a recurring event's
+/// occurrences are materialized over (`NOTIFICATION_WINDOW_DAYS`), so that
+/// a series and a one-off event are listed alike. A one-off event's
+/// notification is written whatever its date (`reminder_occurrences`), so
+/// rows beyond the horizon do exist and are left out: a reminder due more
+/// than 30 days ahead reaches the device only through a call made within
+/// the 30 days before it is due.
 pub fn horizon() -> Duration {
     Duration::days(NOTIFICATION_WINDOW_DAYS)
 }
