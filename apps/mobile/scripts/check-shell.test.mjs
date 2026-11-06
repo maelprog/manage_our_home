@@ -48,7 +48,8 @@ const anchors = (nsc) => elements(nsc, 'certificates').map((attrs) => attrs.src)
 
 // What the manifest of `main` sets and no other source set may touch: a
 // flavour or build type manifest is merged over main's, and can set,
-// replace (tools:replace) or remove (tools:remove) any of them.
+// replace (tools:replace) or remove (tools:remove) any of them. Naming the
+// attribute is what policyOverrides looks for.
 const POLICY_ATTRIBUTES = /\b(networkSecurityConfig|usesCleartextTraffic|allowBackup|fullBackupContent|dataExtractionRules)\b/;
 const POLICY_RESOURCES = ['res/xml/network_security_config.xml', 'res/xml/data_extraction_rules.xml'];
 
@@ -59,8 +60,10 @@ const STORAGE_DOMAINS = [
   'device_root', 'device_file', 'device_database', 'device_sharedpref',
 ];
 
-// The source sets under `src`, other than main, that redefine the network
-// or backup policy.
+// The source sets under `src`, other than main, whose manifest names one of
+// those attributes, or that ship one of those files at res/xml/ exactly.
+// Not caught, left to review: a qualified directory (res/xml-v24/, in main
+// too), and a manifest that replaces <application> whole (tools:node).
 function policyOverrides(src) {
   return readdirSync(src).filter((set) => {
     if (set === 'main') return false;
@@ -79,7 +82,7 @@ test('anchors are read whatever the spacing and quoting, comments aside', () => 
   assert.deepEqual(anchors('<!-- <certificates src="user"/> -->'), []);
 });
 
-test('a source set redefines the policy through its manifest or its resources', () => {
+test('a source set that names a policy attribute or ships a policy file at res/xml/ is caught', () => {
   const src = mkdtempSync(join(tmpdir(), 'check-shell-'));
   try {
     const put = (path, text) => {
@@ -118,7 +121,7 @@ test('the app trusts the system authorities only, and no plain http', () => {
   assert.doesNotMatch(nsc, /domain-config|debug-overrides|pin-set|overridePins/);
   // No certificate shipped in the APK for a trust anchor to point at.
   assert.ok(!existsSync(`${mobile}/${res}/raw`), `${res}/raw holds no certificate`);
-  assert.deepEqual(policyOverrides(`${mobile}/android/app/src`), [], 'no flavour overrides the policy');
+  assert.deepEqual(policyOverrides(`${mobile}/android/app/src`), [], 'no other source set names the policy or ships its files at res/xml/');
 });
 
 test('the manifest applies that policy, keeps the session off backups, and asks for the camera', () => {
