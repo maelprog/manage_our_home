@@ -294,7 +294,7 @@ pub async fn get(
     // The head of a phone's list (#675): the period at a glance, then what
     // the list says when it is empty.
     let mini_html = render_mini(&days, &by_day, focus_month, today, &title, &marks)
-        + &empty_state(&days, &by_day, is_week, load_error);
+        + &empty_state(&days, &by_day, &marks, is_week, load_error);
 
     let body = view! {
         <div inner_html=nav_html></div>
@@ -578,16 +578,22 @@ fn render_mini(
 }
 
 /// What the phone's list says when it has no day to show (#675): nothing
-/// this month, or this week. A PC shows the empty grid, which says it
-/// already. Nothing when the events could not be read: the error notice
-/// above (#455) is the truth, and "Rien de prévu" under it would not be.
+/// this month, or this week. A day the list shows is one with an event or
+/// a national day written out (#565, `shown_labels`) — the same days the
+/// mini grid links. A PC shows the empty grid, which says it already.
+/// Nothing when the events could not be read: the error notice above
+/// (#455) is the truth, and "Rien de prévu" under it would not be.
 fn empty_state(
     days: &[NaiveDate],
     by_day: &BTreeMap<NaiveDate, Vec<&OccurrenceResponse>>,
+    marks: &BTreeMap<NaiveDate, DayMarks>,
     is_week: bool,
     load_error: bool,
 ) -> String {
-    if load_error || days.iter().any(|d| by_day.contains_key(d)) {
+    let listed = |d: &NaiveDate| {
+        by_day.contains_key(d) || marks.get(d).is_some_and(|m| !shown_labels(m, *d).is_empty())
+    };
+    if load_error || days.iter().any(listed) {
         return String::new();
     }
     let period = if is_week {
@@ -1303,12 +1309,12 @@ mod tests {
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
         let month = month_grid(2026, 7);
         assert_eq!(
-            empty_state(&month, &by_day, false, false),
+            empty_state(&month, &by_day, &BTreeMap::new(), false, false),
             r#"<p class="muted phone">Rien de prévu ce mois-ci.</p>"#
         );
         let week = week_days(day(15));
         assert_eq!(
-            empty_state(&week, &by_day, true, false),
+            empty_state(&week, &by_day, &BTreeMap::new(), true, false),
             r#"<p class="muted phone">Rien de prévu cette semaine.</p>"#
         );
     }
@@ -1318,7 +1324,36 @@ mod tests {
         let occs = [occurrence(9, "Dentiste")];
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
-        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, false, false), "");
+        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, &BTreeMap::new(), false, false), "");
+    }
+
+    #[test]
+    fn a_national_day_written_out_is_something_on_a_phone() {
+        // A month with no event but a national day shows that day in the
+        // list (#565): "Rien de prévu" under it would contradict it.
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
+        let (grid, national) = october_2026();
+        let marks = marks_by_day(&grid, &national);
+        assert_eq!(empty_state(&grid, &by_day, &marks, false, false), "");
+        let week = week_days(ymd(2026, 10, 25));
+        let marks = marks_by_day(&week, &national);
+        assert_eq!(empty_state(&week, &by_day, &marks, true, false), "");
+        // A day whose holiday is said to a screen reader only — a
+        // Wednesday of the period — is not in the list.
+        let national = [period(
+            ymd(2026, 10, 17),
+            ymd(2026, 11, 1),
+            "Vacances de la Toussaint",
+        )];
+        let week = week_days(ymd(2026, 10, 21));
+        let marks: BTreeMap<NaiveDate, DayMarks> = marks_by_day(&week, &national)
+            .into_iter()
+            .filter(|(d, _)| *d == ymd(2026, 10, 21))
+            .collect();
+        assert_eq!(
+            empty_state(&week, &by_day, &marks, true, false),
+            r#"<p class="muted phone">Rien de prévu cette semaine.</p>"#
+        );
     }
 
     #[test]
@@ -1326,7 +1361,7 @@ mod tests {
         // The error notice (#455) already says so; "Rien de prévu" under it
         // would say something false.
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
-        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, false, true), "");
+        assert_eq!(empty_state(&month_grid(2026, 7), &by_day, &BTreeMap::new(), false, true), "");
     }
 
     // -- what the grid is called (#145) ----------------------------------

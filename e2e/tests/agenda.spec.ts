@@ -719,14 +719,18 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     // A day number, then — on a national day (#565), a link — its name in
     // words: « 11 novembre, Armistice 1918 ».
     for (const text of await cells.allInnerTexts()) expect(text.trim()).toMatch(/^\d{1,2}(\s|$)/);
-    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeVisible();
 
     const today = mini.locator('td[aria-current="date"]');
     await expect(today).toHaveCount(1);
     await expect(today).toHaveClass(/\bcurrent\b/);
-    await expect(today).toHaveText(String(Number(parisDay().slice(8))));
+    await expect(today).toHaveText(new RegExp(`^${Number(parisDay().slice(8))}(\\s|$)`));
 
-    await page.goto("/agenda?view=week");
+    // A national day written out puts its day in the list (#565): the
+    // empty state is read on a month and a week that have none — February
+    // 2027's grid runs from 1 February to 14 March.
+    await page.goto("/agenda?view=month&date=2027-02-10");
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeVisible();
+    await page.goto("/agenda?view=week&date=2027-02-10");
     await expect(mini.locator("td")).toHaveCount(7);
     await expect(page.getByText("Rien de prévu cette semaine.")).toBeVisible();
   });

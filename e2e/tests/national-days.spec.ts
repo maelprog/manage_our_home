@@ -93,6 +93,8 @@ test.describe("Agenda — jours nationaux (#565)", () => {
       .locator("table.mini")
       .getByRole("link", { name: "25 octobre, Passage à l'heure d'hiver" });
     await expect(link).toHaveAttribute("href", "#j2026-10-25");
+    // A list that shows a day is not empty: no « Rien de prévu » under it.
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
   });
 
   test("zone B set in the settings brings its Toussaint holidays to the agenda", async ({ page }) => {
