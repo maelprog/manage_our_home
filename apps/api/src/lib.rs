@@ -247,6 +247,10 @@ pub fn build_router(state: AppState) -> Router {
                 .put(notifications::preferences::update_settings),
         )
         .route(
+            "/account/reminders/upcoming",
+            get(notifications::upcoming::list_upcoming),
+        )
+        .route(
             "/notifications",
             get(notifications::center::list_notifications),
         )

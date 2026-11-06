@@ -2,7 +2,9 @@
 //! subscriptions (#306): `GET`/`PUT /account/notifications`,
 //! `POST`/`DELETE /account/push-subscriptions`
 //! (`apps/api/src/notifications/preferences.rs`); and of the notification
-//! centre (#534), `/notifications` (`apps/api/src/notifications/center.rs`).
+//! centre (#534), `/notifications` (`apps/api/src/notifications/center.rs`);
+//! and of a member's upcoming reminders (#667),
+//! `GET /account/reminders/upcoming` (`apps/api/src/notifications/upcoming.rs`).
 
 use serde::{Deserialize, Serialize};
 
@@ -78,4 +80,26 @@ pub struct NotificationPage {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UnreadNotificationCount {
     pub unread_count: i64,
+}
+
+/// One entry of `GET /account/reminders/upcoming` (#667): the next time a
+/// reminder of the member's falls due, which the mobile application
+/// schedules on the device so that it fires without network.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct UpcomingReminder {
+    /// The `scheduled_notifications` row, one per reminder and occurrence:
+    /// the same from one call to the next, so the key a device schedules
+    /// it under, and cancels it by once it is no longer listed.
+    pub id: uuid::Uuid,
+    pub event_id: uuid::Uuid,
+    /// The family the event belongs to.
+    pub group_id: uuid::Uuid,
+    /// The event's title.
+    pub title: String,
+    /// The start of the occurrence the reminder is for.
+    pub occurrence_at: chrono::DateTime<chrono::Utc>,
+    /// When the reminder falls due.
+    pub fire_at: chrono::DateTime<chrono::Utc>,
+    pub all_day: bool,
 }

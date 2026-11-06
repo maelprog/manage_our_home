@@ -148,6 +148,7 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::notifications::preferences::subscribe,
         crate::notifications::preferences::unsubscribe_all,
         crate::notifications::preferences::update_settings,
+        crate::notifications::upcoming::list_upcoming,
         crate::recipes::crud::create_recipe,
         crate::recipes::crud::delete_recipe,
         crate::recipes::crud::get_recipe,

@@ -13,6 +13,7 @@
 pub mod center;
 pub mod preferences;
 pub mod push;
+pub mod upcoming;
 
 /// The value of `users.reminder_channel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

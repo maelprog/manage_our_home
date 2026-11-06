@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sn.id, sn.event_id, e.title, sn.occurrence_at, sn.fire_at, e.all_day\n               FROM scheduled_notifications sn JOIN events e ON e.id = sn.event_id\n               WHERE e.group_id = $1 AND e.created_by = $2 AND sn.status = 'pending'\n                 AND sn.fire_at > $3 AND sn.fire_at <= $4\n               ORDER BY sn.fire_at, sn.id\n               LIMIT $5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "scheduled_notifications",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "scheduled_notifications",
+            "name": "event_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "occurrence_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "scheduled_notifications",
+            "name": "occurrence_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "fire_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "scheduled_notifications",
+            "name": "fire_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "all_day",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "all_day"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f9d93991a42db508699e10b7f2d57fc56febbf1cc96af50e107200d1a54ecf5d"
+}
