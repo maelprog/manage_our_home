@@ -66,10 +66,15 @@ configMapGenerator:
       # (ci/render-test.sh).
       - PUBLIC_BASE_URL=https://staging.watallo.fr/api
       - FRONTEND_BASE_URL=https://staging.watallo.fr
-      # Placeholders until a relay is chosen: `.invalid` resolves nowhere
-      # (RFC 2606), so no mail leaves for a third party.
-      - SMTP_HOST=smtp.manage-our-home.invalid
-      - SMTP_FROM=no-reply@staging.manage-our-home.invalid
+      # The relay is Scaleway Transactional Email (#328, #714), reached in
+      # implicit TLS on port 465 (`AsyncSmtpTransport::relay`,
+      # apps/api/src/main.rs of main). The sender's domain is
+      # `staging.watallo.fr`, verified in the console (SPF, DKIM, DMARC),
+      # apart from `watallo.fr` so that the staging's reputation is its own.
+      # Its credentials are in the sealed `api-secrets`
+      # (docs/install-k3s.md, "Le relais SMTP du staging").
+      - SMTP_HOST=smtp.tem.scaleway.com
+      - SMTP_FROM=no-reply@staging.watallo.fr
       - VAPID_SUBJECT=mailto:admin@staging.manage-our-home.invalid
   - name: web-config
     behavior: merge
