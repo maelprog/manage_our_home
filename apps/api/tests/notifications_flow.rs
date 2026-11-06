@@ -534,7 +534,8 @@ async fn the_recap_notifies_every_member_once_a_day(db: PgPool) {
 }
 
 /// A row announced, its date moved to another day close by, is announced
-/// again — alone; a row of quantity 0 never is, whatever its date.
+/// again — alone, and once: the day after, nothing goes; a row of quantity 0
+/// never is, whatever its date.
 #[sqlx::test]
 async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPool) {
     let f = family(&db).await;
@@ -562,6 +563,10 @@ async fn the_recap_announces_a_moved_date_again_and_never_an_empty_row(db: PgPoo
             "2 produits périment bientôt : Œufs, Lait."
         ]
     );
+    // The moved date is the one now marked announced: the next pass, with
+    // Lait still close by, has nothing new to say.
+    let after = recap(&db, day(2), 9).await.unwrap();
+    assert_eq!((after.written, after.recipients.len()), (0, 0));
     let announced: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM stock_expiry_announcements WHERE stock_item_id = $1",
     )
