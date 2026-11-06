@@ -634,8 +634,10 @@ tag) ou restaurer Postgres à un instant antérieur (« Restaurer »).
 
 ## Réglages à fixer
 
-L'adresse publique de la prod et le relais SMTP des deux overlays sont
-des emplacements en `.invalid` (RFC 2606 : ne résout nulle part).
+L'adresse publique de la prod et son relais SMTP sont des emplacements
+en `.invalid` (RFC 2606 : ne résout nulle part). Le staging envoie par
+Scaleway Transactional Email (`docs/install-k3s.md`, « Le relais SMTP du
+staging »).
 L'adresse d'un environnement se fixe dans `FRONTEND_BASE_URL` de son
 overlay, avec `PUBLIC_BASE_URL` et `API_PUBLIC_BASE_URL` sur le même
 hôte : l'ingress et son certificat suivent (« Ingress »). Tant que celle
