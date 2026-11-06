@@ -106,13 +106,20 @@ possibles sont :
 - **Scaleway** (Scaleway SAS, Paris), dont le service d'emails
   transactionnels achemine les emails du site : vérification d'adresse, réinitialisation de mot de passe,
   invitation à un groupe, rappel d'événement, avertissement avant la
-  suppression d'un compte désactivé et avis de la propriété d'un groupe
-  qui vous revient sans que vous l'ayez demandée — les six seuls emails que
+  suppression d'un compte désactivé, avis de la propriété d'un groupe
+  qui vous revient sans que vous l'ayez demandée et avis « Vous avez déjà
+  un compte » — les sept seuls emails que
   ce service envoie. Scaleway reçoit l'adresse du destinataire, l'objet et le
   corps de chacun : le corps d'un rappel reprend le titre et la date de
   l'événement, le corps d'une invitation nomme le groupe et le membre qui
-  invite, et le corps d'un avis de propriété nomme le groupe et dit pourquoi
-  il vous revient. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
+  invite, le corps d'un avis de propriété nomme le groupe et dit pourquoi
+  il vous revient, et le corps de l'avis de compte existant vous nomme par
+  votre nom affiché. Cet avis part quand quelqu'un — vous ou n'importe qui
+  d'autre — tente de créer un compte avec votre adresse alors qu'elle est
+  déjà vérifiée, sauf si votre compte est désactivé ; il vous le signale,
+  avec un lien vers la page « mot de passe oublié », sans que la personne
+  qui a tenté l'inscription apprenne que le compte existe. Il part au plus
+  3 fois par adresse sur 24 heures glissantes. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
   « Rappel d'un événement à venir ». Un titre peut être sensible (un examen
   médical, un rendez-vous chez un professionnel) : il ne figure donc pas
   dans l'objet, la ligne que la liste des messages affiche en premier. Il
