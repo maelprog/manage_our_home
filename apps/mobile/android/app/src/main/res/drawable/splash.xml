@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Behind the launch screen: the page background of the light theme, the web
+  manifest's background_color (apps/web/src/brand.rs, BACKGROUND_COLOR,
+  turned into @color/brand_background by app/build.gradle). Android 12 and
+  later draw the launcher icon over it.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/brand_background"/>
+</shape>

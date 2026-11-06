@@ -1,0 +1,141 @@
+import groovy.json.JsonSlurper
+
+apply plugin: 'com.android.application'
+
+// What the shell takes from elsewhere in the repository (#665), read once
+// when Gradle configures the project:
+// - the synced Capacitor config (assets/capacitor.config.json, written by
+//   `npx cap sync` from ../capacitor.config.ts): the app's name, and the
+//   site the WebView opens, which each flavour checks below;
+// - apps/web/src/brand.rs: the two colours of the web manifest;
+// - apps/web/src/brand/: the icons of the web manifest (copyBrandIcons).
+def syncedConfigFile = file('src/main/assets/capacitor.config.json')
+if (!syncedConfigFile.exists()) {
+    throw new GradleException("${syncedConfigFile} is missing: run `npx cap sync android` in apps/mobile first")
+}
+def syncedConfig = new JsonSlurper().parse(syncedConfigFile)
+def stagingUrl = 'https://staging.watallo.fr'
+
+def brandDir = file('../../../web/src/brand')
+def brandSource = file('../../../web/src/brand.rs').getText('UTF-8')
+def brandColour = { String name ->
+    def found = brandSource =~ /(?m)^pub const ${name}: &str = "(#[0-9A-Fa-f]{6})";$/
+    if (!found.find()) {
+        throw new GradleException("apps/web/src/brand.rs: no `pub const ${name}: &str = \"#RRGGBB\";` line")
+    }
+    found.group(1)
+}
+
+android {
+    namespace = "fr.watallo.mhome"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "fr.watallo.mhome"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        resValue "string", "app_name", syncedConfig.appName
+        resValue "color", "brand_theme", brandColour('THEME_COLOR')
+        resValue "color", "brand_background", brandColour('BACKGROUND_COLOR')
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildFeatures {
+        resValues = true
+    }
+    // Which site the APK opens is chosen at `npx cap sync` (MHOME_TARGET,
+    // capacitor.config.ts); the flavour names it, so the two can be
+    // checked against each other (checkSyncedTarget below). The staging
+    // flavour has an id of its own, so one phone can hold both apps.
+    flavorDimensions = ["target"]
+    productFlavors {
+        staging {
+            dimension "target"
+            applicationIdSuffix ".staging"
+        }
+        prod {
+            dimension "target"
+        }
+    }
+    sourceSets {
+        main {
+            res.srcDirs += layout.buildDirectory.dir('generated/brand-res').get().asFile
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+// The icons of the web manifest, under the names Android looks for. One
+// density each, the largest: Android scales a bitmap down for the others.
+// The legacy icon (Android 7) is the rounded tile; from Android 8 the
+// launcher icon is adaptive, out of the maskable one
+// (res/mipmap-anydpi-v26/ic_launcher.xml).
+def copyBrandIcons = tasks.register('copyBrandIcons', Copy) {
+    into layout.buildDirectory.dir('generated/brand-res')
+    from(brandDir) {
+        include 'icon-maskable-512.png'
+        rename { 'brand_maskable.png' }
+        into 'drawable-nodpi'
+    }
+    from(brandDir) {
+        include 'icon-192.png'
+        rename { 'ic_launcher.png' }
+        into 'mipmap-xxxhdpi'
+    }
+    from(brandDir) {
+        include 'icon-192.png'
+        rename { 'ic_launcher_round.png' }
+        into 'mipmap-xxxhdpi'
+    }
+}
+preBuild.dependsOn copyBrandIcons
+
+// A staging APK opens the staging server and nothing else; a prod APK
+// opens an https site that is not the staging server. A sync for the
+// other target fails the build here instead of shipping in silence.
+def syncedUrl = syncedConfig.server?.url as String
+def checkSyncedTarget = { String flavor ->
+    def ok = flavor == 'staging'
+        ? syncedUrl == stagingUrl
+        : (syncedUrl != null && syncedUrl.startsWith('https://') && syncedUrl != stagingUrl)
+    if (!ok) {
+        throw new GradleException(
+            "the synced capacitor.config.json opens ${syncedUrl}, not a ${flavor} site: " +
+            (flavor == 'staging'
+                ? "run `npx cap sync android` (MHOME_TARGET unset or staging)"
+                : "run `MHOME_TARGET=prod MHOME_PROD_URL=https://… npx cap sync android`"))
+    }
+}
+android.applicationVariants.all { variant ->
+    def flavor = variant.flavorName
+    def check = tasks.register("check${flavor.capitalize()}${variant.buildType.name.capitalize()}SyncedTarget") {
+        doLast { checkSyncedTarget(flavor) }
+    }
+    variant.preBuildProvider.configure { dependsOn check }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'

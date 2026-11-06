@@ -92,12 +92,12 @@ questionnaire.
 | Scheduled reminders | **Postgres-backed job queue table + polling worker** | Survives restarts/deploys by design — the queue lives in the DB, not process memory. A cron-style in-memory scheduler is optional only for non-critical periodic ticks (e.g. cache refresh), never for user-facing reminders. |
 | Local AI (recipes, later OCR) | **Ollama**, self-hosted | Keeps all data (what you ate, fridge photos) local — matches the RGPD/self-hosted stance already established; no third-party API cost or data exposure. |
 | Web frontend | **Leptos (SSR via `leptos_axum`)** | Superseded 2026-07-08 (see Front epic #1, GH issue #15): keeps the whole stack in Rust — shared DTOs/validation between `apps/api` and `apps/web` via a new `apps/shared` crate compiled natively and to `wasm32-unknown-unknown`, no duplicated request/response types or a second language's tooling/CI/audit surface to maintain. Ecosystem gaps (calendar widgets, rich components) are accepted and closed by hand-rolling rather than pulling in a JS framework, in line with the "one Rust monolith" posture already used for the backend. |
-| Mobile client | **Capacitor wrapping the Leptos web app** | Targeted for v1.1 (not the Auth front epic). Reuses the `apps/web` build instead of maintaining a second UI; native shell only for what genuinely needs it (push notifications, camera for fridge-scan, **local reminder notifications that must fire with no network** — see Questions résolues #4). Cross-origin cookie handling for the Capacitor WebView is an open question, to be resolved in that future epic. |
+| Mobile client | **Capacitor wrapping the Leptos web app** | Targeted for v1.1 (not the Auth front epic). Reuses the `apps/web` build instead of maintaining a second UI; native shell only for what genuinely needs it (push notifications, camera for fridge-scan, **local reminder notifications that must fire with no network** — see Questions résolues #4). Cross-origin cookie handling for the Capacitor WebView was left open; the shell of #665 (`apps/mobile`) closes it with model A of `docs/front-stack-study.md` § 2: the WebView loads the site's own origin, so its cookies behave as in the browser. The question only arises with a bundle served from `https://localhost` (model B). |
 | Reverse proxy / TLS | **Caddy** | Automatic TLS renewal, minimal config, fits a home-hosted single-server deployment. |
 | Deployment | **Docker Compose** on your home server | Matches "home hosted"; one compose file for Axum, Postgres, MinIO, Ollama, Caddy; straightforward volume backup for Postgres + MinIO data. **Revised 2026-10-10 (epic #441):** Compose is to stay for local development only; staging and production are to run on k3s (see "Version Y" below). Nothing is deployed yet. |
 | Secrets / encryption keys | **sops** (age-backed) for encrypting secrets at rest in the repo, keys injected as env vars at container start, never committed | Standard practice for home-hosted secret management without a full vault service. **Revised 2026-10-10 (epic #441):** on the k3s clusters, application secrets are to be Sealed Secrets (#432); sops remains for the Compose stack. |
 | PII encryption at rest | **`pgcrypto`** for sensitive columns (e.g. message content, fridge photo metadata) in addition to disk-level encryption on the Postgres/MinIO volumes | RGPD Art. 32 ("mesures techniques appropriées"); protects data even if a DB backup or disk is exfiltrated. |
-| Dependency / vuln scanning | **`cargo audit`** in CI, blocking on high/critical, across the whole workspace (`apps/api`, `apps/web`, `apps/shared`) | Baseline expected by any enterprise security questionnaire; catches known CVEs before deploy. No `npm audit` needed — the frontend is Rust/Leptos, not a JS framework, so there's no separate `package.json` dependency graph to scan. |
+| Dependency / vuln scanning | **`cargo audit`** in CI, blocking on high/critical, across the whole workspace (`apps/api`, `apps/web`, `apps/shared`), and **`npm audit --audit-level=high`** on `apps/mobile` (CI job `mobile`, #665), blocking too, with no ignore list for either | Baseline expected by any enterprise security questionnaire; catches known CVEs before deploy. The frontend is Rust/Leptos, not a JS framework, so the site itself has no `package.json` dependency graph; the Android shell does, since Capacitor is a JS tool, and its graph is what `npm audit` scans. |
 | Transactional email (v1) | **Scaleway Transactional Email** (Scaleway SAS, Paris) as the SMTP relay, sent from Rust via the `lettre` crate | Email verification, password reset, invitations and event reminders need reliable deliverability (SPF/DKIM/DMARC, IP reputation) that's impractical to run well as a single maintainer. Chosen on 2026-10-02 (#328) after comparing self-hosting, Mailjet and Scaleway TEM; it replaces Mailjet (chosen over Brevo on 2026-09-19, #136), whose published sub-processor list names entities outside the EU (#316). Scaleway declares the whole TEM stack hosted and processed in the EU with no non-EU sub-processor for the service, which `docs/registre-traitements.md` records with its dated source: no transfer outside the EU. Self-hosting was set aside for this choice: deliverability (an IP with no reputation, outbound port 25 blocked by ISPs such as Orange, residential ranges on blocklists) and the operating load, for mails as critical as password reset and address verification. Its art. 28 terms (DPA) are accepted from the account console; which version binds, from when and for which sending account is not settled and not asserted: a placeholder in `docs/registre-traitements.md` and `docs/privacy-policy.md`, closed by item #18 of `docs/v2-deployment.md` before go-live. Billed per email sent beyond a free tier of 300 emails a month (Scaleway TEM FAQ, read 2026-10-04). |
 | Transactional email (long-term) | **Self-hosted SMTP server** (e.g. Postfix or Mailu, in the Docker Compose stack) | Planned migration once the operational burden (IP reputation, SPF/DKIM/DMARC, anti-spam/blocklist monitoring) is justified — brings mail fully in-house, consistent with the self-hosted/no-third-party-data-leaves-the-server posture used for Ollama and MinIO. Deferred because getting deliverability right without one is a real risk of landing in spam; kept as an explicit target so the app-level email code (via `lettre`, SMTP-based) needs no rewrite — only a config/endpoint swap when migrating. |
 
@@ -407,7 +407,9 @@ manage_our_home/
 │   ├── web/          # Leptos SSR frontend (calendar, chat, recipes UI, ...)
 │   ├── shared/       # DTOs + pure validation shared between apps/api and
 │   │                 # apps/web (native + wasm32-unknown-unknown)
-│   └── mobile/       # Capacitor shell wrapping apps/web (v1.1)
+│   └── mobile/       # Capacitor shell (Android) whose WebView loads
+│                     # the site's origin (#665): package.json,
+│                     # capacitor.config.ts, android/, README.md
 ├── infra/
 │   ├── docker-compose.yml   # api, postgres, minio, ollama, caddy
 │   ├── Caddyfile
@@ -424,10 +426,11 @@ manage_our_home/
 = ["apps/api", "apps/web", "apps/shared"]`) ties every service together —
 `apps/web` and `apps/shared` are Rust crates like `apps/api`, not a
 separate npm workspace, so `cargo audit` runs once across the whole repo
-with no second dependency graph to scan. `apps/mobile` (Capacitor, v1.1)
-will need its own minimal `package.json` when it lands, since Capacitor
-itself is a JS tool, but it wraps the built `apps/web` output rather than
-housing app logic.
+with no second dependency graph to scan for the site. `apps/mobile`
+(Capacitor, #665) has its own minimal `package.json`, since Capacitor
+itself is a JS tool, audited by `npm audit` in CI; it loads `apps/web`
+from its https origin (model A of `docs/front-stack-study.md` § 2) rather
+than bundling it, and houses no app logic.
 
 **`apps/api` history:** the Auth+Groups epic (issue #1) was started before
 this layout was settled, as a flat crate at repo root. It has since been

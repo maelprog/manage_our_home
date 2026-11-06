@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "#310: only postgres and caddy, pinned by full tag and digest in infra/docker-compose.yml and in the services of .github/workflows/ci.yml (Dependabot does not read workflow services images, dependabot-core#5541). #430: and the rust and debian base images of apps/api/Dockerfile and apps/web/Dockerfile, pinned by digest. Every other dependency stays out of scope here. No automerge: every PR is merged by hand. minimumReleaseAge with internalChecksFilter strict holds a release back for 3 days before Renovate even opens its branch, so a compromised upstream republication has time to be caught first. #607: schedule with timezone opens and updates branches only before 6am on Monday, Paris time, and updateNotScheduled false keeps Renovate from rebasing an existing branch outside that window (by default it would, on every push to main, each rebase rerunning CI and Images). Inside the window, rebaseWhen brings open PRs up to date with main. main requires an up-to-date branch (strict) and Renovate cannot read the branch protection, so a PR merged later in the week is first brought up to date by hand: the Update branch button, or the rebase checkbox in the PR body, which Renovate honours outside the schedule.",
-  "enabledManagers": ["docker-compose", "github-actions", "dockerfile"],
+  "enabledManagers": ["docker-compose", "github-actions", "dockerfile", "npm"],
   "pinDigests": true,
   "automerge": false,
   "rebaseWhen": "behind-base-branch",
@@ -12,7 +12,7 @@
   "internalChecksFilter": "strict",
   "packageRules": [
     {
-      "description": "Off by default: actions, MinIO mirror images and anything else these managers find.",
+      "description": "Off by default: actions, MinIO mirror images, e2e/package.json and anything else these managers find.",
       "matchPackageNames": ["*"],
       "enabled": false
     },
@@ -33,6 +33,26 @@
       "description": "No major series change: rust 1 -> 2 stays a reviewed change, not a bot PR. debian:bookworm-slim names no version Renovate compares, so only its digest moves; leaving bookworm is a reviewed change too.",
       "matchManagers": ["dockerfile"],
       "matchPackageNames": ["rust", "debian"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "#665: the npm dependencies of the Android shell, lockfile included. The @capacitor packages move together in one PR: the CLI, the core and the Android runtime have to be on one version.",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["apps/mobile/package.json"],
+      "enabled": true
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchFileNames": ["apps/mobile/package.json"],
+      "matchPackageNames": ["@capacitor/*"],
+      "groupName": "capacitor"
+    },
+    {
+      "description": "No major series change for Capacitor: a major rewrites part of apps/mobile/android (npx cap migrate), a reviewed change rather than a bot PR.",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["apps/mobile/package.json"],
+      "matchPackageNames": ["@capacitor/*"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
