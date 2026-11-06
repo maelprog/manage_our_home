@@ -18,8 +18,15 @@ du site.
 
 - **Le site, à son adresse.** La WebView charge `https://staging.watallo.fr`
   (variante `staging`) ou l'adresse de production donnée au build (variante
-  `prod`). Les cookies, la session, la messagerie en direct et la connexion
-  Google se comportent comme dans Chrome.
+  `prod`). Les cookies du site restent dans la WebView, propres à
+  l'application : ce ne sont pas ceux de Chrome. La connexion par email et
+  mot de passe, la survie de la session au redémarrage et la messagerie en
+  direct (WebSocket) restent à contrôler sur téléphone (§ 5).
+- **Pas de connexion Google dans l'application.** La page de Google est sur
+  une autre origine : elle s'ouvre dans Chrome, et la session qu'elle ouvre
+  reste dans Chrome, pas dans l'application. Google refuse de toute façon
+  son OAuth dans une WebView (`403 disallowed_useragent`). La connexion
+  Google native arrive avec #669.
 - **Les autorités de certification du système, et elles seules**
   (`android/app/src/main/res/xml/network_security_config.xml`), pour les deux
   variantes. Pas celles qu'un utilisateur installe dans les réglages du
