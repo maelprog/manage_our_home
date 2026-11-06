@@ -251,6 +251,12 @@ pub struct EventForm {
     #[serde(default)]
     pub is_task: Option<String>,
     // RRULE picker
+    /// The « Événement récurrent » box (#698): present iff it was checked.
+    #[serde(default)]
+    pub recurring: Option<String>,
+    /// Present iff the box was on the page — see `RECURRING_BOX_FIELD`.
+    #[serde(default)]
+    pub recurring_box: Option<String>,
     #[serde(default)]
     pub freq: String,
     #[serde(default)]
@@ -287,11 +293,37 @@ pub struct EventForm {
     pub is_private: Option<String>,
 }
 
+/// Hidden field the « Événement récurrent » box carries (#698). It is
+/// rendered `disabled`, like the box, so a browser sends it only once
+/// `enhance.js` has shown the box and enabled both: its presence means the
+/// box was there to check, and an unchecked box then reads as a one-off
+/// event. Without it (no JavaScript, the box never shown), the frequency
+/// decides, as before, and a `recurring` sent anyway is not read.
+pub(crate) const RECURRING_BOX_FIELD: &str = "recurring_box";
+
+/// Whether the « Événement récurrent » box was on the page and checked;
+/// `None` when it was not on the page (no `RECURRING_BOX_FIELD`).
+fn recurring_box(form: &EventForm) -> Option<bool> {
+    form.recurring_box
+        .is_some()
+        .then_some(form.recurring.is_some())
+}
+
 /// Builds the RRULE string from the picker fields, or `Ok(None)` for a
 /// one-off event. `Err(())` on an out-of-range value the UI shouldn't emit.
+///
+/// An unchecked « Événement récurrent » box is a one-off event (#698): the
+/// settings it hid are not read, whatever they still hold. A checked one
+/// with no frequency (« Aucune », or none sent) repeats weekly — the
+/// frequency `enhance.js` selects when the box is checked.
 pub(crate) fn rrule_from_form(form: &EventForm) -> Result<Option<String>, ()> {
     use chrono::Weekday;
+    let checked = recurring_box(form);
+    if checked == Some(false) {
+        return Ok(None);
+    }
     let freq = match form.freq.as_str() {
+        "" | "none" if checked == Some(true) => Freq::Weekly,
         "" | "none" => return Ok(None),
         "daily" => Freq::Daily,
         "weekly" => Freq::Weekly,
@@ -352,6 +384,8 @@ pub(crate) fn rrule_from_form(form: &EventForm) -> Result<Option<String>, ()> {
 /// create leaves it empty, which shows a one-off event.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct RecurrenceFields {
+    /// The « Événement récurrent » box (#698), checked.
+    pub recurring: bool,
     pub freq: String,
     pub interval: String,
     /// Monday → Sunday, the order of `WEEKDAYS` and of the checkboxes.
@@ -365,6 +399,9 @@ impl RecurrenceFields {
     /// The picker's fields of a submitted form, untouched.
     pub(crate) fn from_form(form: &EventForm) -> Self {
         Self {
+            // Checked when it was, or — from a page without the box — when
+            // a frequency was chosen.
+            recurring: recurring_box(form).unwrap_or(!matches!(form.freq.as_str(), "" | "none")),
             freq: form.freq.clone(),
             interval: form.interval.clone(),
             byday: [
@@ -397,6 +434,7 @@ impl RecurrenceFields {
             RecurrenceEnd::Until(d) => ("until", String::new(), d.format("%Y-%m-%d").to_string()),
         };
         Self {
+            recurring: true,
             freq: freq.to_string(),
             interval: r.interval.to_string(),
             byday: WEEKDAYS.map(|wd| r.byday.contains(&wd)),
@@ -409,9 +447,16 @@ impl RecurrenceFields {
 
 /// Renders the recurrence picker with `fields` (the stored rule on the edit
 /// page, the submitted values on an error re-render, empty for a fresh
-/// create). Progressive enhancement: with JS the day/end sub-controls could
-/// hide until relevant; without it they're always visible and simply
-/// ignored server-side when the frequency doesn't use them.
+/// create). Sub-controls the frequency does not use are always visible and
+/// simply ignored server-side.
+///
+/// The « Événement récurrent » box (#698) opens the settings: `enhance.js`
+/// (`data-recurring`) shows it, enables it and its `RECURRING_BOX_FIELD`
+/// — both rendered `disabled`, so neither is sent without it — and hides
+/// the block it names in `aria-controls` while it is unchecked — `hidden`,
+/// so out of the tab order and of the accessibility tree. The server
+/// renders the box hidden and the settings shown: without JavaScript the
+/// picker is what it was, « Aucune (ponctuel) » included.
 pub(crate) fn recurrence_picker(fields: &RecurrenceFields) -> String {
     let selected = |on: bool| if on { " selected" } else { "" };
     // An empty frequency is a one-off event, as `rrule_from_form` reads it.
@@ -469,9 +514,20 @@ pub(crate) fn recurrence_picker(fields: &RecurrenceFields) -> String {
     let count_val = html_escape(&fields.count);
     let until_val = html_escape(&fields.until);
 
+    let (box_checked, expanded) = if fields.recurring {
+        (" checked", "true")
+    } else {
+        ("", "false")
+    };
+
     format!(
         r#"<fieldset class="card">
 <legend>Récurrence</legend>
+<div data-recurring-box hidden>
+<input type="hidden" name="{RECURRING_BOX_FIELD}" value="1" disabled/>
+<label class="field inline"><input type="checkbox" name="recurring"{box_checked} aria-expanded="{expanded}" aria-controls="recurrence-settings" data-recurring disabled/> Événement récurrent</label>
+</div>
+<div id="recurrence-settings">
 <label>Fréquence {freq_select}</label>
 <label>Intervalle
 <input type="number" name="interval" min="1" max="99" value="{interval}"/>
@@ -488,6 +544,7 @@ pub(crate) fn recurrence_picker(fields: &RecurrenceFields) -> String {
 </label>
 <label>Nombre d'occurrences <input type="number" name="count" min="1" max="730" value="{count_val}"/></label>
 <label>Jusqu'au <input type="date" name="until" value="{until_val}"/></label>
+</div>
 </fieldset>"#,
     )
 }
@@ -1224,7 +1281,8 @@ mod tests {
         );
         assert!(html.contains(r#"name="byday_mo" checked/>"#), "{html}");
         assert!(html.contains(r#"name="byday_we" checked/>"#), "{html}");
-        assert_eq!(html.matches(" checked").count(), 2, "{html}");
+        // The two days, and the « Événement récurrent » box (#698).
+        assert_eq!(html.matches(" checked").count(), 3, "{html}");
         assert!(
             html.contains(r#"<option value="count" selected>"#),
             "{html}"
@@ -1303,6 +1361,7 @@ mod tests {
         assert_eq!(
             fields,
             RecurrenceFields {
+                recurring: true,
                 freq: "weekly".into(),
                 interval: "3".into(),
                 byday: [false, true, false, false, true, false, false],
@@ -1333,6 +1392,142 @@ mod tests {
         assert_eq!(
             RecurrenceFields::from_recurrence(&parsed),
             RecurrenceFields::from_form(&form)
+        );
+    }
+
+    // -- the « Événement récurrent » box (#698) -----------------------------
+
+    /// A fresh create: the box unchecked, the settings it controls named on
+    /// it, and nothing hidden by the server — without JavaScript the box
+    /// stays hidden, its marker unsent, and every setting shows.
+    #[test]
+    fn a_fresh_picker_has_an_unchecked_box_over_settings_it_can_hide() {
+        let html = recurrence_picker(&RecurrenceFields::default());
+        assert!(
+            html.contains(
+                r#"<input type="checkbox" name="recurring" aria-expanded="false" aria-controls="recurrence-settings" data-recurring disabled/> Événement récurrent</label>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<div data-recurring-box hidden>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="recurring_box" value="1" disabled/>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<div id="recurrence-settings">"#), "{html}");
+        let settings = html.find(r#"id="recurrence-settings""#).unwrap();
+        assert!(html.find(r#"name="recurring""#).unwrap() < settings);
+        for name in ["freq", "interval", "byday_mo", "end_kind", "count", "until"] {
+            assert!(
+                html.find(&format!(r#"name="{name}""#)).unwrap() > settings,
+                "{name}: {html}"
+            );
+        }
+        // « Aucune » stays a choice for a page without JavaScript.
+        assert!(html.contains(r#"<option value="none" selected>"#), "{html}");
+    }
+
+    /// The edit page of a recurring event: the box comes checked.
+    #[test]
+    fn a_stored_rule_checks_the_box() {
+        let fields = RecurrenceFields::from_recurrence(&Recurrence {
+            freq: Freq::Daily,
+            interval: 1,
+            byday: vec![],
+            end: RecurrenceEnd::Never,
+        });
+        assert!(fields.recurring);
+        let html = recurrence_picker(&fields);
+        assert!(
+            html.contains(
+                r#"name="recurring" checked aria-expanded="true" aria-controls="recurrence-settings" data-recurring disabled/>"#
+            ),
+            "{html}"
+        );
+    }
+
+    /// Under an error the box says what was asked: checked when it was, or
+    /// — from a page without the box — when a frequency was chosen; an
+    /// unchecked box is an answer, whatever the hidden settings still hold.
+    #[test]
+    fn the_box_comes_back_as_it_was_submitted() {
+        let read = |body: &str| RecurrenceFields::from_form(&submitted(body)).recurring;
+        let base = "title=a&starts_at=x&ends_at=y";
+        assert!(read(&format!("{base}&freq=weekly")));
+        assert!(!read(&format!("{base}&freq=none")));
+        assert!(!read(base));
+        // A box without its marker was not on the page: the frequency decides.
+        assert!(!read(&format!("{base}&recurring=on&freq=none")));
+        assert!(read(&format!(
+            "{base}&recurring_box=1&recurring=on&freq=daily"
+        )));
+        assert!(read(&format!(
+            "{base}&recurring_box=1&recurring=on&freq=none"
+        )));
+        assert!(!read(&format!(
+            "{base}&recurring_box=1&freq=weekly&byday_mo=on"
+        )));
+    }
+
+    fn rule(body: &str) -> Result<Option<String>, ()> {
+        rrule_from_form(&submitted(&format!("title=a&starts_at=x&ends_at=y&{body}")))
+    }
+
+    /// An unchecked box is a one-off event: the settings it hid are left
+    /// unread, an out-of-range one included.
+    #[test]
+    fn an_unchecked_box_makes_no_rule_whatever_the_settings_hold() {
+        assert_eq!(
+            rule("recurring_box=1&freq=weekly&interval=2&byday_mo=on&end_kind=count&count=3"),
+            Ok(None)
+        );
+        assert_eq!(
+            rule("recurring_box=1&freq=daily&end_kind=count&count=0"),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_checked_box_builds_the_chosen_rule() {
+        assert_eq!(
+            rule("recurring_box=1&recurring=on&freq=weekly&interval=2&byday_mo=on&byday_we=on&end_kind=count&count=10"),
+            Ok(Some("FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;COUNT=10".to_string()))
+        );
+    }
+
+    /// Checked with no frequency (« Aucune », or none sent): weekly, the
+    /// frequency the box selects in the browser when it is checked.
+    #[test]
+    fn a_checked_box_without_a_frequency_repeats_weekly() {
+        assert_eq!(
+            rule("recurring_box=1&recurring=on&freq=none&byday_fr=on"),
+            Ok(Some("FREQ=WEEKLY;BYDAY=FR".to_string()))
+        );
+        assert_eq!(
+            rule("recurring_box=1&recurring=on"),
+            Ok(Some("FREQ=WEEKLY".to_string()))
+        );
+    }
+
+    /// Without the box (no JavaScript), the frequency decides, as before —
+    /// a `recurring` sent without its marker included: « Aucune » on the
+    /// edit page of a recurring event still clears its rule.
+    #[test]
+    fn without_the_box_the_frequency_decides() {
+        assert_eq!(rule("freq=none&byday_mo=on"), Ok(None));
+        assert_eq!(rule("recurring=on&freq=none"), Ok(None));
+        assert_eq!(rule("recurring=on"), Ok(None));
+        assert_eq!(
+            rule("recurring=on&freq=daily"),
+            Ok(Some("FREQ=DAILY".to_string()))
+        );
+        assert_eq!(rule("freq="), Ok(None));
+        assert_eq!(
+            rule("freq=monthly&interval=3"),
+            Ok(Some("FREQ=MONTHLY;INTERVAL=3".to_string()))
         );
     }
 
