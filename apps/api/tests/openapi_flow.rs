@@ -518,15 +518,41 @@ fn takes_a_session(handler: &[String]) -> bool {
         })
         .unwrap_or_else(|| panic!("no fn {name} in {}", file.display()));
     f.sig.inputs.iter().any(|arg| match arg {
-        syn::FnArg::Typed(arg) => match &*arg.ty {
-            syn::Type::Path(ty) => {
-                let last = ty.path.segments.last().unwrap().ident.to_string();
-                SESSION_EXTRACTORS.contains(&last.as_str())
-            }
-            _ => false,
-        },
+        syn::FnArg::Typed(arg) => reads_a_session(&arg.ty),
         syn::FnArg::Receiver(_) => false,
     })
+}
+
+/// Whether the argument type `ty` is, or wraps, one of
+/// `SESSION_EXTRACTORS`.
+fn reads_a_session(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(ty) => {
+            let last = ty.path.segments.last().unwrap();
+            SESSION_EXTRACTORS.contains(&last.ident.to_string().as_str())
+                || match &last.arguments {
+                    syn::PathArguments::AngleBracketed(args) => {
+                        args.args.iter().any(|arg| match arg {
+                            syn::GenericArgument::Type(ty) => reads_a_session(ty),
+                            _ => false,
+                        })
+                    }
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn a_session_extractor_is_found_inside_a_generic() {
+    let reads = |ty: &str| reads_a_session(&syn::parse_str(ty).unwrap());
+    assert!(reads("AuthUser"));
+    assert!(reads("crate::auth::SuperAdminUser"));
+    assert!(reads("Option<AuthUser>"));
+    assert!(reads("Result<AnySession, Rejection>"));
+    assert!(!reads("State<AppState>"));
+    assert!(!reads("Option<Json<Body>>"));
 }
 
 #[test]
