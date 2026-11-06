@@ -655,10 +655,10 @@ vers un nouveau téléphone, pour que ce cookie n'en sorte pas : sur un
 nouveau téléphone, il faut se reconnecter.
 
 L'application ne s'installe pas depuis le Play Store, mais depuis la page
-des versions publiées du projet sur GitHub. GitHub (GitHub, Inc., filiale
-de Microsoft, aux États-Unis) voit l'adresse IP et le navigateur de qui
-télécharge le fichier, selon sa propre politique de confidentialité ; le
-service ne reçoit rien de ce téléchargement. Sur le téléphone, la
+des versions publiées du projet, chez l'hébergeur de son code, une société
+établie aux États-Unis. Cet hébergeur voit l'adresse IP et le navigateur
+de qui télécharge le fichier, selon sa propre politique de
+confidentialité ; le service ne reçoit rien de ce téléchargement. Sur le téléphone, la
 vérification des applications installées (Play Protect) et la fenêtre web
 du système (Android System WebView) sont des composants de Google : ce
 qu'ils transmettent à Google dépend des réglages de votre téléphone, pas de

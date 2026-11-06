@@ -404,8 +404,9 @@ la tiennent hors de la sauvegarde Android et du transfert d'appareil
 
 Le téléchargement de l'APK passe par GitHub (GitHub, Inc., États-Unis),
 qui voit l'adresse IP et le *user agent* de qui le télécharge ; le service
-n'en reçoit rien. [qualification de ce flux et mécanisme de transfert —
-à établir avant la diffusion aux familles]. Play Protect et Android System
+n'en reçoit rien. La qualification de ce flux et son mécanisme de
+transfert hors UE ne sont pas établis : à faire avant la diffusion aux
+familles. Play Protect et Android System
 WebView, composants de Google sur le téléphone, transmettent à Google selon
 les réglages du téléphone, hors du contrôle de l'application.
 
