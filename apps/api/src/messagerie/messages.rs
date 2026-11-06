@@ -18,7 +18,7 @@ const MAX_CONTENT_CHARS: usize = 4000;
 const DEFAULT_PAGE_LIMIT: i64 = 50;
 const MAX_PAGE_LIMIT: i64 = 100;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateMessageRequest {
     pub content: String,
     /// The message this one answers (#464): a message of the same family,
@@ -27,12 +27,13 @@ pub struct CreateMessageRequest {
     pub reply_to_id: Option<Uuid>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateMessageRequest {
     pub content: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListMessagesQuery {
     pub before_created_at: Option<DateTime<Utc>>,
     pub before_id: Option<Uuid>,
@@ -46,7 +47,8 @@ pub struct ListMessagesQuery {
 }
 
 /// `POST /groups/:id/messages/read` query params.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct MarkReadQuery {
     /// How far the caller's marker may advance: the `created_at` of the
     /// newest message they were actually shown. Omitted means "up to now",
@@ -55,7 +57,7 @@ pub struct MarkReadQuery {
     pub up_to: Option<DateTime<Utc>>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 pub struct MessageResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -70,7 +72,7 @@ pub struct MessageResponse {
 }
 
 /// The parent of a reply, as a reply carries it (#464).
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, PartialEq, utoipa::ToSchema)]
 pub struct ReplyTo {
     pub id: Uuid,
     pub created_by: Uuid,
@@ -174,6 +176,22 @@ fn unread_messages(
         .collect()
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/messages",
+    tag = "messagerie",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateMessageRequest,
+    responses(
+        (status = 201, description = "Message posted", body = MessageResponse),
+        (status = 400, description = "`content_required` or `content_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`reply_to_invalid`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_message(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -252,6 +270,20 @@ pub async fn create_message(
     Ok((StatusCode::CREATED, Json(MessageResponse::from(row))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/messages",
+    tag = "messagerie",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ListMessagesQuery,
+    ),
+    responses(
+        (status = 200, description = "A page of messages", body = crate::api_docs::schemas::MessageList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_messages(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -358,6 +390,19 @@ pub async fn list_messages(
 /// message when there is none, **less the caller's own messages**: what
 /// one wrote oneself is not news. `unread_total` (the home card) applies the
 /// same rule since #551, so the pastille and the card show the same number.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/messages/unread_count",
+    tag = "messagerie",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "How many messages are unread", body = crate::api_docs::schemas::UnreadMessageCount),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn unread_count(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -405,6 +450,20 @@ pub async fn unread_count(
 /// carrying an older `up_to` — a stale tab, a request that lost a race —
 /// cannot un-read anything. Idempotent for the same reason: replaying the
 /// same call is a no-op.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/messages/read",
+    tag = "messagerie",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        MarkReadQuery,
+    ),
+    responses(
+        (status = 204, description = "Read marker moved"),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn mark_messages_read(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -435,6 +494,23 @@ pub async fn mark_messages_read(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/messages/{message_id}",
+    tag = "messagerie",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("message_id" = uuid::Uuid, Path, description = "Message id"),
+    ),
+    request_body = UpdateMessageRequest,
+    responses(
+        (status = 200, description = "Message edited", body = MessageResponse),
+        (status = 400, description = "`content_required` or `content_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_message(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -504,6 +580,21 @@ pub async fn update_message(
     Ok(Json(MessageResponse::from(row)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/messages/{message_id}",
+    tag = "messagerie",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("message_id" = uuid::Uuid, Path, description = "Message id"),
+    ),
+    responses(
+        (status = 204, description = "Message deleted"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_message(
     State(state): State<AppState>,
     auth: AuthUser,

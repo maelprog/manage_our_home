@@ -238,6 +238,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .map_err(anyhow::Error::msg)?,
     );
+    // The OpenAPI spec and Swagger UI (#626): off unless exactly `true`.
+    let api_docs_value = env::var(manage_our_home::api_docs::API_DOCS_ENABLED_VAR).ok();
+    let api_docs_enabled = manage_our_home::api_docs::docs_enabled(api_docs_value.as_deref());
+    if let Some(value) = api_docs_value.as_deref() {
+        if !api_docs_enabled && !matches!(value, "" | "false") {
+            tracing::warn!(
+                value,
+                "API_DOCS_ENABLED is neither `true` nor `false`: the documentation stays off"
+            );
+        }
+    }
     let state = AppState {
         db,
         google_oauth,
@@ -253,6 +264,7 @@ async fn main() -> anyhow::Result<()> {
         secure_cookies: env::var("SECURE_COOKIES")
             .map(|v| v == "true")
             .unwrap_or(true),
+        api_docs_enabled,
         storage,
         admin_db,
         trusted_proxies: std::sync::Arc::new(trusted_proxies),

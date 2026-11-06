@@ -86,6 +86,8 @@ pub fn test_state(db: PgPool) -> AppState {
         // (AC #7) override this on their own state to keep the bound short.
         message_ws_recheck_interval: std::time::Duration::from_secs(30),
         secure_cookies: false,
+        // Off, as in production; tests/openapi_flow.rs turns it on.
+        api_docs_enabled: false,
         storage: test_storage(),
         // No socket behind these requests (the router is driven directly),
         // so there is no peer to trust and `X-Forwarded-For` is ignored:

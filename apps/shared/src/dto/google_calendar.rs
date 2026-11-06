@@ -21,6 +21,7 @@ use uuid::Uuid;
 /// calendar. It is submitted once and never echoed back: `apps/web` must keep it
 /// out of query strings, PRG parameters, re-rendered form values and logs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateCalendarImportRequest {
     pub label: String,
     pub feed_url: String,
@@ -31,6 +32,7 @@ pub struct CreateCalendarImportRequest {
 /// successful run of `POST …/:import_id/import` — v1 is pull-on-demand only, so
 /// a freshly created connection has imported nothing yet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CalendarImportResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -44,6 +46,7 @@ pub struct CalendarImportResponse {
 /// list in a single-key object with `serde_json::json!`, same shape as
 /// `user_admin.rs`'s `{"users": […]}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CalendarImportsResponse {
     pub imports: Vec<CalendarImportResponse>,
 }
@@ -54,6 +57,7 @@ pub struct CalendarImportsResponse {
 /// is `0`. With it, the count is what left the agenda, which the front has to
 /// be told because it cannot count rows that no longer exist.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeleteCalendarImportResponse {
     pub deleted_events: usize,
 }
@@ -64,6 +68,7 @@ pub struct DeleteCalendarImportResponse {
 /// everything as skipped, which is the user-visible face of the backend's
 /// UID-keyed idempotence.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ImportRunResponse {
     pub imported: usize,
     pub updated: usize,

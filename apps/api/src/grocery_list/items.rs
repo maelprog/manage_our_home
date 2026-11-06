@@ -18,7 +18,7 @@ use crate::recipes::availability::planned_availability;
 use crate::stocks::items::today;
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateGroceryItemRequest {
     pub name: String,
     pub quantity: Option<f64>,
@@ -36,7 +36,7 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateGroceryItemRequest {
     pub name: Option<String>,
     /// `Some(None)` clears the quantity; `None` leaves it untouched.
@@ -48,12 +48,12 @@ pub struct UpdateGroceryItemRequest {
     pub unit: Option<Option<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CheckGroceryItemRequest {
     pub checked: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct GroceryItemResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -109,6 +109,21 @@ fn validate_quantity(quantity: Option<f64>) -> AppResult<()> {
     Ok(())
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/grocery-items",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateGroceryItemRequest,
+    responses(
+        (status = 201, description = "Item added", body = GroceryItemResponse),
+        (status = 400, description = "`name_required` or `quantity_must_be_non_negative`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_grocery_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -163,6 +178,21 @@ pub async fn create_grocery_item(
     Ok((StatusCode::CREATED, Json(GroceryItemResponse::from(item))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/grocery-items/{item_id}",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    responses(
+        (status = 200, description = "The item", body = GroceryItemResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_grocery_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -186,6 +216,19 @@ pub async fn get_grocery_item(
     Ok(Json(GroceryItemResponse::from(item)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/grocery-items",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The grocery list", body = crate::api_docs::schemas::GroceryItemList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_grocery_items(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -216,6 +259,22 @@ pub async fn list_grocery_items(
 /// Any member may check/uncheck an item off the shared list — this is a
 /// lighter permission bar than `update_grocery_item`, which only the
 /// creator or a group admin/owner may use to edit name/quantity/unit.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/grocery-items/{item_id}/check",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    request_body = CheckGroceryItemRequest,
+    responses(
+        (status = 200, description = "Item checked or unchecked", body = GroceryItemResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn check_grocery_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -244,6 +303,23 @@ pub async fn check_grocery_item(
     Ok(Json(GroceryItemResponse::from(item)))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/grocery-items/{item_id}",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    request_body = UpdateGroceryItemRequest,
+    responses(
+        (status = 200, description = "Item updated", body = GroceryItemResponse),
+        (status = 400, description = "`name_required` or `quantity_must_be_non_negative`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_grocery_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -310,6 +386,21 @@ pub async fn update_grocery_item(
     Ok(Json(GroceryItemResponse::from(item)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/grocery-items/{item_id}",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    responses(
+        (status = 204, description = "Item deleted"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_grocery_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -359,6 +450,19 @@ struct LowStockRow {
 /// as recipes::suggestions and stocks' low_stock — an item already present
 /// and unchecked is not duplicated, so re-running this is idempotent. Any
 /// group member may trigger it (same bar as manual add).
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/grocery-items/generate",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 201, description = "Every planned recipe's missing ingredients, added to the list", body = crate::api_docs::schemas::GroceryItemList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn generate_grocery_items(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -480,6 +584,21 @@ pub async fn generate_grocery_items(
 /// `generate_grocery_items`, so replaying adds nothing. 404 without a
 /// `planned` selection of that recipe in the group. Any member may, as for
 /// the generation. 201 with the items created.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes/{recipe_id}/selection/missing",
+    tag = "grocery-list",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 201, description = "The planned recipe's missing ingredients, added to the list", body = crate::api_docs::schemas::GroceryItemList),
+        (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn add_missing_grocery_items(
     State(state): State<AppState>,
     auth: AuthUser,

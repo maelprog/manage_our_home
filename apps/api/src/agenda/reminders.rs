@@ -17,18 +17,35 @@ use crate::AppState;
 /// be scheduled indefinitely up front.
 pub const NOTIFICATION_WINDOW_DAYS: i64 = 30;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateReminderRequest {
     pub offset_minutes: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ReminderResponse {
     pub id: Uuid,
     pub event_id: Uuid,
     pub offset_minutes: i32,
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/events/{event_id}/reminders",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+    ),
+    request_body = CreateReminderRequest,
+    responses(
+        (status = 201, description = "Reminder created", body = ReminderResponse),
+        (status = 400, description = "`offset_minutes_must_be_non_negative`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such event", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_reminder(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -144,6 +161,22 @@ pub async fn refill_notifications(
     Ok(())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/events/{event_id}/reminders/{reminder_id}",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+        ("reminder_id" = uuid::Uuid, Path, description = "Reminder id"),
+    ),
+    responses(
+        (status = 204, description = "Reminder deleted"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_reminder(
     State(state): State<AppState>,
     auth: AuthUser,

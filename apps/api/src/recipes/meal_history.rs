@@ -12,13 +12,13 @@ use crate::groups::require_role;
 use crate::stocks::items::{day_or_today, today};
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct LogMealRequest {
     /// Defaults to today, the Paris day (`day_or_today`), when omitted.
     pub eaten_on: Option<NaiveDate>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MealHistoryEntryResponse {
     pub id: Uuid,
     pub recipe_id: Uuid,
@@ -27,6 +27,22 @@ pub struct MealHistoryEntryResponse {
     pub created_at: DateTime<Utc>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes/{recipe_id}/meal-history",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    request_body = LogMealRequest,
+    responses(
+        (status = 201, description = "Meal logged", body = MealHistoryEntryResponse),
+        (status = 404, description = "`not_found`: no such recipe", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn log_meal(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -70,7 +86,8 @@ pub async fn log_meal(
     Ok((StatusCode::CREATED, Json(entry)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListMealHistoryQuery {
     /// Only entries eaten in the last `days_back` days. Defaults to 14 to
     /// match the variety window used by the suggestion algorithm. Counted
@@ -78,6 +95,20 @@ pub struct ListMealHistoryQuery {
     pub days_back: Option<i64>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/meal-history",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ListMealHistoryQuery,
+    ),
+    responses(
+        (status = 200, description = "Meals eaten, newest first", body = crate::api_docs::schemas::MealHistoryList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_meal_history(
     State(state): State<AppState>,
     auth: AuthUser,

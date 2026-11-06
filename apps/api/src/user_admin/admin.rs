@@ -14,7 +14,7 @@ use crate::user_admin::SuperAdminUser;
 use crate::AppState;
 use manage_our_home_shared::validation::groups::OwnershipReason;
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AdminGroupResponse {
     pub id: Uuid,
     pub name: String,
@@ -24,7 +24,7 @@ pub struct AdminGroupResponse {
     pub has_owner: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AdminUserResponse {
     pub id: Uuid,
     pub email: String,
@@ -46,6 +46,16 @@ pub struct AdminUserResponse {
 /// the `groups`/`group_members` RLS boundary. Runs on `AppState.admin_db`
 /// (the `BYPASSRLS` pool), only ever reachable through `SuperAdminUser`.
 /// Needed to locate a family when a user reports an issue (spec §Scope).
+#[utoipa::path(
+    get,
+    path = "/admin/groups",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Every group, with its member count and whether it has an owner", body = crate::api_docs::schemas::AdminGroupList),
+        crate::api_docs::AdminErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_groups(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -97,6 +107,16 @@ pub async fn list_groups(
 /// retention purge #138, account purge #139, reminder worker #293 — none
 /// of which serves a request), kept uniform across all seven superadmin
 /// endpoints rather than special-cased per table.
+#[utoipa::path(
+    get,
+    path = "/admin/users",
+    tag = "admin",
+    responses(
+        (status = 200, description = "Every account", body = crate::api_docs::schemas::AdminUserList),
+        crate::api_docs::AdminErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_users(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -138,6 +158,20 @@ pub async fn list_users(
 /// anonymised: the account purge takes it 2 years later, unless
 /// [`reactivate_user`] gives it back first (#256). An account already
 /// deactivated, or purged, is a 404.
+#[utoipa::path(
+    post,
+    path = "/admin/users/{id}/deactivate",
+    tag = "admin",
+    params(
+        ("id" = uuid::Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 204, description = "Account deactivated"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::AdminErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn deactivate_user(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -186,6 +220,20 @@ pub async fn deactivate_user(
 /// is granted by it and deleted. An account that is not deactivated, or
 /// already purged (nothing is left to give back), is a 404. Traced in
 /// `audit_log` like the deactivation, saying whether it answered a request.
+#[utoipa::path(
+    post,
+    path = "/admin/users/{id}/reactivate",
+    tag = "admin",
+    params(
+        ("id" = uuid::Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 204, description = "Account reactivated"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::AdminErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn reactivate_user(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -265,6 +313,20 @@ pub async fn reactivate_user(
 /// else, so it moves the purge date no further (#313,
 /// `jobs::account_purge::record_refusal`). No pending request, or an
 /// account reactivated or purged since, is a 404. Traced in `audit_log`.
+#[utoipa::path(
+    post,
+    path = "/admin/users/{id}/reactivation-request/refuse",
+    tag = "admin",
+    params(
+        ("id" = uuid::Uuid, Path, description = "User id"),
+    ),
+    responses(
+        (status = 204, description = "Reactivation request refused"),
+        (status = 404, description = "`not_found`: no pending request", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::AdminErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn refuse_reactivation(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -329,7 +391,7 @@ pub async fn refuse_reactivation(
 
 /// One member of a group left without an owner, as
 /// [`ownerless_group_members`] lists it for the superadmin to choose from.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AdminGroupMemberResponse {
     pub user_id: Uuid,
     pub display_name: String,
@@ -344,6 +406,21 @@ pub struct AdminGroupMemberResponse {
 /// to designate one ([`designate_owner`]). Only such a group's: the members
 /// of a group that has an owner are none of support's business (409
 /// `group_has_owner`). An unknown group is a 404. Traced in `audit_log`.
+#[utoipa::path(
+    get,
+    path = "/admin/groups/{id}/members",
+    tag = "admin",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The members of a group without an owner", body = crate::api_docs::schemas::AdminGroupMembers),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`group_has_owner`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::AdminErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn ownerless_group_members(
     State(state): State<AppState>,
     actor: SuperAdminUser,
@@ -395,7 +472,7 @@ pub async fn ownerless_group_members(
     ))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct DesignateOwnerRequest {
     pub user_id: Uuid,
 }
@@ -407,6 +484,23 @@ pub struct DesignateOwnerRequest {
 /// `owner_must_be_active` for a deactivated account or one whose deletion
 /// is pending ([`check_designation`]). Traced in `audit_log` as a transfer
 /// of ownership, the superadmin its actor.
+#[utoipa::path(
+    post,
+    path = "/admin/groups/{id}/owner",
+    tag = "admin",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = DesignateOwnerRequest,
+    responses(
+        (status = 204, description = "Owner designated"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`group_has_owner`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`not_a_member` or `owner_must_be_active`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::AdminErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn designate_owner(
     State(state): State<AppState>,
     actor: SuperAdminUser,

@@ -18,7 +18,7 @@ use crate::stocks::barcode::normalize;
 use crate::stocks::can_modify;
 use crate::AppState;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateStockItemRequest {
     pub name: String,
     pub category: Option<String>,
@@ -68,7 +68,7 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateStockItemRequest {
     pub name: Option<String>,
     /// `Some(None)` clears the category; `None` leaves it untouched.
@@ -100,7 +100,7 @@ impl UpdateStockItemRequest {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct StockItemResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -178,6 +178,22 @@ fn validate_request(quantity: f64, reorder_threshold: Option<f64>) -> AppResult<
     check_quantities(quantity, reorder_threshold).map_err(|e| AppError::BadRequest(e.code().into()))
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/stock-items",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateStockItemRequest,
+    responses(
+        (status = 201, description = "Stock item created", body = StockItemResponse),
+        (status = 400, description = "`name_required`, `invalid_barcode` or another validation code", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`barcode_already_in_stock`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_stock_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -228,6 +244,21 @@ pub async fn create_stock_item(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/stock-items/{item_id}",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    responses(
+        (status = 200, description = "The stock item", body = StockItemResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_stock_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -251,7 +282,8 @@ pub async fn get_stock_item(
     Ok(Json(StockItemResponse::from_row(item, today())))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListStockItemsQuery {
     /// When true, only items at or below their reorder threshold are
     /// returned (used by the future Recipes/Grocery-list epics to compute
@@ -278,6 +310,21 @@ fn parse_sort(sort: Option<&str>) -> AppResult<StockSort> {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/stock-items",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ListStockItemsQuery,
+    ),
+    responses(
+        (status = 200, description = "The group's stock", body = crate::api_docs::schemas::StockItemList),
+        (status = 400, description = "`invalid_sort`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_stock_items(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -321,6 +368,19 @@ pub async fn list_stock_items(
 /// is at most `expiring_until(today)`, today being the Paris day — the
 /// lines `expiry_status` classes `Expired` or `Soon` (the API field and the
 /// detail page's badge). An undated line is never counted (`NULL <= date` is not true).
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/stocks/expiring_count",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "How many stock items expire soon", body = ExpiringStockCount),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn expiring_count(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -341,6 +401,23 @@ pub async fn expiring_count(
     Ok(Json(ExpiringStockCount { expiring_count }))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/stock-items/{item_id}",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    request_body = UpdateStockItemRequest,
+    responses(
+        (status = 200, description = "Stock item updated; a quantity-only change is open to every member", body = StockItemResponse),
+        (status = 400, description = "`name_required`, `invalid_barcode` or another validation code", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_stock_item(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -429,6 +506,21 @@ pub async fn update_stock_item(
     Ok(Json(StockItemResponse::from_row(item, today())))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/stock-items/{item_id}",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Item id"),
+    ),
+    responses(
+        (status = 204, description = "Stock item deleted"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_stock_item(
     State(state): State<AppState>,
     auth: AuthUser,

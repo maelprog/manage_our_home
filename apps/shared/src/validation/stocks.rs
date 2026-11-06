@@ -199,6 +199,7 @@ pub const EXPIRY_SOON_DAYS: i64 = 3;
 /// article — the nearest one — so this is a single verdict, not per batch.
 /// On the wire: `"expired"`, `"soon"`, `"ok"`, `"unknown"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExpiryStatus {
     /// The date is strictly before today.
@@ -241,6 +242,7 @@ pub fn expiring_until(today: NaiveDate) -> NaiveDate {
 /// line (`merge`) or as a line of its own (`new`). On the wire: `"merge"`,
 /// `"new"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ReceptionMode {
     Merge,

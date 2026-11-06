@@ -20,6 +20,16 @@ use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 /// `GET /account/notifications`.
+#[utoipa::path(
+    get,
+    path = "/account/notifications",
+    tag = "notifications",
+    responses(
+        (status = 200, description = "The account's notification settings", body = NotificationSettings),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_settings(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -44,6 +54,18 @@ pub async fn get_settings(
 /// or 400 `invalid_expiry_digest_hour` for a recap hour outside 0..23
 /// (`parse_expiry_digest_hour`, #700). Without `expiry_digest_hour`, the
 /// recap's hour stays as it is.
+#[utoipa::path(
+    put,
+    path = "/account/notifications",
+    tag = "notifications",
+    request_body = UpdateNotificationSettings,
+    responses(
+        (status = 204, description = "Settings saved"),
+        (status = 400, description = "`invalid_reminder_channel` or `invalid_expiry_digest_hour`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_settings(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -92,6 +114,19 @@ pub async fn update_settings(
 /// the dates written are the wall clock at the write (`clock_timestamp()`),
 /// not the transaction's start, so a subscription that waited for the lock
 /// is not taken for the least recent.
+#[utoipa::path(
+    post,
+    path = "/account/push-subscriptions",
+    tag = "notifications",
+    request_body = PushSubscriptionRequest,
+    responses(
+        (status = 201, description = "Push subscription stored"),
+        (status = 400, description = "`invalid_push_endpoint`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`push_not_configured`: the server has no VAPID key", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn subscribe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -159,6 +194,17 @@ pub const MAX_DEVICES_PER_ACCOUNT: i64 = 50;
 /// (`push::pending_on_receipt`), `null` for the neutral text — pushes of
 /// two kinds on their way, none pending, or an endpoint that is not one of
 /// the caller's devices. The receipt is taken off the device's count.
+#[utoipa::path(
+    post,
+    path = "/account/push-subscriptions/received",
+    tag = "notifications",
+    request_body = PushSubscriptionRequest,
+    responses(
+        (status = 200, description = "What the device is to show for the push it received", body = crate::api_docs::schemas::PushReceived),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn received(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -213,6 +259,16 @@ pub(crate) async fn write_pending(
 /// `DELETE /account/push-subscriptions` — forgets every device of the
 /// caller: 204. The browsers keep their side of the subscription until
 /// the member withdraws the permission; nothing is sent to them any more.
+#[utoipa::path(
+    delete,
+    path = "/account/push-subscriptions",
+    tag = "notifications",
+    responses(
+        (status = 204, description = "Every push subscription of the account removed"),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn unsubscribe_all(
     State(state): State<AppState>,
     auth: AuthUser,

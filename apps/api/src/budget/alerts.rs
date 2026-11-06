@@ -424,6 +424,20 @@ pub(crate) fn push_in_background(state: &AppState, alerted: Vec<Uuid>) {
 }
 
 /// The family's switches; a family without a settings row has both on.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/budget-alert-settings",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The budget alert thresholds", body = BudgetAlertSettings),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_alert_settings(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -448,6 +462,22 @@ pub async fn get_alert_settings(
 
 /// Sets the switches the body names and keeps the other. Same bar as every
 /// budget route, before the body is looked at (#531).
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/budget-alert-settings",
+    tag = "budget",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = UpdateBudgetAlertSettings,
+    responses(
+        (status = 200, description = "Thresholds saved", body = BudgetAlertSettings),
+        (status = 400, description = "Invalid threshold", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such resource, or a role without access to the budget", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn patch_alert_settings(
     State(state): State<AppState>,
     auth: AuthUser,

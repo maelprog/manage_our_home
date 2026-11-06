@@ -37,6 +37,16 @@ use crate::AppState;
 /// email tokens, OAuth refresh tokens, attachment and profile photo storage
 /// keys and ICS feed URLs. Attachments and the profile photo come as
 /// metadata plus a short-lived presigned URL.
+#[utoipa::path(
+    get,
+    path = "/account/export",
+    tag = "account",
+    responses(
+        (status = 200, description = "Everything the account holds, as one JSON document (RGPD art. 15 and 20)", body = crate::api_docs::schemas::AccountExport),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn export_account(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -745,6 +755,15 @@ const PRIVACY_POLICY_MD: &str = include_str!(concat!(
     "/../../docs/privacy-policy.md"
 ));
 
+#[utoipa::path(
+    get,
+    path = "/privacy-policy",
+    tag = "legal",
+    responses(
+        (status = 200, description = "The privacy policy, in Markdown", body = String, content_type = "text/markdown"),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn privacy_policy() -> Response {
     markdown_document(PRIVACY_POLICY_MD)
 }
@@ -769,6 +788,15 @@ const TERMS_OF_SERVICE_MD: &str = include_str!(concat!(
     "/../../docs/terms-of-service.md"
 ));
 
+#[utoipa::path(
+    get,
+    path = "/legal-notice",
+    tag = "legal",
+    responses(
+        (status = 200, description = "The legal notice, in Markdown", body = String, content_type = "text/markdown"),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn legal_notice() -> Response {
     markdown_document(LEGAL_NOTICE_MD)
 }
@@ -777,6 +805,15 @@ pub async fn legal_notice() -> Response {
 /// announced one from its date, `docs/terms-of-service.md` before. The day
 /// is read on every request, and the response is marked `no-cache`, so no
 /// copy kept by a browser or a proxy outlives the switch.
+#[utoipa::path(
+    get,
+    path = "/terms-of-service",
+    tag = "legal",
+    responses(
+        (status = 200, description = "The CGU in force, in Markdown", body = String, content_type = "text/markdown"),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn terms_of_service() -> Response {
     let in_force = crate::auth::terms_acceptance::terms_in_force_now();
     not_cached(markdown_document(terms_markdown(in_force, TERMS_ANNOUNCED)))
@@ -795,6 +832,16 @@ fn terms_markdown(in_force: &str, announced: Option<AnnouncedTerms>) -> &'static
 /// force (#367), so it can be read before it applies; 404 when there is
 /// none, which is also the case from its date on: it is then the text
 /// `/terms-of-service` serves. `no-cache` for the same reason.
+#[utoipa::path(
+    get,
+    path = "/terms-of-service/announced",
+    tag = "legal",
+    responses(
+        (status = 200, description = "The next version of the CGU, announced but not yet in force, in Markdown", body = String, content_type = "text/markdown"),
+        (status = 404, description = "No version is announced (empty body)"),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn announced_terms_of_service() -> Response {
     match terms_announced_on(paris_day(Utc::now())) {
         Some(announced) => not_cached(markdown_document(announced.markdown)),

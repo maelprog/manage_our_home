@@ -22,6 +22,7 @@ use uuid::Uuid;
 /// message of the same family, else 422 `reply_to_invalid`. Left out of the
 /// body when `None`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateMessageRequest {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,6 +34,7 @@ pub struct CreateMessageRequest {
 /// message and is required (there is no other editable field, so there is no
 /// `Option`/"leave as-is" state to model).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateMessageRequest {
     pub content: String,
 }
@@ -42,6 +44,7 @@ pub struct UpdateMessageRequest {
 /// (`validation::messagerie::author_name`). `edited_at` is `Some` once the
 /// message has been edited, which is what the `modifié` marker renders from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MessageResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -61,6 +64,7 @@ pub struct MessageResponse {
 /// decrypted by the backend on each read and cut at
 /// `REPLY_EXCERPT_CHARS` (120) chars, ending with `…` when it was cut.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReplyTo {
     pub id: Uuid,
     pub created_by: Uuid,
@@ -83,6 +87,7 @@ pub struct ReplyTo {
 /// card gives (issue #73; #98 verification, round 2, found that card silently
 /// capped at five with no hint there were fifteen more).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MessageList {
     pub messages: Vec<MessageResponse>,
     pub has_more: bool,
@@ -102,6 +107,7 @@ pub struct MessageList {
 /// server to re-render the thread, so no client-side renderer can drift from
 /// the Rust one. Writes never go over this socket — they are REST only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "type")]
 pub enum MessageEvent {
     #[serde(rename = "message.created")]

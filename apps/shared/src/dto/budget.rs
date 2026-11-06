@@ -26,6 +26,7 @@ use uuid::Uuid;
 /// paid (#638), none « Personne »; a non-member is a 400
 /// `paid_by_not_a_member`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateBudgetEntryRequest {
     pub name: String,
     pub amount: f64,
@@ -54,6 +55,7 @@ pub struct CreateBudgetEntryRequest {
 /// `paid_by` is a double `Option` as `category_id` (#638): `Some(None)`
 /// leaves the entry without a payer, `None` keeps its payer.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateBudgetEntryRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -84,6 +86,7 @@ pub struct UpdateBudgetEntryRequest {
 /// double-counting. An item linked to an entry that carries other items too
 /// is a 409 `grocery_item_priced_with_others`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SetGroceryItemPriceRequest {
     pub amount: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +99,7 @@ pub struct SetGroceryItemPriceRequest {
 /// given; `name` is denormalized so it survives the grocery item being
 /// deleted. `amount` is euros.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetEntryResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -118,6 +122,7 @@ pub struct BudgetEntryResponse {
 
 /// A grocery item a budget entry links to. Mirrors `LinkedGroceryItem`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LinkedGroceryItem {
     pub id: Uuid,
     pub name: String,
@@ -125,6 +130,7 @@ pub struct LinkedGroceryItem {
 
 /// `GET /groups/:id/budget-entries` response envelope (`{ "entries": [...] }`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetEntryList {
     pub entries: Vec<BudgetEntryResponse>,
 }
@@ -133,6 +139,7 @@ pub struct BudgetEntryList {
 /// first day of the month, `total` is euros (the backend sums `amount_cents`
 /// then divides). The wire field is `total` (euros), *not* `total_cents`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetPeriodTotal {
     pub period: NaiveDate,
     pub total: f64,
@@ -143,6 +150,7 @@ pub struct BudgetPeriodTotal {
 /// the month asked for (`?month=YYYY-MM`, else the current one) against the
 /// caps (#532); `None` when a response lacks it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetSummary {
     pub periods: Vec<BudgetPeriodTotal>,
     #[serde(default)]
@@ -171,6 +179,7 @@ where
 /// A spending category of the family. `color` is one of
 /// `validation::budget::CATEGORY_COLORS`, a named key, never a hex value.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetCategory {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -183,12 +192,14 @@ pub struct BudgetCategory {
 
 /// `GET /groups/:id/budget-categories` (`{ "categories": [...] }`, by name).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetCategoryList {
     pub categories: Vec<BudgetCategory>,
 }
 
 /// `POST /groups/:id/budget-categories` request body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateBudgetCategoryRequest {
     pub name: String,
     pub color: String,
@@ -199,6 +210,7 @@ pub struct CreateBudgetCategoryRequest {
 /// `PATCH /groups/:id/budget-categories/:category_id` request body. A field
 /// left out keeps its value; `monthly_cap: null` removes the cap.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateBudgetCategoryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -216,6 +228,7 @@ pub struct UpdateBudgetCategoryRequest {
 /// the monthly cap for the whole family. `PUT` replaces it, so a body
 /// without `monthly_cap` removes it, as `null` does.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetSettings {
     #[serde(default)]
     pub monthly_cap: Option<f64>,
@@ -224,6 +237,7 @@ pub struct BudgetSettings {
 /// `GET` and `PATCH /groups/:id/budget-alert-settings` response (#536): the
 /// family's two switches of the cap alerts, both on unless turned off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetAlertSettings {
     /// The alerts on the family's monthly cap: 80 % reached, cap reached.
     pub global_cap_alerts: bool,
@@ -234,6 +248,7 @@ pub struct BudgetAlertSettings {
 /// `PATCH /groups/:id/budget-alert-settings` request body: a switch named
 /// is set, a switch left out keeps its value.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateBudgetAlertSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub global_cap_alerts: Option<bool>,
@@ -243,6 +258,7 @@ pub struct UpdateBudgetAlertSettings {
 
 /// One category's spend over the summary's month.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetCategoryUsage {
     pub id: Uuid,
     pub name: String,
@@ -266,6 +282,7 @@ pub struct BudgetCategoryUsage {
 /// largest first, and `without_payer` the spend nobody is named as having
 /// paid: together, `total` again.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetMonthSummary {
     /// First day of the month.
     pub period: NaiveDate,
@@ -284,6 +301,7 @@ pub struct BudgetMonthSummary {
 /// One member's spend over the summary's month (#638), under the name they
 /// go by now.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BudgetPayerTotal {
     pub user_id: Uuid,
     pub display_name: String,

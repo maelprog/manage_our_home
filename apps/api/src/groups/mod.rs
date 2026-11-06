@@ -22,12 +22,12 @@ use crate::AppState;
 const MAX_GROUPS_PER_USER: i64 = 10;
 pub const INVITATION_TTL_DAYS: i64 = 7;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateGroupRequest {
     pub name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct GroupResponse {
     pub id: Uuid,
     pub name: String,
@@ -40,6 +40,18 @@ pub struct GroupResponse {
 
 /// AC #9: the creator becomes owner+admin immediately; blocked at 10
 /// active groups per user.
+#[utoipa::path(
+    post,
+    path = "/groups",
+    tag = "groups",
+    request_body = CreateGroupRequest,
+    responses(
+        (status = 201, description = "Group created, the caller its owner", body = GroupResponse),
+        (status = 422, description = "`too_many_groups`, or an invalid name (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_group(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -115,6 +127,16 @@ pub async fn create_group(
 /// one transaction per group to find the caller's role: there it cost a
 /// few round trips per group *in the database*, on every authenticated page
 /// of apps/web (issue #113).
+#[utoipa::path(
+    get,
+    path = "/groups",
+    tag = "groups",
+    responses(
+        (status = 200, description = "The caller's groups", body = Vec<crate::api_docs::schemas::GroupSummary>),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_groups(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -176,6 +198,20 @@ pub async fn list_groups(
 /// The refusal is `NotFound`, the same answer as an id that does not exist,
 /// so it does not tell the caller which groups are real. apps/web already
 /// renders both as "Groupe introuvable" (`routes/groups/members.rs`).
+#[utoipa::path(
+    get,
+    path = "/groups/{id}",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The group, its calendar settings and its members", body = crate::api_docs::schemas::GroupDetail),
+        (status = 404, description = "`not_found`: no such group, or the caller is not a member", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_group(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -247,6 +283,21 @@ pub async fn get_group(
 /// another group, but a connection that bypassed RLS would not. Every refusal
 /// is `NotFound`, the answer to an unknown id, so the response never tells
 /// the caller who belongs to which group.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/members/{user_id}",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("user_id" = uuid::Uuid, Path, description = "Member's user id"),
+    ),
+    responses(
+        (status = 200, description = "A member's profile", body = GroupMemberProfile),
+        (status = 404, description = "`not_found`: not a member, or the caller is not a member", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_member(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -285,6 +336,19 @@ pub async fn get_member(
 /// 204, and `GET /groups` stops carrying it. Idempotent; a member with no
 /// such notice gets the same 204. A non-member gets 403, like every other
 /// action on a group it does not belong to.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/ownership-notice/seen",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 204, description = "Notice acknowledged"),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn acknowledge_ownership_notice(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -305,7 +369,7 @@ pub async fn acknowledge_ownership_notice(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RenameGroupRequest {
     #[serde(default)]
     pub name: Option<String>,
@@ -315,9 +379,11 @@ pub struct RenameGroupRequest {
     /// it is `null` (cleared). Taken as a raw value so that a wrong type is
     /// a 400 `invalid_school_zone` too, not axum's plain-text 422.
     #[serde(default, deserialize_with = "deserialize_some")]
+    #[schema(value_type = Option<String>)]
     pub school_zone: Option<serde_json::Value>,
     /// #561: same reason; `null` is kept apart from absence to be refused.
     #[serde(default, deserialize_with = "deserialize_some")]
+    #[schema(value_type = bool)]
     pub alsace_moselle: Option<serde_json::Value>,
 }
 
@@ -367,6 +433,22 @@ fn parse_alsace_moselle(value: &serde_json::Value) -> Result<bool, &'static str>
 /// otherwise), and `alsace_moselle`, a boolean (400
 /// `invalid_alsace_moselle` otherwise, `null` included). Either one alone
 /// is a body with a setting.
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = RenameGroupRequest,
+    responses(
+        (status = 200, description = "Group updated", body = GroupResponse),
+        (status = 400, description = "`invalid_accent`, or an invalid school zone", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`name_required`, or an invalid name", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn rename_group(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -476,7 +558,7 @@ async fn perform_ownership_transfer(
     Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct TransferOwnershipRequest {
     pub new_owner_id: Uuid,
 }
@@ -486,6 +568,22 @@ pub struct TransferOwnershipRequest {
 /// caller itself (422). The old owner becomes `admin`, the target becomes
 /// `owner`, with one `ownership_transferred` audit row — the same swap as an
 /// owner leaving, factored into `perform_ownership_transfer`.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/transfer-ownership",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = TransferOwnershipRequest,
+    responses(
+        (status = 200, description = "Ownership transferred"),
+        (status = 404, description = "`not_found`: the new owner is not a member", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`cannot_transfer_to_self`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn transfer_ownership(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -549,6 +647,19 @@ pub(crate) async fn require_role(
 
 /// Owner-only. Deleting the group also deletes members/invitations
 /// (ON DELETE CASCADE) — this is the only sanctioned way to empty a group.
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 204, description = "Group deleted (owner only)"),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_group(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -585,13 +696,28 @@ pub async fn delete_group(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateInvitationRequest {
     pub invited_email: Option<String>,
 }
 
 /// AC #14: admin/owner only; invitation expires after 7 days and is
 /// single-use.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/invitations",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateInvitationRequest,
+    responses(
+        (status = 201, description = "Invitation created and emailed", body = crate::api_docs::schemas::InvitationCreated),
+        (status = 422, description = "Invalid email (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_invitation(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -720,6 +846,21 @@ pub async fn create_invitation(
 
 /// AC #14: single-use, 7-day expiry. Accepting deletes the invitation, so
 /// re-use returns 404 (#138); 410 Gone is left for an expired one.
+#[utoipa::path(
+    post,
+    path = "/groups/invitations/{token}/accept",
+    tag = "groups",
+    params(
+        ("token" = String, Path, description = "Invitation token, from the invitation link"),
+    ),
+    responses(
+        (status = 200, description = "Joined the group", body = crate::api_docs::schemas::InvitationAccepted),
+        (status = 404, description = "`not_found`: unknown token", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 410, description = "`gone`: expired or already used invitation", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn accept_invitation(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -782,7 +923,7 @@ pub async fn accept_invitation(
     Ok(Json(json!({ "group_id": group_id })))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct ChangeRoleRequest {
     pub role: String,
 }
@@ -790,6 +931,22 @@ pub struct ChangeRoleRequest {
 /// AC #13: only the owner may touch another admin or the owner role
 /// itself; an admin may only act on standard members. Enforced here, not
 /// just documented, and covered by a test per role pair.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/members/{user_id}/role",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("user_id" = uuid::Uuid, Path, description = "Member's user id"),
+    ),
+    request_body = ChangeRoleRequest,
+    responses(
+        (status = 200, description = "Role changed"),
+        (status = 400, description = "`invalid_role`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn change_role(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -836,6 +993,20 @@ pub async fn change_role(
 /// AC #13: admin/owner removes a standard; owner removes an admin. Nobody
 /// removes the owner via this endpoint (must transfer ownership + leave,
 /// or delete the group).
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/members/{user_id}",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("user_id" = uuid::Uuid, Path, description = "Member's user id"),
+    ),
+    responses(
+        (status = 204, description = "Member removed"),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn remove_member(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -860,7 +1031,7 @@ pub async fn remove_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::ToSchema)]
 pub struct LeaveGroupRequest {
     pub new_owner_id: Option<Uuid>,
 }
@@ -868,6 +1039,22 @@ pub struct LeaveGroupRequest {
 /// AC #11, #12: an owner leaving must supply `new_owner_id` (422
 /// otherwise). AC #12: the last remaining member must delete the group
 /// instead (409).
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/leave",
+    tag = "groups",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = LeaveGroupRequest,
+    responses(
+        (status = 200, description = "Left the group"),
+        (status = 409, description = "`last_member_must_delete_group`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`new_owner_id_required`: the owner must name a successor", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn leave_group(
     State(state): State<AppState>,
     auth: AuthUser,

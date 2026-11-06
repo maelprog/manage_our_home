@@ -14,6 +14,7 @@ use uuid::Uuid;
 /// `seasonal_months` are omitted from the wire when `None`; `is_optional`
 /// is always sent (the backend defaults a missing key to `false`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct IngredientInput {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -28,6 +29,7 @@ pub struct IngredientInput {
 
 /// `POST /groups/:id/recipes` request body. Mirrors `CreateRecipeRequest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateRecipeRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,6 +75,7 @@ where
 /// present `ingredients` replaces the recipe's full ingredient list; an
 /// absent one leaves the ingredients untouched.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateRecipeRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -103,6 +106,7 @@ pub struct UpdateRecipeRequest {
 
 /// One ingredient on a recipe response. Mirrors `IngredientResponse`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct IngredientResponse {
     pub id: Uuid,
     pub name: String,
@@ -115,6 +119,7 @@ pub struct IngredientResponse {
 /// `GET/POST/PATCH /groups/:id/recipes[/:recipe_id]` response body. Mirrors
 /// `RecipeResponse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RecipeResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -137,6 +142,7 @@ pub struct RecipeResponse {
 
 /// `POST /groups/:id/recipes/import` request body (#405).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ImportRecipeRequest {
     pub url: String,
 }
@@ -144,6 +150,7 @@ pub struct ImportRecipeRequest {
 /// One ingredient line of an imported page, split into quantity, unit and
 /// name — or kept whole as the name when it was not understood.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DraftIngredient {
     pub quantity: Option<f64>,
     pub unit: Option<String>,
@@ -154,6 +161,7 @@ pub struct DraftIngredient {
 /// publishes, for the member to review and correct. Nothing is saved: the
 /// recipe is created by `POST /groups/:id/recipes`, with `source_url`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RecipeDraft {
     pub name: String,
     pub ingredients: Vec<DraftIngredient>,
@@ -163,6 +171,7 @@ pub struct RecipeDraft {
 
 /// `GET /groups/:id/recipes` response envelope (`{ "recipes": [...] }`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RecipeList {
     pub recipes: Vec<RecipeResponse>,
 }
@@ -171,6 +180,7 @@ pub struct RecipeList {
 /// `MissingIngredient` — the exact shape the grocery-list generate endpoint
 /// (F6) consumes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MissingIngredient {
     pub name: String,
     pub quantity: Option<f64>,
@@ -182,6 +192,7 @@ pub struct MissingIngredient {
 /// the *order* and the derived signals below, never the number itself (see
 /// `docs/front-epic-5-recipes.md`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RecipeSuggestion {
     pub recipe_id: Uuid,
     pub name: String,
@@ -195,6 +206,7 @@ pub struct RecipeSuggestion {
 
 /// `GET /groups/:id/recipes/suggestions` response envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SuggestionList {
     pub suggestions: Vec<RecipeSuggestion>,
 }
@@ -202,6 +214,7 @@ pub struct SuggestionList {
 /// `POST /groups/:id/recipes/:recipe_id/meal-history` request body. Mirrors
 /// `LogMealRequest`. An omitted `eaten_on` defaults to today server-side.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LogMealRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eaten_on: Option<NaiveDate>,
@@ -209,6 +222,7 @@ pub struct LogMealRequest {
 
 /// One `meal_history` entry. Mirrors `MealHistoryEntryResponse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MealHistoryEntryResponse {
     pub id: Uuid,
     pub recipe_id: Uuid,
@@ -219,6 +233,7 @@ pub struct MealHistoryEntryResponse {
 
 /// `GET /groups/:id/recipes/meal-history` response envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MealHistoryList {
     pub entries: Vec<MealHistoryEntryResponse>,
 }
@@ -227,6 +242,7 @@ pub struct MealHistoryList {
 /// Mirrors `apps/api/src/recipes/selections.rs::SelectRecipeRequest`.
 /// `servings` (1 to 50 people) is left as it is when omitted.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SelectRecipeRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servings: Option<i32>,
@@ -235,6 +251,7 @@ pub struct SelectRecipeRequest {
 /// `PATCH /groups/:id/recipes/:recipe_id/selection` request body (#469).
 /// Mirrors `UpdateSelectionRequest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateSelectionRequest {
     pub servings: i32,
 }
@@ -243,6 +260,7 @@ pub struct UpdateSelectionRequest {
 /// `planned`, `done` or `abandoned`; `servings` is `None` until someone
 /// sets it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RecipeSelectionResponse {
     pub id: Uuid,
     pub recipe_id: Uuid,
@@ -257,6 +275,7 @@ pub struct RecipeSelectionResponse {
 /// `GET /groups/:id/recipes/selections` response envelope: the group's
 /// `planned` selections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RecipeSelectionList {
     pub selections: Vec<RecipeSelectionResponse>,
 }
@@ -269,6 +288,7 @@ pub struct RecipeSelectionList {
 /// date by which to cook it to use up what expires, `days_left` the days
 /// until then in Europe/Paris, negative once past.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PlannedSelection {
     #[serde(flatten)]
     pub selection: RecipeSelectionResponse,
@@ -283,6 +303,7 @@ pub struct PlannedSelection {
 /// The same response as [`RecipeSelectionList`], read with what the stock
 /// holds of each recipe (#559): the dated ones first, the nearest first.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PlannedSelectionList {
     pub selections: Vec<PlannedSelection>,
 }
@@ -293,6 +314,7 @@ pub struct PlannedSelectionList {
 /// `apps/api/src/recipes/outcome.rs::RemovalWarning`; a code this mirror
 /// does not know reads as `Other` rather than failing the whole preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum RemovalWarning {
     NoStock,
@@ -306,6 +328,7 @@ pub enum RemovalWarning {
 /// One stock line of a `done` preview, and what is proposed from it, in
 /// the line's unit. Mirrors `DoneLotResponse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DoneLot {
     pub stock_item: crate::dto::stocks::StockItemResponse,
     pub quantity: f64,
@@ -314,6 +337,7 @@ pub struct DoneLot {
 /// One ingredient of a `done` preview. Mirrors `DoneLineResponse`:
 /// `quantity` is the recipe's, scaled to the selection's number of people.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DoneIngredient {
     pub ingredient_id: Uuid,
     pub name: String,
@@ -330,6 +354,7 @@ pub struct DoneIngredient {
 
 /// `GET /groups/:id/recipes/:recipe_id/selection/done` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DonePreview {
     pub selection: RecipeSelectionResponse,
     pub ingredients: Vec<DoneIngredient>,
@@ -345,6 +370,7 @@ pub struct DonePreview {
 /// One line of a `done` request: the quantity to take from a stock line,
 /// in its unit. Mirrors `Removal`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DoneRemoval {
     pub stock_item_id: Uuid,
     pub quantity: f64,
@@ -354,6 +380,7 @@ pub struct DoneRemoval {
 /// A product used that the recipe does not call for (#540): the quantity
 /// to take from a stock line, in its unit. Mirrors `OtherRemoval`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DoneOther {
     pub stock_item_id: Uuid,
     pub quantity: f64,
@@ -361,6 +388,7 @@ pub struct DoneOther {
 
 /// `POST …/selection/done` request body. Mirrors `DoneRequest`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DoneRequest {
     pub removals: Vec<DoneRemoval>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -381,6 +409,7 @@ pub struct DoneRequest {
 /// `"action": "set_quantity"` with `"quantity"`, `"remove"` or
 /// `"make_optional"`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum RecipeChange {
     /// The new quantity, for the recipe's number of people, in its unit.
@@ -394,6 +423,7 @@ pub enum RecipeChange {
 /// One change to the recipe of a `done` request (#558). Mirrors
 /// `RecipeUpdate`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RecipeUpdate {
     pub ingredient_id: Uuid,
     #[serde(flatten)]
@@ -403,6 +433,7 @@ pub struct RecipeUpdate {
 /// One grocery item of an `abandoned` preview. Mirrors
 /// `AbandonLineResponse`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AbandonItem {
     pub id: Uuid,
     pub name: String,
@@ -412,6 +443,7 @@ pub struct AbandonItem {
 
 /// `GET /groups/:id/recipes/:recipe_id/selection/abandoned` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AbandonPreview {
     pub selection: RecipeSelectionResponse,
     pub items: Vec<AbandonItem>,
@@ -419,6 +451,7 @@ pub struct AbandonPreview {
 
 /// `POST …/selection/abandoned` request body. Mirrors `AbandonRequest`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AbandonRequest {
     pub remove: Vec<Uuid>,
 }

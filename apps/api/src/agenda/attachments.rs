@@ -13,7 +13,7 @@ use crate::storage::{
 };
 use crate::AppState;
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AttachmentResponse {
     pub id: Uuid,
     pub event_id: Uuid,
@@ -38,6 +38,25 @@ pub struct AttachmentResponse {
 /// bounded per account and per process, and one over either bound is
 /// answered 503 without a byte read. How long the body may take is bounded
 /// on every route by the middleware in `build_router`.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/events/{event_id}/attachments",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+    ),
+    request_body(content = inline(crate::api_docs::schemas::FileUpload), content_type = "multipart/form-data", description = "One `file` field, 20 MiB at most"),
+    responses(
+        (status = 201, description = "Attachment stored", body = AttachmentResponse),
+        (status = 400, description = "`invalid_multipart`, `missing_file` or `multiple_files`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such event", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`file_too_large` or `unsupported_file_type`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 503, description = "`uploads_busy`: too many uploads at once; `Retry-After` says when to retry", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn upload_attachment(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -199,6 +218,20 @@ pub async fn upload_attachment(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/events/{event_id}/attachments",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+    ),
+    responses(
+        (status = 200, description = "The event's attachments", body = Vec<AttachmentResponse>),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_attachments(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -219,6 +252,22 @@ pub async fn list_attachments(
     Ok(Json(rows))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/events/{event_id}/attachments/{attachment_id}/download",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+        ("attachment_id" = uuid::Uuid, Path, description = "Attachment id"),
+    ),
+    responses(
+        (status = 200, description = "A short-lived presigned URL to the file", body = crate::api_docs::schemas::AttachmentDownload),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn download_attachment(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -246,6 +295,22 @@ pub async fn download_attachment(
     Ok(Json(serde_json::json!({ "url": url })))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/events/{event_id}/attachments/{attachment_id}",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+        ("attachment_id" = uuid::Uuid, Path, description = "Attachment id"),
+    ),
+    responses(
+        (status = 204, description = "Attachment deleted"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_attachment(
     State(state): State<AppState>,
     auth: AuthUser,

@@ -188,6 +188,10 @@ services:
       # Overridable (SECURE_COOKIES=false in .env) for local http://localhost
       # testing, where Secure cookies can be dropped by the browser.
       SECURE_COOKIES: ${SECURE_COOKIES:-true}
+      # The OpenAPI spec and Swagger UI, at /api/openapi.json and /api/docs/
+      # (#626). Off unless `true`: .env.example turns it on for the local
+      # stack, a real deployment leaves it off (apps/api/README.md).
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-false}
       # Whose `X-Forwarded-For` the API believes (#178). Only `caddy` and
       # `web` can reach `api` here — it publishes no port — and Docker's
       # default address pools hand this network a subnet out of

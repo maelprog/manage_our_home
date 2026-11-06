@@ -590,7 +590,7 @@ pub fn clear_session_cookie(cookies: &Cookies, secure: bool) {
 /// the `__Host-` prefix. Without it — local development over plain HTTP,
 /// `infra/.env.example` — a browser rejects a `__Host-` cookie that is not
 /// `Secure`, so the bare name stays, or logging in would set nothing.
-fn session_cookie_name(secure: bool) -> &'static str {
+pub(crate) fn session_cookie_name(secure: bool) -> &'static str {
     if secure {
         HOST_SESSION_COOKIE_NAME
     } else {

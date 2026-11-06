@@ -27,6 +27,21 @@ use crate::groups::require_role;
 use crate::stocks::{barcode, gs1, openfoodfacts, shelf_life};
 use crate::AppState;
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/stock-items/scan",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = ScanRequest,
+    responses(
+        (status = 200, description = "What the barcode says: the product, the item already in stock, a proposed expiry", body = ScanResult),
+        (status = 422, description = "`invalid_barcode`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn scan_stock_item(
     State(state): State<AppState>,
     auth: AuthUser,

@@ -15,6 +15,7 @@ use uuid::Uuid;
 /// member count (the one gated exception to the RLS boundary, see
 /// `apps/api/src/user_admin/admin.rs::list_groups`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminGroupResponse {
     pub id: Uuid,
     pub name: String,
@@ -32,6 +33,7 @@ fn has_owner_by_default() -> bool {
 /// One member of `GET /admin/groups/:id/members` — only answered for a group
 /// left without an owner (#323), for the superadmin to designate one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminGroupMember {
     pub user_id: Uuid,
     pub display_name: String,
@@ -44,6 +46,7 @@ pub struct AdminGroupMember {
 
 /// `GET /admin/groups/:id/members` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminGroupMembersResponse {
     pub id: Uuid,
     pub name: String,
@@ -52,12 +55,14 @@ pub struct AdminGroupMembersResponse {
 
 /// `POST /admin/groups/:id/owner` request (#323).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DesignateOwnerRequest {
     pub user_id: Uuid,
 }
 
 /// `GET /admin/groups` response envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminGroupsResponse {
     pub groups: Vec<AdminGroupResponse>,
 }
@@ -67,6 +72,7 @@ pub struct AdminGroupsResponse {
 /// superadmin `deactivate`, cleared by `reactivate` (#256);
 /// `deletion_requested_at` marks a pending grace-period deletion request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminUserResponse {
     pub id: Uuid,
     pub email: String,
@@ -89,6 +95,7 @@ pub struct AdminUserResponse {
 
 /// `GET /admin/users` response envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminUsersResponse {
     pub users: Vec<AdminUserResponse>,
 }

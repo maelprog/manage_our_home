@@ -27,7 +27,7 @@ fn validate_duration(minutes: i32) -> AppResult<i32> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct IngredientInput {
     pub name: String,
     pub quantity: Option<f64>,
@@ -37,7 +37,7 @@ pub struct IngredientInput {
     pub seasonal_months: Option<Vec<i32>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateRecipeRequest {
     pub name: String,
     pub instructions: Option<String>,
@@ -65,7 +65,7 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateRecipeRequest {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_some")]
@@ -81,7 +81,7 @@ pub struct UpdateRecipeRequest {
     pub duration_minutes: Option<Option<i32>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct IngredientResponse {
     pub id: Uuid,
     pub name: String,
@@ -91,7 +91,7 @@ pub struct IngredientResponse {
     pub seasonal_months: Option<Vec<i32>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct RecipeResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -208,6 +208,21 @@ async fn fetch_ingredients(
     Ok(rows.into_iter().map(IngredientResponse::from).collect())
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateRecipeRequest,
+    responses(
+        (status = 201, description = "Recipe created", body = RecipeResponse),
+        (status = 400, description = "`name_required`, `invalid_source_url`, `invalid_duration`, `ingredient_name_required`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_recipe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -272,6 +287,21 @@ pub async fn create_recipe(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/{recipe_id}",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 200, description = "The recipe", body = RecipeResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn get_recipe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -309,6 +339,19 @@ pub async fn get_recipe(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The group's recipes", body = crate::api_docs::schemas::RecipeList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_recipes(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -370,6 +413,23 @@ pub async fn list_recipes(
     Ok(Json(json!({ "recipes": recipes })))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/recipes/{recipe_id}",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    request_body = UpdateRecipeRequest,
+    responses(
+        (status = 200, description = "Recipe updated", body = RecipeResponse),
+        (status = 400, description = "`name_required`, `invalid_source_url`, `invalid_duration`, `ingredient_name_required`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_recipe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -472,6 +532,21 @@ pub async fn update_recipe(
     }))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/recipes/{recipe_id}",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 204, description = "Recipe deleted"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_recipe(
     State(state): State<AppState>,
     auth: AuthUser,

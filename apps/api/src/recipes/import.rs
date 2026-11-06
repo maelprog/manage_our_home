@@ -94,6 +94,22 @@ impl From<ImportFailure> for AppError {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes/import",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = ImportRecipeRequest,
+    responses(
+        (status = 200, description = "A draft read from the page, to review before it is saved", body = RecipeDraft),
+        (status = 422, description = "The page could not be read as a recipe (import failure code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 429, description = "`too_many_attempts`: import rate limit", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn import_recipe(
     State(state): State<AppState>,
     auth: AuthUser,

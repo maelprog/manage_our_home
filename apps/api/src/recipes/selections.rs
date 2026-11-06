@@ -40,19 +40,19 @@ pub(crate) fn validate_servings(servings: i32) -> AppResult<i32> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct SelectRecipeRequest {
     /// Number of people; left as it is (or unset, on a new selection) when
     /// omitted.
     pub servings: Option<i32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateSelectionRequest {
     pub servings: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct SelectionResponse {
     pub id: Uuid,
     pub recipe_id: Uuid,
@@ -82,6 +82,24 @@ async fn recipe_name(
 
 /// `POST /groups/:id/recipes/:recipe_id/selection`: 201 with a new
 /// `planned` selection, or 200 with the one already planned.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes/{recipe_id}/selection",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    request_body = SelectRecipeRequest,
+    responses(
+        (status = 201, description = "Recipe planned", body = SelectionResponse),
+        (status = 200, description = "Already planned: the selection as it is", body = SelectionResponse),
+        (status = 400, description = "`invalid_servings`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such recipe", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn select_recipe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -144,6 +162,23 @@ pub async fn select_recipe(
 
 /// `PATCH /groups/:id/recipes/:recipe_id/selection`: changes the number of
 /// people of the recipe's `planned` selection; 404 when there is none.
+#[utoipa::path(
+    patch,
+    path = "/groups/{id}/recipes/{recipe_id}/selection",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    request_body = UpdateSelectionRequest,
+    responses(
+        (status = 200, description = "Selection updated", body = SelectionResponse),
+        (status = 400, description = "`invalid_servings`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn update_selection(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -186,6 +221,21 @@ pub async fn update_selection(
 /// `DELETE /groups/:id/recipes/:recipe_id/selection`: deletes the recipe's
 /// `planned` selection; 404 when there is none. A `done` or `abandoned`
 /// selection (#473) is history and stays.
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/recipes/{recipe_id}/selection",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 204, description = "Selection removed"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn deselect_recipe(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -216,7 +266,7 @@ pub async fn deselect_recipe(
 /// use up what expires (`use_by`), with the days left until then in
 /// Europe/Paris (`days_left`, negative once past). A non-empty `missing`
 /// is a warning: the recipe can still be cooked.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct PlannedSelectionResponse {
     #[serde(flatten)]
     pub selection: SelectionResponse,
@@ -228,6 +278,19 @@ pub struct PlannedSelectionResponse {
 /// `GET /groups/:id/recipes/selections`: the group's `planned` selections,
 /// those with a `use_by` first, the nearest first, then the others oldest
 /// first.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/selections",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The planned recipes, with what is missing for each", body = crate::api_docs::schemas::PlannedSelectionList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_selections(
     State(state): State<AppState>,
     auth: AuthUser,

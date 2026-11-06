@@ -29,7 +29,8 @@ use crate::AppState;
 /// The `kind` of a school holiday period (#563).
 pub const SCHOOL_HOLIDAY: &str = "school_holiday";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DateRangeQuery {
     pub from: NaiveDate,
     pub to: NaiveDate,
@@ -38,6 +39,22 @@ pub struct DateRangeQuery {
 /// Any member of the family; anyone else gets 404, as on `GET /groups/:id`.
 /// A backwards range is 400 `to_before_from`, one wider than a leap year
 /// 400 `range_too_wide` — checked before the database is touched.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/national-days",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        DateRangeQuery,
+    ),
+    responses(
+        (status = 200, description = "Public holidays, school holidays of the zone and national days between `from` and `to`", body = NationalDayList),
+        (status = 400, description = "Invalid range (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no such group, or the caller is not a member", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_national_days(
     State(state): State<AppState>,
     auth: AuthUser,

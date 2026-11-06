@@ -15,6 +15,7 @@ use uuid::Uuid;
 /// unit as `NULL` too, unless a quantity is given: then « unité », #458);
 /// only `name` is required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateGroceryItemRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +47,7 @@ where
 /// edit form always sends every field, so a blank quantity/unit clears it
 /// (a cleared unit becomes « unité » while a quantity remains, #458).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateGroceryItemRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -66,6 +68,7 @@ pub struct UpdateGroceryItemRequest {
 /// `POST /groups/:id/grocery-items/:item_id/check` request body. Mirrors
 /// `CheckGroceryItemRequest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CheckGroceryItemRequest {
     pub checked: bool,
 }
@@ -75,6 +78,7 @@ pub struct CheckGroceryItemRequest {
 /// `low_stock` (informational provenance); `source_recipe_id` is set only
 /// when the row was generated from a recipe's missing ingredients.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GroceryItemResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -92,6 +96,7 @@ pub struct GroceryItemResponse {
 /// `GET /groups/:id/grocery-items` and `POST …/generate` response envelope
 /// (`{ "items": [...] }`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GroceryItemList {
     pub items: Vec<GroceryItemResponse>,
 }

@@ -28,6 +28,18 @@ use super::session::AgeUndeclaredSession;
 /// the registration's rule and code. Any session but that of an account
 /// without declaration is a 401: the declaration is made once, and never
 /// rewritten.
+#[utoipa::path(
+    post,
+    path = "/auth/age-declaration",
+    tag = "auth",
+    request_body = AgeDeclarationRequest,
+    responses(
+        (status = 204, description = "Age declared"),
+        (status = 422, description = "The declaration is refused (validation code)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::RestrictedSessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn declare(
     State(state): State<AppState>,
     session: AgeUndeclaredSession,

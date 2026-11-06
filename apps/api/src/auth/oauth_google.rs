@@ -80,6 +80,15 @@ fn flow_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'stati
 /// HttpOnly session cookies (no `Max-Age`: they last until `callback`
 /// clears them or the browser session ends) so `callback` can verify the
 /// one and present the other.
+#[utoipa::path(
+    get,
+    path = "/auth/google/start",
+    tag = "auth",
+    responses(
+        (status = 303, description = "Redirect to Google, with the state cookie set"),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn start(
     State(state): State<AppState>,
     cookies: Cookies,
@@ -100,7 +109,8 @@ pub async fn start(
     Ok(Redirect::to(auth_url.as_str()))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct CallbackQuery {
     code: String,
     state: String,
@@ -164,6 +174,19 @@ async fn exchange_code(
 /// and nothing written to it (#194, #289); a purged one is refused. No
 /// existing session is read. The refresh token (if any) is stored
 /// encrypted via `pgcrypto` and is never written to `tracing` logs.
+#[utoipa::path(
+    get,
+    path = "/auth/google/callback",
+    tag = "auth",
+    params(
+        CallbackQuery,
+    ),
+    responses(
+        (status = 303, description = "Redirect to apps/web: signed in, or to `/login?google=...` with the reason it was not"),
+        (status = 401, description = "`unauthorized`: state mismatch or Google refused the code", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::PublicErrors,
+    ),
+)]
 pub async fn callback(
     State(state): State<AppState>,
     cookies: Cookies,

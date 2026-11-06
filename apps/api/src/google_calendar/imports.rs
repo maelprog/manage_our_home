@@ -17,7 +17,7 @@ use crate::AppState;
 
 const MAX_FEED_BYTES: usize = 5 * 1024 * 1024;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateCalendarImportRequest {
     pub label: String,
     pub feed_url: String,
@@ -27,7 +27,7 @@ pub struct CreateCalendarImportRequest {
 /// once stored it's write-only from the API's perspective (same principle
 /// as never returning a password hash). Members needing to change it
 /// delete and recreate the connection.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CalendarImportResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -84,6 +84,21 @@ fn validate_feed_url(url: &str) -> AppResult<&str> {
 
 /// Admin/owner only — see `can_configure`'s doc comment for why this epic
 /// uses a stricter bar than the rest of the app.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/calendar-imports",
+    tag = "calendar-imports",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    request_body = CreateCalendarImportRequest,
+    responses(
+        (status = 201, description = "Calendar feed registered", body = CalendarImportResponse),
+        (status = 400, description = "`label_required`, `feed_url_required` or `feed_url_must_be_http_or_https`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn create_calendar_import(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -122,6 +137,19 @@ pub async fn create_calendar_import(
     Ok((StatusCode::CREATED, Json(CalendarImportResponse::from(row))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/calendar-imports",
+    tag = "calendar-imports",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+    ),
+    responses(
+        (status = 200, description = "The group's calendar feeds", body = crate::api_docs::schemas::CalendarImportList),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_calendar_imports(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -158,7 +186,8 @@ pub async fn list_calendar_imports(
 /// per-occurrence completion), all of which cascades from `events`.
 /// Destroying that silently would be worse than leaving them behind, so
 /// this is a choice offered, never a new default.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DeleteCalendarImportQuery {
     #[serde(default)]
     pub delete_events: bool,
@@ -167,7 +196,7 @@ pub struct DeleteCalendarImportQuery {
 /// What the delete removed. Reported rather than left to the caller to
 /// work out: the front tells the user how many events left the agenda,
 /// and it cannot count them itself once they are gone.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DeleteCalendarImportResponse {
     pub deleted_events: usize,
 }
@@ -175,6 +204,22 @@ pub struct DeleteCalendarImportResponse {
 /// Admin/owner only, same reasoning as `create_calendar_import` — and the
 /// same bar for the `delete_events` branch, which only widens the radius
 /// of a delete this role could already perform.
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/calendar-imports/{import_id}",
+    tag = "calendar-imports",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("import_id" = uuid::Uuid, Path, description = "Calendar import id"),
+        DeleteCalendarImportQuery,
+    ),
+    responses(
+        (status = 200, description = "Feed removed, with its events if asked", body = DeleteCalendarImportResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn delete_calendar_import(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -236,7 +281,7 @@ pub async fn delete_calendar_import(
     Ok(Json(DeleteCalendarImportResponse { deleted_events }))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct ImportRunResponse {
     pub imported: usize,
     pub updated: usize,
@@ -249,6 +294,22 @@ pub struct ImportRunResponse {
 /// actions (Budget is owner/admin only since #531). Fetches the feed fresh every call: v1 is
 /// pull-on-demand only, no background polling (see migration comment for
 /// the OAuth-vs-ICS tradeoff).
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/calendar-imports/{import_id}/import",
+    tag = "calendar-imports",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("import_id" = uuid::Uuid, Path, description = "Calendar import id"),
+    ),
+    responses(
+        (status = 200, description = "Feed imported now", body = ImportRunResponse),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`feed_too_large`, `invalid_ics`, or why the feed could not be fetched", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn trigger_calendar_import(
     State(state): State<AppState>,
     auth: AuthUser,

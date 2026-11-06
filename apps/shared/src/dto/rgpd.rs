@@ -19,12 +19,14 @@ use uuid::Uuid;
 /// response body is built by hand as `json!({"id": g.group_id, "name": g.name})`,
 /// so `id` is the wire name this must mirror.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BlockingGroup {
     pub id: Uuid,
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OwnerOfGroupsError {
     pub error: String,
     #[serde(default)]

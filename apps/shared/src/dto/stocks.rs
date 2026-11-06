@@ -17,6 +17,7 @@ use crate::validation::stocks::{ExpiryStatus, ReceptionMode};
 /// the wire when `None` (the backend treats an absent `category` as `NULL`,
 /// and an absent `quantity` as `0.0` — we always send `quantity`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateStockItemRequest {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +57,7 @@ where
 /// The quantity-adjust action sends only `quantity`; the full edit sends every
 /// field.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateStockItemRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -87,6 +89,7 @@ pub struct UpdateStockItemRequest {
 /// `StockItemResponse`. `low_stock` is derived by the backend on read
 /// (`quantity <= reorder_threshold`), never stored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct StockItemResponse {
     pub id: Uuid,
     pub group_id: Uuid,
@@ -114,6 +117,7 @@ pub const SORT_BY_EXPIRY: &str = "expires_on";
 
 /// `GET /groups/:id/stock-items` response envelope (`{ "items": [...] }`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct StockItemList {
     pub items: Vec<StockItemResponse>,
 }
@@ -122,6 +126,7 @@ pub struct StockItemList {
 /// barcode decoder produced, or the code typed by hand, as is. Every check
 /// on it happens in apps/api (`stocks::barcode`, `stocks::gs1`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ScanRequest {
     pub raw: String,
 }
@@ -129,6 +134,7 @@ pub struct ScanRequest {
 /// What Open Food Facts knows of a scanned product, kept only when the
 /// record has a name (a nameless record reads as unknown).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ScannedProduct {
     pub name: String,
     /// The pack size as Open Food Facts writes it (`"400 g"`), free text.
@@ -142,6 +148,7 @@ pub struct ScannedProduct {
 /// carries (#403); `category`, the scan's day plus a default shelf life for
 /// the product's Open Food Facts category (#404).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExpiresOnSource {
     Gs1,
@@ -152,6 +159,7 @@ pub enum ExpiresOnSource {
 /// writes nothing to the family's stock: it reads the code, the stock and
 /// the product record, and the page decides what to offer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ScanResult {
     /// The code in its stored form (a UPC-A becomes its EAN-13, and the
     /// GTIN-14 of a GS1 2D code the EAN/UPC of the same product). A string
@@ -188,6 +196,7 @@ pub struct ScanResult {
 /// optional, and an absent one takes the grocery item's value (an absent
 /// `mode`, the default proposal). Omitted from the wire when `None`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReceivedItemRequest {
     pub grocery_item_id: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,6 +214,7 @@ pub struct ReceivedItemRequest {
 /// `POST /groups/:id/stock-items/reception` request body (#471): the lot,
 /// applied in its order and in one transaction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReceiveRequest {
     pub items: Vec<ReceivedItemRequest>,
 }
@@ -216,6 +226,7 @@ pub struct ReceiveRequest {
 /// line an earlier article of the lot creates), on `POST` the line as the
 /// reception left it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReceptionLine {
     pub grocery_item_id: Uuid,
     pub name: String,
@@ -231,6 +242,7 @@ pub struct ReceptionLine {
 /// `GET`/`POST /groups/:id/stock-items/reception` response envelope
 /// (`{ "items": [...] }`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ReceptionList {
     pub items: Vec<ReceptionLine>,
 }
@@ -239,6 +251,7 @@ pub struct ReceptionList {
 /// articles in stock (quantity above 0) whose date is past or within
 /// `EXPIRY_SOON_DAYS` — the number on the Stocks tab's pastille.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExpiringStockCount {
     pub expiring_count: i64,
 }

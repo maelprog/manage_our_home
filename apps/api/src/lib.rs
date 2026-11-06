@@ -1,4 +1,5 @@
 pub mod agenda;
+pub mod api_docs;
 pub mod attachment_reconcile;
 pub mod audit;
 pub mod auth;
@@ -83,6 +84,10 @@ pub struct AppState {
     /// this is a periodic tick rather than a per-event check.
     pub message_ws_recheck_interval: std::time::Duration,
     pub secure_cookies: bool,
+    /// Whether `build_router` serves the OpenAPI spec and Swagger UI
+    /// (#626, `API_DOCS_ENABLED`, `api_docs`). Off: those routes do not
+    /// exist, and answer what any unknown route answers.
+    pub api_docs_enabled: bool,
     /// MinIO/S3 client for event file attachments (architecture.md epic #10).
     pub storage: Storage,
     /// Peers whose `X-Forwarded-For` is believed when resolving a client
@@ -197,7 +202,7 @@ pub fn build_router(state: AppState) -> Router {
         render: cross_origin_response,
     };
 
-    Router::new()
+    let router = Router::new()
         .route("/auth/register", post(auth::register))
         .route("/auth/verify-email", get(auth::verify_email))
         .route("/auth/verify-email/resend", post(auth::resend_verification))
@@ -572,6 +577,13 @@ pub fn build_router(state: AppState) -> Router {
         // applies: they read no cookie and no body, and an origin check or
         // a limit has nothing to protect there.
         .route("/healthz", get(health::healthz))
-        .route("/readyz", get(health::readyz))
-        .with_state(state)
+        .route("/readyz", get(health::readyz));
+    // The documentation (#626), after every layer like the probes: GETs
+    // only, no cookie or body read. Not merged at all when off.
+    let router = if state.api_docs_enabled {
+        router.merge(api_docs::router(&api_docs::openapi(state.secure_cookies)))
+    } else {
+        router
+    };
+    router.with_state(state)
 }

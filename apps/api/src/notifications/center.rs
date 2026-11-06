@@ -298,7 +298,8 @@ const DEFAULT_PAGE_LIMIT: i64 = 20;
 const MAX_PAGE_LIMIT: i64 = 100;
 
 /// `GET /notifications` query parameters.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
     /// One kind only (`Kind::as_str`); every kind when absent.
     pub kind: Option<String>,
@@ -317,6 +318,20 @@ pub struct ListQuery {
 /// Every query of this module filters on the caller's id itself, and runs
 /// under `app.user_id` too, so the recipient policy of 0036 applies the
 /// same filter a second time.
+#[utoipa::path(
+    get,
+    path = "/notifications",
+    tag = "notifications",
+    params(
+        ListQuery,
+    ),
+    responses(
+        (status = 200, description = "A page of notifications, newest first", body = NotificationPage),
+        (status = 400, description = "`invalid_cursor` or `invalid_notification_kind`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn list_notifications(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -378,6 +393,16 @@ pub async fn list_notifications(
 
 /// `GET /notifications/unread_count` — one `count(*)` on the partial index
 /// of 0036, for the badge every page of the application shows.
+#[utoipa::path(
+    get,
+    path = "/notifications/unread_count",
+    tag = "notifications",
+    responses(
+        (status = 200, description = "How many notifications are unread", body = UnreadNotificationCount),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn unread_count(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -397,6 +422,20 @@ pub async fn unread_count(
 /// `POST /notifications/:id/read` — 204, also when it was read already (its
 /// `read_at` is kept). 404 for an id that is not one of the caller's: the
 /// answer is the same whether it belongs to another member or to nobody.
+#[utoipa::path(
+    post,
+    path = "/notifications/{id}/read",
+    tag = "notifications",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Notification id"),
+    ),
+    responses(
+        (status = 204, description = "Marked read"),
+        (status = 404, description = "`not_found`: no such notification of this account", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn mark_read(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -421,6 +460,16 @@ pub async fn mark_read(
 
 /// `POST /notifications/read` — marks every unread notification of the
 /// caller read: 204.
+#[utoipa::path(
+    post,
+    path = "/notifications/read",
+    tag = "notifications",
+    responses(
+        (status = 204, description = "Every notification marked read"),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
 pub async fn mark_all_read(State(state): State<AppState>, auth: AuthUser) -> AppResult<StatusCode> {
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
     sqlx::query!(

@@ -183,7 +183,7 @@ pub(crate) struct Availability {
 }
 
 /// One element of `missing` on the wire.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct MissingResponse {
     pub name: String,
     pub quantity: Option<f64>,
