@@ -612,7 +612,10 @@ seule (WCAG 1.4.1), le formulaire au-dessus disant quelle couleur est à qui.
 Le panneau du jour d'un PC écrit le nom en clair avant les personnes. La
 teinte du membre reste le fond de la pastille. Une famille dont les
 événements n'ont pas pu être lus est nommée dans une notice d'erreur ; les
-autres s'affichent.
+autres s'affichent. Une famille qui n'est pas l'active, même seule à
+l'écran, est portée dans le lien de ses pastilles (`famille=<id>`) : sans
+lui, la page de l'événement, lue dans la famille active, ne le trouve pas.
+Seule, elle ne porte ni liseré ni nom.
 
 La feuille gagne une règle. Le document, lui, gagne le formulaire et, par
 pastille d'une vue de plusieurs, l'attribut, le nom et — pour une famille

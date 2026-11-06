@@ -128,7 +128,7 @@ test.describe("Agenda — several families (#622)", () => {
     await expect(activeFamily(page)).toHaveText(F1);
   });
 
-  test("from the combined view, open then edit an event of the other family; create in it", async ({
+  test("from the combined view, open then edit an event of the other family; create in it; open it from that family alone", async ({
     page,
   }) => {
     await registerAndLogin(page, "e2e-agfamedit", "Agenda Familles Edit");
@@ -168,6 +168,14 @@ test.describe("Agenda — several families (#622)", () => {
     await expect(chip(page, "Piscine Deux déplacée")).toBeVisible();
     await show(page, [F1]);
     await expect(chip(page, "Goûter Deux")).toHaveCount(0);
+    await expect(activeFamily(page)).toHaveText(F1);
+
+    // From F2 alone, F1 still active: its event opens in F2.
+    await show(page, [F2]);
+    await chip(page, "Goûter Deux").click();
+    await expect(page.getByRole("heading", { level: 1, name: "Goûter Deux" })).toBeVisible();
+    await expect(page).toHaveURL(/famille=/);
+    await expect(page.getByText(`Famille : ${F2}`)).toBeVisible();
     await expect(activeFamily(page)).toHaveText(F1);
   });
 });

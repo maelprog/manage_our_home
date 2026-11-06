@@ -86,10 +86,10 @@
 //! answers per family, so each family shown is read on its own, all at
 //! once, and their occurrences merged (`merge_occurrences`); one that
 //! fails is named above the grid, and the others are shown. In a view of
-//! several, a chip wears its family (`FamilyTag`): its colour as its edge,
-//! its name in `.sr-only`, and — for a family that is not the active one —
-//! `?famille=` in its link, which the event's pages work in
-//! (`super::family_context_for`). The national days are one family's: the
+//! several, a chip wears its family (`FamilyTag`): its colour as its edge
+//! and its name in `.sr-only`. A chip of a family that is not the active
+//! one — in a view of several or alone — has `?famille=` in its link,
+//! which the event's pages work in (`super::family_context_for`). The national days are one family's: the
 //! active one when it is shown, the first shown otherwise.
 
 use std::collections::BTreeMap;
@@ -227,10 +227,12 @@ fn missing_families_html(names: &[&str]) -> String {
         .collect()
 }
 
-/// A family of a view of several (#622): what its chips wear — its colour
-/// (`data-accent`, the rule of `[data-accent]` pointing `--accent` at it)
-/// and its name, said to a screen reader since the selector above shows
-/// which colour is whose: never the colour alone (WCAG 1.4.1).
+/// A family shown (#622). In a view of several, what its chips wear — its
+/// colour (`data-accent`, the rule of `[data-accent]` pointing `--accent`
+/// at it) and its name, said to a screen reader since the selector above
+/// shows which colour is whose: never the colour alone (WCAG 1.4.1). A
+/// family that is not the active one, even alone on screen, is also
+/// carried in its chips' links.
 pub(crate) struct FamilyTag<'a> {
     gid: Uuid,
     name: &'a str,
@@ -238,12 +240,17 @@ pub(crate) struct FamilyTag<'a> {
     /// Its id when it is not the active family: its events' links carry
     /// it (`with_family`), so that their page works in that family.
     carried: Option<Uuid>,
+    /// Whether its chips wear its colour and name: in a view of several.
+    worn: bool,
 }
 
-/// The tags of the families shown, none for one family alone: a view of
-/// the active family is the agenda as it was.
+/// The tags of the families shown. None for the active family alone: the
+/// agenda as it was. Another family alone is tagged but not worn: its
+/// chips look as they did and their links carry it, without which its
+/// event's page, read in the active family, finds no event.
 fn family_tags<'a>(shown: &[&'a GroupSummary], active: &GroupSummary) -> Vec<FamilyTag<'a>> {
-    if shown.len() < 2 {
+    let worn = shown.len() > 1;
+    if !worn && shown.iter().all(|g| g.group_id == active.group_id) {
         return Vec::new();
     }
     shown
@@ -253,6 +260,7 @@ fn family_tags<'a>(shown: &[&'a GroupSummary], active: &GroupSummary) -> Vec<Fam
             name: &g.name,
             accent: accent_of(g),
             carried: (g.group_id != active.group_id).then_some(g.group_id),
+            worn,
         })
         .collect()
 }
@@ -561,7 +569,7 @@ async fn body(
         );
     // One family's events that could not be read: the generic notice of
     // #455. Several families shown: the one that is missing, by name.
-    let notice_html = if families.is_empty() {
+    let notice_html = if shown.len() < 2 {
         notices_html(view.notice, load_error)
     } else {
         notices_html(view.notice, false) + &missing_families_html(&failed)
@@ -694,7 +702,8 @@ struct Cells<'a> {
     /// The national days of the grid (#565, `marks_by_day`): a head line
     /// under a day's number, and a band on a school holiday.
     marks: &'a BTreeMap<NaiveDate, DayMarks<'a>>,
-    /// The families of a view of several (#622, `family_tags`), none for one.
+    /// The families shown (#622, `family_tags`): worn in a view of several,
+    /// none for the active family alone.
     families: &'a [FamilyTag<'a>],
 }
 
@@ -964,10 +973,11 @@ fn initials(people: &[&GroupMember]) -> String {
 /// A private event (#621) wears `private_mark` before its time: the lock,
 /// and « Privé » at the head of the link's name.
 ///
-/// In a view of several families (#622, `families` not empty), a chip also
-/// wears its family: its colour as the chip's edge (`data-accent`), its name
-/// at the end of the link's name, and the family in its link when it is not
-/// the active one, so that the event's page works in that family.
+/// In a view of several families (#622, a tag `worn`), a chip also wears
+/// its family: its colour as the chip's edge (`data-accent`) and its name
+/// at the end of the link's name. A chip of a family that is not the
+/// active one, even alone on screen, carries it in its link, so that the
+/// event's page works in that family.
 pub(crate) fn render_chips(
     occs: &[&OccurrenceResponse],
     cap: Option<usize>,
@@ -1002,11 +1012,11 @@ pub(crate) fn render_chips(
             };
             let family = family_of(occ, families);
             let (accent, family_name) = match family {
-                Some(f) => (
+                Some(f) if f.worn => (
                     format!(r#" data-accent="{}""#, f.accent.as_str()),
                     format!(r#"<span class="sr-only"> ({})</span>"#, html_escape(f.name)),
                 ),
-                None => (String::new(), String::new()),
+                _ => (String::new(), String::new()),
             };
             format!(
                 r#"<a href="{href}" class="chip{done}{tint}"{accent}>{initials}{private}{marker}<strong>{time}</strong> {title}{family_name}</a>"#,
@@ -1189,7 +1199,7 @@ fn day_panel(
                 };
                 let people = people(occ, members);
                 let names: Vec<&str> = people.iter().map(|m| m.display_name.as_str()).collect();
-                let names = match family_of(occ, families) {
+                let names = match family_of(occ, families).filter(|f| f.worn) {
                     Some(f) if names.is_empty() => f.name.to_string(),
                     Some(f) => format!("{} · {}", f.name, names.join(", ")),
                     None => names.join(", "),
@@ -1443,10 +1453,65 @@ mod tests {
     }
 
     #[test]
-    fn one_family_shown_wears_no_tag() {
+    fn the_active_family_alone_wears_no_tag() {
         let groups = two_families();
         assert!(family_tags(&[&groups[0]], &groups[0]).is_empty());
-        assert!(family_tags(&[&groups[1]], &groups[0]).is_empty());
+    }
+
+    #[test]
+    fn another_family_alone_is_carried_but_not_worn() {
+        // F2 alone, F1 active: its events' pages must work in F2, so its
+        // links carry it; one family on screen needs no colour nor name.
+        let groups = two_families();
+        let tags = family_tags(&[&groups[1]], &groups[0]);
+        let read: Vec<(Uuid, Option<Uuid>, bool)> =
+            tags.iter().map(|t| (t.gid, t.carried, t.worn)).collect();
+        assert_eq!(
+            read,
+            [(Uuid::from_u128(2), Some(Uuid::from_u128(2)), false)]
+        );
+    }
+
+    #[test]
+    fn every_family_of_a_view_of_several_is_worn() {
+        let groups = two_families();
+        let tags = family_tags(&[&groups[0], &groups[1]], &groups[0]);
+        assert!(tags.iter().all(|t| t.worn));
+    }
+
+    #[test]
+    fn a_chip_of_another_family_alone_carries_it_and_nothing_else() {
+        let groups = two_families();
+        let tags = family_tags(&[&groups[1]], &groups[0]);
+        let occ = in_family(9, "Piscine", 2);
+        let refs = [&occ];
+        let html = render_chips(&refs, None, day(15), &[], &tags);
+        assert!(
+            html.contains(&format!(
+                r#"href="/agenda/{}?occ=2026-07-15T09:00:00Z&famille={}" class="chip">"#,
+                occ.event.id,
+                Uuid::from_u128(2)
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("data-accent"), "{html}");
+        assert!(!html.contains("sr-only"), "{html}");
+    }
+
+    #[test]
+    fn the_day_panel_of_another_family_alone_names_no_family() {
+        let groups = two_families();
+        let tags = family_tags(&[&groups[1]], &groups[0]);
+        let members = [named(7, "Chloé")];
+        let mut occ = in_family(9, "Piscine", 2);
+        occ.event.assignee_ids = vec![Uuid::from_u128(7)];
+        let refs = [&occ];
+        let html = day_panel(day(15), &refs, &members, &tags);
+        assert!(
+            html.contains(r#"<span class="muted">Chloé</span>"#),
+            "{html}"
+        );
+        assert!(!html.contains("Les Martin"), "{html}");
     }
 
     #[test]
