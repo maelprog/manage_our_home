@@ -839,3 +839,34 @@ container 10 s after SIGTERM unless `stop_grace_period` says otherwise, so
 under `infra/docker-compose.yml` a stop is cut at 10 s whatever this says.
 apps/web reads the same variable and stops the same way, minus the
 WebSockets it does not have.
+
+## API documentation: OpenAPI and Swagger UI (#626)
+
+**`API_DOCS_ENABLED`** — `true` serves the documentation, any other value
+or none leaves it off (the default; a value other than `true`, `false` or
+empty is logged as a warning at startup). Off, its routes do not exist and
+answer 404 like any unknown route: the inventory of the routes is not
+published where it is not wanted (OWASP API9). `infra/.env.example` turns it
+on for the local stack; `infra/generate-env.sh` leaves it off.
+
+- **`GET /openapi.json`** — the OpenAPI 3.1 spec, generated from the
+  handlers' `#[utoipa::path]` annotations (`src/api_docs`). The session
+  cookie is its `session_cookie` security scheme, under the name this
+  process gives it (`__Host-session_id` behind `SECURE_COOKIES`).
+- **`GET /docs/`** — Swagger UI, served from the binary. Behind Caddy:
+  `/api/docs/`, reading `/api/openapi.json`.
+
+Every route of `build_router` is an operation of the spec, and the other
+way round, but for the four left out on purpose (Messagerie WebSocket,
+`/healthz`, `/readyz`, `/csp-report`): `tests/openapi_flow.rs` reads the
+routes from `src/lib.rs` and fails on a route added without its
+annotation. A new handler takes a `#[utoipa::path]` and a line in
+`api_docs::ApiDoc`'s `paths(...)`; its DTOs derive `utoipa::ToSchema` (in
+`apps/shared`, behind the `openapi` feature only apps/api turns on).
+
+Swagger UI comes from the `utoipa-swagger-ui-vendored` crate: the build
+downloads nothing (no `curl` to GitHub in `build.rs`), and the archive is
+pinned by its checksum in `Cargo.lock`. The page runs under Caddy's CSP as
+it is: its initializer is a file, its top bar (an SVG logo carrying a
+`<style>` element) is not used, and `src/api_docs/index.css` takes off the
+`data:` images of its stylesheet.

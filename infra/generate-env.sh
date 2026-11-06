@@ -70,6 +70,11 @@ PUBLIC_BASE_URL=https://$DOMAIN
 # Defaults to true when unset; set to false only for local http testing.
 #SECURE_COOKIES=false
 
+# The API's OpenAPI documentation (#626), off unless `true`. Production
+# leaves it off: it publishes the inventory of every route
+# (apps/api/README.md).
+#API_DOCS_ENABLED=false
+
 ########################################
 # PostgreSQL
 ########################################
