@@ -1,4 +1,5 @@
-//! A member's reminder channel and their subscribed devices (#306).
+//! A member's reminder channel and their subscribed devices (#306), and
+//! the hour of their daily expiry recap (#700).
 //!
 //! Account-level, like `/account/export`: no group, and every query
 //! filters on the caller's own id. `push_subscriptions` and `users` are
@@ -13,7 +14,7 @@ use manage_our_home_shared::dto::notifications::{
 };
 
 use super::push::{self, validate_endpoint};
-use super::ReminderChannel;
+use super::{parse_expiry_digest_hour, ReminderChannel};
 use crate::auth::session::AuthUser;
 use crate::error::{AppError, AppResult};
 use crate::AppState;
@@ -24,7 +25,7 @@ pub async fn get_settings(
     auth: AuthUser,
 ) -> AppResult<Json<NotificationSettings>> {
     let row = sqlx::query!(
-        r#"SELECT u.reminder_channel,
+        r#"SELECT u.reminder_channel, u.expiry_digest_hour,
                   (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS "subscriptions!"
            FROM users u WHERE u.id = $1"#,
         auth.user_id
@@ -35,10 +36,14 @@ pub async fn get_settings(
         reminder_channel: row.reminder_channel,
         push_subscriptions: row.subscriptions,
         vapid_public_key: state.push.as_ref().map(|v| v.public_key().to_string()),
+        expiry_digest_hour: row.expiry_digest_hour,
     }))
 }
 
-/// `PUT /account/notifications` — 204, or 400 `invalid_reminder_channel`.
+/// `PUT /account/notifications` — 204, or 400 `invalid_reminder_channel`,
+/// or 400 `invalid_expiry_digest_hour` for a recap hour outside 0..23
+/// (`parse_expiry_digest_hour`, #700). Without `expiry_digest_hour`, the
+/// recap's hour stays as it is.
 pub async fn update_settings(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -46,10 +51,20 @@ pub async fn update_settings(
 ) -> AppResult<impl IntoResponse> {
     let channel = ReminderChannel::parse(&body.reminder_channel)
         .ok_or_else(|| AppError::BadRequest("invalid_reminder_channel".into()))?;
+    let digest_hour = body
+        .expiry_digest_hour
+        .map(|hour| {
+            parse_expiry_digest_hour(hour)
+                .ok_or_else(|| AppError::BadRequest("invalid_expiry_digest_hour".into()))
+        })
+        .transpose()?;
     sqlx::query!(
-        "UPDATE users SET reminder_channel = $2 WHERE id = $1",
+        r#"UPDATE users SET reminder_channel = $2,
+                  expiry_digest_hour = COALESCE($3, expiry_digest_hour)
+           WHERE id = $1"#,
         auth.user_id,
-        channel.as_str()
+        channel.as_str(),
+        digest_hour,
     )
     .execute(&state.db)
     .await?;

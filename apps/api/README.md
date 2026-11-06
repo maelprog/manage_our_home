@@ -276,11 +276,14 @@ Six other things run on this pool, and none is a request handler:
   does not bypass RLS, logs `stock expiry pass failed` at ERROR once an
   hour and writes nothing;
 - the **daily expiry recap** (#566, `src/jobs/stock_expiry_recap.rs`),
-  which at 9:00 Europe/Paris reads the `stock_items` of quantity > 0 whose
-  expiry date is at most 3 days ahead, expired ones included, and not yet
-  announced for that date, `INSERT`s one `notifications` row per active
-  member of each family that has some, and `UPDATE`s their
-  `expiry_notified_on` in the same transaction; then pushes the devices of
+  which every 5 minutes takes the active `users` whose recap hour
+  (`expiry_digest_hour`, Europe/Paris, #700) has come and who had no pass
+  yet that day (`expiry_digest_sent_on`), reads the `stock_items` of their
+  families of quantity > 0 whose expiry date is at most 3 days ahead,
+  expired ones included, and not yet announced to them for that date,
+  `INSERT`s one `notifications` row per member and family that has some,
+  and records what it announced (`stock_expiry_announcements`) and the
+  day of the pass in the same transaction; then pushes the devices of
   those members whose channel includes notifications. Same
   `ensure_bypasses_rls` guard: on a role that does not bypass RLS it logs
   `stock expiry recap failed` at ERROR and writes nothing.

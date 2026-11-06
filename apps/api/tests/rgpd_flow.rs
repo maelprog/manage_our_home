@@ -1139,6 +1139,12 @@ async fn export_accounts_for_every_table(db: PgPool) {
              recipients",
         ),
         (
+            "stock_expiry_announcements",
+            "the expiry recap's bookkeeping (#700): which family item a recap announced to the \
+             account, for which date; the recaps themselves are exported to their recipient \
+             (notifications), the items with the family's stock",
+        ),
+        (
             "off_products",
             "Open Food Facts' public product records, keyed by code: no family, no account",
         ),
@@ -1247,6 +1253,12 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
             "budget_entries",
             "paid_by",
             "names a current member only, whose family group_members already lists",
+        ),
+        // #700: the recap's bookkeeping, deleted with the account's purge.
+        (
+            "stock_expiry_announcements",
+            "user_id",
+            "which item a recap announced to the account; the recaps are exported",
         ),
     ];
 

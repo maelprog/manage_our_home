@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO stock_expiry_announcements (user_id, stock_item_id, expires_on)\n               SELECT $1, item, date FROM unnest($2::uuid[], $3::date[]) AS t(item, date)\n               ON CONFLICT (user_id, stock_item_id)\n               DO UPDATE SET expires_on = EXCLUDED.expires_on",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "DateArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6f6ae0d1a7815d7217cc9c2e77573be7f29d5c7abf7178845432d13dd8296cff"
+}

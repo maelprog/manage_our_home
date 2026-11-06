@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, expiry_digest_hour, expiry_digest_sent_on FROM users\n           WHERE expiry_digest_hour <= $1\n             AND expiry_digest_sent_on IS DISTINCT FROM $2\n             AND deactivated_at IS NULL AND deleted_at IS NULL\n           ORDER BY id\n           FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "expiry_digest_hour",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "expiry_digest_hour"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "expiry_digest_sent_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "expiry_digest_sent_on"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "Date"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "9edf8ae7dacf57cc61c846687c4dd687e7f4ec45ea40b04b1226d11c33487501"
+}

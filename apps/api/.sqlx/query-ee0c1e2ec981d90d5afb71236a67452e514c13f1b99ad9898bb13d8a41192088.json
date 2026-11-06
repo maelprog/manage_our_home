@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,\n                  avatar_key, (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
+  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,\n                  expiry_digest_hour, avatar_key, (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "expiry_digest_hour",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "expiry_digest_hour"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "avatar_key",
         "type_info": "Text",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "has_password!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -159,9 +170,10 @@
       true,
       false,
       false,
+      false,
       true,
       null
     ]
   },
-  "hash": "b5271a979f3bcbf03bcdf5306bc6b794b4221a36152ffe97cd08d271efc66585"
+  "hash": "ee0c1e2ec981d90d5afb71236a67452e514c13f1b99ad9898bb13d8a41192088"
 }

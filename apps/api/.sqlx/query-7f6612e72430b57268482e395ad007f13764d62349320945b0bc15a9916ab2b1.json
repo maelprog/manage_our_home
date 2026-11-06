@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT u.reminder_channel,\n                  (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS \"subscriptions!\"\n           FROM users u WHERE u.id = $1",
+  "query": "SELECT u.reminder_channel, u.expiry_digest_hour,\n                  (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS \"subscriptions!\"\n           FROM users u WHERE u.id = $1",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "expiry_digest_hour",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "expiry_digest_hour"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "subscriptions!",
         "type_info": "Int8",
         "origin": "Expression"
@@ -28,8 +39,9 @@
     },
     "nullable": [
       false,
+      false,
       null
     ]
   },
-  "hash": "7d41a79ca484d8b71b11b487c7d8dd37fcc87a08ec01e8ff074f9f4c3d2097ed"
+  "hash": "7f6612e72430b57268482e395ad007f13764d62349320945b0bc15a9916ab2b1"
 }

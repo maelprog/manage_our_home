@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, expires_on AS \"expires_on!\"\n           FROM stock_items\n           WHERE expires_on BETWEEN $1 AND $2 AND quantity > 0\n             AND expiry_notified_on IS DISTINCT FROM expires_on",
+  "query": "SELECT id, group_id, name, expires_on AS \"expires_on!\"\n           FROM stock_items\n           WHERE expires_on BETWEEN $1 AND $2 AND quantity > 0",
   "describe": {
     "columns": [
       {
@@ -61,5 +61,5 @@
       true
     ]
   },
-  "hash": "c036ad4fe80561c057a4209b20f22892514d627c581a217acb2135a63945101d"
+  "hash": "9d9faf6006702b79d4b3d9c9203257ce02e20fb162489c8bf66a73d2b79b2022"
 }

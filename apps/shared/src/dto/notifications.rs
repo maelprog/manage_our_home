@@ -18,12 +18,18 @@ pub struct NotificationSettings {
     /// `applicationServerKey` a browser subscribes with — `None` when this
     /// server has notifications turned off (no `VAPID_PRIVATE_KEY`).
     pub vapid_public_key: Option<String>,
+    /// The Paris hour, 0 to 23, of the daily recap of the stock items
+    /// nearing their expiry date (`users.expiry_digest_hour`, #700).
+    pub expiry_digest_hour: i16,
 }
 
 /// `PUT /account/notifications`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateNotificationSettings {
     pub reminder_channel: String,
+    /// The recap's hour, 0 to 23 (#700); left as it is when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_digest_hour: Option<i64>,
 }
 
 /// `POST /account/push-subscriptions`: the endpoint of the browser's
