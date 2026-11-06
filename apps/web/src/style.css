@@ -1077,3 +1077,7 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
    `--dur`, so zeroing the token neutralises all of them — no sweep of
    `* { transition: none !important }`, and nothing to keep in sync. */
 @media (prefers-reduced-motion: reduce) { :root { --dur: 0s; } }
+/* Forced colours drop `box-shadow`, and with it the school holiday's band
+   (#565): a top border of the same width, which they repaint instead of
+   dropping. After the phone's `.cal-cell` border, which it has to beat. */
+@media (forced-colors: active) { .hol { border-top: var(--s1) solid; } }

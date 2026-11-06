@@ -140,6 +140,11 @@ test.describe("Agenda — jours nationaux (#565)", () => {
       35,
     );
     await expect(after).not.toHaveClass(/\bhol\b/);
+    // Forced colours drop the band's shadow: a top border stands in for it.
+    await page.emulateMedia({ forcedColors: "active" });
+    await expect(page.locator("table.cal td#j2026-10-17")).toHaveCSS("border-top-width", "4px");
+    await expect(after).not.toHaveCSS("border-top-width", "4px");
+    await page.emulateMedia({ forcedColors: "none" });
 
     // Alsace-Moselle adds Good Friday (26 March 2027).
     await page.goto("/agenda?view=month&date=2027-03-15");
