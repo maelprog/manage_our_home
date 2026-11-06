@@ -791,6 +791,63 @@ retire `/api` avant de transmettre à l'api. L'origine ne sert qu'à un
 appel depuis le navigateur, que ce flux, côté serveur, ne fait pas : elle
 est donnée pour que la console nomme le même hôte partout.
 
+### Le relais SMTP du staging
+
+Le staging envoie ses emails (vérification d'adresse, mot de passe
+oublié, invitations, récap de péremption) par Scaleway Transactional
+Email (#328, #714), depuis le domaine `staging.watallo.fr` : un domaine
+à part de `watallo.fr`, pour que la réputation d'envoi du staging ne
+soit pas celle de la prod. Le palier gratuit couvre 300 emails par mois
+(revérifié le 2026-11-06).
+
+**Dans la console Scaleway**, le projet qui porte Transactional Email :
+
+1. Ajouter le domaine `staging.watallo.fr`, publier dans la zone
+   `watallo.fr` les enregistrements SPF et DKIM que la console donne, un
+   DMARC `_dmarc.staging.watallo.fr` en `p=none` et le MX recommandé,
+   puis lancer la vérification du domaine.
+2. Créer une clé d'API IAM de ce projet pour l'envoi SMTP.
+   L'identifiant du projet est `SMTP_USERNAME`, la clé secrète de cette
+   clé d'API `SMTP_PASSWORD`.
+
+**Dans l'overlay** (`apps/manage-our-home/overlays/staging`) :
+`SMTP_HOST=smtp.tem.scaleway.com` et `SMTP_FROM=no-reply@staging.watallo.fr`.
+L'api s'y connecte en TLS implicite sur le port 465
+(`AsyncSmtpTransport::relay`, `apps/api/src/main.rs` de `main`) ;
+`SMTP_PORT` n'est pas lu hors du mode de développement.
+
+**Les identifiants** se rescellent dans `api-secrets` sans toucher à ses
+autres clés : `kubeseal --merge-into` remplace ces deux-là seulement.
+Les valeurs se tapent sans écho et ne passent ni sur la ligne de
+commande ni dans l'historique du shell :
+
+```sh
+poste$ read -r  -p 'Identifiant du projet : ' SMTP_USERNAME
+poste$ read -rs -p 'Clé secrète IAM : ' SMTP_PASSWORD; echo
+poste$ kubectl -n manage-our-home create secret generic api-secrets --dry-run=client -o json \
+  --from-file=SMTP_USERNAME=<(printf %s "$SMTP_USERNAME") \
+  --from-file=SMTP_PASSWORD=<(printf %s "$SMTP_PASSWORD") \
+  | kubeseal --format yaml --merge-into platform/clusters/staging/secrets/api-secrets.yaml
+poste$ unset SMTP_USERNAME SMTP_PASSWORD
+```
+
+puis commiter `api-secrets.yaml` par une PR vers `deploy`. Un Secret lu
+en variable d'environnement n'est relu qu'au démarrage du pod : une fois
+le Secret ouvert par le contrôleur, redémarrer l'api et vérifier la
+longueur des deux clés (celle de leur encodage base64, 0 si vide), jamais
+leur valeur :
+
+```sh
+poste$ kubectl -n manage-our-home rollout restart deployment/api
+poste$ kubectl -n manage-our-home get secret api-secrets \
+  -o go-template='SMTP_USERNAME={{len .data.SMTP_USERNAME}} SMTP_PASSWORD={{len .data.SMTP_PASSWORD}}{{"\n"}}'
+```
+
+**Vérifier** : un « Mot de passe oublié » sur `https://staging.watallo.fr`
+livre un email dont l'en-tête `Authentication-Results` montre
+`spf=pass`, `dkim=pass` et `dmarc=pass`. Un échec d'envoi se lit dans
+les journaux de l'api (`kubectl -n manage-our-home logs deployment/api`).
+
 ## 5. Déployer en prod
 
 Rien n'arrive en prod sans deux gestes de l'utilisateur (arbitrage du
