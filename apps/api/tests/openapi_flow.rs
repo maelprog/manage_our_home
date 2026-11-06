@@ -376,9 +376,11 @@ fn routes_of(source: &str) -> BTreeMap<(String, String), Route> {
 
 /// A `build_router` whose body is `body`, for the tests of the parse.
 fn routes_of_body(body: &str) -> BTreeSet<(String, String)> {
-    routes_of(&format!("fn build_router(state: AppState) -> Router {{ {body} }}"))
-        .into_keys()
-        .collect()
+    routes_of(&format!(
+        "fn build_router(state: AppState) -> Router {{ {body} }}"
+    ))
+    .into_keys()
+    .collect()
 }
 
 fn route(method: &str, path: &str) -> (String, String) {
@@ -394,7 +396,11 @@ fn the_parse_reads_method_chains_and_skips_layers() {
                 .route("/b", axum::routing::patch(b::edit).layer(DefaultBodyLimit::max(1)))
                 .layer(CookieManagerLayer::new())"#
         ),
-        BTreeSet::from([route("GET", "/a"), route("POST", "/a"), route("PATCH", "/b")])
+        BTreeSet::from([
+            route("GET", "/a"),
+            route("POST", "/a"),
+            route("PATCH", "/b")
+        ])
     );
 }
 
