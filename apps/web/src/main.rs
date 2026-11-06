@@ -484,6 +484,10 @@ fn build_router(state: AppState) -> Router {
             post(routes::groups::settings::accent),
         )
         .route(
+            "/groups/{id}/settings/calendar",
+            post(routes::groups::settings::calendar),
+        )
+        .route(
             "/groups/{id}/settings/transfer",
             post(routes::groups::settings::transfer),
         )

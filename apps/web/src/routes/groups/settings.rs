@@ -1,7 +1,7 @@
-//! `/groups/:id/settings` — rename, colour (#538), leave, transfer
-//! ownership, delete.
-//! Permission bar per `apps/api/src/groups/mod.rs`: rename is
-//! owner/admin (403 otherwise); transfer and delete are owner-only;
+//! `/groups/:id/settings` — rename, colour (#538), calendar (#565), leave,
+//! transfer ownership, delete.
+//! Permission bar per `apps/api/src/groups/mod.rs`: rename, colour and
+//! calendar are owner/admin (403 otherwise); transfer and delete are owner-only;
 //! anyone can leave, but an owner leaving must name a successor (422
 //! `new_owner_id_required`) and the last remaining member must delete the
 //! group instead (409 `last_member_must_delete_group`). Transfer also
@@ -19,7 +19,7 @@ use axum::Form;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::{GroupDetailResponse, GroupMember, RenameGroupRequest};
 use manage_our_home_shared::validation::groups::{
-    actor_can_act_on, can_manage_group, validate_group_name, Accent,
+    actor_can_act_on, can_manage_group, validate_group_name, Accent, SchoolZone,
 };
 use uuid::Uuid;
 
@@ -37,6 +37,7 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "renamed" => Some("Groupe renommé."),
         "ownership_transferred" => Some("Propriété transférée."),
         "accent_changed" => Some("Couleur de la famille enregistrée."),
+        "calendar_changed" => Some("Calendrier de la famille enregistré."),
         _ => None,
     }
 }
@@ -46,6 +47,7 @@ fn error_text(code: &str) -> Option<&'static str> {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "name_required" => Some("Le nom du groupe ne peut pas être vide."),
         "invalid_accent" => Some("Cette couleur n'est pas proposée."),
+        "invalid_school_zone" => Some("Cette zone n'est pas proposée."),
         "last_member" => Some(
             "Vous êtes le dernier membre : quitter n'est pas possible, supprimez le groupe à la place.",
         ),
@@ -255,6 +257,87 @@ fn colour_card(group_id: Uuid, accent: Accent, my_role: &str) -> String {
     )
 }
 
+/// « Calendrier » (#565): the family's school zone — A, B, C or none — and
+/// Alsace-Moselle, which the agenda's national days follow (#561, #562,
+/// #563). A form of native radios and a checkbox for owners and admins,
+/// the bar of `PATCH /groups/:id`; the settings in words for the others.
+fn calendar_card(group: &GroupDetailResponse, my_role: &str) -> String {
+    let zone = group.school_zone.as_deref().and_then(SchoolZone::parse);
+    let checked = |on: bool| if on { " checked" } else { "" };
+    let body = if can_manage_group(my_role) {
+        let picks: String = SchoolZone::ALL
+            .into_iter()
+            .map(|z| (z.as_str(), format!("Zone {}", z.as_str()), zone == Some(z)))
+            .chain([("", "Aucune".to_string(), zone.is_none())])
+            .map(|(value, label, on)| {
+                format!(
+                    r#"<label class="field inline pick"><input type="radio" name="school_zone" value="{value}"{on}>{label}</label>"#,
+                    on = checked(on),
+                )
+            })
+            .collect();
+        format!(
+            r#"<form method="post" action="/groups/{id}/settings/calendar">
+<div class="picks" role="radiogroup" aria-label="Zone de vacances scolaires">{picks}</div>
+<label class="field inline"><input type="checkbox" name="alsace_moselle" value="on"{am}>Alsace-Moselle</label>
+<p class="muted">Ajoute le Vendredi saint et la Saint-Étienne aux jours fériés de l'agenda.</p>
+<button type="submit">Enregistrer le calendrier</button>
+</form>"#,
+            id = group.id,
+            am = checked(group.alsace_moselle),
+        )
+    } else {
+        let zone = zone.map_or("Aucune zone".to_string(), |z| {
+            format!("Zone {}", z.as_str())
+        });
+        let am = if group.alsace_moselle {
+            "Jours fériés d'Alsace-Moselle"
+        } else {
+            "Sans les jours fériés d'Alsace-Moselle"
+        };
+        format!(
+            r#"<p>{zone} · {am}</p>
+<p class="muted">Réservé aux propriétaires et admins.</p>"#
+        )
+    };
+    format!(
+        r#"<section class="card" id="calendrier">
+<h2>Calendrier</h2>
+<p class="muted">Les vacances scolaires de la zone et les jours fériés s'affichent dans l'agenda.</p>
+{body}
+</section>"#
+    )
+}
+
+#[derive(serde::Deserialize)]
+pub struct CalendarForm {
+    /// `""` is « Aucune »; absent, the zone is kept.
+    #[serde(default)]
+    school_zone: Option<String>,
+    /// A checkbox: sent when ticked, absent otherwise.
+    #[serde(default)]
+    alsace_moselle: Option<String>,
+}
+
+/// The body of `PATCH /groups/:id` for what the calendar form posted: the
+/// two calendar settings, nothing else. A zone outside A, B, C is refused
+/// here, before apps/api, which would refuse it too.
+fn calendar_request(form: &CalendarForm) -> Result<RenameGroupRequest, &'static str> {
+    let school_zone = match form.school_zone.as_deref() {
+        None => None,
+        Some("") => Some(None),
+        Some(value) => match SchoolZone::parse(value) {
+            Some(zone) => Some(Some(zone.as_str().to_string())),
+            None => return Err("invalid_school_zone"),
+        },
+    };
+    Ok(RenameGroupRequest {
+        school_zone,
+        alsace_moselle: Some(form.alsace_moselle.is_some()),
+        ..Default::default()
+    })
+}
+
 /// The family settings (#530, maquettes « Mobile — Famille » et « PC —
 /// Famille »): the family's name under « Paramètres de la famille » and
 /// your role, then the members and their roles with the invitation, then
@@ -306,6 +389,7 @@ fn page(
 </div>
 <div>
 {colour}
+{calendar}
 <section class="card">
 <h2>Agendas Google</h2>
 <p class="muted">Les agendas Google connectés à cette famille se gèrent depuis l'agenda : leurs événements y sont recopiés à la demande.</p>
@@ -322,6 +406,7 @@ fn page(
         members = members_card(group, &my_role),
         name_card = name_card(group, &my_role, &others),
         colour = colour_card(group.id, accent, &my_role),
+        calendar = calendar_card(group, &my_role),
         id = group.id,
     );
     shell_with_header(
@@ -456,6 +541,49 @@ pub async fn accent(
         }
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
             format!("{settings_url}?error=invalid_accent")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+            return group_not_found_page().into_response()
+        }
+        Ok(_) | Err(_) => format!("{settings_url}?error=unavailable"),
+    };
+    Redirect::to(&target).into_response()
+}
+
+/// « Enregistrer le calendrier » (#565): `PATCH /groups/:id` with the
+/// school zone and Alsace-Moselle, the name and the colour kept.
+pub async fn calendar(
+    CurrentUser(_me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<Uuid>,
+    Form(form): Form<CalendarForm>,
+) -> Response {
+    let settings_url = format!("/groups/{group_id}/settings");
+    let body = match calendar_request(&form) {
+        Ok(body) => body,
+        Err(code) => return Redirect::to(&format!("{settings_url}?error={code}")).into_response(),
+    };
+
+    let cookie = cookie_of(&headers);
+    let result = api_request_auth(
+        &state,
+        reqwest::Method::PATCH,
+        &format!("/groups/{group_id}"),
+        cookie.as_deref(),
+        Some(serde_json::json!(body)),
+    )
+    .await;
+
+    let target = match result {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            format!("{settings_url}?notice=calendar_changed")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
+            format!("{settings_url}?error=forbidden")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
+            format!("{settings_url}?error=invalid_school_zone")
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             return group_not_found_page().into_response()
@@ -922,6 +1050,172 @@ mod tests {
         assert_eq!(
             error_text("invalid_accent"),
             Some("Cette couleur n'est pas proposée.")
+        );
+    }
+
+    // -- « Calendrier » (#565) -------------------------------------------
+
+    fn calendar_card(html: &str) -> &str {
+        let at = html
+            .find(r#"<section class="card" id="calendrier">"#)
+            .expect("the calendar card");
+        &html[at..at + html[at..].find("</section>").unwrap()]
+    }
+
+    fn family_with(zone: Option<&str>, alsace_moselle: bool) -> GroupDetailResponse {
+        GroupDetailResponse {
+            school_zone: zone.map(str::to_string),
+            alsace_moselle,
+            ..family()
+        }
+    }
+
+    /// Owners and admins choose the zone among A, B, C or none, and tick
+    /// Alsace-Moselle, in a form without JavaScript; the family's settings
+    /// are the ones checked.
+    #[test]
+    fn owners_and_admins_set_the_zone_and_alsace_moselle() {
+        for who in [OWNER, ADMIN] {
+            let group = family_with(Some("B"), true);
+            let html = page("", &me(who), &group, Accent::Sarcelle, None, None);
+            let card = calendar_card(&html);
+            assert!(card.contains("<h2>Calendrier</h2>"), "{card}");
+            assert!(
+                card.contains(&format!(
+                    r#"<form method="post" action="/groups/{G}/settings/calendar">"#
+                )),
+                "{card}"
+            );
+            assert!(
+                card.contains(r#"role="radiogroup" aria-label="Zone de vacances scolaires""#),
+                "{card}"
+            );
+            for (value, label) in [
+                ("A", "Zone A"),
+                ("B", "Zone B"),
+                ("C", "Zone C"),
+                ("", "Aucune"),
+            ] {
+                let checked = if value == "B" { " checked" } else { "" };
+                assert!(
+                    card.contains(&format!(
+                        r#"<input type="radio" name="school_zone" value="{value}"{checked}>{label}</label>"#
+                    )),
+                    "{value}: {card}"
+                );
+            }
+            assert!(
+                card.contains(r#"<input type="checkbox" name="alsace_moselle" value="on" checked>Alsace-Moselle</label>"#),
+                "{card}"
+            );
+            assert_eq!(card.matches(" checked").count(), 2, "{card}");
+            assert!(
+                card.contains("<button type=\"submit\">Enregistrer le calendrier</button>"),
+                "{card}"
+            );
+            assert!(!card.contains("<script"), "{card}");
+        }
+    }
+
+    /// A family with no zone has « Aucune » checked, and Alsace-Moselle not.
+    #[test]
+    fn no_zone_is_aucune_checked() {
+        let html = page(
+            "",
+            &me(OWNER),
+            &family_with(None, false),
+            Accent::Sarcelle,
+            None,
+            None,
+        );
+        let card = calendar_card(&html);
+        assert!(
+            card.contains(
+                r#"<input type="radio" name="school_zone" value="" checked>Aucune</label>"#
+            ),
+            "{card}"
+        );
+        assert!(
+            card.contains(
+                r#"<input type="checkbox" name="alsace_moselle" value="on">Alsace-Moselle</label>"#
+            ),
+            "{card}"
+        );
+        assert_eq!(card.matches(" checked").count(), 1, "{card}");
+    }
+
+    /// A standard member reads the settings and cannot change them.
+    #[test]
+    fn a_standard_member_reads_the_calendar_settings_only() {
+        let html = page(
+            "",
+            &me(STANDARD),
+            &family_with(Some("C"), true),
+            Accent::Sarcelle,
+            None,
+            None,
+        );
+        let card = calendar_card(&html);
+        assert!(card.contains("Zone C"), "{card}");
+        assert!(card.contains("Alsace-Moselle"), "{card}");
+        assert!(
+            card.contains("Réservé aux propriétaires et admins."),
+            "{card}"
+        );
+        assert!(!card.contains("<form"), "{card}");
+        assert!(!card.contains("<input"), "{card}");
+        assert!(!html.contains("/settings/calendar"), "{html}");
+        let none = page(
+            "",
+            &me(STANDARD),
+            &family_with(None, false),
+            Accent::Sarcelle,
+            None,
+            None,
+        );
+        assert!(calendar_card(&none).contains("Aucune zone"), "{none}");
+    }
+
+    /// What the form posts becomes the body of `PATCH /groups/:id`: both
+    /// calendar settings, and nothing else — the name and the colour kept.
+    #[test]
+    fn the_calendar_form_sends_the_zone_and_alsace_moselle_only() {
+        let body = |zone: Option<&str>, am: Option<&str>| {
+            calendar_request(&CalendarForm {
+                school_zone: zone.map(str::to_string),
+                alsace_moselle: am.map(str::to_string),
+            })
+            .map(|r| serde_json::to_value(r).unwrap())
+        };
+        assert_eq!(
+            body(Some("B"), Some("on")),
+            Ok(serde_json::json!({"school_zone": "B", "alsace_moselle": true}))
+        );
+        // « Aucune » clears the zone; an unticked box is not sent by the
+        // browser, and means no Alsace-Moselle.
+        assert_eq!(
+            body(Some(""), None),
+            Ok(serde_json::json!({"school_zone": null, "alsace_moselle": false}))
+        );
+        // No zone field at all keeps the zone.
+        assert_eq!(
+            body(None, Some("on")),
+            Ok(serde_json::json!({"alsace_moselle": true}))
+        );
+        for zone in ["D", "b", "Zone B", " B"] {
+            assert_eq!(body(Some(zone), None), Err("invalid_school_zone"), "{zone}");
+        }
+    }
+
+    #[test]
+    fn the_calendar_notice_and_error_are_in_french() {
+        assert_eq!(
+            notice_text("calendar_changed"),
+            Some("Calendrier de la famille enregistré.")
+        );
+        assert_eq!(
+            error_text("invalid_school_zone"),
+            Some("Cette zone n'est pas proposée.")
         );
     }
 

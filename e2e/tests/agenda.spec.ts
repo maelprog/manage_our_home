@@ -716,15 +716,21 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     const count = await cells.count();
     expect(count).toBeGreaterThanOrEqual(28);
     expect(count).toBeLessThanOrEqual(42);
-    for (const text of await cells.allInnerTexts()) expect(text.trim()).toMatch(/^\d{1,2}$/);
-    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeVisible();
+    // A day number, then — on a national day (#565), a link — its name in
+    // words: « 11 novembre, Armistice 1918 ».
+    for (const text of await cells.allInnerTexts()) expect(text.trim()).toMatch(/^\d{1,2}(\s|$)/);
 
     const today = mini.locator('td[aria-current="date"]');
     await expect(today).toHaveCount(1);
     await expect(today).toHaveClass(/\bcurrent\b/);
-    await expect(today).toHaveText(String(Number(parisDay().slice(8))));
+    await expect(today).toHaveText(new RegExp(`^${Number(parisDay().slice(8))}(\\s|$)`));
 
-    await page.goto("/agenda?view=week");
+    // A national day written out puts its day in the list (#565): the
+    // empty state is read on a month and a week that have none — February
+    // 2027's grid runs from 1 February to 14 March.
+    await page.goto("/agenda?view=month&date=2027-02-10");
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeVisible();
+    await page.goto("/agenda?view=week&date=2027-02-10");
     await expect(mini.locator("td")).toHaveCount(7);
     await expect(page.getByText("Rien de prévu cette semaine.")).toBeVisible();
   });
@@ -737,7 +743,11 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     await createEvent(page, { title: "Réunion parents", start: `${date}T10:00`, end: `${date}T11:00` });
 
     await page.goto(`/agenda?view=month&date=${date}`);
-    const link = page.locator("table.mini").getByRole("link", { name: /^15 \S+, 1 événement$/ });
+    // The 15th may also be a national day (15 August, #565): its name
+    // comes before the count.
+    const link = page
+      .locator("table.mini")
+      .getByRole("link", { name: /^15 \S+, (.+, )?1 événement$/ });
     await expect(link).toHaveAttribute("href", `#j${date}`);
     await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
     await link.click();
