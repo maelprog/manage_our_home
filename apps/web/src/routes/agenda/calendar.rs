@@ -799,18 +799,25 @@ fn marks_html(marks: &DayMarks, day: NaiveDate) -> String {
 }
 
 /// The national days an answer carries. Anything but a readable 200 is
-/// none: they are decoration, and the agenda renders without them (#565).
+/// none, after logging why: they are decoration, and the agenda renders
+/// without them (#565).
 fn national_days_from_response(
     status: reqwest::StatusCode,
     body: serde_json::Value,
+    group_id: uuid::Uuid,
 ) -> Vec<NationalDayResponse> {
-    json_from_response::<NationalDayList>(status, body)
-        .map(|l| l.days)
-        .unwrap_or_default()
+    read_or_log(
+        json_from_response::<NationalDayList>(status, body),
+        group_id,
+        "national-days",
+    )
+    .map(|l| l.days)
+    .unwrap_or_default()
 }
 
 /// `GET /groups/:gid/national-days` for the days of the grid, `[first,
-/// last]`. A failed call, like an unreadable answer, is no national day.
+/// last]`. A failed call, like an unreadable answer, is no national day,
+/// and is logged.
 async fn fetch_national_days(
     state: &AppState,
     cookie: Option<&str>,
@@ -820,7 +827,7 @@ async fn fetch_national_days(
 ) -> Vec<NationalDayResponse> {
     let path = format!("/groups/{group_id}/national-days?from={first}&to={last}");
     match api_request_auth(state, reqwest::Method::GET, &path, cookie, None).await {
-        Ok(resp) => national_days_from_response(resp.status, resp.body),
+        Ok(resp) => national_days_from_response(resp.status, resp.body, group_id),
         Err(error) => {
             tracing::warn!(%group_id, %error, "could not read the national days");
             Vec::new()
@@ -1978,7 +1985,7 @@ mod tests {
             {"date": "2026-10-25", "kind": "clock_change", "label": "Passage à l'heure d'hiver"}
         ]});
         assert_eq!(
-            national_days_from_response(reqwest::StatusCode::OK, ok).len(),
+            national_days_from_response(reqwest::StatusCode::OK, ok, uuid::Uuid::nil()).len(),
             1
         );
         for (status, body) in [
@@ -1998,7 +2005,7 @@ mod tests {
             (reqwest::StatusCode::OK, serde_json::json!("<html>")),
         ] {
             assert!(
-                national_days_from_response(status, body).is_empty(),
+                national_days_from_response(status, body, uuid::Uuid::nil()).is_empty(),
                 "{status}"
             );
         }
