@@ -253,7 +253,10 @@ Au moment de l'ouverture publique :
    `p=none` le temps de lire les rapports, puis durci), et lancer la
    vérification du domaine depuis l'onglet de vérification DNS. Un
    enregistrement MX sur le domaine est recommandé par Scaleway pour la
-   délivrabilité.
+   délivrabilité. **Fait pour le staging le 2026-11-06** (#714) : domaine
+   `staging.watallo.fr`, distinct de `watallo.fr` pour que la réputation
+   d'envoi du staging ne soit pas celle de la prod. Reste à faire pour le
+   domaine de production.
 4. **Pointer la configuration de production sur Scaleway** :
    `SMTP_HOST=smtp.tem.scaleway.com`, `SMTP_USERNAME` = l'identifiant du
    projet Scaleway qui porte le domaine, `SMTP_PASSWORD` = la clé secrète
@@ -265,7 +268,12 @@ Au moment de l'ouverture publique :
    développement non chiffré (`SMTP_ALLOW_INSECURE=true`, Mailpit) et ne
    s'applique pas ici. Scaleway accepte aussi le port 587 en STARTTLS, que
    ce code n'utilise pas. `SMTP_HOST` n'est contraint par rien d'autre que
-   cette configuration.
+   cette configuration. **Fait pour le staging le 2026-11-06** (#714) :
+   overlay staging de la branche `deploy` (`SMTP_HOST=smtp.tem.scaleway.com`,
+   `SMTP_FROM=no-reply@staging.watallo.fr`), identifiants scellés dans
+   `api-secrets`, envoi réel constaté avec SPF, DKIM et DMARC en `pass`
+   (`docs/install-k3s.md` de `deploy`, « Le relais SMTP du staging »).
+   La configuration de production reste à pointer.
 5. **Faire le travail de transferts pour Google** (connexion et flux iCal)
    et remplir le deuxième placeholder. La liste officielle du cadre de
    confidentialité des données n'était pas consultable le 2026-09-21 (site
