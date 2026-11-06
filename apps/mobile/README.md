@@ -53,8 +53,10 @@ du site.
 - **La photo du code-barres** (Stocks → ajouter) ouvre l'appareil photo ;
   l'application demande la permission la première fois.
 
-Hors de ce paquet : l'APK signé et sa diffusion (#666), les rappels locaux
-(#668), la connexion Google native (#669), iOS.
+L'APK signé que les familles installent est publié en release GitHub
+(#666) : « Publier un APK signé » et « Installer l'application
+(familles) » plus bas. Hors de ce paquet : les rappels locaux (#668), la
+connexion Google native (#669), iOS.
 
 ## Guide pas à pas : construire et installer l'APK `staging`
 
@@ -127,7 +129,7 @@ cd android
 À voir :
 
 - `npm ci` finit par `found 0 vulnerabilities` ;
-- `npm test` affiche `ℹ pass 8` et `ℹ fail 0` ;
+- `npm test` affiche `ℹ pass 13` et `ℹ fail 0` ;
 - `npx cap sync android` finit par `✔ update android` et `[info] Sync
   finished` ; il écrit la configuration du staging dans
   `android/app/src/main/assets/capacitor.config.json` (`"url":
@@ -138,7 +140,7 @@ cd android
 
 L'APK est `android/app/build/outputs/apk/staging/debug/app-staging-debug.apk`.
 Il est signé d'une clé de débogage : installable par `adb` ou à la main, pas
-publiable (#666).
+publiable. L'APK publié est construit par la CI (« Publier un APK signé »).
 
 **Variante `prod`** : l'adresse de production n'est pas encore fixée, elle
 se donne au moment du `sync` (une origine https, rien après le nom) :
@@ -247,12 +249,193 @@ des applications. À l'ouverture :
    retomber Capacitor sur un script inline, que la CSP bloquerait :
    mettre à jour « Android System WebView » depuis le Play Store.
 
+## Publier un APK signé (#666)
+
+Ce que les familles installent : la variante `prod`, en release, signée
+d'une clé qui ne change jamais. Android n'installe une mise à jour par-dessus
+l'application que si elle est signée de la même clé et que son
+`versionCode` est plus grand ; sinon il faut désinstaller, et l'application
+perd ses données (la session, et les rappels locaux une fois #668 livré).
+
+Le workflow `.github/workflows/mobile-release.yml` fait le reste à chaque
+tag `mobile-vX.Y.Z` : `npm ci`, `npm audit --audit-level=high` (bloquant),
+`npm test`, `npx cap sync android` vers la production, `./gradlew
+assembleProdRelease` signé, contrôle de la signature et de la version, puis
+une release GitHub du tag avec `mhome-X.Y.Z.apk` et `mhome-X.Y.Z.apk.sha256`.
+La version vient du tag : `versionName` X.Y.Z, `versionCode`
+X × 1 000 000 + Y × 1 000 + Z (`scripts/release-version.mjs`). Pas de
+suffixe (`-rc.1`), mineure et correctif jusqu'à 999, et un tag qui n'est
+pas au-dessus de tous les `mobile-v…` déjà poussés est refusé : aucun
+téléphone ne pourrait l'installer par-dessus.
+
+La variante `staging` n'a pas de release : elle ouvre le serveur de test,
+joignable par le VPN seulement. `./gradlew assembleStagingRelease` échoue
+avec `the staging flavour has no release build`.
+
+La clé n'est jamais dans le dépôt : elle vit chez vous, et une copie
+encodée dans un secret GitHub. C'est vous qui faites les étapes 1 à 5, une
+seule fois.
+
+### 1. Générer la clé
+
+Dans un dossier **hors du dépôt**, avec Java 21 (`keytool` est livré avec,
+§ 1 du guide ci-dessus) :
+
+```sh
+mkdir -p ~/mhome-release && cd ~/mhome-release
+keytool -genkeypair -v -keystore mhome-release.p12 -storetype PKCS12 \
+  -alias mhome -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=MHome"
+```
+
+`keytool` demande deux fois le mot de passe (« Enter keystore password »,
+« Re-enter new password ») : en choisir un long, généré par le gestionnaire
+de mots de passe. Il finit par `[Storing mhome-release.p12]`.
+
+- `-alias mhome` : le build cherche la clé sous ce nom
+  (`android/app/build.gradle`).
+- `-dname "CN=MHome"` : ce nom est lisible par quiconque a l'APK. Ne pas y
+  mettre de nom de personne.
+- `-validity 10000` : environ 27 ans ; une clé expirée ne signe plus de mise
+  à jour.
+- Un seul mot de passe : un fichier PKCS12 protège la clé et le fichier du
+  même mot de passe.
+
+### 2. Ranger la clé et son mot de passe
+
+- **Le gestionnaire de mots de passe** : une entrée « MHome — clé de
+  signature Android » qui porte le mot de passe et, en pièce jointe, le
+  fichier `mhome-release.p12`.
+- **Une copie hors ligne** : le fichier sur une clé USB rangée ailleurs que
+  l'ordinateur, le mot de passe noté avec (ou sur papier, à part).
+- Jamais dans le dépôt (`android/.gitignore` ignore `*.p12`, `*.jks`,
+  `*.keystore`), jamais dans un mail ni un dossier synchronisé partagé.
+
+**Si la clé ou son mot de passe sont perdus**, plus aucune mise à jour n'est
+possible : une nouvelle clé donne une autre application aux yeux
+d'Android, et chaque famille doit désinstaller l'ancienne (et perdre ses
+données) pour installer la nouvelle. GitHub n'aide pas : un secret ne se
+relit pas. **Si la clé fuit**, quelqu'un peut signer un APK qu'Android
+installera par-dessus le vôtre : supprimer les secrets, générer une
+nouvelle clé, et prévenir les familles qu'elles doivent réinstaller.
+
+### 3. Lire les empreintes
+
+```sh
+keytool -list -v -keystore ~/mhome-release/mhome-release.p12 -alias mhome
+```
+
+Après le mot de passe, sous « Certificate fingerprints » :
+
+```
+	 SHA1: 12:34:…:AB
+	 SHA256: 12:34:56:…:EF
+```
+
+Le **SHA-256** identifie l'APK publié : il se recopie dans la ligne
+ci-dessous (dans une PR), en majuscules avec les `:`, telle que `keytool`
+l'affiche, **avant** le premier tag. Le workflow lit cette ligne et refuse
+de publier un APK signé d'une autre clé, ou si elle n'est pas remplie. Ne
+pas changer la forme de la ligne.
+
+Empreinte SHA-256 du certificat de signature : `aucune clé générée`
+
+Le **SHA-1** sert à la connexion Google native (#669) : c'est l'empreinte
+que Google Cloud demande pour un client OAuth Android.
+
+### 4. Renseigner les secrets
+
+Sur GitHub, page du dépôt → **Settings** → **Secrets and variables** →
+**Actions** :
+
+- onglet **Secrets** → **New repository secret** :
+  - `MHOME_KEYSTORE_BASE64` : le fichier encodé en base64, sur une ligne
+    (`base64 -w0 ~/mhome-release/mhome-release.p12` l'affiche) ;
+  - `MHOME_KEYSTORE_PASSWORD` : le mot de passe ;
+- onglet **Variables** → **New repository variable** :
+  - `MHOME_PROD_URL` : l'adresse que l'application ouvre, une origine https
+    sans chemin (`https://exemple.fr`). Ce n'est pas un secret.
+
+Ou, avec `gh` (connecté au compte propriétaire du dépôt) :
+
+```sh
+base64 -w0 ~/mhome-release/mhome-release.p12 | gh secret set MHOME_KEYSTORE_BASE64 --repo maelprog/manage_our_home
+gh secret set MHOME_KEYSTORE_PASSWORD --repo maelprog/manage_our_home   # demande la valeur ; la coller
+gh variable set MHOME_PROD_URL --body https://exemple.fr --repo maelprog/manage_our_home
+gh secret list --repo maelprog/manage_our_home     # les deux noms, sans leur valeur
+```
+
+Il manque l'un des trois : le workflow s'arrête à sa première étape en
+nommant celui qui manque. Le build Gradle fait de même hors CI
+(`MHOME_KEYSTORE_FILE`, `MHOME_KEYSTORE_PASSWORD`, `-PmhomeVersionName`,
+`-PmhomeVersionCode`).
+
+### 5. Publier
+
+Une fois la ligne d'empreinte fusionnée sur `main` :
+
+```sh
+git fetch origin
+git tag mobile-v1.0.0 origin/main
+git push origin mobile-v1.0.0
+```
+
+Onglet **Actions** → « Mobile release » : le run finit vert, et la release
+`mobile-v1.0.0` porte `mhome-1.0.0.apk` et `mhome-1.0.0.apk.sha256`. Pour
+un premier essai, deux tags de test (`mobile-v0.1.0` puis `mobile-v0.1.1`)
+suffisent à vérifier que la seconde s'installe par-dessus la première sans
+désinstaller ; `mobile-v1.0.0` passera au-dessus des deux.
+
+Contrôle sur l'ordinateur, avec les build-tools du § 1 :
+
+```sh
+sha256sum -c mhome-1.0.0.apk.sha256        # mhome-1.0.0.apk: OK
+$ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs mhome-1.0.0.apk
+# Signer #1 certificate SHA-256 digest: 1234…ef   (l'empreinte ci-dessus, en minuscules, sans les « : »)
+```
+
+## Installer l'application (familles)
+
+Ce qu'il faut : un téléphone Android 7 ou plus récent, et l'adresse de la
+page des releases (`https://github.com/maelprog/manage_our_home/releases`).
+
+1. **Télécharger** : sur le téléphone, ouvrir la dernière release
+   « MHome Android », toucher `mhome-X.Y.Z.apk` dans « Assets ».
+2. **Vérifier le fichier** (conseillé pour la première installation) : sur
+   un ordinateur, calculer le SHA-256 de l'APK et le comparer à celui des
+   notes de la release (et du fichier `.sha256`) :
+   - Linux : `sha256sum mhome-X.Y.Z.apk` ;
+   - macOS : `shasum -a 256 mhome-X.Y.Z.apk` ;
+   - Windows (PowerShell) : `Get-FileHash mhome-X.Y.Z.apk -Algorithm SHA256`.
+
+   Les deux doivent être identiques. Ce contrôle dit que le fichier n'a pas
+   été abîmé ou remplacé en route ; il ne dit pas qui l'a publié, puisque
+   l'empreinte est sur la même page. Ce qui le dit, c'est le certificat :
+   `apksigner verify --print-certs` (§ 5 ci-dessus) doit donner l'empreinte
+   de ce README.
+3. **Autoriser l'installation** : ouvrir le fichier téléchargé. Android
+   répond que le navigateur n'a pas le droit d'installer des applications :
+   **Paramètres** → activer **Autoriser cette source** (« Installer des
+   applications inconnues »), revenir, puis **Installer**. Play Protect peut
+   signaler une application qu'il ne connaît pas : c'est le cas de toute
+   application installée hors du Play Store.
+4. **Retirer l'autorisation** une fois installée : Paramètres →
+   Applications → Chrome (ou le navigateur utilisé) → « Installer des
+   applications inconnues » → désactiver. Les libellés varient d'un
+   fabricant à l'autre.
+
+**Mettre à jour** : même chemin avec l'APK de la nouvelle release ; Android
+propose « Mettre à jour » et l'application garde sa session. Il refuse une
+mise à jour signée d'une autre clé (« conflit avec un package existant ») :
+ne pas désinstaller pour la forcer, et prévenir l'administrateur.
+
 ## La CI
 
 Le job `mobile` de `.github/workflows/ci.yml` lance `npm ci`,
 `npm audit --audit-level=high` (bloquant, sans liste d'ignore, comme
 `cargo audit`), `npm test`, `npx cap sync android` puis
-`./gradlew assembleStagingDebug`. Renovate tient `package.json` à jour
-(`renovate.json`), les paquets `@capacitor/*` ensemble, sans changement de
-version majeure (une majeure de Capacitor se migre à la main,
-`npx cap migrate`).
+`./gradlew assembleStagingDebug`. Le workflow `mobile-release.yml` publie
+l'APK signé (« Publier un APK signé »). Renovate tient `package.json` à
+jour (`renovate.json`), les paquets `@capacitor/*` ensemble, sans
+changement de version majeure (une majeure de Capacitor se migre à la
+main, `npx cap migrate`). Les dépendances Gradle d'`android/` ne sont
+suivies ni par Renovate ni par un audit.

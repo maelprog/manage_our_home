@@ -1,0 +1,170 @@
+# The signed Android APK, published as a GitHub release (#666).
+#
+# A tag mobile-vX.Y.Z builds the prod flavour in release, signs it with the
+# release key, checks the signature against the certificate fingerprint
+# recorded in apps/mobile/README.md, and publishes the APK and its SHA-256
+# in a release of that tag. The families install it by hand, and every
+# later release installs over it as long as it is signed with the same key
+# and its versionCode is higher (scripts/release-version.mjs refuses a tag
+# that is not above every mobile-v tag already there).
+#
+# What the user sets up once (apps/mobile/README.md, « Publier un APK
+# signé »):
+# - secret MHOME_KEYSTORE_BASE64: the PKCS12 keystore, base64-encoded;
+# - secret MHOME_KEYSTORE_PASSWORD: its password;
+# - variable MHOME_PROD_URL: the https origin the app opens.
+# Missing any of them stops the run at its first step, saying which.
+#
+# A tag mobile-v… does not start with v: images.yml and promote.yml, which
+# follow v* tags, are not triggered.
+
+name: Mobile release
+
+on:
+  push:
+    tags: ["mobile-v*"]
+
+# Nothing by default; the job below asks for what it uses.
+permissions: {}
+
+# Two releases at once would each check the other's tag as already there.
+concurrency:
+  group: mobile-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create.
+      contents: write
+    defaults:
+      run:
+        working-directory: apps/mobile
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Signing secrets and production URL
+        env:
+          MHOME_KEYSTORE_BASE64: ${{ secrets.MHOME_KEYSTORE_BASE64 }}
+          MHOME_KEYSTORE_PASSWORD: ${{ secrets.MHOME_KEYSTORE_PASSWORD }}
+          MHOME_PROD_URL: ${{ vars.MHOME_PROD_URL }}
+        working-directory: .
+        run: |
+          missing=0
+          for name in MHOME_KEYSTORE_BASE64 MHOME_KEYSTORE_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::secret $name is not set (Settings → Secrets and variables → Actions → Secrets; apps/mobile/README.md, « Publier un APK signé »)"
+              missing=1
+            fi
+          done
+          if [ -z "$MHOME_PROD_URL" ]; then
+            echo "::error::variable MHOME_PROD_URL is not set (Settings → Secrets and variables → Actions → Variables): the https origin the app opens"
+            missing=1
+          fi
+          exit "$missing"
+
+      # Every tag, for the versionCode check. No persisted credentials: the
+      # only write, the release, goes through GH_TOKEN below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # No dependency cache: a release build starts from the lockfile alone.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      # Capacitor 8 builds with Java 21 (its capacitor.build.gradle sets
+      # sourceCompatibility 21).
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Version from the tag
+        id: version
+        run: |
+          mapfile -t tags < <(git tag --list 'mobile-v*')
+          node scripts/release-version.mjs "$TAG" "${tags[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Expected certificate
+        id: certificate
+        run: |
+          # shellcheck disable=SC2016 # the backquotes are the README's, not command substitutions
+          line=$(grep -E '^Empreinte SHA-256 du certificat de signature : `([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}`$' README.md || true)
+          if [ -z "$line" ]; then
+            echo "::error::apps/mobile/README.md records no certificate fingerprint: the line « Empreinte SHA-256 du certificat de signature : \`AA:BB:…\` » (keytool -list -v) has to be committed before the first release"
+            exit 1
+          fi
+          fingerprint=$(printf '%s' "$line" | grep -oE '([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}' | tr -d ':' | tr 'A-F' 'a-f')
+          echo "sha256=$fingerprint" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+      # Blocking, no ignore list, as in the mobile job of ci.yml.
+      - run: npm audit --audit-level=high
+      - run: npm test
+
+      - name: Sync the prod target
+        env:
+          MHOME_TARGET: prod
+          MHOME_PROD_URL: ${{ vars.MHOME_PROD_URL }}
+        run: npx cap sync android
+
+      - name: Build and sign
+        env:
+          MHOME_KEYSTORE_BASE64: ${{ secrets.MHOME_KEYSTORE_BASE64 }}
+          MHOME_KEYSTORE_PASSWORD: ${{ secrets.MHOME_KEYSTORE_PASSWORD }}
+          MHOME_KEYSTORE_FILE: ${{ runner.temp }}/release.p12
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        working-directory: apps/mobile/android
+        run: |
+          printf '%s' "$MHOME_KEYSTORE_BASE64" | base64 --decode > "$MHOME_KEYSTORE_FILE"
+          trap 'rm -f "$MHOME_KEYSTORE_FILE"' EXIT
+          ./gradlew assembleProdRelease --no-daemon \
+            -PmhomeVersionName="$VERSION_NAME" -PmhomeVersionCode="$VERSION_CODE"
+
+      - name: Check the APK
+        env:
+          EXPECTED_SHA256: ${{ steps.certificate.outputs.sha256 }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          apk=android/app/build/outputs/apk/prod/release/app-prod-release.apk
+          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          "$build_tools/apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+          signed=$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9a-f]{64})$/\1/p' "$RUNNER_TEMP/certs.txt")
+          if ! grep -qx 'Number of signers: 1' "$RUNNER_TEMP/certs.txt" || [ "$signed" != "$EXPECTED_SHA256" ]; then
+            echo "::error::the APK is signed by certificate ${signed:-none}, not the one apps/mobile/README.md records ($EXPECTED_SHA256): the secret MHOME_KEYSTORE_BASE64 holds another key"
+            exit 1
+          fi
+          "$build_tools/aapt2" dump badging "$apk" | head -n 1 | tee "$RUNNER_TEMP/badging.txt"
+          expected="package: name='fr.watallo.mhome' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
+          if ! grep -qF "$expected" "$RUNNER_TEMP/badging.txt"; then
+            echo "::error::expected $expected"
+            exit 1
+          fi
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_NAME: ${{ steps.version.outputs.version_name }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+          CERT_SHA256: ${{ steps.certificate.outputs.sha256 }}
+        run: |
+          dir="$RUNNER_TEMP/release"
+          mkdir -p "$dir"
+          name="mhome-$VERSION_NAME.apk"
+          cp android/app/build/outputs/apk/prod/release/app-prod-release.apk "$dir/$name"
+          (cd "$dir" && sha256sum "$name" > "$name.sha256")
+          cat > "$dir/notes.md" <<EOF
+          Application Android de MHome, version $VERSION_NAME (versionCode $VERSION_CODE).
+
+          - SHA-256 de l'APK : \`$(cut -d' ' -f1 "$dir/$name.sha256")\`
+          - SHA-256 du certificat de signature : \`$CERT_SHA256\`
+
+          Installation et vérification : [apps/mobile/README.md](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/apps/mobile/README.md#installer-lapplication-familles).
+          EOF
+          gh release create "$TAG" "$dir/$name" "$dir/$name.sha256" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "MHome Android $VERSION_NAME" --notes-file "$dir/notes.md"
