@@ -1985,7 +1985,8 @@ mod tests {
             {"date": "2026-10-25", "kind": "clock_change", "label": "Passage à l'heure d'hiver"}
         ]});
         assert_eq!(
-            national_days_from_response(reqwest::StatusCode::OK, ok, uuid::Uuid::nil()).len(),
+            national_days_from_response(reqwest::StatusCode::OK, ok.clone(), uuid::Uuid::nil())
+                .len(),
             1
         );
         for (status, body) in [
@@ -1997,10 +1998,10 @@ mod tests {
                 reqwest::StatusCode::SERVICE_UNAVAILABLE,
                 serde_json::Value::Null,
             ),
-            (
-                reqwest::StatusCode::NOT_FOUND,
-                serde_json::json!({"days": []}),
-            ),
+            // A status other than 200 is no national day, even when its
+            // body reads as a list of them.
+            (reqwest::StatusCode::NOT_FOUND, ok.clone()),
+            (reqwest::StatusCode::INTERNAL_SERVER_ERROR, ok.clone()),
             (reqwest::StatusCode::OK, serde_json::json!({"days": "nope"})),
             (reqwest::StatusCode::OK, serde_json::json!("<html>")),
         ] {
