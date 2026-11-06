@@ -23,7 +23,8 @@
 //! device got and shows that kind's fixed text — « Rappel d'un événement à
 //! venir » for a reminder, never the event's title, the same choice as the
 //! reminder emails' subject (#146); « Alerte de budget » for a budget alert
-//! (#536); a neutral one when it cannot tell.
+//! (#536); « Produits bientôt périmés » for the daily expiry recap (#566),
+//! never an item's name; a neutral one when it cannot tell.
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
