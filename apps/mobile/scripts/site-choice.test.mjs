@@ -73,6 +73,14 @@ test('the phone offline: nothing is stored, and the message says so', () => {
   }
 });
 
+test('only a WebView that knows it is offline says so: online unknown is not offline', () => {
+  for (const online of [undefined, null]) {
+    assert.deepEqual(judgeProbe('https://maison.example.org', answer(200, MANIFEST), { online, appName: 'MHome' }), {
+      store: { origin: 'https://maison.example.org' },
+    });
+  }
+});
+
 test('each failure to reach the site has its own clear message, and nothing is stored', () => {
   for (const [failure, reason] of [
     ['certificate', /certificat/],
@@ -107,6 +115,12 @@ test('a redirect is not followed: the message names where it leads, if an https 
   assert.doesNotMatch(to('http://www.maison.example.org/').error, /www\.maison/);
   assert.match(to(undefined).error, /renvoie vers une autre adresse/);
   assert.match(judgeProbe('https://maison.example.org', answer(308, ''), ONLINE).error, /renvoie/);
+  // The whole 3xx range, and nothing else.
+  assert.match(judgeProbe('https://maison.example.org', answer(300, ''), ONLINE).error, /renvoie/);
+  assert.match(judgeProbe('https://maison.example.org', answer(399, ''), ONLINE).error, /renvoie/);
+  for (const status of [299, 400]) {
+    assert.doesNotMatch(judgeProbe('https://maison.example.org', answer(status, ''), ONLINE).error, /renvoie/, String(status));
+  }
 });
 
 test('an answer that is not an MHome manifest is foreign', () => {
@@ -114,6 +128,10 @@ test('an answer that is not an MHome manifest is foreign', () => {
     answer(404, '<html>Not found</html>'),
     answer(500, MANIFEST),
     answer(204, ''),
+    // 200 only: another 2xx with the manifest is not apps/web's answer.
+    answer(201, MANIFEST),
+    answer(203, MANIFEST),
+    answer(299, MANIFEST),
     answer(200, '<!doctype html><html></html>'),
     answer(200, ''),
     answer(200, 'null'),
