@@ -194,6 +194,8 @@ async fn serve_stylesheet() -> Response {
 /// - `ResetPassword`, `MessagerieLive`, `Push`: one page each, loaded where
 ///   their inline `<script>` used to sit, so they still run once the markup
 ///   before them is parsed.
+/// - `GoogleSignIn`: `/login` and `/register` in the Android app only,
+///   right after the button it drives (#670).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Script {
     Enhance,
@@ -201,15 +203,17 @@ pub enum Script {
     MessagerieLive,
     Push,
     LocalReminders,
+    GoogleSignIn,
 }
 
 impl Script {
-    pub const ALL: [Script; 5] = [
+    pub const ALL: [Script; 6] = [
         Script::Enhance,
         Script::ResetPassword,
         Script::MessagerieLive,
         Script::Push,
         Script::LocalReminders,
+        Script::GoogleSignIn,
     ];
 
     fn stem(self) -> &'static str {
@@ -219,6 +223,7 @@ impl Script {
             Script::MessagerieLive => "messagerie-live",
             Script::Push => "push",
             Script::LocalReminders => "local-reminders",
+            Script::GoogleSignIn => "google-sign-in",
         }
     }
 
@@ -230,6 +235,7 @@ impl Script {
             Script::MessagerieLive => crate::routes::messagerie::thread::LIVE_SCRIPT,
             Script::Push => crate::routes::account::notifications::PUSH_SCRIPT,
             Script::LocalReminders => crate::routes::account::notifications::LOCAL_REMINDERS_SCRIPT,
+            Script::GoogleSignIn => crate::routes::auth::GOOGLE_SIGN_IN_SCRIPT,
         }
     }
 

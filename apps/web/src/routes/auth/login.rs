@@ -63,7 +63,7 @@ fn page(
     notice: Option<&str>,
     api_public_base_url: &str,
 ) -> String {
-    let google_start = format!("{api_public_base_url}/auth/google/start");
+    let google = super::google_actions(api_public_base_url);
     let pw = password_field("Mot de passe", "password", "current-password", false);
     let body = view! {
         <h1>"Se connecter"</h1>
@@ -79,9 +79,8 @@ fn page(
         </form>
         // #419: stacked, so the Google button takes the width of the form's
         // own; the legal documents moved to the shell's footer.
-        <div class="actions stacked">
-            <a class="btn secondary" href=google_start>"Continuer avec Google"</a>
-        </div>
+        // In the app, a native button in place of the link (#670).
+        <div class="actions stacked" inner_html=google></div>
         <div class="links centered">
             <a href="/register">"Créer un compte"</a>
             <a href="/forgot-password">"Mot de passe oublié ?"</a>
@@ -303,8 +302,17 @@ mod route_tests {
 
     use crate::state::AppState;
 
-    /// `GET {uri}` from a visitor with no session.
+    /// `GET {uri}` from a visitor with no session, in a browser.
     async fn get_page(uri: &str) -> (StatusCode, String) {
+        get_page_as(uri, ANDROID_CHROME).await
+    }
+
+    const ANDROID_CHROME: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) \
+        AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+
+    /// `GET {uri}` from a visitor with no session, whose browser says
+    /// `user_agent`.
+    async fn get_page_as(uri: &str, user_agent: &str) -> (StatusCode, String) {
         let app = Router::new().route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -317,7 +325,11 @@ mod route_tests {
             upload_gate: manage_our_home_http_guard::UploadGate::production(),
             shutdown: manage_our_home_http_guard::Shutdown::new(),
         });
-        let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let request = Request::builder()
+            .uri(uri)
+            .header(axum::http::header::USER_AGENT, user_agent)
+            .body(Body::empty())
+            .unwrap();
         let response = router.oneshot(request).await.unwrap();
         let status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -337,5 +349,32 @@ mod route_tests {
 
         let (_, plain) = get_page("/login").await;
         assert!(!plain.contains("notice error"), "{plain}");
+    }
+
+    /// #670: in the app's WebView, Google refuses its own page
+    /// (`disallowed_useragent`): the link to it is never there, the native
+    /// button and its script are. A browser still gets the link.
+    #[tokio::test]
+    async fn the_app_gets_the_native_google_button_and_a_browser_the_link() {
+        let app = format!("{ANDROID_CHROME} {}", crate::mobile_app::USER_AGENT_MARKER);
+        let (status, body) = get_page_as("/login", &app).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!body.contains("/auth/google/start"), "{body}");
+        assert!(body.contains(r#"id="google-native""#), "{body}");
+        assert!(
+            body.contains(&crate::assets::Script::GoogleSignIn.tag()),
+            "{body}"
+        );
+
+        let (_, browser) = get_page("/login").await;
+        assert!(
+            browser.contains(r#"href="/api/auth/google/start""#),
+            "{browser}"
+        );
+        assert!(!browser.contains("google-native"), "{browser}");
+        assert!(
+            !browser.contains(&crate::assets::Script::GoogleSignIn.tag()),
+            "{browser}"
+        );
     }
 }

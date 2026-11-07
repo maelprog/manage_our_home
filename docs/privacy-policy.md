@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-11-06.
+Dernière mise à jour : 2026-11-07.
 
 ## Qui est responsable de vos données ?
 
@@ -97,7 +97,11 @@ possibles sont :
   avec Google ». Votre navigateur passe alors par Google, puis le serveur
   échange auprès de Google le code d'autorisation obtenu et lit votre
   profil (identifiant, email, nom). Google sait donc que vous vous
-  connectez à ce service.
+  connectez à ce service. Dans l'application Android, c'est le téléphone
+  qui passe par Google : son gestionnaire d'identifiants (services Google
+  Play) vous fait choisir un compte Google et remet à la page un jeton
+  d'identité signé par Google, portant ce même profil, que la page envoie
+  au serveur.
 - **Hébergeur du flux calendrier** (import calendrier, en pratique Google
   Agenda) : uniquement si un administrateur ou le propriétaire du groupe
   configure un import avec une URL de flux iCal privée fournie
@@ -631,7 +635,11 @@ conservées par le même serveur, aux conditions décrites sur cette page.
 Elle ne contient aucune logique du service, aucun outil de mesure
 d'audience, aucun SDK publicitaire ni de statistiques, et ne contacte aucun
 autre serveur que celui du site : les liens vers un autre site s'ouvrent
-dans le navigateur du téléphone.
+dans le navigateur du téléphone. Une seule exception, à votre demande : si
+vous touchez « Continuer avec Google », le téléphone demande à Google le
+jeton d'identité du compte que vous choisissez (voir « Avec qui vos
+données sont-elles partagées ? »). L'application ne garde pas ce jeton : elle le remet au
+serveur, qui ouvre votre session.
 
 Elle demande au téléphone :
 

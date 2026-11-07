@@ -1049,7 +1049,8 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
             Script::ResetPassword,
             Script::MessagerieLive,
             Script::Push,
-            Script::LocalReminders
+            Script::LocalReminders,
+            Script::GoogleSignIn
         ]
     );
     // A call commented out at the end of a line or inside a block comment
@@ -1063,7 +1064,8 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
         vec![
             Script::Enhance,
             Script::ResetPassword,
-            Script::LocalReminders
+            Script::LocalReminders,
+            Script::GoogleSignIn
         ]
     );
     // A block comment spanning lines, nested block comments (Rust's nest)
@@ -1085,7 +1087,7 @@ let r = r#"say "Script::Push.tag()" here"#;
 fn f<'a>(x: &'a str) { Script::ResetPassword.tag(); }
 let e = '\''; let u = "https://x"; Script::MessagerieLive.tag();
 let b = b"/*"; Script::Push.tag(); let c = "*/";
-Script::LocalReminders.tag();
+Script::LocalReminders.tag(); Script::GoogleSignIn.tag();
 "###;
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),

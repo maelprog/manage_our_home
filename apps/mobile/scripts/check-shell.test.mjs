@@ -188,6 +188,16 @@ test('prod opens the https origin it is given, and refuses anything else', () =>
   }
 });
 
+test('the Social Login plugin brings Google alone, and no client ID of its own', () => {
+  // #670: the plugin's sync hook reads `providers` and leaves the SDKs of
+  // the others out of the APK; the web client ID comes from apps/api with
+  // each nonce.
+  const { config } = loadConfig({});
+  assert.deepEqual(config.plugins.SocialLogin, {
+    providers: { google: true, facebook: false, apple: false, twitter: false },
+  });
+});
+
 test("the app's name and User-Agent marker are apps/web's", () => {
   const { config } = loadConfig({});
   assert.equal(config.appName, rustConst('brand.rs', 'NAME'));
