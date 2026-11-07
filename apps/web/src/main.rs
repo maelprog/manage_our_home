@@ -971,3 +971,107 @@ mod login_peer_tests {
         assert_eq!(*seen.lock().unwrap(), [None]);
     }
 }
+
+/// The local reminders (#668) on the real router: `mobile_app::scope`
+/// tells `app::document` which pages are the app's, and the relay the
+/// script calls is routed to apps/api.
+#[cfg(test)]
+mod local_reminders_tests {
+    use axum::body::Body;
+    use axum::http::{header, Request, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    const REMINDER: &str = r#"[{
+        "id": "00000000-0000-0000-0000-000000000001",
+        "event_id": "00000000-0000-0000-0000-000000000002",
+        "group_id": "00000000-0000-0000-0000-000000000003",
+        "title": "Dentiste",
+        "occurrence_at": "2026-11-10T13:30:00Z",
+        "fire_at": "2026-11-10T13:00:00Z",
+        "all_day": false
+    }]"#;
+
+    /// An apps/api with no session for `/auth/me` (`/login` renders), whose
+    /// upcoming reminders answer `upcoming`.
+    async fn web(upcoming: StatusCode) -> Router {
+        let app = Router::new()
+            .route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }))
+            .route(
+                "/account/reminders/upcoming",
+                get(move || async move {
+                    let list: serde_json::Value = serde_json::from_str(REMINDER).unwrap();
+                    (upcoming, axum::Json(list))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        })
+    }
+
+    async fn get_as(router: Router, path: &str, user_agent: &str) -> (StatusCode, String) {
+        let request = Request::builder()
+            .uri(path)
+            .header(header::USER_AGENT, user_agent)
+            .header(header::COOKIE, "session=x")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// The `<head>` of `/login` as served to `user_agent`.
+    async fn head(user_agent: &str) -> String {
+        let (status, body) = get_as(web(StatusCode::OK).await, "/login", user_agent).await;
+        assert_eq!(status, StatusCode::OK);
+        body[..body.find("</head>").expect("a </head>")].to_string()
+    }
+
+    const ANDROID_CHROME: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) \
+        AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+
+    #[tokio::test]
+    async fn the_apps_pages_load_the_local_reminders_script() {
+        let tag = assets::Script::LocalReminders.tag();
+        let app = format!("{ANDROID_CHROME} {}", mobile_app::USER_AGENT_MARKER);
+        assert!(head(&app).await.contains(&tag));
+        assert!(!head(ANDROID_CHROME).await.contains(&tag));
+    }
+
+    #[tokio::test]
+    async fn the_relay_answers_the_list_or_the_apis_401() {
+        let (status, body) = get_as(
+            web(StatusCode::OK).await,
+            "/account/notifications/upcoming",
+            ANDROID_CHROME,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            serde_json::from_str::<serde_json::Value>(REMINDER).unwrap()
+        );
+        let (status, _) = get_as(
+            web(StatusCode::UNAUTHORIZED).await,
+            "/account/notifications/upcoming",
+            ANDROID_CHROME,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
