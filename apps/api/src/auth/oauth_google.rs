@@ -66,7 +66,7 @@ fn callback_verifier(
     well_formed.then(|| PkceCodeVerifier::new(verifier))
 }
 
-fn flow_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'static> {
+pub(crate) fn flow_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'static> {
     let mut cookie = Cookie::new(name, value);
     cookie.set_http_only(true);
     cookie.set_secure(secure);
@@ -123,6 +123,15 @@ struct Existing {
     deactivated: bool,
 }
 
+/// A Google profile whose email Google verified: what `callback` reads
+/// from userinfo, or `google_id_token` from a verified ID token.
+#[derive(Debug)]
+pub struct GoogleProfile {
+    pub sub: String,
+    pub email: String,
+    pub name: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct GoogleUserInfo {
     sub: String,
@@ -167,13 +176,8 @@ async fn exchange_code(
 
 /// AC #3, #8: validates the CSRF `state`, exchanges the code with the PKCE
 /// verifier `start` stashed (refusing outright when it is missing), fetches
-/// the verified Google profile, then signs in the account already bound to
-/// that Google identity — or, failing that, binds the identity to the
-/// account with the same email, creating the account if there is none. An
-/// account deactivated by support gets a restricted session on both paths,
-/// and nothing written to it (#194, #289); a purged one is refused. No
-/// existing session is read. The refresh token (if any) is stored
-/// encrypted via `pgcrypto` and is never written to `tracing` logs.
+/// the verified Google profile, then signs it in ([`sign_in_profile`]). No
+/// existing session is read.
 #[utoipa::path(
     get,
     path = "/auth/google/callback",
@@ -223,21 +227,59 @@ pub async fn callback(
     if !userinfo.email_verified {
         return Err(AppError::Unauthorized);
     }
+    let refresh_token = token.refresh_token().map(|t| t.secret().clone());
+    let profile = GoogleProfile {
+        sub: userinfo.sub,
+        email: userinfo.email,
+        name: userinfo.name,
+    };
+
+    let to = match sign_in_profile(&state, &cookies, &profile, refresh_token.as_deref()).await? {
+        SignIn::Session => state.frontend_base_url.clone(),
+        SignIn::Refused(reason) => format!("{}/login?google={reason}", state.frontend_base_url),
+    };
+    Ok(Redirect::to(&to))
+}
+
+/// The refusal code of a Google profile whose address is not ASCII (#572):
+/// `apps/web`'s login page has the copy for it (`google_refusal`).
+pub const EMAIL_NOT_ASCII: &str = "email_not_ascii";
+
+/// How [`sign_in_profile`] ended, short of an error.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SignIn {
+    /// A session cookie is set: a full session, or a restricted one for an
+    /// account deactivated by support.
+    Session,
+    /// Nothing was signed in to, nothing created; the code says why, for
+    /// the login page.
+    Refused(&'static str),
+}
+
+/// Signs in a Google profile whose email Google verified, for `callback`
+/// and for the native sign-in (`google_id_token`, #669) alike: the account
+/// already bound to that Google identity — or, failing that, the account
+/// with the same email, to which the identity is then bound, created if
+/// there is none. An account deactivated by support gets a restricted
+/// session on both paths, and nothing written to it (#194, #289); a purged
+/// one is refused with a bare 401. `refresh_token`, when Google gave one, is
+/// stored encrypted via `pgcrypto` and is never written to `tracing` logs.
+pub(crate) async fn sign_in_profile(
+    state: &AppState,
+    cookies: &Cookies,
+    profile: &GoogleProfile,
+    refresh_token: Option<&str>,
+) -> AppResult<SignIn> {
     // Stored and matched in the same form as a password account's (#459),
     // so a Google profile finds the account its holder registered by hand.
-    let email = normalize_email(&userinfo.email);
+    let email = normalize_email(&profile.email);
     // #572: addresses are ASCII only. A Google profile whose address is not
     // signs in to nothing and creates nothing — not even an account already
     // bound to it, which a password login would refuse too — and the
     // browser lands on the login page, which says why.
     if validate_email_ascii(&email).is_err() {
-        return Ok(Redirect::to(&format!(
-            "{}/login?google=email_not_ascii",
-            state.frontend_base_url
-        )));
+        return Ok(SignIn::Refused(EMAIL_NOT_ASCII));
     }
-
-    let refresh_token_plain = token.refresh_token().map(|t| t.secret().clone());
 
     let mut tx = crate::db::begin(&state.db).await?;
 
@@ -249,7 +291,7 @@ pub async fn callback(
         JOIN users u ON u.id = i.user_id
         WHERE i.provider = 'google' AND i.provider_user_id = $1
         "#,
-        userinfo.sub
+        profile.sub
     )
     .fetch_optional(&mut *tx)
     .await?;
@@ -298,17 +340,17 @@ pub async fn callback(
     if let Some(account) = existing_account.as_ref().filter(|a| a.deactivated) {
         tx.rollback().await?;
         let token = create_restricted_session(&state.db, account.user_id).await?;
-        set_session_cookie(&cookies, &token, state.secure_cookies);
-        return Ok(Redirect::to(&state.frontend_base_url));
+        set_session_cookie(cookies, &token, state.secure_cookies);
+        return Ok(SignIn::Session);
     }
 
     let user_id = match existing_account {
         Some(account) => account.user_id,
         None => {
-            let display_name = userinfo
+            let display_name = profile
                 .name
                 .clone()
-                .unwrap_or_else(|| userinfo.email.clone());
+                .unwrap_or_else(|| profile.email.clone());
             sqlx::query_scalar!(
                 r#"
                 INSERT INTO users (email, email_verified, display_name)
@@ -324,14 +366,14 @@ pub async fn callback(
     };
 
     if !identity_bound {
-        if let Some(refresh_token) = &refresh_token_plain {
+        if let Some(refresh_token) = refresh_token {
             sqlx::query!(
                 r#"
                 INSERT INTO oauth_identities (user_id, provider, provider_user_id, refresh_token_encrypted)
                 VALUES ($1, 'google', $2, pgp_sym_encrypt($3, $4))
                 "#,
                 user_id,
-                userinfo.sub,
+                profile.sub,
                 refresh_token,
                 state.oauth_encryption_key,
             )
@@ -344,7 +386,7 @@ pub async fn callback(
                 VALUES ($1, 'google', $2)
                 "#,
                 user_id,
-                userinfo.sub,
+                profile.sub,
             )
             .execute(&mut *tx)
             .await?;
@@ -354,9 +396,9 @@ pub async fn callback(
     tx.commit().await?;
 
     let token = create_session(&state.db, user_id).await?;
-    set_session_cookie(&cookies, &token, state.secure_cookies);
+    set_session_cookie(cookies, &token, state.secure_cookies);
 
-    Ok(Redirect::to(&state.frontend_base_url))
+    Ok(SignIn::Session)
 }
 
 #[cfg(test)]

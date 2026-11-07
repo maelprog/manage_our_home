@@ -75,6 +75,8 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::auth::deactivated::status,
         crate::auth::delete_account,
         crate::auth::forgot_password,
+        crate::auth::google_id_token::issue_nonce,
+        crate::auth::google_id_token::sign_in,
         crate::auth::list_sessions,
         crate::auth::login,
         crate::auth::logout,

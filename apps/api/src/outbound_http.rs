@@ -1,6 +1,7 @@
 //! The HTTP clients for requests this API makes to third parties on behalf
-//! of a user request: Google's OAuth token and userinfo endpoints, and the
-//! iCal feeds of calendar imports. Without a timeout, a peer that accepts
+//! of a user request: Google's OAuth token and userinfo endpoints, its key
+//! set for the native sign-in's ID tokens (#669), and the iCal feeds of
+//! calendar imports. Without a timeout, a peer that accepts
 //! the connection and never answers holds the user's request open
 //! indefinitely (#371).
 //!

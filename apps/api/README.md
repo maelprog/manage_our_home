@@ -601,9 +601,12 @@ only lets distinct addresses proceed together.
 to Open Food Facts (`stocks::openfoodfacts::RATE_LIMIT` a minute, for the
 whole server), the "account exists" notice `POST /auth/register` mails to
 a verified address (`auth::account_exists_notice::RATE`, 3 per address per
-24 hours, #570) and `POST /csp-report` (`csp_report_throttle::MAX_REPORTS`
-per client address per 15 minutes) are counted in the `UNLOGGED` tables
-`rate_limit_log` and `csp_report_throttle` (migrations `0029` and `0043`),
+24 hours, #570), the native Google sign-in's `POST /auth/google/nonce` and
+`POST /auth/google/id-token` together (`auth::google_id_token::RATE`, 20
+per client address per 10 minutes, #669) and `POST /csp-report`
+(`csp_report_throttle::MAX_REPORTS` per client address per 15 minutes) are
+counted in the `UNLOGGED` tables `rate_limit_log` and `csp_report_throttle`
+(migrations `0029`, `0043` and `0050`),
 under an advisory lock per counted subject and on the database's clock, so
 N replicas allow what one does. Their rows hold HMAC pseudonyms keyed from
 the same `LOGIN_THROTTLE_KEY`, each limit under a label of its own. The
@@ -612,8 +615,8 @@ once the row's newest admission is its own limit's window old
 (`rate_limit::LIMITS`), and a `csp_report_throttle` row on its first pass
 once its window is over. A database error refuses the request: a 500 for
 the import and the CSP report, a scan without a product for Open Food
-Facts, and no notice — with the registration's usual answer — for the
-account-exists email.
+Facts, no notice — with the registration's usual answer — for the
+account-exists email, and a 500 for the Google sign-in.
 
 Their admissions hold a connection while they wait on their subject's
 lock too, so they have pools of their own as well (#483), on
@@ -637,13 +640,16 @@ from 1 refuses to start):
   With one connection, a burst on one address delays the notices of the
   other verified addresses too: an admission waits 250 ms at most, then
   sends nothing, so the queue stays under the response floor (#571).
+- **`GOOGLE_SIGN_IN_POOL_SIZE`** connections, 1 when unset
+  (`auth::google_id_token::POOL_SIZE`), for the native Google sign-in's
+  two routes alone (#669), which answer anyone without a session.
 
 **Connection budget, per replica.** Count, against Postgres's
 `max_connections`: the handlers' 20, the admin pool's 5, the login lock's
 `LOGIN_THROTTLE_POOL_SIZE` (4), `CSP_REPORT_POOL_SIZE` (2),
-`RATE_LIMIT_POOL_SIZE` (2), `ACCOUNT_EXISTS_NOTICE_POOL_SIZE` (1) and one
-per background job pass running (#426) — 34 plus the job passes with the
-defaults, once per replica.
+`RATE_LIMIT_POOL_SIZE` (2), `ACCOUNT_EXISTS_NOTICE_POOL_SIZE` (1),
+`GOOGLE_SIGN_IN_POOL_SIZE` (1) and one per background job pass running
+(#426) — 35 plus the job passes with the defaults, once per replica.
 
 **What counts as one address (#198).** An IPv4 address stands for itself. An
 IPv6 one is reduced to its **/64** before it is used as a key: a residential

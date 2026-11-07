@@ -54,6 +54,14 @@ pub struct AppState {
     /// the callback's account resolution can be driven end to end against
     /// a local listener, like the token endpoint already is (#194).
     pub google_userinfo_url: String,
+    /// Checks the ID tokens of the native Google sign-in (#669) against
+    /// Google's keys: `audience` is `GOOGLE_CLIENT_ID`, the key set
+    /// `auth::google_id_token::GOOGLE_JWKS_URL` in production; tests serve
+    /// their own keys from a local listener.
+    pub google_id_token: std::sync::Arc<auth::google_id_token::IdTokenVerifier>,
+    /// The per-address limit on the native Google sign-in's two routes
+    /// (#669), counted in Postgres (`rate_limit_log`), on a pool of its own.
+    pub google_sign_in_throttle: std::sync::Arc<auth::google_id_token::SignInThrottle>,
     pub email: EmailSender,
     /// Base URL of this API, used to build links sent in emails.
     pub public_base_url: String,
@@ -218,6 +226,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/auth/google/start", get(auth::oauth_google::start))
         .route("/auth/google/callback", get(auth::oauth_google::callback))
+        .route(
+            "/auth/google/nonce",
+            post(auth::google_id_token::issue_nonce),
+        )
+        .route(
+            "/auth/google/id-token",
+            post(auth::google_id_token::sign_in),
+        )
         .route("/auth/logout", post(auth::logout))
         .route("/auth/sessions", get(auth::list_sessions))
         .route("/auth/sessions/{id}/revoke", post(auth::revoke_one_session))

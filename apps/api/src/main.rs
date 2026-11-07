@@ -76,7 +76,16 @@ async fn main() -> anyhow::Result<()> {
     let frontend_base_url =
         env::var("FRONTEND_BASE_URL").unwrap_or_else(|_| "http://localhost:3000".into());
 
-    let google_oauth = BasicClient::new(ClientId::new(env::var("GOOGLE_CLIENT_ID")?))
+    let google_client_id = env::var("GOOGLE_CLIENT_ID")?;
+    // The native sign-in's ID tokens (#669) are issued for this same web
+    // client: the app asks Credential Manager for it as "server client ID".
+    let google_id_token = std::sync::Arc::new(
+        manage_our_home::auth::google_id_token::IdTokenVerifier::new(
+            google_client_id.clone(),
+            manage_our_home::auth::google_id_token::GOOGLE_JWKS_URL,
+        ),
+    );
+    let google_oauth = BasicClient::new(ClientId::new(google_client_id))
         .set_client_secret(ClientSecret::new(env::var("GOOGLE_CLIENT_SECRET")?))
         .set_auth_uri(AuthUrl::new(
             "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
@@ -198,6 +207,14 @@ async fn main() -> anyhow::Result<()> {
         manage_our_home::auth::account_exists_notice::POOL_SIZE,
     )
     .map_err(anyhow::Error::msg)?;
+    let google_sign_in_pool_size = manage_our_home::db::pool_size(
+        manage_our_home::auth::google_id_token::POOL_SIZE_VAR,
+        env::var(manage_our_home::auth::google_id_token::POOL_SIZE_VAR)
+            .ok()
+            .as_deref(),
+        manage_our_home::auth::google_id_token::POOL_SIZE,
+    )
+    .map_err(anyhow::Error::msg)?;
     let csp_report_throttle =
         std::sync::Arc::new(manage_our_home::csp_report_throttle::ReportThrottle::new(
             &db,
@@ -223,9 +240,19 @@ async fn main() -> anyhow::Result<()> {
                 &db,
                 account_exists_pool_size,
             ),
-            pseudonyms,
+            pseudonyms.clone(),
         ),
     );
+    // The native Google sign-in (#669) answers anyone too: a pool of its own.
+    let google_sign_in_throttle =
+        std::sync::Arc::new(manage_our_home::auth::google_id_token::SignInThrottle::new(
+            manage_our_home::db::pool_beside(
+                manage_our_home::db::pool_options(),
+                &db,
+                google_sign_in_pool_size,
+            ),
+            pseudonyms,
+        ));
     // The least time `register`, `forgot_password` and
     // `resend_verification` take to answer (#571). A malformed value, or one
     // below what their slowest branch may take, refuses to start rather
@@ -253,6 +280,8 @@ async fn main() -> anyhow::Result<()> {
         db,
         google_oauth,
         google_userinfo_url: manage_our_home::auth::oauth_google::GOOGLE_USERINFO_URL.to_string(),
+        google_id_token,
+        google_sign_in_throttle,
         email: email.clone(),
         public_base_url,
         frontend_base_url,

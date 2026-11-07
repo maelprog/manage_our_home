@@ -1,6 +1,7 @@
 pub mod account_exists_notice;
 pub mod age_declaration;
 pub mod deactivated;
+pub mod google_id_token;
 pub mod oauth_google;
 pub mod response_floor;
 pub mod session;
