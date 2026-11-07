@@ -19,9 +19,10 @@
 // the reason of a refusal (`?google=`, the same copy as on the web). The
 // picker closed by the member puts the page back as it was, silently.
 //
-// The pure part (`redirectTarget`, `isCancelled`, `message`) and `signIn`
-// are tested by apps/mobile/scripts/google-sign-in.test.mjs, which runs
-// this file in a context with no `window`: only `start` touches the page.
+// Tested by apps/mobile/scripts/google-sign-in.test.mjs, which runs this
+// file in a context with no `window`, nothing started: the pure part
+// (`redirectTarget`, `isCancelled`, `message`) and `signIn` as they are,
+// and `start`, the only one that touches the page, against a stand-in.
 var MHomeGoogleSignIn = (function () {
   "use strict";
 

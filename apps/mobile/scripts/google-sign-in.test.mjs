@@ -222,3 +222,133 @@ test('what the page says of each outcome', () => {
   assert.match(G.message({ state: 'throttled' }), /Trop de tentatives/);
   assert.match(G.message({ state: 'failed' }), /Google/);
 });
+
+// -- the page -------------------------------------------------------------------
+
+// The app's page as apps/web serves it (`routes::auth::google_actions`):
+// the button and both notices hidden, `data-api` on the button; and the
+// globals `start` reads, with the Social Login plugin present when
+// `plugin`, and apps/api answering through `harness`.
+function page({ plugin = false, button = true, ...answers } = {}) {
+  const { calls, env } = harness(answers);
+  const element = (attributes = {}) => ({
+    hidden: true,
+    disabled: false,
+    textContent: '',
+    listeners: {},
+    getAttribute: (name) => (name in attributes ? attributes[name] : null),
+    addEventListener(type, listener) {
+      (this.listeners[type] ??= []).push(listener);
+    },
+  });
+  const elements = {
+    'google-native-unsupported': element(),
+    'google-native-error': element(),
+  };
+  if (button) elements['google-native'] = element({ 'data-api': '/api' });
+  const assigned = [];
+  const win = {
+    document: { getElementById: (id) => elements[id] ?? null },
+    fetch: env.fetch,
+    location: { assign: (to) => assigned.push(to) },
+  };
+  if (plugin) win.Capacitor = { Plugins: { SocialLogin: env.plugin } };
+  const click = () => elements['google-native'].listeners.click.forEach((listener) => listener());
+  return { win, calls, elements, assigned, click };
+}
+
+// Lets a sign-in started by a touch run to its end.
+async function settle() {
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+}
+
+test('start: without the plugin, the button stays hidden and the page says to update', () => {
+  const { win, elements } = page();
+  G.start(win);
+  const button = elements['google-native'];
+  assert.equal(button.hidden, true);
+  assert.deepEqual(button.listeners, {});
+  assert.equal(elements['google-native-unsupported'].hidden, false);
+  assert.equal(elements['google-native-error'].hidden, true);
+});
+
+test('start: a page without the button is left as it is', () => {
+  const { win, elements } = page({ button: false, plugin: true });
+  G.start(win);
+  assert.equal(elements['google-native-unsupported'].hidden, true);
+  assert.equal(elements['google-native-error'].hidden, true);
+});
+
+test('start: with the plugin, the button shows, and a touch signs in then goes where the API says', async () => {
+  const { win, calls, elements, assigned, click } = page({ plugin: true });
+  G.start(win);
+  const button = elements['google-native'];
+  assert.equal(button.hidden, false);
+  assert.equal(elements['google-native-unsupported'].hidden, true);
+
+  click();
+  // No second sign-in while this one runs.
+  assert.equal(button.disabled, true);
+  await settle();
+  // apps/api at the button's `data-api`.
+  assert.equal(calls[0][1], '/api/auth/google/nonce');
+  assert.deepEqual(assigned, ['/']);
+  // The page is leaving: the button stays off.
+  assert.equal(button.disabled, true);
+  assert.equal(elements['google-native-error'].hidden, true);
+});
+
+test('start: the picker closed puts the page back as it was, silently', async () => {
+  const { win, elements, assigned, click } = page({
+    plugin: true,
+    login: () => {
+      throw Object.assign(new Error('Google Sign-In cancelled by user'), { code: 'USER_CANCELLED' });
+    },
+  });
+  G.start(win);
+  click();
+  await settle();
+  assert.deepEqual(assigned, []);
+  assert.equal(elements['google-native'].disabled, false);
+  assert.equal(elements['google-native-error'].hidden, true);
+  assert.equal(elements['google-native-error'].textContent, '');
+});
+
+test('start: a failure is said, the button comes back, and a new touch clears the message', async () => {
+  const { win, elements, assigned, click } = page({
+    plugin: true,
+    idToken: () => response(401, { error: 'unauthorized' }),
+  });
+  G.start(win);
+  const error = elements['google-native-error'];
+  click();
+  await settle();
+  assert.deepEqual(assigned, []);
+  assert.equal(elements['google-native'].disabled, false);
+  assert.equal(error.hidden, false);
+  assert.equal(error.textContent, G.message({ state: 'failed' }));
+
+  click();
+  assert.equal(error.hidden, true);
+  assert.equal(elements['google-native'].disabled, true);
+  await settle();
+});
+
+test('start: too many attempts is said as such', async () => {
+  const { win, elements, click } = page({
+    plugin: true,
+    nonce: () => response(429, { error: 'too_many_attempts' }),
+  });
+  G.start(win);
+  click();
+  await settle();
+  assert.equal(elements['google-native-error'].textContent, G.message({ state: 'throttled' }));
+  assert.equal(elements['google-native-error'].hidden, false);
+});
+
+test('the script starts on its own in a page', () => {
+  const { win, elements } = page({ plugin: true });
+  const context = vm.createContext({ window: win });
+  vm.runInContext(SOURCE, context, { filename: 'google-sign-in.js' });
+  assert.equal(elements['google-native'].hidden, false);
+});
