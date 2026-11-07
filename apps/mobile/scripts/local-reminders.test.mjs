@@ -28,7 +28,7 @@ const ENTRY = {
   group_id: '16fd2706-8baf-433b-82eb-8c7fada847da',
   title: 'Dentiste',
   occurrence_at: '2026-11-10T13:30:00Z',
-  // The day before: the text names the occurrence's date.
+  // The day before.
   fire_at: '2026-11-09T13:30:00Z',
   all_day: false,
 };
@@ -80,78 +80,57 @@ test("a timed occurrence: the event's title, its time in the phone's zone", () =
   assert.equal(n.id, R.notificationId(ENTRY.id));
   assert.equal(n.title, 'Dentiste');
   // 13:30 UTC is 14:30 in Paris in November.
-  assert.equal(n.body, 'Mardi 10 novembre à 14:30');
+  assert.equal(n.body, 'À 14:30');
   assert.equal(n.schedule.at.getTime(), Date.parse(ENTRY.fire_at));
   assert.equal(n.schedule.allowWhileIdle, true);
   assert.equal(n.isExactNotification, true);
 });
 
+const NEW_YORK = { ...PARIS, timeZone: 'America/New_York' };
+
 test('the time is the one of the zone the phone is in', () => {
-  const n = R.toNotification(ENTRY, { ...PARIS, timeZone: 'America/New_York' });
-  assert.equal(n.body, 'Mardi 10 novembre à 08:30');
+  assert.equal(R.toNotification(ENTRY, NEW_YORK).body, 'À 08:30');
 });
 
-test('an occurrence on the day the reminder fires says the time only', () => {
-  const n = R.toNotification(
-    { ...ENTRY, occurrence_at: '2026-11-10T13:30:00Z', fire_at: '2026-11-10T12:30:00Z' },
-    PARIS,
-  );
-  assert.equal(n.body, 'À 14:30');
+test('the text is the time alone, whatever day the reminder fires', () => {
+  // Title and time only (choice of 2026-11-01, confirmed 2026-11-07): no
+  // date, neither on the day of the occurrence nor before it.
+  for (const fire_at of ['2026-11-10T12:30:00Z', '2026-11-09T13:30:00Z', '2026-11-03T13:30:00Z']) {
+    assert.equal(R.toNotification({ ...ENTRY, fire_at }, PARIS).body, 'À 14:30', fire_at);
+  }
 });
 
-test('the day is compared in the zone of the phone, not in UTC', () => {
-  // 23:30 UTC on the 9th is 00:30 on the 10th in Paris; a reminder at
-  // 22:00 UTC on the 9th fires at 23:00 on the 9th there: another day.
+test('the time is read in the zone of the phone, not in UTC', () => {
+  // 23:30 UTC on the 9th is 00:30 on the 10th in Paris.
   const n = R.toNotification(
     { ...ENTRY, occurrence_at: '2026-11-09T23:30:00Z', fire_at: '2026-11-09T22:00:00Z' },
     PARIS,
   );
-  assert.equal(n.body, 'Mardi 10 novembre à 00:30');
+  assert.equal(n.body, 'À 00:30');
 });
 
-test('an all-day occurrence says « toute la journée », on its Paris date', () => {
-  // An all-day occurrence starts at the Paris midnight opening its day
-  // (apps/api, recurrence::all_day_anchor): 23:00 UTC on the 9th is the
-  // 10th, whatever zone the phone is in.
-  const allDay = { ...ENTRY, all_day: true, occurrence_at: '2026-11-09T23:00:00Z' };
-  const dayBefore = { ...allDay, fire_at: '2026-11-08T17:00:00Z' };
-  assert.equal(R.toNotification(dayBefore, PARIS).body, 'Mardi 10 novembre, toute la journée');
-  assert.equal(
-    R.toNotification(dayBefore, { ...PARIS, timeZone: 'America/New_York' }).body,
-    'Mardi 10 novembre, toute la journée',
-  );
-  const sameDay = { ...allDay, fire_at: '2026-11-10T07:00:00Z' };
-  assert.equal(R.toNotification(sameDay, PARIS).body, 'Toute la journée');
-});
-
-const NEW_YORK = { ...PARIS, timeZone: 'America/New_York' };
-
-test("a timed occurrence's date is the phone's, not Paris's", () => {
+test('a late occurrence in New York: its New York time, no date', () => {
   // 03:00 UTC on the 10th is 22:00 on the 9th in New York, 04:00 on the
   // 10th in Paris.
   const late = { ...ENTRY, occurrence_at: '2026-11-10T03:00:00Z' };
-  // A reminder on the 8th, New York time: another day, dated.
-  assert.equal(
-    R.toNotification({ ...late, fire_at: '2026-11-08T15:00:00Z' }, NEW_YORK).body,
-    'Lundi 9 novembre à 22:00',
-  );
-  // A reminder at 15:00 on the 9th, New York time: the same day there,
-  // the day before in Paris.
-  assert.equal(
-    R.toNotification({ ...late, fire_at: '2026-11-09T20:00:00Z' }, NEW_YORK).body,
-    'À 22:00',
-  );
+  for (const fire_at of ['2026-11-08T15:00:00Z', '2026-11-09T20:00:00Z']) {
+    assert.equal(R.toNotification({ ...late, fire_at }, NEW_YORK).body, 'À 22:00', fire_at);
+  }
 });
 
-test("an all-day reminder's day is the phone's, not Paris's", () => {
-  // The occurrence is the 10th (Paris midnight). The reminder fires at
-  // 02:00 UTC on the 10th: the 10th in Paris, 21:00 on the 9th in New York,
-  // where « toute la journée » alone would read as the 9th.
-  const allDay = {
-    ...ENTRY, all_day: true, occurrence_at: '2026-11-09T23:00:00Z', fire_at: '2026-11-10T02:00:00Z',
-  };
-  assert.equal(R.toNotification(allDay, NEW_YORK).body, 'Mardi 10 novembre, toute la journée');
-  assert.equal(R.toNotification(allDay, PARIS).body, 'Toute la journée');
+test('an all-day occurrence says « toute la journée », and no date', () => {
+  // An all-day occurrence starts at the Paris midnight opening its day
+  // (apps/api, recurrence::all_day_anchor): 23:00 UTC on the 9th is the 10th.
+  const allDay = { ...ENTRY, all_day: true, occurrence_at: '2026-11-09T23:00:00Z' };
+  for (const fire_at of ['2026-11-08T17:00:00Z', '2026-11-10T02:00:00Z', '2026-11-10T07:00:00Z']) {
+    for (const zone of [PARIS, NEW_YORK]) {
+      assert.equal(
+        R.toNotification({ ...allDay, fire_at }, zone).body,
+        'Toute la journée',
+        `${fire_at} ${zone.timeZone}`,
+      );
+    }
+  }
 });
 
 test('an entry it cannot read gives no notification', () => {
