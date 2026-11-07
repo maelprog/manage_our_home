@@ -17,6 +17,7 @@ function busy(text) {
   for (const button of [standard, form.querySelector('button')]) button.disabled = text !== '';
 }
 
+// A typed address refused: the message is the field's.
 function refuse(message) {
   busy('');
   error.textContent = message;
@@ -24,26 +25,44 @@ function refuse(message) {
   address.focus();
 }
 
-async function store(choice) {
+// Anything else that went wrong: said in the status line, the field left
+// as it is.
+function fail(message) {
+  busy('');
+  status.textContent = message;
+}
+
+// `onError` says the failure: refuse for a typed address, fail for the
+// standard site.
+async function store(choice, onError) {
   busy('Ouverture du site…');
   try {
     await site.choose(choice);
   } catch {
-    refuse("Le choix n'a pas pu être enregistré. Réessayez.");
+    onError("Le choix n'a pas pu être enregistré. Réessayez.");
   }
 }
 
-if (!site) {
-  // Opened anywhere but in the app's first launch: nothing to store into.
-  busy("Cette page ne sert qu'au premier lancement de l'application.");
-} else {
-  const info = await site.info();
+// The app's name and its standard site's host, from the Site plugin; null,
+// the page left disabled with a message, if it cannot give them.
+async function readInfo() {
+  try {
+    const info = await site.info();
+    return { ...info, host: new URL(info.standardOrigin).host };
+  } catch {
+    busy("L'application n'a pas pu lire ses réglages. Fermez-la, puis rouvrez-la.");
+    return null;
+  }
+}
+
+function start(info) {
+  busy('');
   appName = info.appName;
   const label = standardLabel(info.applicationId, info.appName);
   standard.textContent = `Ouvrir ${label}`;
-  document.getElementById('standard-host').textContent = `${label} : ${new URL(info.standardOrigin).host}`;
+  document.getElementById('standard-host').textContent = `${label} : ${info.host}`;
 
-  standard.addEventListener('click', () => store(readChoice({ kind: 'standard' }).store));
+  standard.addEventListener('click', () => store(readChoice({ kind: 'standard' }).store, fail));
 
   address.addEventListener('input', () => {
     error.textContent = '';
@@ -53,6 +72,7 @@ if (!site) {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     error.textContent = '';
+    status.textContent = '';
     const choice = readChoice({ kind: 'custom', address: address.value });
     if (choice.error) {
       refuse(choice.error);
@@ -73,6 +93,15 @@ if (!site) {
       refuse(verdict.error);
       return;
     }
-    await store(verdict.store);
+    await store(verdict.store, refuse);
   });
+}
+
+if (!site) {
+  // Opened anywhere but in the app's first launch: nothing to store into.
+  busy("Cette page ne sert qu'au premier lancement de l'application.");
+} else {
+  busy('Chargement…');
+  const info = await readInfo();
+  if (info) start(info);
 }
