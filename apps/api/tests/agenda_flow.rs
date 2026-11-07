@@ -3711,3 +3711,704 @@ async fn school_holidays_follow_the_family_zone(db: PgPool) {
     drop(router);
     drop_prescribed_role(&db, pool, &role).await;
 }
+
+// -- #708: PATCH of a series with a scope ----------------------------------
+
+/// 09:00 on the Paris wall clock `n` days after the day after tomorrow —
+/// in the future, so the reminders of these series get scheduled.
+fn nine_paris(n: i64) -> DateTime<Utc> {
+    use manage_our_home_shared::validation::agenda::paris_date;
+    let day = paris_date(Utc::now()) + Duration::days(2 + n);
+    rrule::Tz::Europe__Paris
+        .from_local_datetime(&day.and_hms_opt(9, 0, 0).unwrap())
+        .single()
+        .unwrap()
+        .with_timezone(&Utc)
+}
+
+/// The occurrences listed to `cookie` over `[from, to]`, as
+/// `(id, title, occurrence_starts_at, completed)`.
+async fn listed_occurrences(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Vec<(String, String, DateTime<Utc>, bool)> {
+    let res = call(
+        router,
+        Method::GET,
+        &format!(
+            "/groups/{group_id}/events?from={}&to={}",
+            urlenc(&from.to_rfc3339()),
+            urlenc(&to.to_rfc3339())
+        ),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let mut listed: Vec<_> = json_body(res).await["occurrences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            (
+                o["id"].as_str().unwrap().to_string(),
+                o["title"].as_str().unwrap().to_string(),
+                instant(o, "occurrence_starts_at"),
+                o["completed_at"].is_string(),
+            )
+        })
+        .collect();
+    listed.sort_by_key(|o| o.2);
+    listed
+}
+
+/// What `scheduled_notifications` holds for `event_id`, by occurrence.
+async fn scheduled_occurrences(db: &PgPool, event_id: &str) -> Vec<DateTime<Utc>> {
+    sqlx::query_scalar(
+        "SELECT occurrence_at FROM scheduled_notifications WHERE event_id = $1::uuid ORDER BY occurrence_at",
+    )
+    .bind(event_id)
+    .fetch_all(db)
+    .await
+    .unwrap()
+}
+
+async fn reminder_count(db: &PgPool, event_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM event_reminders WHERE event_id = $1::uuid")
+        .bind(event_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+async fn patch_event(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    event_id: &str,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(cookie),
+        Some(body),
+    )
+    .await
+}
+
+/// A daily series of five at 09:00 Paris, assigned to `assignee_ids`, with a
+/// reminder at the start of each occurrence. Returns its id.
+async fn daily_series_with_a_reminder(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    extra: serde_json::Value,
+) -> String {
+    let mut body = serde_json::json!({
+        "title": "Piscine",
+        "starts_at": nine_paris(0),
+        "ends_at": nine_paris(0) + Duration::hours(1),
+        "rrule": "FREQ=DAILY;COUNT=5",
+    });
+    body.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    let series = create_event_with(router, cookie, group_id, body).await;
+    let id = series["id"].as_str().unwrap().to_string();
+    let reminder = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/events/{id}/reminders"),
+        Some(cookie),
+        Some(serde_json::json!({"offset_minutes": 0})),
+    )
+    .await;
+    assert_status(&reminder, StatusCode::CREATED);
+    id
+}
+
+/// AC (#708): `this` takes one occurrence out of its series — the series
+/// excludes it, and a one-off event with the change takes its place, with
+/// the series' assignees and reminders, while the attachments stay on the
+/// series. Every other occurrence is listed as it was.
+#[sqlx::test]
+async fn editing_one_occurrence_detaches_it_from_its_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "scope-this@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (_, member_id) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "scope-this-member@example.test",
+        "standard",
+    )
+    .await;
+    let owner_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'scope-this@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let series_id = daily_series_with_a_reminder(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"assignee_ids": [owner_id, member_id]}),
+    )
+    .await;
+    let mut tx = with_family_scope(&db, &group_id).await;
+    sqlx::query(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         VALUES ($1::uuid, $2, 'k-708', 'plan.png', 'image/png', 10)",
+    )
+    .bind(&series_id)
+    .bind(owner_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let (from, to) = (nine_paris(-1), nine_paris(10));
+    let before = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+    assert_eq!(before.len(), 5);
+
+    let moved = nine_paris(2) + Duration::hours(2);
+    let res = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({
+            "scope": "this",
+            "occurrence_at": nine_paris(2),
+            "title": "Piscine (décalée)",
+            "starts_at": moved,
+            "ends_at": moved + Duration::hours(1),
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let created = json_body(res).await;
+    let created_id = created["id"].as_str().unwrap().to_string();
+    assert_ne!(created_id, series_id);
+    assert_eq!(created["rrule"], serde_json::Value::Null);
+    assert_eq!(created["title"], "Piscine (décalée)");
+    assert_eq!(instant(&created, "starts_at"), moved);
+    let mut both = [owner_id, member_id];
+    both.sort();
+    assert_eq!(created["assignee_ids"], serde_json::json!(both));
+
+    let after = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+    let mut expected: Vec<_> = before
+        .iter()
+        .filter(|o| o.2 != nine_paris(2))
+        .cloned()
+        .collect();
+    expected.push((created_id.clone(), "Piscine (décalée)".into(), moved, false));
+    expected.sort_by_key(|o| o.2);
+    assert_eq!(after, expected);
+
+    assert_eq!(reminder_count(&db, &created_id).await, 1);
+    assert_eq!(scheduled_occurrences(&db, &created_id).await, vec![moved]);
+    assert_eq!(
+        scheduled_occurrences(&db, &series_id).await,
+        [0, 1, 3, 4].map(nine_paris).to_vec()
+    );
+    assert_eq!(attachment_count(&db, &group_id, &series_id).await, 1);
+    assert_eq!(attachment_count(&db, &group_id, &created_id).await, 0);
+}
+
+/// AC (#708): `this_and_following` cuts the series right before the
+/// occurrence and carries the rest on in a new series with the change: the
+/// occurrences before it are listed exactly as they were, the series' count
+/// is shared between the two, and reminders follow each.
+#[sqlx::test]
+async fn editing_an_occurrence_and_the_following_ones_splits_the_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "scope-follow@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let series_id =
+        daily_series_with_a_reminder(&router, &owner_cookie, &group_id, serde_json::json!({}))
+            .await;
+    let (from, to) = (nine_paris(-1), nine_paris(10));
+    let before = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+
+    let res = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({
+            "scope": "this_and_following",
+            "occurrence_at": nine_paris(3),
+            "title": "Aquagym",
+            "starts_at": nine_paris(3) + Duration::hours(1),
+            "ends_at": nine_paris(3) + Duration::hours(2),
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let created = json_body(res).await;
+    let created_id = created["id"].as_str().unwrap().to_string();
+    assert_ne!(created_id, series_id);
+    assert_eq!(created["rrule"], "FREQ=DAILY;COUNT=2");
+
+    let after = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+    assert_eq!(
+        after[..3],
+        before[..3],
+        "the occurrences before stay as they were"
+    );
+    assert_eq!(
+        after[3..],
+        [3, 4]
+            .map(|n| (
+                created_id.clone(),
+                "Aquagym".to_string(),
+                nine_paris(n) + Duration::hours(1),
+                false
+            ))
+            .to_vec()
+    );
+
+    assert_eq!(
+        scheduled_occurrences(&db, &series_id).await,
+        [0, 1, 2].map(nine_paris).to_vec()
+    );
+    assert_eq!(
+        scheduled_occurrences(&db, &created_id).await,
+        [3, 4].map(|n| nine_paris(n) + Duration::hours(1)).to_vec()
+    );
+}
+
+/// AC (#708): from the series' first occurrence, `this_and_following` is
+/// the whole series — the row is updated in place.
+#[sqlx::test]
+async fn this_and_following_from_the_first_occurrence_updates_the_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "scope-first@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let series_id =
+        daily_series_with_a_reminder(&router, &owner_cookie, &group_id, serde_json::json!({}))
+            .await;
+
+    let res = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({
+            "scope": "this_and_following",
+            "occurrence_at": nine_paris(0),
+            "title": "Aquagym",
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["id"], series_id);
+    assert_eq!(body["rrule"], "FREQ=DAILY;COUNT=5");
+    let listed = listed_occurrences(
+        &router,
+        &owner_cookie,
+        &group_id,
+        nine_paris(-1),
+        nine_paris(10),
+    )
+    .await;
+    assert_eq!(listed.len(), 5);
+    assert!(listed.iter().all(|o| o.0 == series_id && o.1 == "Aquagym"));
+}
+
+/// AC (#708): the first occurrence the series *lists* is not its start when
+/// earlier ones are excluded. `this_and_following` from there still cuts
+/// the series: a move of that occurrence moves the following ones, and the
+/// count left is shared — not five more occurrences from the moved one.
+#[sqlx::test]
+async fn this_and_following_after_an_excluded_head_still_splits_the_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "scope-excluded-head@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let series_id =
+        daily_series_with_a_reminder(&router, &owner_cookie, &group_id, serde_json::json!({}))
+            .await;
+    let detached = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({"scope": "this", "occurrence_at": nine_paris(0), "title": "Seule"}),
+    )
+    .await;
+    assert_status(&detached, StatusCode::OK);
+
+    let res = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({
+            "scope": "this_and_following",
+            "occurrence_at": nine_paris(1),
+            "starts_at": nine_paris(1) + Duration::hours(1),
+            "ends_at": nine_paris(1) + Duration::hours(2),
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let created = json_body(res).await;
+    assert_eq!(created["rrule"], "FREQ=DAILY;COUNT=4");
+
+    let listed = listed_occurrences(
+        &router,
+        &owner_cookie,
+        &group_id,
+        nine_paris(-1),
+        nine_paris(10),
+    )
+    .await;
+    let starts: Vec<_> = listed.iter().map(|o| o.2).collect();
+    let mut expected = vec![nine_paris(0)];
+    expected.extend([1, 2, 3, 4].map(|n| nine_paris(n) + Duration::hours(1)));
+    assert_eq!(starts, expected);
+}
+
+/// AC (#708): a recurring task keeps its completions where they belong — the
+/// ones from the occurrence on move to the new series, a detached
+/// occurrence carries its own onto the one-off.
+#[sqlx::test]
+async fn a_recurring_task_split_keeps_each_completion_on_its_occurrence(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "scope-task@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let series_id = daily_series_with_a_reminder(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"is_task": true}),
+    )
+    .await;
+    for n in [0, 1, 3] {
+        let res = patch_event(
+            &router,
+            &owner_cookie,
+            &group_id,
+            &series_id,
+            serde_json::json!({"completed": true, "occurrence_at": nine_paris(n)}),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+    }
+
+    // The second occurrence alone, then the fourth on.
+    let res = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({"scope": "this", "occurrence_at": nine_paris(1)}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let detached = json_body(res).await;
+    assert!(detached["completed_at"].is_string());
+    let detached_id = detached["id"].as_str().unwrap().to_string();
+
+    let moved = nine_paris(3) + Duration::minutes(30);
+    let res = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({
+            "scope": "this_and_following",
+            "occurrence_at": nine_paris(3),
+            "starts_at": moved,
+            "ends_at": moved + Duration::hours(1),
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let following_id = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let listed = listed_occurrences(
+        &router,
+        &owner_cookie,
+        &group_id,
+        nine_paris(-1),
+        nine_paris(10),
+    )
+    .await;
+    let summary: Vec<_> = listed
+        .iter()
+        .map(|(id, _, at, done)| (id.clone(), *at, *done))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (series_id.clone(), nine_paris(0), true),
+            (detached_id, nine_paris(1), true),
+            (series_id.clone(), nine_paris(2), false),
+            (following_id.clone(), moved, true),
+            (following_id, nine_paris(4) + Duration::minutes(30), false),
+        ]
+    );
+}
+
+/// AC (#708): what a scope other than `all` refuses, and who may send it.
+#[sqlx::test]
+async fn a_scope_is_refused_where_it_has_no_meaning(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "scope-refused@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (member_cookie, _) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "scope-refused-member@example.test",
+        "standard",
+    )
+    .await;
+    let series_id =
+        daily_series_with_a_reminder(&router, &owner_cookie, &group_id, serde_json::json!({}))
+            .await;
+    let one_off = create_event_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({
+            "title": "Dentiste",
+            "starts_at": nine_paris(0),
+            "ends_at": nine_paris(0) + Duration::hours(1),
+        }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let refused = |id: &str, body: serde_json::Value| {
+        let (router, cookie, group_id, id) = (
+            router.clone(),
+            owner_cookie.clone(),
+            group_id.clone(),
+            id.to_string(),
+        );
+        async move {
+            let res = patch_event(&router, &cookie, &group_id, &id, body).await;
+            assert_status(&res, StatusCode::BAD_REQUEST);
+            json_body(res).await["error"].as_str().unwrap().to_string()
+        }
+    };
+    for scope in ["this", "this_and_following"] {
+        assert_eq!(
+            refused(
+                &series_id,
+                serde_json::json!({"scope": scope, "title": "X"})
+            )
+            .await,
+            "scope_requires_occurrence"
+        );
+        assert_eq!(
+            refused(
+                &one_off,
+                serde_json::json!({"scope": scope, "occurrence_at": nine_paris(0)})
+            )
+            .await,
+            "scope_requires_recurring_event"
+        );
+        for not_one in [nine_paris(1) + Duration::minutes(5), nine_paris(5)] {
+            assert_eq!(
+                refused(
+                    &series_id,
+                    serde_json::json!({"scope": scope, "occurrence_at": not_one})
+                )
+                .await,
+                "occurrence_not_in_series"
+            );
+        }
+    }
+
+    // Same permission as any PATCH: a plain member may not change someone
+    // else's shared series, one occurrence or all.
+    let res = patch_event(
+        &router,
+        &member_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({"scope": "this", "occurrence_at": nine_paris(1), "title": "X"}),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+
+    // A series mirrored from an imported calendar is changed whole or not
+    // at all.
+    let owner_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'scope-refused@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let mut tx = with_family_scope(&db, &group_id).await;
+    sqlx::query(
+        "WITH import AS (
+             INSERT INTO calendar_imports (group_id, created_by, label, feed_url)
+             VALUES ($1::uuid, $2, 'Agenda', '\\x00'::bytea) RETURNING id
+         )
+         INSERT INTO calendar_import_events (calendar_import_id, event_id, external_uid)
+         SELECT id, $3::uuid, 'uid-708' FROM import",
+    )
+    .bind(&group_id)
+    .bind(owner_id)
+    .bind(&series_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for scope in ["this", "this_and_following"] {
+        assert_eq!(
+            refused(
+                &series_id,
+                serde_json::json!({"scope": scope, "occurrence_at": nine_paris(1)})
+            )
+            .await,
+            "scope_not_allowed_for_imported_event"
+        );
+    }
+    let whole = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({"scope": "all", "title": "Piscine municipale"}),
+    )
+    .await;
+    assert_status(&whole, StatusCode::OK);
+
+    // Nothing above changed the series.
+    let listed = listed_occurrences(
+        &router,
+        &owner_cookie,
+        &group_id,
+        nine_paris(-1),
+        nine_paris(10),
+    )
+    .await;
+    assert_eq!(
+        listed
+            .iter()
+            .filter(|o| o.0 == series_id)
+            .map(|o| o.2)
+            .collect::<Vec<_>>(),
+        (0..5).map(nine_paris).collect::<Vec<_>>()
+    );
+}
+
+/// AC (#708): on a private series, an assignee who did not create it may
+/// split it like any participant. What it creates is private too, keeps the
+/// series' creator, and stays out of a non-participant's agenda.
+///
+/// Driven through a role that does not bypass RLS: the new row is written
+/// under the policy of `events`.
+#[sqlx::test]
+async fn an_assignee_splits_a_private_series_into_private_events(db: PgPool) {
+    let (role, pool) = prescribed_role_pool(&db).await;
+    let router = test_router(pool.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "scope-priv-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (creator_cookie, creator_id) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "scope-priv-creator@example.test",
+        "standard",
+    )
+    .await;
+    let (assignee_cookie, assignee_id) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "scope-priv-assignee@example.test",
+        "standard",
+    )
+    .await;
+    let series_id = daily_series_with_a_reminder(
+        &router,
+        &creator_cookie,
+        &group_id,
+        serde_json::json!({"assignee_ids": [creator_id, assignee_id], "is_private": true}),
+    )
+    .await;
+
+    let mut created_ids = Vec::new();
+    for (scope, n) in [("this", 1), ("this_and_following", 3)] {
+        let res = patch_event(
+            &router,
+            &assignee_cookie,
+            &group_id,
+            &series_id,
+            serde_json::json!({"scope": scope, "occurrence_at": nine_paris(n), "title": "Cadeau"}),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        let created = json_body(res).await;
+        assert_eq!(created["is_private"], true, "{scope}");
+        assert_eq!(created["created_by"], creator_id.to_string(), "{scope}");
+        created_ids.push(created["id"].as_str().unwrap().to_string());
+    }
+
+    let (from, to) = (nine_paris(-1), nine_paris(10));
+    for cookie in [&creator_cookie, &assignee_cookie] {
+        let ids: Vec<_> = listed_occurrences(&router, cookie, &group_id, from, to)
+            .await
+            .into_iter()
+            .map(|o| o.0)
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                &series_id,
+                &created_ids[0],
+                &series_id,
+                &created_ids[1],
+                &created_ids[1]
+            ]
+            .map(|s| s.clone())
+            .to_vec()
+        );
+    }
+    assert!(
+        listed_occurrences(&router, &owner_cookie, &group_id, from, to)
+            .await
+            .is_empty()
+    );
+
+    drop(router);
+    drop_prescribed_role(&db, pool, &role).await;
+}

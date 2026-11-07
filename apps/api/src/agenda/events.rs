@@ -4,12 +4,15 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
+use manage_our_home_shared::dto::agenda::EditScope;
 use manage_our_home_shared::validation::agenda::normalize_all_day;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agenda::{attachments, can_modify, is_participant, may_set_privacy, recurrence};
+use crate::agenda::{
+    attachments, can_modify, is_participant, may_set_privacy, recurrence, reminders,
+};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
@@ -62,6 +65,12 @@ pub struct UpdateEventRequest {
     /// the event can send it, so only a participant can change it on a
     /// private one (#620).
     pub is_private: Option<bool>,
+    /// Which occurrences of a series the change applies to (#708). Missing
+    /// is `all`: the row is updated in place, as every `PATCH` was before.
+    /// `this` and `this_and_following` need `occurrence_at`, and a series —
+    /// see `split_series`.
+    #[serde(default)]
+    pub scope: Option<EditScope>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -656,8 +665,8 @@ pub async fn list_events(
     ),
     request_body = UpdateEventRequest,
     responses(
-        (status = 200, description = "Event updated", body = EventResponse),
-        (status = 400, description = "`title_required`, `ends_at_before_starts_at` or `invalid_rrule`, `completed_only_valid_for_tasks` or `occurrence_at_required_for_recurring_task`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 200, description = "Event updated — or, under scope `this` or `this_and_following`, the event created in place of the occurrences changed", body = EventResponse),
+        (status = 400, description = "`title_required`, `ends_at_before_starts_at` or `invalid_rrule`, `completed_only_valid_for_tasks` or `occurrence_at_required_for_recurring_task`; under a scope other than `all`: `scope_requires_occurrence`, `scope_requires_recurring_event`, `scope_not_allowed_for_imported_event` or `occurrence_not_in_series`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
@@ -688,8 +697,10 @@ pub async fn update_event(
     // `put_object`, and reminder or assignee inserts would stall the PATCH
     // for nothing. `FOR NO KEY UPDATE` still conflicts with the sync's
     // `FOR UPDATE OF e` and with any other write to the row.
-    let existing = sqlx::query!(
-        "SELECT created_by, starts_at, ends_at, all_day, rrule, is_task, completed_at, is_private FROM events WHERE id = $1 AND group_id = $2 FOR NO KEY UPDATE",
+    let existing = sqlx::query_as!(
+        EventRow,
+        r#"SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
+           FROM events WHERE id = $1 AND group_id = $2 FOR NO KEY UPDATE"#,
         event_id,
         group_id,
     )
@@ -738,6 +749,62 @@ pub async fn update_event(
         return Err(AppError::Forbidden);
     }
 
+    let scope = body.scope.unwrap_or_default();
+    if scope != EditScope::All {
+        let occurrence_at = body
+            .occurrence_at
+            .ok_or_else(|| AppError::BadRequest("scope_requires_occurrence".into()))?;
+        let Some(series_rule) = existing.rrule.clone() else {
+            return Err(AppError::BadRequest(
+                "scope_requires_recurring_event".into(),
+            ));
+        };
+        if is_imported(&mut tx, event_id).await? {
+            return Err(AppError::BadRequest(
+                "scope_not_allowed_for_imported_event".into(),
+            ));
+        }
+        let located = recurrence::locate_occurrence(
+            &series_rule,
+            existing.all_day,
+            existing.starts_at,
+            existing.ends_at,
+            &existing.exdates,
+            occurrence_at,
+        )
+        .ok()
+        .flatten()
+        .ok_or_else(|| AppError::BadRequest("occurrence_not_in_series".into()))?;
+        // « This one and the following » from the series' very first
+        // occurrence is the whole series: nothing is left to cut off, and
+        // the row is updated in place below. From the first one it *lists*
+        // after excluded ones, it is not: the excluded ones still hold the
+        // series' start and spend its `COUNT`, so the series is cut there
+        // like anywhere else — it is left listing nothing.
+        if scope == EditScope::This || located.produced_before > 0 {
+            // Sorted: the order `assignees_for_events` reads a set written
+            // in one statement back in (see `update_event`'s own return).
+            let mut assignee_ids = new_assignees.unwrap_or(current_assignees);
+            assignee_ids.sort();
+            let event = split_series(
+                &mut tx,
+                Split {
+                    actor: auth.user_id,
+                    series: &existing,
+                    series_rule: &series_rule,
+                    located,
+                    scope,
+                    body: &body,
+                    assignee_ids: &assignee_ids,
+                    is_private: will_be_private,
+                },
+            )
+            .await?;
+            tx.commit().await?;
+            return Ok(Json(event_response(event, assignee_ids)));
+        }
+    }
+
     let starts_at = body.starts_at.unwrap_or(existing.starts_at);
     let ends_at = body.ends_at.unwrap_or(existing.ends_at);
     let rrule = match &body.rrule {
@@ -776,29 +843,8 @@ pub async fn update_event(
             let occurrence_at = body.occurrence_at.ok_or(AppError::BadRequest(
                 "occurrence_at_required_for_recurring_task".into(),
             ))?;
-            if completed {
-                sqlx::query!(
-                    r#"
-                    INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_by)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (event_id, occurrence_at)
-                    DO UPDATE SET completed_at = now(), completed_by = $3
-                    "#,
-                    event_id,
-                    occurrence_at,
-                    auth.user_id,
-                )
-                .execute(&mut *tx)
+            set_occurrence_completion(&mut tx, event_id, occurrence_at, completed, auth.user_id)
                 .await?;
-            } else {
-                sqlx::query!(
-                    "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
-                    event_id,
-                    occurrence_at,
-                )
-                .execute(&mut *tx)
-                .await?;
-            }
         }
         existing.completed_at
     } else {
@@ -866,6 +912,355 @@ pub async fn update_event(
     tx.commit().await?;
 
     Ok(Json(event_response(event, assignee_ids)))
+}
+
+/// Whether `event_id` mirrors an event of an imported calendar. The import
+/// rewrites such a row from its feed (`google_calendar/imports.rs`) and
+/// knows nothing of a series split off it: a scope other than `all` is
+/// refused on it (#708).
+async fn is_imported(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_id: Uuid,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM calendar_import_events WHERE event_id = $1) AS "imported!""#,
+        event_id,
+    )
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+/// What `split_series` works from: the series as locked by `update_event`,
+/// the occurrence it is split at, and the request already checked against
+/// the permissions — `assignee_ids` and `is_private` are what the new event
+/// gets.
+struct Split<'a> {
+    actor: Uuid,
+    series: &'a EventRow,
+    series_rule: &'a str,
+    located: recurrence::OccurrenceInSeries,
+    scope: EditScope,
+    body: &'a UpdateEventRequest,
+    assignee_ids: &'a [Uuid],
+    is_private: bool,
+}
+
+/// A `PATCH` with scope `this` or `this_and_following` (#708), in the
+/// caller's transaction. Returns the event it creates; the series keeps its
+/// id and everything the request does not take from it.
+///
+/// - `this`: the occurrence is added to the series' `exdates`, and a one-off
+///   event takes its place — no rule, whatever the request carries in
+///   `rrule`.
+/// - `this_and_following`: the series is cut right before the occurrence
+///   (`recurrence::truncated_before`) and a new series carries on from it
+///   with the rest of its rule (`recurrence::continued_after`), unless the
+///   request gives it another one. Its exclusions and task completions from
+///   the occurrence on go with it, moved as the series moves
+///   (`recurrence::carried_over`).
+///
+/// In both cases the new event starts where the occurrence did — or where
+/// `starts_at`/`ends_at` move it — and takes every other field the request
+/// leaves out from the series. It is created by the series' creator, with
+/// the series' reminders copied and its assignees (or the ones the request
+/// sets); the attachments stay on the series. A recurring task occurrence's
+/// completion moves with it: onto the one-off row's `completed_at` for
+/// `this`, onto the new series for `this_and_following`, unless the request
+/// sets `completed`.
+///
+/// The notifications already scheduled for the occurrences that leave the
+/// series and are still pending are deleted; the copied reminders schedule
+/// the new event's own.
+///
+/// Not handled: a cut on an occurrence in the hour Paris skips. The new
+/// series is anchored on the instant that occurrence resolves to — an hour
+/// later on the clock, see `recurrence::expand_occurrences` — and a row's
+/// anchor is an instant, read on the Paris clock: a daily series at 02:30
+/// cut on the last Sunday of March carries on at 03:30 every day. The wall
+/// clock it had names no instant that day, so no anchor of that day can
+/// carry it.
+async fn split_series(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    split: Split<'_>,
+) -> AppResult<EventRow> {
+    let Split {
+        actor,
+        series,
+        series_rule,
+        located,
+        scope,
+        body,
+        assignee_ids,
+        is_private,
+    } = split;
+    let (occurrence_starts_at, occurrence_ends_at) = located.span;
+
+    let all_day = body.all_day.unwrap_or(series.all_day);
+    let starts_at = body.starts_at.unwrap_or(occurrence_starts_at);
+    let ends_at = body.ends_at.unwrap_or(occurrence_ends_at);
+    let rrule = match scope {
+        EditScope::This => None,
+        _ => match &body.rrule {
+            Some(r) if r.is_empty() => None,
+            Some(r) => Some(r.clone()),
+            None => Some(
+                recurrence::continued_after(series_rule, located.produced_before)
+                    .map_err(|_| AppError::BadRequest("invalid_rrule".into()))?,
+            ),
+        },
+    };
+    validate_request(
+        body.title.as_deref(),
+        starts_at,
+        ends_at,
+        all_day,
+        rrule.as_deref(),
+    )?;
+    let (starts_at, ends_at) = normalized_bounds(all_day, starts_at, ends_at);
+    if body.completed.is_some() && !series.is_task {
+        return Err(AppError::BadRequest(
+            "completed_only_valid_for_tasks".into(),
+        ));
+    }
+
+    // A one-off task is completed on its row; for `this`, it keeps the
+    // completion its occurrence had in the series.
+    let one_off = rrule.is_none();
+    let completed_at = match body.completed {
+        Some(true) if one_off => Some(Utc::now()),
+        None if scope == EditScope::This && series.is_task => sqlx::query_scalar!(
+            "SELECT completed_at FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
+            series.id,
+            occurrence_starts_at,
+        )
+        .fetch_optional(&mut **tx)
+        .await?,
+        _ => None,
+    };
+    let exdates = match scope {
+        EditScope::This => Vec::new(),
+        _ => recurrence::carried_over(
+            &series.exdates,
+            series.all_day,
+            occurrence_starts_at,
+            starts_at,
+        ),
+    };
+
+    // Shared at first, made private below once its assignees are written:
+    // the policy of `events` lets a private row through only for a
+    // participant, and an assignee who is not the creator becomes one with
+    // their `event_assignees` row (#620, as in `update_event`).
+    let created = sqlx::query_as!(
+        EventRow,
+        r#"
+        INSERT INTO events (group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, false, $12)
+        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
+        "#,
+        series.group_id,
+        series.created_by,
+        body.title.clone().unwrap_or_else(|| series.title.clone()),
+        body.description.clone().or_else(|| series.description.clone()),
+        body.location.clone().or_else(|| series.location.clone()),
+        starts_at,
+        ends_at,
+        all_day,
+        series.is_task,
+        completed_at,
+        rrule,
+        &exdates,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    upsert_assignees(tx, created.id, assignee_ids).await?;
+    let created = if is_private {
+        sqlx::query_as!(
+            EventRow,
+            r#"
+            UPDATE events SET is_private = true WHERE id = $1
+            RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
+            "#,
+            created.id,
+        )
+        .fetch_one(&mut **tx)
+        .await?
+    } else {
+        created
+    };
+
+    // The series lets go of the occurrence(s), and of the notifications
+    // still pending for them.
+    match scope {
+        EditScope::This => {
+            sqlx::query!(
+                "UPDATE events SET exdates = array_append(exdates, $2), updated_at = now() WHERE id = $1",
+                series.id,
+                occurrence_starts_at,
+            )
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query!(
+                "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
+                series.id,
+                occurrence_starts_at,
+            )
+            .execute(&mut **tx)
+            .await?;
+            sqlx::query!(
+                "DELETE FROM scheduled_notifications WHERE event_id = $1 AND occurrence_at = $2 AND status = 'pending'",
+                series.id,
+                occurrence_starts_at,
+            )
+            .execute(&mut **tx)
+            .await?;
+        }
+        _ => {
+            let cut =
+                recurrence::truncated_before(series_rule, series.all_day, occurrence_starts_at)
+                    .map_err(|_| AppError::BadRequest("invalid_rrule".into()))?;
+            sqlx::query!(
+                "UPDATE events SET rrule = $2, updated_at = now() WHERE id = $1",
+                series.id,
+                cut,
+            )
+            .execute(&mut **tx)
+            .await?;
+            move_completions(tx, series, &created, occurrence_starts_at).await?;
+            sqlx::query!(
+                "DELETE FROM scheduled_notifications WHERE event_id = $1 AND occurrence_at >= $2 AND status = 'pending'",
+                series.id,
+                occurrence_starts_at,
+            )
+            .execute(&mut **tx)
+            .await?;
+            if let (Some(completed), false) = (body.completed, one_off) {
+                set_occurrence_completion(tx, created.id, starts_at, completed, actor).await?;
+            }
+        }
+    }
+
+    copy_reminders(tx, series.id, &created).await?;
+    Ok(created)
+}
+
+/// Moves the task completions of `series` from `occurrence` on to the new
+/// series `to` (#708): each completion keeps its author and time, on the
+/// instant its occurrence has in the new series. A new event without a rule
+/// takes none: a one-off task is completed on its row.
+async fn move_completions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    series: &EventRow,
+    to: &EventRow,
+    occurrence: DateTime<Utc>,
+) -> AppResult<()> {
+    if !series.is_task || to.rrule.is_none() {
+        return Ok(());
+    }
+    let (to, new_start) = (to.id, to.starts_at);
+    let rows = sqlx::query!(
+        "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at >= $2 RETURNING occurrence_at, completed_at, completed_by",
+        series.id,
+        occurrence,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in rows {
+        // One instant at a time, so each keeps its own completion.
+        let Some(occurrence_at) =
+            recurrence::carried_over(&[row.occurrence_at], series.all_day, occurrence, new_start)
+                .pop()
+        else {
+            continue;
+        };
+        sqlx::query!(
+            r#"
+            INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_at, completed_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (event_id, occurrence_at) DO NOTHING
+            "#,
+            to,
+            occurrence_at,
+            row.completed_at,
+            row.completed_by,
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Marks the occurrence of `event_id` at `occurrence_at` done or not done —
+/// a recurring task is completed per occurrence (`update_event`).
+async fn set_occurrence_completion(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_id: Uuid,
+    occurrence_at: DateTime<Utc>,
+    completed: bool,
+    actor: Uuid,
+) -> AppResult<()> {
+    if completed {
+        sqlx::query!(
+            r#"
+            INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (event_id, occurrence_at)
+            DO UPDATE SET completed_at = now(), completed_by = $3
+            "#,
+            event_id,
+            occurrence_at,
+            actor,
+        )
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query!(
+            "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
+            event_id,
+            occurrence_at,
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Gives `event` a copy of every reminder of `from`, and schedules each the
+/// way `POST …/reminders` does (#708).
+async fn copy_reminders(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    from: Uuid,
+    event: &EventRow,
+) -> AppResult<()> {
+    let copies = sqlx::query!(
+        r#"
+        INSERT INTO event_reminders (event_id, offset_minutes)
+        SELECT $2, offset_minutes FROM event_reminders WHERE event_id = $1
+        RETURNING id, offset_minutes
+        "#,
+        from,
+        event.id,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for copy in copies {
+        reminders::refill_notifications(
+            tx,
+            copy.id,
+            event.id,
+            reminders::EventTimes {
+                starts_at: event.starts_at,
+                ends_at: event.ends_at,
+                all_day: event.all_day,
+                rrule: event.rrule.as_deref(),
+                exdates: &event.exdates,
+            },
+            copy.offset_minutes,
+        )
+        .await
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to schedule notifications")))?;
+    }
+    Ok(())
 }
 
 #[utoipa::path(

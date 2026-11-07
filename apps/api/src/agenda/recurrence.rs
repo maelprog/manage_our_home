@@ -563,6 +563,168 @@ pub fn without_excluded(
     }
 }
 
+/// Where one occurrence sits in its series — what splitting the series there
+/// (#708) needs to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OccurrenceInSeries {
+    /// The occurrence as the series unrolls it.
+    pub span: OccurrenceSpan,
+    /// How many occurrences the rule produces before it, excluded ones
+    /// included: what `COUNT` has spent by then. Zero only for the series'
+    /// very first occurrence, excluded ones counting.
+    pub produced_before: u32,
+}
+
+/// The occurrence of a stored series that `at` names, or `None` when it names
+/// none the series lists — not an occurrence at all, or an excluded one.
+///
+/// `at` is read the way `without_excluded` reads an exclusion: for an
+/// hour-bound series the exact instant the occurrence starts on, as the
+/// agenda lists it (`occurrence_starts_at`); for an all-day series any
+/// instant of the Paris day the occurrence opens.
+///
+/// The series is unrolled from its start, through `expand_series`, so the
+/// lookup spends `MAX_OCCURRENCES` like any other unroll: an occurrence past
+/// the thousandth of its series is not found.
+pub fn locate_occurrence(
+    rrule: &str,
+    all_day: bool,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+    exdates: &[DateTime<Utc>],
+    at: DateTime<Utc>,
+) -> Result<Option<OccurrenceInSeries>, rrule::RRuleError> {
+    let spans = expand_series(
+        rrule,
+        all_day,
+        starts_at,
+        ends_at,
+        starts_at - Duration::days(1),
+        at + Duration::days(1),
+        &[],
+    )?;
+    let is_at = |start: DateTime<Utc>| {
+        if all_day {
+            paris_date(start) == paris_date(at)
+        } else {
+            start == at
+        }
+    };
+    let Some(index) = spans.iter().position(|(start, _)| is_at(*start)) else {
+        return Ok(None);
+    };
+    let span = spans[index];
+    if without_excluded(vec![span], exdates, all_day).is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(OccurrenceInSeries {
+        span,
+        produced_before: u32::try_from(index).unwrap_or(u32::MAX),
+    }))
+}
+
+/// `rrule` cut so that the series ends right before `occurrence` — the rule
+/// the old series keeps when « this and the following ones » are split off
+/// (#708). Its `COUNT` and `UNTIL` give way to an `UNTIL` of our own:
+///
+/// - **hour-bound**: one second before the occurrence. Not the day before:
+///   an hourly series has occurrences earlier the same day, and they stay.
+///   For an occurrence on the repeated hour, one second before its **first
+///   pass**: the unroll produces it there before moving it onto the second
+///   pass (see `expand_occurrences`), so a bound between the two passes
+///   would keep it.
+/// - **all-day**: the Paris day before the occurrence's, written
+///   `<date>T235959Z` as `build_rrule` writes « jusqu'au <date> » — the
+///   value `all_day_until_day` reads on the day it names. The Paris day, not
+///   the UTC one: an all-day occurrence opens at 22:00Z or 23:00Z the day
+///   before.
+pub fn truncated_before(
+    rrule: &str,
+    all_day: bool,
+    occurrence: DateTime<Utc>,
+) -> Result<String, rrule::RRuleError> {
+    parse_rule(rrule)?;
+    let until = if all_day {
+        let eve = add_days(paris_date(occurrence), -1);
+        format!("{}T235959Z", eve.format("%Y%m%d"))
+    } else {
+        (first_pass_of_a_repeated_hour(occurrence) - Duration::seconds(1))
+            .format("%Y%m%dT%H%M%SZ")
+            .to_string()
+    };
+    let mut parts: Vec<&str> = rule_parts(rrule)
+        .filter(|part| !is_part(part, "COUNT") && !is_part(part, "UNTIL"))
+        .collect();
+    let until = format!("UNTIL={until}");
+    parts.push(&until);
+    Ok(parts.join(";"))
+}
+
+/// `rrule` for the series that carries on from an occurrence `produced_before`
+/// occurrences into it (#708): a `COUNT` gives the new series what the old
+/// one had left, excluded occurrences included since `COUNT` counts them. A
+/// rule without `COUNT` comes back as it is — an `UNTIL` still holds, and an
+/// open rule stays open.
+pub fn continued_after(rrule: &str, produced_before: u32) -> Result<String, rrule::RRuleError> {
+    let Some(count) = parse_rule(rrule)?.get_count() else {
+        return Ok(rrule.to_string());
+    };
+    let left = format!("COUNT={}", count.saturating_sub(produced_before));
+    Ok(rule_parts(rrule)
+        .map(|part| if is_part(part, "COUNT") { &left } else { part })
+        .collect::<Vec<_>>()
+        .join(";"))
+}
+
+/// The instants of a series' occurrences — its exclusions, its completed
+/// task occurrences — that the series carrying on from `occurrence` takes
+/// over when it starts at `new_start` instead (#708): those from
+/// `occurrence` on, moved as the series moves.
+///
+/// - **hour-bound**: from the instant of `occurrence` on, each moved by
+///   `new_start - occurrence`. A move within the day keeps its Paris wall
+///   clock on both sides of a change of hour, since the offset is the same
+///   at both ends of it.
+/// - **all-day** (read on the old series' kind): from the Paris day of
+///   `occurrence` on, each moved by as many civil days as the series and
+///   written as the Paris midnight opening its new day — what an all-day
+///   occurrence starts on.
+pub fn carried_over(
+    instants: &[DateTime<Utc>],
+    all_day: bool,
+    occurrence: DateTime<Utc>,
+    new_start: DateTime<Utc>,
+) -> Vec<DateTime<Utc>> {
+    if all_day {
+        let from = paris_date(occurrence);
+        let days = (paris_date(new_start) - from).num_days();
+        instants
+            .iter()
+            .map(|at| paris_date(*at))
+            .filter(|day| *day >= from)
+            .map(|day| paris_start_of_day(add_days(day, days)))
+            .collect()
+    } else {
+        let moved = new_start - occurrence;
+        instants
+            .iter()
+            .filter(|at| **at >= occurrence)
+            .map(|at| *at + moved)
+            .collect()
+    }
+}
+
+/// The `NAME=value` parts of a rule, empty ones dropped.
+fn rule_parts(rrule: &str) -> impl Iterator<Item = &str> {
+    rrule.split(';').filter(|part| !part.trim().is_empty())
+}
+
+/// Whether `part` is the rule part `name`, whatever its case.
+fn is_part(part: &str, name: &str) -> bool {
+    part.split_once('=')
+        .is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+}
+
 /// `date + n` days, saturating at chrono's representable range instead of
 /// panicking. Only a rule reaching the year 262143 can hit the fallback.
 fn add_days(date: NaiveDate, n: i64) -> NaiveDate {
@@ -2228,5 +2390,282 @@ mod tests {
             };
             assert_eq!(series, direct, "{rule}");
         }
+    }
+
+    // -- splitting a series at an occurrence (#708) ----------------------------
+
+    /// The starts a series lists over a wide window.
+    fn starts_of(
+        rule: &str,
+        all_day: bool,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Vec<DateTime<Utc>> {
+        expand_series(
+            rule,
+            all_day,
+            start,
+            end,
+            start - Duration::days(1),
+            start + Duration::days(4 * 366),
+            &[],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect()
+    }
+
+    #[test]
+    fn an_hour_bound_series_is_cut_a_second_before_the_occurrence_across_a_change_of_hour() {
+        // 09:00 in Paris, from CEST into CET: the 27th's 09:00 is 08:00Z.
+        let start = paris(2026, 10, 20, 9, 0);
+        let rule = "FREQ=DAILY;COUNT=10";
+        let at = paris(2026, 10, 27, 9, 0);
+        let cut = truncated_before(rule, false, at).unwrap();
+        assert_eq!(cut, "FREQ=DAILY;UNTIL=20261027T075959Z");
+        let before = starts_of(&cut, false, start, start + Duration::hours(1));
+        let original = starts_of(rule, false, start, start + Duration::hours(1));
+        assert_eq!(before, original[..7].to_vec());
+        assert_eq!(before.last(), Some(&paris(2026, 10, 26, 9, 0)));
+    }
+
+    #[test]
+    fn an_hourly_series_keeps_the_occurrences_earlier_the_same_day() {
+        let start = paris(2026, 9, 10, 8, 0);
+        let cut =
+            truncated_before("FREQ=HOURLY;COUNT=6", false, paris(2026, 9, 10, 11, 0)).unwrap();
+        assert_eq!(
+            starts_of(&cut, false, start, start + Duration::minutes(30)),
+            [8, 9, 10].map(|h| paris(2026, 9, 10, h, 0)).to_vec()
+        );
+    }
+
+    #[test]
+    fn a_series_on_the_second_pass_of_the_repeated_hour_is_cut_before_that_occurrence() {
+        // 02:30 CET on the last Sunday of October, every year: 2027-10-31's
+        // occurrence is 01:30Z too, and the unroll produces it on its first
+        // pass (00:30Z) before moving it. A cut one second before 01:30Z
+        // would let it through.
+        let start = utc(2026, 10, 25, 1, 30);
+        let rule = "FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU";
+        let end = start + Duration::hours(1);
+        assert_eq!(
+            starts_of(rule, false, start, end)[1],
+            utc(2027, 10, 31, 1, 30)
+        );
+        let cut = truncated_before(rule, false, utc(2027, 10, 31, 1, 30)).unwrap();
+        assert_eq!(
+            cut,
+            "FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU;UNTIL=20271031T002959Z"
+        );
+        assert_eq!(starts_of(&cut, false, start, end), vec![start]);
+    }
+
+    #[test]
+    fn an_all_day_series_is_cut_on_the_paris_day_before_across_a_change_of_hour() {
+        // Saturdays: 2026-10-31 opens at 23:00Z on the 30th, in CET; the UTC
+        // date of that instant is already the day before.
+        let start = midnight(2026, 10, 3);
+        let rule = "FREQ=WEEKLY;UNTIL=20261231T235959Z";
+        for at in [midnight(2026, 10, 31), paris(2026, 10, 31, 15, 0)] {
+            let cut = truncated_before(rule, true, at).unwrap();
+            assert_eq!(cut, "FREQ=WEEKLY;UNTIL=20261030T235959Z");
+            assert_eq!(
+                starts_of(&cut, true, start, midnight(2026, 10, 4)),
+                [3, 10, 17, 24].map(|d| midnight(2026, 10, d)).to_vec()
+            );
+        }
+    }
+
+    #[test]
+    fn cutting_a_series_drops_its_count() {
+        assert_eq!(
+            truncated_before(
+                "FREQ=WEEKLY;COUNT=8;BYDAY=MO,WE",
+                false,
+                utc(2026, 9, 9, 7, 0)
+            )
+            .unwrap(),
+            "FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20260909T065959Z"
+        );
+    }
+
+    #[test]
+    fn a_malformed_rule_is_not_cut() {
+        assert!(truncated_before("NOT_A_RULE", false, utc(2026, 9, 9, 7, 0)).is_err());
+        assert!(continued_after("NOT_A_RULE", 2).is_err());
+    }
+
+    #[test]
+    fn the_rest_of_a_counted_series_keeps_what_its_count_has_left() {
+        assert_eq!(
+            continued_after("FREQ=DAILY;COUNT=10", 3).unwrap(),
+            "FREQ=DAILY;COUNT=7"
+        );
+        assert_eq!(
+            continued_after("FREQ=WEEKLY;COUNT=4;BYDAY=SA", 0).unwrap(),
+            "FREQ=WEEKLY;COUNT=4;BYDAY=SA"
+        );
+        for unbounded in ["FREQ=DAILY", "FREQ=DAILY;UNTIL=20261231T235959Z"] {
+            assert_eq!(continued_after(unbounded, 3).unwrap(), unbounded);
+        }
+    }
+
+    #[test]
+    fn a_split_series_lists_what_the_whole_one_did() {
+        for (rule, all_day, start, nth) in [
+            ("FREQ=DAILY;COUNT=10", false, paris(2026, 10, 20, 9, 0), 6),
+            (
+                "FREQ=WEEKLY;COUNT=6;BYDAY=SA",
+                true,
+                midnight(2026, 10, 3),
+                4,
+            ),
+            (
+                "FREQ=DAILY;UNTIL=20261105T235959Z",
+                false,
+                paris(2026, 10, 20, 9, 0),
+                3,
+            ),
+        ] {
+            let end = if all_day {
+                start + Duration::days(1)
+            } else {
+                start + Duration::hours(1)
+            };
+            let whole = starts_of(rule, all_day, start, end);
+            let at = whole[nth];
+            let located = locate_occurrence(rule, all_day, start, end, &[], at)
+                .unwrap()
+                .expect("an occurrence of the series");
+            assert_eq!(located.produced_before, nth as u32, "{rule}");
+            let head = starts_of(
+                &truncated_before(rule, all_day, at).unwrap(),
+                all_day,
+                start,
+                end,
+            );
+            let tail_rule = continued_after(rule, located.produced_before).unwrap();
+            let tail = starts_of(&tail_rule, all_day, located.span.0, located.span.1);
+            assert_eq!([head, tail].concat(), whole, "{rule}");
+        }
+    }
+
+    #[test]
+    fn an_occurrence_is_located_with_what_comes_before_it() {
+        let start = paris(2026, 9, 1, 9, 0);
+        let end = paris(2026, 9, 1, 10, 0);
+        let excluded = [paris(2026, 9, 2, 9, 0)];
+        let located = locate_occurrence(
+            "FREQ=DAILY;COUNT=5",
+            false,
+            start,
+            end,
+            &excluded,
+            paris(2026, 9, 4, 9, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            located,
+            Some(OccurrenceInSeries {
+                span: (paris(2026, 9, 4, 9, 0), paris(2026, 9, 4, 10, 0)),
+                produced_before: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn an_instant_that_is_no_occurrence_is_not_located() {
+        let start = paris(2026, 9, 1, 9, 0);
+        let end = paris(2026, 9, 1, 10, 0);
+        let rule = "FREQ=DAILY;COUNT=5";
+        for at in [
+            paris(2026, 9, 2, 9, 30),
+            paris(2026, 9, 8, 9, 0),
+            paris(2026, 8, 31, 9, 0),
+        ] {
+            assert_eq!(
+                locate_occurrence(rule, false, start, end, &[], at).unwrap(),
+                None,
+                "{at}"
+            );
+        }
+        // An excluded occurrence is no longer one.
+        let excluded = paris(2026, 9, 2, 9, 0);
+        assert_eq!(
+            locate_occurrence(rule, false, start, end, &[excluded], excluded).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn what_the_new_series_carries_over_is_what_comes_from_the_occurrence_on() {
+        let at = paris(2026, 9, 4, 9, 0);
+        let kept = [paris(2026, 9, 4, 9, 0), paris(2026, 9, 6, 9, 0)];
+        let left = [paris(2026, 9, 2, 9, 0), paris(2026, 9, 4, 8, 59)];
+        let all: Vec<_> = [left[0], kept[0], left[1], kept[1]].to_vec();
+        assert_eq!(carried_over(&all, false, at, at), kept.to_vec());
+
+        // All-day: by Paris day, whatever the instant of the day.
+        let at = midnight(2026, 10, 26);
+        let all = [
+            paris(2026, 10, 25, 23, 0),
+            paris(2026, 10, 26, 15, 0),
+            paris(2026, 10, 27, 0, 0),
+        ];
+        assert_eq!(
+            carried_over(&all, true, at, at),
+            vec![midnight(2026, 10, 26), midnight(2026, 10, 27)]
+        );
+    }
+
+    #[test]
+    fn an_hour_bound_series_moved_carries_its_instants_by_the_same_time() {
+        // 09:00 → 10:30, across the October change of hour: still 10:30 on
+        // the Paris wall clock a week later.
+        let at = paris(2026, 10, 20, 9, 0);
+        let to = paris(2026, 10, 20, 10, 30);
+        assert_eq!(
+            carried_over(&[paris(2026, 10, 27, 9, 0)], false, at, to),
+            vec![paris(2026, 10, 27, 10, 30)]
+        );
+    }
+
+    #[test]
+    fn an_all_day_series_moved_carries_its_days_by_the_same_days() {
+        // Moved from Saturday the 24th to Monday the 26th, across the change
+        // of hour: the 31st goes to 2 November, at its own Paris midnight.
+        assert_eq!(
+            carried_over(
+                &[paris(2026, 10, 31, 12, 0)],
+                true,
+                midnight(2026, 10, 24),
+                midnight(2026, 10, 26)
+            ),
+            vec![midnight(2026, 11, 2)]
+        );
+    }
+
+    #[test]
+    fn an_all_day_occurrence_is_located_from_any_instant_of_its_paris_day() {
+        let start = midnight(2026, 10, 24);
+        let end = midnight(2026, 10, 25);
+        let located = locate_occurrence(
+            "FREQ=DAILY;COUNT=5",
+            true,
+            start,
+            end,
+            &[],
+            paris(2026, 10, 26, 18, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            located,
+            Some(OccurrenceInSeries {
+                span: (midnight(2026, 10, 26), midnight(2026, 10, 27)),
+                produced_before: 2,
+            })
+        );
     }
 }

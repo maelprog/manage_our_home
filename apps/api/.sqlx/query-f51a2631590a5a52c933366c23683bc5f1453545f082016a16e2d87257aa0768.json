@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT completed_at FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "completed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "event_occurrence_completions",
+            "name": "completed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f51a2631590a5a52c933366c23683bc5f1453545f082016a16e2d87257aa0768"
+}

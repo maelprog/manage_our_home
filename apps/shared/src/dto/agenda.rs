@@ -70,6 +70,26 @@ pub struct UpdateEventRequest {
     /// `None` leaves the event's privacy unchanged (#620).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_private: Option<bool>,
+    /// Which occurrences of a series the change applies to (#708). `None`
+    /// is `All`, the whole series; the two others need `occurrence_at`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<EditScope>,
+}
+
+/// What a `PATCH` of a recurring event changes (#708).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum EditScope {
+    /// The whole series: the row is updated in place.
+    #[default]
+    All,
+    /// The occurrence at `occurrence_at` and every later one: the series is
+    /// cut before it and a new series carries on from it.
+    ThisAndFollowing,
+    /// The occurrence at `occurrence_at` alone: the series excludes it and a
+    /// one-off event takes its place.
+    This,
 }
 
 /// `GET/POST/PATCH /groups/:id/events[/:event_id]` response body. For a

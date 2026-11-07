@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO event_reminders (event_id, offset_minutes)\n        SELECT $2, offset_minutes FROM event_reminders WHERE event_id = $1\n        RETURNING id, offset_minutes\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "event_reminders",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "offset_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "event_reminders",
+            "name": "offset_minutes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9027255e409cd310deab540316f684de9cd53c3ce6c6b77430b92c97293d8256"
+}
