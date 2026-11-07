@@ -1829,3 +1829,189 @@ async fn malformed_recipe_updates_are_refused(db: PgPool) {
     );
     assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 }
+
+// -- Planned usage of the stock (#711) -------------------------------------------
+
+/// `planned_usage` of each stock line on the list, by line id.
+async fn listed_usage(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+) -> std::collections::HashMap<String, Value> {
+    let res = get(router, cookie, &format!("/groups/{group_id}/stock-items")).await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["id"].as_str().unwrap().to_string(),
+                i["planned_usage"].clone(),
+            )
+        })
+        .collect()
+}
+
+async fn detail_usage(router: &axum::Router, cookie: &str, group_id: &str, id: &str) -> Value {
+    let res = get(
+        router,
+        cookie,
+        &format!("/groups/{group_id}/stock-items/{id}"),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["planned_usage"].clone()
+}
+
+/// AC (#711): each line lists the planned recipes taking from it, the
+/// quantity being the one the done preview proposes from that line, scaled
+/// to the selection; a line no recipe uses lists nothing; optional
+/// ingredients count, flagged; the list and the detail agree; a recipe
+/// abandoned or done leaves every list.
+#[sqlx::test]
+async fn the_stock_lists_what_the_planned_recipes_would_take(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "usage@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let (crepes, farine, beurre, sucre) = crepes(&router, &cookie, &group_id).await;
+    let pain = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Pain", "quantity": 1.0}),
+    )
+    .await;
+    let gateau = planned_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Gateau", "ingredients": [
+            {"name": "Farine", "quantity": 250.0, "unit": "g"},
+            {"name": "Beurre", "quantity": 20.0, "unit": "g", "is_optional": true}
+        ]}),
+        json!({}),
+    )
+    .await;
+
+    let usage = listed_usage(&router, &cookie, &group_id).await;
+    assert_eq!(usage[&pain], json!([]), "no planned recipe uses it");
+    // By recipe name, each as its own preview proposes it.
+    assert_eq!(
+        usage[&farine],
+        json!([
+            {"recipe_id": crepes, "recipe_name": "Crepes", "quantity": 400.0, "unit": "g", "is_optional": false},
+            {"recipe_id": gateau, "recipe_name": "Gateau", "quantity": 250.0, "unit": "g", "is_optional": false}
+        ])
+    );
+    assert_eq!(
+        usage[&beurre],
+        json!([
+            {"recipe_id": crepes, "recipe_name": "Crepes", "quantity": 100.0, "unit": "g", "is_optional": false},
+            {"recipe_id": gateau, "recipe_name": "Gateau", "quantity": 20.0, "unit": "g", "is_optional": true}
+        ])
+    );
+    // The preview proposes 0 kg from the sugar (the recipe is in g).
+    assert_eq!(
+        usage[&sucre],
+        json!([{"recipe_id": crepes, "recipe_name": "Crepes", "quantity": 0.0, "unit": "kg", "is_optional": false}])
+    );
+
+    // The quantity of each line is the preview's for that line.
+    for (recipe, name) in [(&crepes, "Crepes"), (&gateau, "Gateau")] {
+        for line in done_preview(&router, &cookie, &group_id, recipe).await {
+            for lot in line["lots"].as_array().unwrap() {
+                let id = lot["stock_item"]["id"].as_str().unwrap();
+                let shown = usage[id]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|u| u["recipe_name"] == name)
+                    .unwrap_or_else(|| panic!("{name} on {id}"));
+                assert_eq!(shown["quantity"], lot["quantity"], "{name} on {id}");
+            }
+        }
+    }
+
+    // The detail says the same as the list.
+    for id in [&farine, &beurre, &sucre, &pain] {
+        assert_eq!(
+            detail_usage(&router, &cookie, &group_id, id).await,
+            usage[id]
+        );
+    }
+    // Only the list and the detail carry it.
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{pain}"),
+        Some(&cookie),
+        Some(json!({"quantity": 2.0})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+    assert!(json_body(patch).await.get("planned_usage").is_none());
+
+    // Abandoned: the crêpes leave every line.
+    let res = post(
+        &router,
+        &cookie,
+        &abandoned_path(&group_id, &crepes),
+        json!({"remove": []}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let usage = listed_usage(&router, &cookie, &group_id).await;
+    assert_eq!(usage[&sucre], json!([]));
+    assert_eq!(
+        usage[&farine],
+        json!([{"recipe_id": gateau, "recipe_name": "Gateau", "quantity": 250.0, "unit": "g", "is_optional": false}])
+    );
+
+    // Done: nothing is planned any more.
+    let res = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &gateau),
+        json!({"removals": []}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let usage = listed_usage(&router, &cookie, &group_id).await;
+    assert!(
+        usage.values().all(|u| *u == json!([])),
+        "nothing planned: {usage:?}"
+    );
+    assert_eq!(
+        detail_usage(&router, &cookie, &group_id, &farine).await,
+        json!([])
+    );
+}
+
+/// Another group's planned recipe takes nothing from this group's stock,
+/// even of the same name.
+#[sqlx::test]
+async fn another_groups_planned_recipe_does_not_show(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "usage-iso@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let other = register_verify_login(&router, &db, "usage-iso-o@example.test").await;
+    let other_group = create_group(&router, &other).await;
+    let farine = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Farine", "quantity": 500.0, "unit": "g"}),
+    )
+    .await;
+    crepes(&router, &other, &other_group).await;
+
+    assert_eq!(
+        listed_usage(&router, &cookie, &group_id).await[&farine],
+        json!([])
+    );
+    assert_eq!(
+        detail_usage(&router, &cookie, &group_id, &farine).await,
+        json!([])
+    );
+}

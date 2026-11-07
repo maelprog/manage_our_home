@@ -109,6 +109,26 @@ pub struct StockItemResponse {
     /// EAN/UPC code (#402), `None` for an article entered without one.
     #[serde(default)]
     pub barcode: Option<String>,
+    /// What the planned recipes would take from this line (#711), on
+    /// `GET /groups/:id/stock-items` and its detail only: absent from the
+    /// other responses, empty when no planned recipe uses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_usage: Option<Vec<PlannedUsage>>,
+}
+
+/// One planned recipe's use of a stock line (#711): the quantity marking it
+/// done would propose to take from that line (`preview_done`), in the line's
+/// unit, scaled to the selection's number of people. 0 when that preview
+/// proposes 0 from it (another unit, no quantity, an empty line).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PlannedUsage {
+    pub recipe_id: Uuid,
+    pub recipe_name: String,
+    pub quantity: f64,
+    pub unit: String,
+    /// Every ingredient of the recipe taking from this line is optional.
+    pub is_optional: bool,
 }
 
 /// `GET /groups/:id/stock-items?sort=…` values. Absent → name order; the

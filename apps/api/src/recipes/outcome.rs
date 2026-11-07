@@ -87,6 +87,7 @@ use crate::recipes::can_modify;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::selections::SelectionResponse;
 use crate::stocks::items::{day_or_today, today, StockItemResponse, StockItemRow};
+use crate::stocks::planned_usage::stock_lines;
 use crate::AppState;
 
 // -- Pure part ----------------------------------------------------------------
@@ -283,6 +284,29 @@ pub(crate) fn propose(ingredients: &[Ingredient<'_>], stock: &[StockLine<'_>]) -
             }
         })
         .collect()
+}
+
+/// What marking a selection done proposes (`preview_done`), and what the
+/// stock list shows as the planned recipes' use (#711): each ingredient as
+/// written for the recipe's number of people (`written_for`), its quantity
+/// scaled to the selection's (`cooked_for`) as the grocery list scales it
+/// (`scale_quantity`), then `propose`d from `stock`. Gives, per ingredient,
+/// the scaled quantity and the proposal.
+pub(crate) fn propose_for_selection(
+    written: &[Ingredient<'_>],
+    written_for: Option<i32>,
+    cooked_for: Option<i32>,
+    stock: &[StockLine<'_>],
+) -> Vec<(Option<f64>, Proposal)> {
+    let scaled: Vec<Ingredient<'_>> = written
+        .iter()
+        .map(|i| Ingredient {
+            quantity: scale_quantity(i.quantity, written_for, cooked_for),
+            ..*i
+        })
+        .collect();
+    let proposals = propose(&scaled, stock);
+    scaled.iter().map(|i| i.quantity).zip(proposals).collect()
 }
 
 /// The `(stock line, quantity)` pairs a `done` request removes: the lines
@@ -640,37 +664,27 @@ pub async fn preview_done(
     .await?;
     tx.commit().await?;
 
-    let scaled: Vec<Option<f64>> = rows
+    let written: Vec<Ingredient<'_>> = rows
         .iter()
-        .map(|r| scale_quantity(r.quantity, selection.recipe_servings, selection.servings))
-        .collect();
-    let wanted: Vec<Ingredient<'_>> = rows
-        .iter()
-        .zip(&scaled)
-        .map(|(r, q)| Ingredient {
+        .map(|r| Ingredient {
             name: &r.name,
-            quantity: *q,
+            quantity: r.quantity,
             unit: r.unit.as_deref(),
         })
         .collect();
-    let lines: Vec<StockLine<'_>> = stock
-        .iter()
-        .map(|s| StockLine {
-            id: s.id,
-            name: &s.name,
-            unit: &s.unit,
-            quantity: s.quantity,
-            expires_on: s.expires_on,
-        })
-        .collect();
-    let proposals = propose(&wanted, &lines);
+    let lines = stock_lines(&stock);
+    let proposals = propose_for_selection(
+        &written,
+        selection.recipe_servings,
+        selection.servings,
+        &lines,
+    );
 
     let today = today();
     let ingredients: Vec<DoneLineResponse> = rows
         .iter()
-        .zip(scaled)
         .zip(proposals)
-        .map(|((r, quantity), p)| DoneLineResponse {
+        .map(|(r, (quantity, p))| DoneLineResponse {
             ingredient_id: r.id,
             name: r.name.clone(),
             quantity,
@@ -1154,6 +1168,60 @@ mod tests {
             Err(AppError::BadRequest(code)) => code,
             other => panic!("expected a 400, got {other:?}"),
         }
+    }
+
+    // -- propose_for_selection -----------------------------------------------
+
+    #[test]
+    fn a_selection_is_proposed_scaled_to_its_number_of_people() {
+        let stock = [line(1, "Farine", "g", 500.0, None)];
+        let got = propose_for_selection(
+            &[ing("Farine", Some(200.0), Some("g"))],
+            Some(2),
+            Some(4),
+            &stock,
+        );
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, Some(400.0));
+        assert_eq!(got[0].1.lots, vec![take(1, 400.0)]);
+        assert_eq!(got[0].1.warning, None);
+    }
+
+    #[test]
+    fn a_selection_without_a_number_of_people_is_proposed_as_written() {
+        let stock = [line(1, "Farine", "g", 500.0, None)];
+        for (written_for, cooked_for) in [(None, Some(4)), (Some(2), None), (Some(0), Some(4))] {
+            let got = propose_for_selection(
+                &[ing("Farine", Some(200.0), Some("g"))],
+                written_for,
+                cooked_for,
+                &stock,
+            );
+            assert_eq!(got[0].0, Some(200.0), "{written_for:?} → {cooked_for:?}");
+            assert_eq!(got[0].1.lots, vec![take(1, 200.0)]);
+        }
+    }
+
+    #[test]
+    fn a_selection_is_proposed_as_propose_does_on_the_scaled_ingredients() {
+        let stock = [
+            line(1, "Farine", "g", 100.0, date(3)),
+            line(2, "Farine", "g", 500.0, date(20)),
+            line(3, "Sucre", "kg", 1.0, None),
+        ];
+        let written = [
+            ing("Farine", Some(200.0), Some("g")),
+            ing("Sucre", Some(30.0), Some("g")),
+            ing("Sel", None, None),
+        ];
+        let scaled = [
+            ing("Farine", Some(400.0), Some("g")),
+            ing("Sucre", Some(60.0), Some("g")),
+            ing("Sel", None, None),
+        ];
+        let got = propose_for_selection(&written, Some(2), Some(4), &stock);
+        let proposals: Vec<Proposal> = got.into_iter().map(|(_, p)| p).collect();
+        assert_eq!(proposals, propose(&scaled, &stock));
     }
 
     // -- match_stock ---------------------------------------------------------

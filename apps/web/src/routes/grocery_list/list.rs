@@ -976,6 +976,7 @@ mod tests {
             expires_on: None,
             expiry_status: manage_our_home_shared::validation::stocks::ExpiryStatus::Unknown,
             barcode: None,
+            planned_usage: None,
         }
     }
 
