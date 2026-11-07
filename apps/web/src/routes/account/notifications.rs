@@ -25,13 +25,18 @@
 //! reminder emails' subject (#146); « Alerte de budget » for a budget alert
 //! (#536); « Produits bientôt périmés » for the daily expiry recap (#566),
 //! never an item's name; a neutral one when it cannot tell.
+//!
+//! The Android app's WebView has no Push API. There (#668), the reminders
+//! are scheduled on the phone by [`LOCAL_REMINDERS_SCRIPT`], from the list
+//! [`upcoming`] relays, and show the event's title and time; this page
+//! shows their state ([`local_block`]) in place of [`push_block`].
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Form, Json};
 use manage_our_home_shared::dto::notifications::{
-    NotificationSettings, PushSubscriptionRequest, UpdateNotificationSettings,
+    NotificationSettings, PushSubscriptionRequest, UpcomingReminder, UpdateNotificationSettings,
 };
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -230,6 +235,83 @@ pub(crate) const PUSH_SCRIPT: &str = r#"
 })();
 "#;
 
+/// The script of the Android app's local reminders (#668), served under
+/// `/assets` (`assets::Script::LocalReminders`) and loaded by
+/// `app::document` in the app's pages only. It schedules the member's
+/// next reminders on the phone ([`upcoming`]) and drives [`local_block`].
+pub(crate) const LOCAL_REMINDERS_SCRIPT: &str = include_str!("../../local-reminders.js");
+
+/// In the app, what stands in place of [`push_block`] (#668): the state of
+/// the reminders scheduled on this phone. Every state waits `hidden` for
+/// [`LOCAL_REMINDERS_SCRIPT`], which alone can read the plugin:
+/// `#local-unsupported` (an APK without it), `#local-granted` and
+/// `#local-count` (the number scheduled), `#local-ask` (permission never
+/// given: a button, the system prompt opens on its click only),
+/// `#local-denied` (refused: Android's settings), `#local-exact` (exact
+/// alarms refused: why they help, and a button to Android's « Alarmes et
+/// rappels »; reminders go on inexact meanwhile), `#local-failed`.
+pub(crate) fn local_block(settings: &NotificationSettings) -> String {
+    let email = email_choice_link();
+    let on_email = if includes_push(&settings.reminder_channel) {
+        ""
+    } else {
+        r#"<p class="muted">Vos rappels partent par email : aucun n'est programmé sur ce téléphone.</p>
+"#
+    };
+    format!(
+        r#"<div id="local-reminders">
+{on_email}<p class="notice warning" id="local-unsupported" hidden>Cette version de l'application ne programme pas les rappels : installez la dernière version.</p>
+<p id="local-granted" hidden>Notifications autorisées sur ce téléphone.</p>
+<p id="local-count" hidden></p>
+<p id="local-ask" hidden><button type="button" class="secondary" id="local-ask-button">Autoriser les notifications sur ce téléphone</button></p>
+<div class="notice warning" id="local-denied" hidden><p><strong>Les notifications sont bloquées sur ce téléphone</strong> : aucun rappel n'y est programmé. Pour les réactiver, ouvrez Réglages › Applications, choisissez l'application, puis Notifications. Ou {email}.</p></div>
+<div id="local-exact" hidden><p>Android peut retarder un rappel de quelques minutes pour économiser la batterie. Pour qu'il arrive à l'heure exacte, autorisez l'application dans « Alarmes et rappels ». Sans cela, les rappels arrivent quand même, avec ce léger retard possible.</p>
+<p><button type="button" class="secondary" id="local-exact-button">Autoriser les rappels à l'heure exacte</button></p></div>
+<p class="notice error" id="local-failed" hidden>Les rappels de ce téléphone n'ont pas pu être mis à jour : ils le seront à la prochaine ouverture de l'application.</p>
+</div>"#
+    )
+}
+
+/// What [`upcoming`] answers for the API's: the list as it came, `200`,
+/// when it is one; `401` when the API says the caller has no session
+/// (logged out, account deactivated or deleted), on which the script
+/// cancels every reminder; `502` for anything else, on which it keeps
+/// them. Never cached.
+pub(crate) fn upcoming_answer(result: Result<crate::state::ApiResponse, String>) -> Response {
+    let no_store = [(header::CACHE_CONTROL, "no-store")];
+    match result {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            match serde_json::from_value::<Vec<UpcomingReminder>>(resp.body) {
+                Ok(list) => (no_store, Json(list)).into_response(),
+                Err(_) => (no_store, StatusCode::BAD_GATEWAY).into_response(),
+            }
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::UNAUTHORIZED => {
+            (no_store, StatusCode::UNAUTHORIZED).into_response()
+        }
+        _ => (no_store, StatusCode::BAD_GATEWAY).into_response(),
+    }
+}
+
+/// `GET /account/notifications/upcoming` — [`LOCAL_REMINDERS_SCRIPT`]'s
+/// call, relayed to apps/api's `GET /account/reminders/upcoming` (#667).
+/// No `CurrentUser`: its redirect to `/login` would read as a page, not
+/// as the 401 the script cancels the reminders on; the API's session
+/// check decides ([`upcoming_answer`]).
+pub async fn upcoming(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let cookie = account_cookie(&headers);
+    upcoming_answer(
+        api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            "/account/reminders/upcoming",
+            cookie.as_deref(),
+            None,
+        )
+        .await,
+    )
+}
+
 /// The kinds of notification the API pushes to the devices: an agenda
 /// reminder come due (#306), a budget alert (#536) and the daily recap of
 /// the stock items nearing their expiry date (#566). The service worker
@@ -398,12 +480,27 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
     } else {
         ""
     };
+    // In the app (#668), the reminders are scheduled on the phone, with
+    // the event's title: what the browser's text says of the notifications
+    // pushed to a device is not true of them.
+    let (about, block) = if crate::mobile_app::current() {
+        (
+            r#"<p>Les rappels de vos événements vous parviennent par notification, par email, ou les deux. Dans l'application, les rappels par notification sont programmés sur ce téléphone et arrivent même sans réseau : la notification affiche le titre de l'événement et son heure, qu'Android garde sur le téléphone jusqu'au rappel.</p>
+<p class="muted">Les rappels sont mis à jour à chaque ouverture de l'application. Un événement modifié pendant que le téléphone est hors ligne garde son rappel à l'ancienne heure jusque-là.</p>"#,
+            local_block(settings),
+        )
+    } else {
+        (
+            r#"<p>Les rappels de vos événements vous parviennent par notification sur les appareils où vous les avez activées, par email, ou les deux. Une notification n'affiche jamais le titre de l'événement, seulement « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue : le titre se lit dans l'agenda.</p>
+<p class="muted">Sans appareil abonné, un rappel par notification n'est pas envoyé du tout, et aucun email ne le remplace.</p>"#,
+            push_block(settings, true),
+        )
+    };
     format!(
         r#"<p><a href="/account">← Retour à mon compte</a></p>
 <h1>Notifications de rappel</h1>
 {notice}{error}
-<p>Les rappels de vos événements vous parviennent par notification sur les appareils où vous les avez activées, par email, ou les deux. Une notification n'affiche jamais le titre de l'événement, seulement « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue : le titre se lit dans l'agenda.</p>
-<p class="muted">Sans appareil abonné, un rappel par notification n'est pas envoyé du tout, et aucun email ne le remplace.</p>
+{about}
 <form method="post" action="/account/notifications">
 <fieldset class="card">
 <legend>Recevoir mes rappels</legend>
@@ -421,7 +518,6 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
 <p>{devices}</p>
 {remove}
 </section>"#,
-        block = push_block(settings, true),
     )
 }
 
@@ -842,6 +938,122 @@ mod tests {
             reuse < unsubscribe && unsubscribe < resubscribe,
             "{subscribe}"
         );
+    }
+
+    /// The page as the app's WebView gets it (#668).
+    fn app_page(s: &NotificationSettings) -> String {
+        crate::mobile_app::serving(true, || page_body(s, "", ""))
+    }
+
+    #[test]
+    fn in_the_app_the_local_reminders_replace_the_browsers_notifications() {
+        let body = app_page(&settings("push", 0));
+        assert!(body.contains(r#"id="local-reminders""#), "{body}");
+        assert!(!body.contains(r#"id="push-device""#), "{body}");
+        assert!(!body.contains(&Script::Push.tag()), "{body}");
+        // The server's warning is about browsers: not shown in the app.
+        assert!(!body.contains(r#"id="push-warning""#), "{body}");
+        // What a local reminder shows is said, and its limit.
+        assert!(body.contains("titre de l'événement et son heure"), "{body}");
+        assert!(body.contains("hors ligne"), "{body}");
+        // Out of the app, the page is the browser's.
+        let browser = page_body(&settings("push", 0), "", "");
+        assert!(!browser.contains("local-reminders"), "{browser}");
+        assert!(browser.contains(r#"id="push-device""#), "{browser}");
+    }
+
+    #[test]
+    fn the_local_states_wait_hidden_for_the_script() {
+        let html = local_block(&settings("push", 0));
+        let hidden = hidden_ids(&html);
+        for id in [
+            "local-unsupported",
+            "local-granted",
+            "local-ask",
+            "local-denied",
+            "local-exact",
+            "local-count",
+            "local-failed",
+        ] {
+            assert!(hidden.contains(&id.to_string()), "{id} in {hidden:?}");
+        }
+        for id in ["local-ask-button", "local-exact-button"] {
+            assert!(
+                html.contains(&format!(
+                    r#"<button type="button" class="secondary" id="{id}">"#
+                )),
+                "{id}: {html}"
+            );
+        }
+        // Exact alarms are asked for with an explanation.
+        let exact = &html[html.find(r#"id="local-exact""#).unwrap()..];
+        assert!(exact.contains("Alarmes et rappels"), "{exact}");
+        // A refusal says where to lift it, and offers the email instead.
+        let denied = &html[html.find(r#"id="local-denied""#).unwrap()..];
+        let denied = &denied[..denied.find("</div>").unwrap()];
+        assert!(denied.contains("Réglages"), "{denied}");
+        assert!(denied.contains(EMAIL_CHOICE_HREF), "{denied}");
+        // The script is the shell's, in the head: none here.
+        assert!(!html.contains("<script"), "{html}");
+    }
+
+    #[test]
+    fn in_the_app_a_member_on_email_is_told_nothing_is_scheduled() {
+        let told = "Vos rappels partent par email";
+        assert!(local_block(&settings("email", 0)).contains(told));
+        assert!(!local_block(&settings("push", 0)).contains(told));
+        assert!(!local_block(&settings("both", 0)).contains(told));
+    }
+
+    fn api(status: u16, body: serde_json::Value) -> Result<crate::state::ApiResponse, String> {
+        Ok(crate::state::ApiResponse {
+            status: reqwest::StatusCode::from_u16(status).unwrap(),
+            set_cookie: None,
+            body,
+        })
+    }
+
+    #[tokio::test]
+    async fn the_upcoming_reminders_pass_through_as_the_api_lists_them() {
+        let entry = serde_json::json!({
+            "id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+            "event_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+            "group_id": "16fd2706-8baf-433b-82eb-8c7fada847da",
+            "title": "Dentiste",
+            "occurrence_at": "2026-11-10T13:30:00Z",
+            "fire_at": "2026-11-09T13:30:00Z",
+            "all_day": false,
+        });
+        let resp = upcoming_answer(api(200, serde_json::json!([entry.clone()])));
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CACHE_CONTROL], "no-store");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body, serde_json::json!([entry]));
+        let empty = upcoming_answer(api(200, serde_json::json!([])));
+        assert_eq!(empty.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn signed_out_is_a_401_and_anything_else_a_502() {
+        // The script cancels every reminder on a 401, and on that only: a
+        // failure of the server must not wipe the phone's reminders.
+        let signed_out = upcoming_answer(api(401, serde_json::json!({"error": "unauthorized"})));
+        assert_eq!(signed_out.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(signed_out.headers()[header::CACHE_CONTROL], "no-store");
+        for answer in [
+            api(500, serde_json::Value::Null),
+            api(403, serde_json::Value::Null),
+            api(404, serde_json::Value::Null),
+            api(200, serde_json::json!({"not": "a list"})),
+            api(200, serde_json::json!([{"id": "nope"}])),
+            Err("connection refused".to_string()),
+        ] {
+            let resp = upcoming_answer(answer);
+            assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        }
     }
 
     /// The API's answer passes through when it is a kind pushed; anything

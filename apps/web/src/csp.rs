@@ -1045,7 +1045,12 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
                 mod tests {\n    fn t() { Script::Push.tag(); }\n}\n";
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
-        vec![Script::ResetPassword, Script::MessagerieLive, Script::Push]
+        vec![
+            Script::ResetPassword,
+            Script::MessagerieLive,
+            Script::Push,
+            Script::LocalReminders
+        ]
     );
     // A call commented out at the end of a line or inside a block comment
     // is no call either.
@@ -1055,7 +1060,11 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
                 let v = Script::Push.tag();\n";
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),
-        vec![Script::Enhance, Script::ResetPassword]
+        vec![
+            Script::Enhance,
+            Script::ResetPassword,
+            Script::LocalReminders
+        ]
     );
     // A block comment spanning lines, nested block comments (Rust's nest)
     // and a string literal, raw or not, hold no call either.
@@ -1076,6 +1085,7 @@ let r = r#"say "Script::Push.tag()" here"#;
 fn f<'a>(x: &'a str) { Script::ResetPassword.tag(); }
 let e = '\''; let u = "https://x"; Script::MessagerieLive.tag();
 let b = b"/*"; Script::Push.tag(); let c = "*/";
+Script::LocalReminders.tag();
 "###;
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),

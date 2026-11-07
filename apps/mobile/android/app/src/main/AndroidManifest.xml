@@ -57,4 +57,15 @@
     -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!--
+      The event reminders scheduled on the phone (#668, the Local
+      Notifications plugin, whose own manifest declares them too): showing
+      a notification, asked for at run time from Android 13 on
+      /account/notifications; and exact alarms, so that a reminder is not
+      delayed by battery saving. From Android 14 the member grants them in
+      « Alarmes et rappels », and the reminders go on inexact if they do
+      not. Not USE_EXACT_ALARM: Android would grant it without asking.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 </manifest>

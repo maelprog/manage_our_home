@@ -162,7 +162,7 @@ fn document(title: &str, body: &str) -> String {
 <title>{title} — MHome</title>
 <link rel="stylesheet" href="{css}"/>
 {brand}
-{enhance}
+{enhance}{local_reminders}
 </head>
 <body>
 <a class="skip-link" href="#main">Aller au contenu</a>
@@ -175,8 +175,22 @@ fn document(title: &str, body: &str) -> String {
         css = crate::assets::stylesheet_href(),
         brand = crate::brand::head_links(),
         enhance = crate::assets::Script::Enhance.tag(),
+        local_reminders = local_reminders_tag(),
         body = body,
     )
+}
+
+/// The local reminders' script (#668), on a new line, in the app's pages
+/// only (`crate::mobile_app::scope` reads the User-Agent of every
+/// request); nothing in a browser's. On every page, the login page
+/// included: that is where a 401 cancels the reminders of a member who
+/// logged out.
+fn local_reminders_tag() -> String {
+    if crate::mobile_app::current() {
+        format!("\n{}", crate::assets::Script::LocalReminders.tag())
+    } else {
+        String::new()
+    }
 }
 
 /// ` data-theme="…"` for a forced theme, nothing for Automatique.

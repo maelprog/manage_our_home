@@ -48,7 +48,7 @@ données sont-elles conservées ? ».
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
-| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue | Exécution du contrat |
+| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue ; dans l'application Android, la notification est programmée sur le téléphone et affiche le titre de l'événement et son heure (voir « Application Android ») | Exécution du contrat |
 | Notifications dans l'application | pour chaque notification qui vous est adressée : son type (rappel d'événement, article bientôt périmé, récapitulatif quotidien des articles bientôt périmés ou périmés, message, invitation, ajout à la liste de courses, alerte de plafond du budget pour les propriétaires et administrateurs d'une famille), la famille concernée, l'élément visé, un texte court (titre de l'événement et sa date, nom de l'article, nom affiché du membre à l'origine de l'action, nom du groupe, nom de la catégorie de dépense — jamais le contenu d'un message), la date de création, la date à laquelle vous l'avez lue et le membre à l'origine de l'action ; l'heure à laquelle vous recevez le récapitulatif des articles bientôt périmés (9 h par défaut), le jour du dernier, et les articles qu'il vous a déjà annoncés, pour ne pas vous les annoncer deux fois | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
 | Budget | dépenses saisies manuellement, leur catégorie et le membre qui les a payées ; catégories de dépense de la famille (nom, couleur, plafond mensuel facultatif) et plafond mensuel de la famille | Exécution du contrat |
@@ -641,12 +641,38 @@ Elle demande au téléphone :
   stock. Android vous le demande la première fois, et vous pouvez refuser :
   le reste de l'application fonctionne sans. La photo suit le même chemin
   que depuis un navigateur : envoyée au serveur, lue puis oubliée (voir
-  « Quelles données sont collectées, et pourquoi », Stocks).
+  « Quelles données sont collectées, et pourquoi », Stocks) ;
+- **les notifications**, pour vos rappels d'événements. Depuis Android 13,
+  elle vous les demande quand vous appuyez sur « Autoriser les
+  notifications sur ce téléphone », dans « Notifications de rappel » ; vous
+  pouvez refuser, et vos rappels ne vous parviennent alors pas sur ce
+  téléphone ;
+- **les alarmes exactes** (« Alarmes et rappels »), pour qu'un rappel
+  arrive à l'heure et non quelques minutes plus tard. Depuis Android 14,
+  vous les accordez dans les réglages du téléphone, depuis la même page ;
+  sans elles, les rappels arrivent quand même, avec ce léger retard
+  possible.
 
 Elle ne demande ni votre position, ni vos contacts, ni vos fichiers, ni le
-micro. Les notifications et les alarmes exactes (rappels programmés sur le
-téléphone, sans réseau) ne sont pas encore demandées : elles le seront avec
-les rappels locaux, et cette section dira alors ce qu'elles font.
+micro.
+
+**Les rappels programmés sur le téléphone.** Si vos rappels vous
+parviennent par notification, l'application demande au site, à chaque
+ouverture et à chaque retour au premier plan, vos prochains rappels (ceux
+des 30 jours à venir, 64 au plus), et les confie à Android, qui les affiche
+à leur heure même sans réseau et l'application fermée. Pour chacun, Android
+garde sur le téléphone, jusqu'à l'heure du rappel, le titre de l'événement,
+sa date et son heure, et le lien vers l'événement dans l'agenda. Rien de
+cela ne passe par un tiers : ni service de notification, ni Google, ni le
+serveur au moment du rappel. La notification affiche le titre de
+l'événement et son heure, sur l'écran verrouillé aussi selon les réglages
+de votre téléphone (Android peut masquer le contenu des notifications sur
+l'écran verrouillé). À la déconnexion, et quand votre compte est désactivé
+ou supprimé, l'application retire tous les rappels qu'elle avait
+programmés dès sa prochaine page ouverte ; si vos rappels passent par
+email, elle n'en programme aucun. Un événement modifié pendant que le
+téléphone est hors ligne garde son rappel à l'ancienne heure jusqu'à la
+prochaine ouverture de l'application.
 
 Votre session est un cookie gardé par l'application, à part de votre
 navigateur : se connecter dans l'une ne connecte pas l'autre. L'application

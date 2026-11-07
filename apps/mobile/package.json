@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/check-shell.test.mjs scripts/release-version.test.mjs"
+    "test": "node --test scripts/check-shell.test.mjs scripts/release-version.test.mjs scripts/local-reminders.test.mjs"
   },
   "engines": {
     "node": ">=22.18.0"
@@ -12,7 +12,8 @@
   "dependencies": {
     "@capacitor/android": "8.6.0",
     "@capacitor/app": "8.1.2",
-    "@capacitor/core": "8.6.0"
+    "@capacitor/core": "8.6.0",
+    "@capacitor/local-notifications": "8.3.1"
   },
   "devDependencies": {
     "@capacitor/cli": "8.6.0",

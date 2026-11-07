@@ -147,6 +147,14 @@ test('the manifest applies that policy, keeps the session off backups, and asks 
     );
   }
   assert.ok(elements(manifest, 'uses-permission').some((p) => p['android:name'] === 'android.permission.CAMERA'));
+  // The local reminders (#668): the permission to show them (asked at run
+  // time from Android 13), and exact alarms, which the member may refuse
+  // (the reminders then go on inexact). Not USE_EXACT_ALARM, which Android
+  // would grant without asking.
+  const permissions = elements(manifest, 'uses-permission').map((p) => p['android:name']);
+  assert.ok(permissions.includes('android.permission.POST_NOTIFICATIONS'));
+  assert.ok(permissions.includes('android.permission.SCHEDULE_EXACT_ALARM'));
+  assert.ok(!permissions.includes('android.permission.USE_EXACT_ALARM'));
   assert.deepEqual(
     elements(manifest, 'uses-feature').filter((f) => f['android:name'] === 'android.hardware.camera'),
     [{ 'android:name': 'android.hardware.camera', 'android:required': 'false' }],
