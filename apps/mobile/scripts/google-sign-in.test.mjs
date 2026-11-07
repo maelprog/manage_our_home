@@ -81,6 +81,16 @@ test('the page follows a path of the site, and nothing else', () => {
     'https://evil.example/',
     '//evil.example/',
     '/\\evil.example/',
+    // The URL parser drops a tab or a newline anywhere: each of these is
+    // `//evil.example/`, another site, to it.
+    '/\t/evil.example/',
+    '/\n/evil.example/',
+    '/\r/evil.example/',
+    // No other control character, nor a backslash anywhere, in a path
+    // apps/api writes.
+    '/login\u0000',
+    '/login\u007f',
+    '/a\\b',
     'javascript:alert(1)',
     '',
     'login',

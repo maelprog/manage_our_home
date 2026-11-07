@@ -31,12 +31,13 @@ var MHomeGoogleSignIn = (function () {
 
   // The path apps/api sends the page to, when it is one of this site's:
   // `/…`, but neither `//host` nor `/\host`, which browsers read as
-  // another site. `null` for anything else.
+  // another site. Nor a backslash or a control character anywhere: the
+  // URL parser drops a tab or a newline wherever it is (`/\t/host` is
+  // `//host`), and apps/api writes none of them. `null` for anything else.
   function redirectTarget(body) {
     var to = body && typeof body === "object" ? body.redirect : null;
-    if (typeof to !== "string" || to.charAt(0) !== "/") return null;
-    var second = to.charAt(1);
-    return second === "/" || second === "\\" ? null : to;
+    if (typeof to !== "string" || to.charAt(0) !== "/" || to.charAt(1) === "/") return null;
+    return /[\\\u0000-\u001f\u007f]/.test(to) ? null : to;
   }
 
   function isCancelled(error) {
