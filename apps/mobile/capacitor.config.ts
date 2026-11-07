@@ -86,8 +86,11 @@ const config: CapacitorConfig = {
     App: { disableBackButtonHandler: true },
     // The native Google sign-in (#670), driven by apps/web/src/
     // google-sign-in.js. Google only: the plugin's hook, run by
-    // `npx cap sync`, then leaves the other providers' SDKs (Facebook,
-    // Apple, Twitter) out of the APK. The web client ID it signs in for is
+    // `npx cap sync`, writes these switches into its gradle.properties
+    // (`socialLogin.<provider>.include`), and the APK is then built without
+    // the Facebook SDK (com.facebook.android:facebook-login) and without
+    // the androidx.browser library Apple's sign-in adds. Twitter's brings
+    // no SDK on Android to leave out. The web client ID it signs in for is
     // not here: apps/api hands it out with each nonce, so that one APK
     // serves whatever `GOOGLE_CLIENT_ID` its server checks.
     SocialLogin: {
