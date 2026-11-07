@@ -155,6 +155,15 @@ test('the manifest applies that policy, keeps the session off backups, and asks 
   assert.ok(permissions.includes('android.permission.POST_NOTIFICATIONS'));
   assert.ok(permissions.includes('android.permission.SCHEDULE_EXACT_ALARM'));
   assert.ok(!permissions.includes('android.permission.USE_EXACT_ALARM'));
+  // The Social Login plugin's manifest (#670) declares USE_CREDENTIALS, an
+  // AccountManager permission Android stopped using at API 23, below this
+  // app's minSdk: removed from the merged manifest rather than declared
+  // for nothing.
+  assert.deepEqual(
+    elements(manifest, 'uses-permission').filter((p) => p['android:name'] === 'android.permission.USE_CREDENTIALS'),
+    [{ 'android:name': 'android.permission.USE_CREDENTIALS', 'tools:node': 'remove' }],
+  );
+  assert.equal(elements(manifest, 'manifest')[0]['xmlns:tools'], 'http://schemas.android.com/tools');
   assert.deepEqual(
     elements(manifest, 'uses-feature').filter((f) => f['android:name'] === 'android.hardware.camera'),
     [{ 'android:name': 'android.hardware.camera', 'android:required': 'false' }],

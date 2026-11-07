@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
       allowBackup false: Android's backup would copy the app's data, the
@@ -68,4 +69,11 @@
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!--
+      Declared by the Social Login plugin's own manifest (#670):
+      AccountManager's permission, which Android stopped using at API 23,
+      below this app's minSdk. The sign-in goes through Credential Manager
+      and needs nothing of it: removed from the merged manifest.
+    -->
+    <uses-permission android:name="android.permission.USE_CREDENTIALS" tools:node="remove" />
 </manifest>
