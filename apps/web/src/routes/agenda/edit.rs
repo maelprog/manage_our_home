@@ -108,13 +108,21 @@ fn field_values(
 }
 
 /// The `Début`/`Fin` values of the series' occurrence starting at
-/// `occurrence_at`: the series' duration, from that instant.
+/// `occurrence_at`: the series' duration, from that instant — in calendar
+/// days for an all-day series, whose 24 hours across a change of Paris
+/// time would end an hour into the next day, read as one day more.
 fn occurrence_field_values(
     series: &EventResponse,
     occurrence_at: DateTime<Utc>,
 ) -> (String, String) {
+    if series.all_day {
+        let (first, last) = field_values(true, series.starts_at, series.ends_at);
+        let day = fmt_paris(occurrence_at, "%Y-%m-%d");
+        let last = rebased(&last, &first, &day).unwrap_or_else(|| day.clone());
+        return (day, last);
+    }
     let duration = series.ends_at - series.starts_at;
-    field_values(series.all_day, occurrence_at, occurrence_at + duration)
+    field_values(false, occurrence_at, occurrence_at + duration)
 }
 
 /// A field moved on the occurrence, carried to the series: the series' day
@@ -186,6 +194,22 @@ fn update_request(
     })
 }
 
+/// The request of an edit of the whole event, opened without an
+/// occurrence: `body` as built from the form, with the rule left out when
+/// it is the series' own.
+///
+/// The form writes an `UNTIL` as the end of its day; a series cut by « Cet
+/// événement et les suivants » stores one a second before the cut (#708).
+/// Sent back untouched, the form's rule let the cut occurrence in again,
+/// beside the new series' first one.
+fn whole_event_request(body: UpdateEventRequest, series: &EventResponse) -> UpdateEventRequest {
+    let mut body = body;
+    if same_rule(body.rrule.as_deref(), series) {
+        body.rrule = None;
+    }
+    body
+}
+
 /// The request of an edit opened on an occurrence: `body` as built from
 /// the form, reshaped for the chosen scope. `None` when a moved field cannot
 /// be carried to the series.
@@ -221,13 +245,13 @@ fn scoped_request(
     match choice.scope {
         // The occurrence becomes a one-off event, whatever the rule says.
         EditScope::This => body.rrule = None,
-        // The series' rule untouched, none is sent: the API carries on
-        // with what is left of it — `COUNT` less what the series already
-        // produced, where the form's `COUNT` would start over.
-        EditScope::ThisAndFollowing if same_rule(body.rrule.as_deref(), series) => {
-            body.rrule = None
+        // The series' rule untouched, none is sent. From the occurrence on,
+        // the API carries on with what is left of it — `COUNT` less what
+        // the series already produced, where the form's `COUNT` would start
+        // over; for the whole series, see `whole_event_request`.
+        EditScope::ThisAndFollowing | EditScope::All => {
+            body = whole_event_request(body, series);
         }
-        EditScope::ThisAndFollowing | EditScope::All => {}
     }
     body.scope = Some(choice.scope);
     body.occurrence_at = (choice.scope != EditScope::All).then_some(choice.occurrence_at);
@@ -545,36 +569,34 @@ pub async fn post(
         Ok(body) => body,
         Err(code) => return render_error(code),
     };
-    let body = match scope {
-        None => body,
-        Some(choice) => {
-            // The series as it stands: the form shows the occurrence, and
-            // what it sends depends on the series' own times and rule.
-            let series = match api_request_auth(
-                &state,
-                reqwest::Method::GET,
-                &format!("/groups/{}/events/{}", fam.gid, event_id),
-                cookie.as_deref(),
-                None,
-            )
-            .await
-            {
-                Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-                    match serde_json::from_value::<EventResponse>(resp.body) {
-                        Ok(e) => e,
-                        Err(_) => return render_error("unavailable"),
-                    }
-                }
-                Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-                    return event_not_found_page().into_response()
-                }
-                _ => return render_error("unavailable"),
-            };
-            match scoped_request(body, choice, &form, &series) {
-                Some(body) => body,
-                None => return render_error("ends_before_starts"),
+    // The event as it stands: what the form sends depends on its own rule
+    // and, when the form shows an occurrence, on its own times.
+    let series = match api_request_auth(
+        &state,
+        reqwest::Method::GET,
+        &format!("/groups/{}/events/{}", fam.gid, event_id),
+        cookie.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            match serde_json::from_value::<EventResponse>(resp.body) {
+                Ok(e) => e,
+                Err(_) => return render_error("unavailable"),
             }
         }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+            return event_not_found_page().into_response()
+        }
+        _ => return render_error("unavailable"),
+    };
+    let body = match scope {
+        None => whole_event_request(body, &series),
+        Some(choice) => match scoped_request(body, choice, &form, &series) {
+            Some(body) => body,
+            None => return render_error("ends_before_starts"),
+        },
     };
 
     let result = api_request_auth(
@@ -935,6 +957,89 @@ mod tests {
         assert_eq!(read_scope(b"occurrence_at=demain&scope=this"), Err(()));
     }
 
+    /// A series cut by « Cet événement et les suivants » stores its `UNTIL`
+    /// a second before the cut (#708), which the form can only write as the
+    /// end of that day: sent back untouched, it let the cut occurrence in
+    /// again, beside the new series' own.
+    #[test]
+    fn an_untouched_rule_is_not_sent_back_for_the_whole_series() {
+        let mut cut = series();
+        cut.rrule = Some("FREQ=WEEKLY;BYDAY=TU;UNTIL=20261124T155959Z".to_string());
+        let rule = "freq=weekly&interval=1&byday_tu=on&end_kind=until&until=2026-11-24";
+        let form = submitted("2026-11-17T17:00", "2026-11-17T18:00", rule);
+        let body = update_request(&form, &[]).unwrap();
+        let scoped = scoped_request(body, third(EditScope::All), &form, &cut).unwrap();
+        assert_eq!(scoped.rrule, None);
+
+        // Opened without an occurrence: the same.
+        let form = submitted("2026-11-03T17:00", "2026-11-03T18:00", rule);
+        let whole = whole_event_request(update_request(&form, &[]).unwrap(), &cut);
+        assert_eq!(whole.rrule, None);
+        assert_eq!(whole.scope, None);
+        assert_eq!(whole.starts_at, Some(at("2026-11-03T16:00:00Z")));
+
+        // A rule that changed is sent, either way.
+        let daily = submitted(
+            "2026-11-03T17:00",
+            "2026-11-03T18:00",
+            "freq=daily&interval=1&end_kind=never",
+        );
+        let whole = whole_event_request(update_request(&daily, &[]).unwrap(), &cut);
+        assert_eq!(whole.rrule.as_deref(), Some("FREQ=DAILY"));
+        let body = update_request(&daily, &[]).unwrap();
+        let daily_from_third = submitted(
+            "2026-11-17T17:00",
+            "2026-11-17T18:00",
+            "freq=daily&interval=1&end_kind=never",
+        );
+        let scoped = scoped_request(body, third(EditScope::All), &daily_from_third, &cut).unwrap();
+        assert_eq!(scoped.rrule.as_deref(), Some("FREQ=DAILY"));
+        // Unticked, the rule is cleared.
+        let once: EventForm = serde_urlencoded::from_str(
+            "title=Piscine&starts_at=2026-11-03T17:00&ends_at=2026-11-03T18:00&recurring_box=1",
+        )
+        .unwrap();
+        let whole = whole_event_request(update_request(&once, &[]).unwrap(), &cut);
+        assert_eq!(whole.rrule.as_deref(), Some(""));
+    }
+
+    /// An all-day series is moved in calendar days: across the spring
+    /// change of Paris time, the 24 hours of a one-day event end an hour
+    /// into the next day, which read as a second day.
+    #[test]
+    fn an_all_day_occurrence_keeps_its_days_across_a_change_of_time() {
+        let mut all_day = series();
+        all_day.all_day = true;
+        all_day.starts_at = at("2027-03-20T23:00:00Z");
+        all_day.ends_at = at("2027-03-21T23:00:00Z");
+        all_day.rrule = Some("FREQ=WEEKLY;BYDAY=SU".to_string());
+        // Sunday 2027-03-28, the day Paris moves to summer time.
+        let occurrence_at = at("2027-03-27T23:00:00Z");
+        assert_eq!(
+            occurrence_field_values(&all_day, occurrence_at),
+            ("2027-03-28".to_string(), "2027-03-28".to_string())
+        );
+        let form: EventForm = serde_urlencoded::from_str(
+            "title=Piscine&starts_at=2027-03-28&ends_at=2027-03-28&all_day=on\
+             &recurring_box=1&recurring=on&freq=weekly&interval=1&byday_su=on&end_kind=never",
+        )
+        .unwrap();
+        let choice = ScopeChoice {
+            occurrence_at,
+            scope: EditScope::This,
+        };
+        let body = update_request(&form, &[]).unwrap();
+        let body = scoped_request(body, choice, &form, &all_day).unwrap();
+        assert_eq!((body.starts_at, body.ends_at), (None, None));
+
+        // A two-day series keeps its two days.
+        all_day.ends_at = at("2027-03-22T23:00:00Z");
+        assert_eq!(
+            occurrence_field_values(&all_day, occurrence_at),
+            ("2027-03-28".to_string(), "2027-03-29".to_string())
+        );
+    }
+
     #[test]
     fn the_scope_radio_reads_as_the_apis_scope() {
         assert_eq!(scope_from_form("all"), Some(EditScope::All));
@@ -1010,7 +1115,8 @@ mod tests {
         assert_eq!(body.scope, Some(EditScope::All));
         assert_eq!(body.occurrence_at, None);
         assert_eq!((body.starts_at, body.ends_at), (None, None));
-        assert_eq!(body.rrule.as_deref(), Some("FREQ=WEEKLY;BYDAY=TU;COUNT=10"));
+        // Its rule untouched, it is not sent back either.
+        assert_eq!(body.rrule, None);
         assert_eq!(body.title.as_deref(), Some("Piscine"));
     }
 
