@@ -675,6 +675,16 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         "ends_before_starts" => "La fin doit être après le début.",
         "invalid_rrule" => "La récurrence choisie est invalide.",
         "invalid_form" => "Formulaire incomplet ou illisible, merci de réessayer.",
+        // The refusals of an edit scoped to an occurrence (#709).
+        "occurrence_not_in_series" => {
+            "Cette occurrence ne fait plus partie de la série : rouvrez-la depuis l'agenda."
+        }
+        "scope_not_allowed_for_imported_event" => {
+            "Un événement importé ne se modifie que pour toute la série."
+        }
+        "scope_requires_recurring_event" => {
+            "Cet événement n'est plus récurrent : choisissez « Toute la série »."
+        }
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         "unsupported_file_type" => "Type de fichier non autorisé (png, jpg, webp, pdf).",
         "file_too_large" => "Fichier trop volumineux (max 20 Mo).",
