@@ -971,6 +971,14 @@ struct Split<'a> {
 /// The notifications already scheduled for the occurrences that leave the
 /// series and are still pending are deleted; the copied reminders schedule
 /// the new event's own.
+///
+/// Not handled: a cut on an occurrence in the hour Paris skips. The new
+/// series is anchored on the instant that occurrence resolves to — an hour
+/// later on the clock, see `recurrence::expand_occurrences` — and a row's
+/// anchor is an instant, read on the Paris clock: a daily series at 02:30
+/// cut on the last Sunday of March carries on at 03:30 every day. The wall
+/// clock it had names no instant that day, so no anchor of that day can
+/// carry it.
 async fn split_series(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     split: Split<'_>,
