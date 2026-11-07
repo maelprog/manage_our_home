@@ -197,6 +197,11 @@
   font-display: swap;
 }
 * { box-sizing: border-box; }
+/* `hidden` hides, whatever the element's class. The browser's own
+   `[hidden] { display: none }` loses to any author rule that sets a
+   display: `button, .btn` below showed the app's `#google-native` before
+   its script had found the plugin (#670). */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   /* The stack renders during the swap, and for good where downloads are

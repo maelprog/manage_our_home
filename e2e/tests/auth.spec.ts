@@ -566,3 +566,43 @@ test.describe("Auth — Google OAuth", () => {
     // Intentionally left unimplemented — see the module-level skip reason.
   });
 });
+
+// The Android app's /login and /register (#670): its WebView appends
+// `MHomeApp` to the User-Agent (apps/web/src/mobile_app.rs), and gets a
+// button that signs in through the system's account picker instead of the
+// link to Google's page. The button carries `hidden` until its script finds
+// the Social Login plugin. What is checked is that the page really hides
+// it: the `display` of `button, .btn` used to beat the browser's own
+// `[hidden]` rule, and the button showed in an APK without the plugin.
+test.describe("Auth — Google natif dans l'app Android (#670)", () => {
+  test.use({
+    userAgent:
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 MHomeApp",
+  });
+
+  for (const path of ["/login", "/register"]) {
+    test(`${path} sans le plugin : le bouton reste caché, l'avis s'affiche`, async ({ page }) => {
+      await page.goto(path);
+      const button = page.locator("#google-native");
+      await expect(button).toHaveAttribute("hidden", "");
+      await expect(button).toBeHidden();
+      await expect(page.locator("#google-native-unsupported")).toBeVisible();
+      await expect(page.locator("#google-native-error")).toBeHidden();
+      await expect(page.locator('a[href$="/auth/google/start"]')).toHaveCount(0);
+    });
+
+    test(`${path} avec le plugin : le bouton s'affiche, l'avis reste caché`, async ({ page }) => {
+      // What the Capacitor bridge puts in the page of an APK built with
+      // the plugin; never called here, the button is not touched.
+      await page.addInitScript(() => {
+        (window as unknown as { Capacitor: unknown }).Capacitor = {
+          Plugins: { SocialLogin: {} },
+        };
+      });
+      await page.goto(path);
+      await expect(page.getByRole("button", { name: "Continuer avec Google" })).toBeVisible();
+      await expect(page.locator("#google-native-unsupported")).toBeHidden();
+      await expect(page.locator("#google-native-error")).toBeHidden();
+    });
+  }
+});
