@@ -1,5 +1,7 @@
 //! `/stocks/:id` — item detail with the low-stock and expiry states, plus the
 //! quantity-adjust action and the delete action; full edit lives in `edit.rs`.
+//! Under « Utilisé dans », the planned recipes that take from the article
+//! and their total against the stock (#712).
 //!
 //! Permission bar: the quantity-adjust form renders for **any** family member
 //! (shared inventory — issue #39); the edit link and delete button render only
@@ -29,7 +31,7 @@ use crate::state::{api_request_auth, AppState};
 use super::new::parse_quantity;
 use super::{
     can_modify, expiry_badge, family_context, fmt_date, fmt_num, forbidden_page,
-    item_not_found_page, service_unavailable_page, stocks_cookie,
+    item_not_found_page, planned_total, service_unavailable_page, stocks_cookie,
 };
 
 #[derive(serde::Deserialize)]
@@ -165,6 +167,7 @@ fn page(
         r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cet article.</p>"#.to_string()
     };
     let controls_html = format!("{adjust_form}{edit_delete_html}");
+    let planned_html = planned_html(item);
 
     let body = format!(
         r#"<h1>{name}</h1>
@@ -174,12 +177,57 @@ fn page(
 {category_html}
 {threshold_html}
 {expiry_html}
+{planned_html}
 {controls_html}
 <div class="links"><a href="/stocks">Retour aux stocks</a></div>"#,
         name = html_escape(&item.name),
         qty = html_escape(&format_quantity(item.quantity, &item.unit)),
     );
     shell_with_header(Width::Read, &item.name, header, &body)
+}
+
+/// « Utilisé dans » (#712): each planned recipe that takes from the article,
+/// linked, with what it would take (`planned_usage`, in the article's unit),
+/// then their total against the stock — and, when the stock falls short,
+/// what is missing, in words on a `.badge.warn`. Nothing when no planned
+/// recipe uses the article.
+fn planned_html(item: &StockItemResponse) -> String {
+    let usage = item.planned_usage.as_deref().unwrap_or_default();
+    let Some(total) = planned_total(usage, item.quantity, &item.unit) else {
+        return String::new();
+    };
+    let rows: String = usage
+        .iter()
+        .map(|u| {
+            format!(
+                r#"<li class="list-row"><a href="/recipes/{id}">{name}</a><span>{qty}{optional}</span></li>"#,
+                id = u.recipe_id,
+                name = html_escape(&u.recipe_name),
+                qty = html_escape(&format_quantity(u.quantity, &item.unit)),
+                optional = if u.is_optional {
+                    r#" <span class="muted">(facultatif)</span>"#
+                } else {
+                    ""
+                },
+            )
+        })
+        .collect();
+    let short = total
+        .short_by
+        .map(|s| {
+            format!(
+                r#" <span class="badge warn">Il manque {}</span>"#,
+                html_escape(&s)
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        r#"<h2>Utilisé dans</h2>
+<ul class="list">{rows}</ul>
+<p><strong>Total prévu :</strong> {total} pour {stock} en stock{short}</p>"#,
+        total = html_escape(&total.total),
+        stock = html_escape(&total.stock),
+    )
 }
 
 // -- mutations --------------------------------------------------------------
@@ -383,6 +431,79 @@ mod tests {
         );
         assert!(
             html.contains("<strong>Seuil de réappro :</strong> 1 paquet</p>"),
+            "{html}"
+        );
+    }
+
+    // -- « Utilisé dans » (#712) ---------------------------------------------
+
+    use crate::routes::stocks::tests::usage;
+
+    #[test]
+    fn no_planned_recipe_shows_no_section() {
+        let mut pates = item(2.0, "paquet", None);
+        for planned in [None, Some(vec![])] {
+            pates.planned_usage = planned;
+            let html = page("", &pates, false, None, None);
+            assert!(!html.contains("Utilisé dans"), "{html}");
+            assert!(!html.contains("Total prévu"), "{html}");
+        }
+    }
+
+    #[test]
+    fn one_planned_recipe_is_linked_with_its_quantity_and_the_total() {
+        let mut pates = item(3.0, "paquet", None);
+        pates.planned_usage = Some(vec![usage(1, "Pâtes <bolo>", 1.0, "paquet")]);
+        let html = page("", &pates, false, None, None);
+        assert!(html.contains("<h2>Utilisé dans</h2>"), "{html}");
+        assert!(
+            html.contains(
+                r#"<ul class="list"><li class="list-row"><a href="/recipes/00000000-0000-0000-0000-000000000001">Pâtes &lt;bolo&gt;</a><span>1 paquet</span></li></ul>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains("<p><strong>Total prévu :</strong> 1 paquet pour 3 paquets en stock</p>"),
+            "{html}"
+        );
+        assert!(!html.contains("Il manque"), "{html}");
+    }
+
+    #[test]
+    fn several_planned_recipes_are_listed_in_order_an_optional_one_said_so() {
+        let mut pates = item(4.0, "paquet", None);
+        let mut salade = usage(2, "Salade", 0.5, "paquet");
+        salade.is_optional = true;
+        pates.planned_usage = Some(vec![usage(1, "Bolo", 2.0, "paquet"), salade]);
+        let html = page("", &pates, false, None, None);
+        assert_eq!(
+            html.matches(r#"<li class="list-row">"#).count(),
+            2,
+            "{html}"
+        );
+        let bolo = html.find(">Bolo</a><span>2 paquets</span>").expect(&html);
+        let salade = html
+            .find(r#">Salade</a><span>0,5 paquet <span class="muted">(facultatif)</span></span>"#)
+            .expect(&html);
+        assert!(bolo < salade, "{html}");
+        assert!(
+            html.contains("<strong>Total prévu :</strong> 2,5 paquets pour 4 paquets en stock</p>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_total_above_the_stock_is_worded_not_only_coloured() {
+        let mut pates = item(2.0, "paquet", None);
+        pates.planned_usage = Some(vec![
+            usage(1, "Bolo", 2.0, "paquet"),
+            usage(2, "Gratin", 1.0, "paquet"),
+        ]);
+        let html = page("", &pates, false, None, None);
+        assert!(
+            html.contains(
+                r#"<p><strong>Total prévu :</strong> 3 paquets pour 2 paquets en stock <span class="badge warn">Il manque 1 paquet</span></p>"#
+            ),
             "{html}"
         );
     }

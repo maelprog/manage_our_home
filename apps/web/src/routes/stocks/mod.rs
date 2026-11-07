@@ -30,7 +30,8 @@ use chrono::NaiveDate;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
-use manage_our_home_shared::validation::stocks::ExpiryStatus;
+use manage_our_home_shared::dto::stocks::PlannedUsage;
+use manage_our_home_shared::validation::stocks::{format_quantity, ExpiryStatus};
 use uuid::Uuid;
 
 use crate::app::{shell, Width};
@@ -140,6 +141,58 @@ pub(crate) fn fmt_num(n: f64) -> String {
     }
 }
 
+/// « Prévu : n recette(s) » on a list card (#712): how many planned recipes
+/// take from the article (`planned_usage`, one entry per recipe). `None`
+/// when none does, or when the response does not carry the field.
+pub(crate) fn planned_count(usage: Option<&[PlannedUsage]>) -> Option<String> {
+    match usage.map(<[PlannedUsage]>::len) {
+        None | Some(0) => None,
+        Some(1) => Some("Prévu : 1 recette".to_string()),
+        Some(n) => Some(format!("Prévu : {n} recettes")),
+    }
+}
+
+/// What the planned recipes take from an article in all, against its stock
+/// (#712), each written by `format_quantity` in the article's unit — the
+/// unit `planned_usage` is given in. `short_by` is what the stock lacks,
+/// `None` when it covers the total.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannedTotal {
+    pub total: String,
+    pub stock: String,
+    pub short_by: Option<String>,
+}
+
+/// The total of `usage` against `quantity`, `None` when no planned recipe
+/// uses the article. Optional ingredients count: a recipe listed takes its
+/// share. The comparison is made on the quantities as written — rounded to
+/// three decimals, like `format_quantity` — so a total that reads equal to
+/// the stock is never said to exceed it.
+///
+/// apps/api caps each recipe's share at what the line holds
+/// (`recipes::outcome`, `cap(still, left)`): one recipe alone never makes
+/// `short_by` appear, and with several the shortfall is a lower bound —
+/// two recipes wanting 600 g each from 500 g read « Il manque 500 g » where
+/// 700 g are missing.
+pub(crate) fn planned_total(
+    usage: &[PlannedUsage],
+    quantity: f64,
+    unit: &str,
+) -> Option<PlannedTotal> {
+    if usage.is_empty() {
+        return None;
+    }
+    // Thousandths, as `format_quantity` writes them.
+    let thousandths = |q: f64| (q * 1000.0).round() as i64;
+    let total: f64 = usage.iter().map(|u| u.quantity).sum();
+    let missing = thousandths(total) - thousandths(quantity);
+    Some(PlannedTotal {
+        total: format_quantity(total, unit),
+        stock: format_quantity(quantity, unit),
+        short_by: (missing > 0).then(|| format_quantity(missing as f64 / 1000.0, unit)),
+    })
+}
+
 /// The message for `quantity_too_large` on the stock forms and the adjust
 /// action (#649). The bound is written out in French; a test ties it to
 /// `MAX_QUANTITY`.
@@ -151,7 +204,7 @@ pub(crate) const THRESHOLD_TOO_LARGE_MESSAGE: &str =
     "Le seuil de réappro doit être un nombre d'au plus 1 000 000 000.";
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -187,6 +240,116 @@ mod tests {
     fn a_far_or_missing_date_gets_no_badge() {
         assert_eq!(expiry_badge(ExpiryStatus::Ok), None);
         assert_eq!(expiry_badge(ExpiryStatus::Unknown), None);
+    }
+
+    // -- planned_count / planned_total (#712) --------------------------------
+
+    pub(crate) fn usage(n: u128, name: &str, quantity: f64, unit: &str) -> PlannedUsage {
+        PlannedUsage {
+            recipe_id: Uuid::from_u128(n),
+            recipe_name: name.to_string(),
+            quantity,
+            unit: unit.to_string(),
+            is_optional: false,
+        }
+    }
+
+    #[test]
+    fn no_planned_recipe_counts_nothing() {
+        assert_eq!(planned_count(None), None);
+        assert_eq!(planned_count(Some(&[])), None);
+    }
+
+    #[test]
+    fn the_planned_recipes_are_counted_singular_then_plural() {
+        let one = [usage(1, "Gratin", 200.0, "g")];
+        assert_eq!(
+            planned_count(Some(&one)).as_deref(),
+            Some("Prévu : 1 recette")
+        );
+        let three = [
+            usage(1, "Gratin", 200.0, "g"),
+            usage(2, "Quiche", 100.0, "g"),
+            usage(3, "Soupe", 0.0, "g"),
+        ];
+        assert_eq!(
+            planned_count(Some(&three)).as_deref(),
+            Some("Prévu : 3 recettes")
+        );
+    }
+
+    #[test]
+    fn no_usage_has_no_total() {
+        assert_eq!(planned_total(&[], 3.0, "paquet"), None);
+    }
+
+    #[test]
+    fn one_recipe_within_the_stock_lacks_nothing() {
+        assert_eq!(
+            planned_total(&[usage(1, "Pâtes bolo", 1.0, "paquet")], 3.0, "paquet"),
+            Some(PlannedTotal {
+                total: "1 paquet".to_string(),
+                stock: "3 paquets".to_string(),
+                short_by: None,
+            })
+        );
+    }
+
+    #[test]
+    fn several_recipes_add_up_optional_ones_included() {
+        let mut optional = usage(3, "Salade", 50.0, "g");
+        optional.is_optional = true;
+        let total = planned_total(
+            &[
+                usage(1, "Gratin", 200.0, "g"),
+                usage(2, "Quiche", 150.0, "g"),
+                optional,
+            ],
+            400.0,
+            "g",
+        )
+        .unwrap();
+        assert_eq!(total.total, "400 g");
+        assert_eq!(total.stock, "400 g");
+        // Equal to the stock: it covers the total.
+        assert_eq!(total.short_by, None);
+    }
+
+    #[test]
+    fn a_total_above_the_stock_says_what_is_missing() {
+        let total = planned_total(
+            &[
+                usage(1, "Pâtes bolo", 2.0, "paquet"),
+                usage(2, "Gratin", 1.5, "paquet"),
+            ],
+            2.0,
+            "paquet",
+        )
+        .unwrap();
+        assert_eq!(total.total, "3,5 paquets");
+        assert_eq!(total.stock, "2 paquets");
+        assert_eq!(total.short_by.as_deref(), Some("1,5 paquet"));
+        // Nothing in stock: all of it is missing.
+        let total = planned_total(&[usage(1, "Crêpes", 0.5, "L")], 0.0, "L").unwrap();
+        assert_eq!(total.short_by.as_deref(), Some("0,5 L"));
+    }
+
+    #[test]
+    fn a_total_that_reads_equal_to_the_stock_does_not_exceed_it() {
+        // 0.1 + 0.2 is 0.30000000000000004 in f64.
+        let total = planned_total(
+            &[usage(1, "A", 0.1, "kg"), usage(2, "B", 0.2, "kg")],
+            0.3,
+            "kg",
+        )
+        .unwrap();
+        assert_eq!(total.total, "0,3 kg");
+        assert_eq!(total.short_by, None);
+        // Under a thousandth over still reads equal, and lacks nothing.
+        let total = planned_total(&[usage(1, "A", 1.0004, "kg")], 1.0, "kg").unwrap();
+        assert_eq!(total.short_by, None);
+        let total = planned_total(&[usage(1, "A", 1.001, "kg")], 1.0, "kg").unwrap();
+        assert_eq!(total.short_by.as_deref(), Some("0,001 kg"));
     }
 
     #[test]
