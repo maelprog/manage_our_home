@@ -17,9 +17,9 @@ components:
 # ci/set-images.sh, in a PR (README, « Promotion », #436).
 images:
   - name: ghcr.io/maelprog/manage-our-home-api
-    digest: sha256:6aa7f45c421a9e726378ffd45a8a84289d8a5c6bdcfce1db33355d561408aa0c # main aef6388
+    digest: sha256:588c7eccbb4bde0abb10472df0c4797b12c9c7ddaacd652a56ead20839614cb2 # main b0ba5a5
   - name: ghcr.io/maelprog/manage-our-home-web
-    digest: sha256:1974b44f0ab005f260fe885b2d585b2d4e73031101630f6b75ec000151e8c0e6 # main aef6388
+    digest: sha256:42cfcbd9e3a38e3440967855beb5a0df469ef0109ea3eb7e853d6349c1593820 # main b0ba5a5
 
 # One replica each: the cluster has a budget of about 3 GB for the
 # platform, Postgres, MinIO, api and web together. The
