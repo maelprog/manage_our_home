@@ -36,7 +36,10 @@ du site.
   le sélecteur remet la page telle quelle. Le client ID web vient de l'API
   avec le nonce (`GOOGLE_CLIENT_ID`) : l'APK n'en porte aucun. Le plugin
   n'embarque que Google (`plugins.SocialLogin.providers` de
-  `capacitor.config.ts`) et oublie le jeton aussitôt reçu. Un APK construit
+  `capacitor.config.ts`) ; le script lui demande d'effacer le jeton avant
+  de l'envoyer (`logout`), et l'envoie même si cet effacement échoue : le
+  jeton reste alors dans les préférences privées de l'application jusqu'à
+  la connexion suivante. Un APK construit
   avant #670 n'a pas le plugin : la page lui dit d'installer la dernière
   version. Chez Google, l'application doit être déclarée : « Connexion
   Google native » plus bas.

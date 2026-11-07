@@ -638,8 +638,14 @@ autre serveur que celui du site : les liens vers un autre site s'ouvrent
 dans le navigateur du téléphone. Une seule exception, à votre demande : si
 vous touchez « Continuer avec Google », le téléphone demande à Google le
 jeton d'identité du compte que vous choisissez (voir « Avec qui vos
-données sont-elles partagées ? »). L'application ne garde pas ce jeton : elle le remet au
-serveur, qui ouvre votre session.
+données sont-elles partagées ? »). L'application demande au module de
+connexion d'effacer ce jeton du téléphone, puis le remet au serveur, qui
+ouvre votre session. Si cet effacement échoue, le jeton reste dans
+l'espace privé de l'application, hors de portée des autres applications et
+exclu des sauvegardes, jusqu'à votre connexion avec Google suivante ou la
+désinstallation de l'application. Il ne peut de toute façon ouvrir qu'une
+session : le serveur n'accepte un jeton qu'une fois, et dans les 5 minutes
+qui suivent la demande de connexion.
 
 Elle demande au téléphone :
 
