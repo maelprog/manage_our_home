@@ -34,7 +34,9 @@ use crate::routes::agenda::today_paris;
 use crate::routes::recipes::missing::{after_stock_change, incomplete_banner_for};
 use crate::state::{api_request_auth, AppState};
 
-use super::{family_context, fmt_date, fmt_num, service_unavailable_page, stocks_cookie};
+use super::{
+    family_context, fmt_date, fmt_num, planned_count, service_unavailable_page, stocks_cookie,
+};
 
 #[derive(serde::Deserialize)]
 pub struct ListQuery {
@@ -226,8 +228,18 @@ fn card(item: &StockItemResponse, today: NaiveDate, back: &str) -> String {
     } else {
         ""
     };
+    // A discreet count (#712): the recipes themselves are on the detail.
+    // The place already ends with its space; a badge does not.
+    let sep = if pill.is_empty() && low.is_empty() {
+        ""
+    } else {
+        " "
+    };
+    let planned = planned_count(item.planned_usage.as_deref())
+        .map(|text| format!("{sep}<span>{text}</span>"))
+        .unwrap_or_default();
     format!(
-        r#"<li class="card"><span class="what"><a href="/stocks/{id}"><strong>{name}</strong></a><span class="muted">{place}{pill}{low}</span></span>{stepper}</li>"#,
+        r#"<li class="card"><span class="what"><a href="/stocks/{id}"><strong>{name}</strong></a><span class="muted">{place}{pill}{low}{planned}</span></span>{stepper}</li>"#,
         id = item.id,
         name = html_escape(&item.name),
         stepper = stepper(item, back),
@@ -715,6 +727,39 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(">1 L<"), "{html}");
+    }
+
+    #[test]
+    fn a_card_tells_how_many_planned_recipes_use_it() {
+        use crate::routes::stocks::tests::usage;
+        let mut pates = item("Pâtes", Some("Placard"), 2.0, "paquet");
+        // None: the field is absent; empty: no planned recipe uses it.
+        for planned in [None, Some(vec![])] {
+            pates.planned_usage = planned;
+            let html = card(&pates, d(2026, 10, 29), "/stocks");
+            assert!(!html.contains("Prévu"), "{html}");
+        }
+        pates.planned_usage = Some(vec![usage(1, "Bolo", 1.0, "paquet")]);
+        let html = card(&pates, d(2026, 10, 29), "/stocks");
+        assert!(
+            html.contains(r#"<span class="muted">Placard <span>Prévu : 1 recette</span></span>"#),
+            "{html}"
+        );
+        pates.planned_usage = Some(vec![
+            usage(1, "Bolo", 1.0, "paquet"),
+            usage(2, "Gratin", 2.0, "paquet"),
+        ]);
+        let html = card(&pates, d(2026, 10, 29), "/stocks");
+        assert!(html.contains("<span>Prévu : 2 recettes</span>"), "{html}");
+        // After a badge, a space keeps the words apart.
+        pates.reorder_threshold = Some(2.0);
+        let html = card(&pates, d(2026, 10, 29), "/stocks");
+        assert!(
+            html.contains(r#"Stock bas</span> <span>Prévu : 2 recettes</span>"#),
+            "{html}"
+        );
+        // The recipes are not named on the list: their page is the detail.
+        assert!(!html.contains("Gratin"), "{html}");
     }
 
     #[test]
