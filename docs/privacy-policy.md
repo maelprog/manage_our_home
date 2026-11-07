@@ -41,10 +41,10 @@ données sont-elles conservées ? ».
 | Compte | email, mot de passe (haché), nom affiché ; votre photo de profil si vous en ajoutez une — le fichier envoyé n'est pas conservé : le serveur en garde un petit carré (256 pixels de côté) ré-encodé, sans les métadonnées du fichier (ni position GPS, ni date de prise de vue, ni appareil), que seuls vous et les membres de vos groupes peuvent voir | Exécution du contrat (fournir le service) |
 | Âge | la déclaration d'avoir 15 ans ou plus, faite à l'inscription (à la première connexion pour un compte ouvert avec Google), et sa date — aucune date de naissance n'est demandée ni conservée | Exécution du contrat (les conditions générales réservent le service aux 15 ans et plus) |
 | Conditions d'utilisation | la version des conditions générales que vous avez acceptée — à l'inscription, ou à la première connexion pour un compte ouvert avec Google — ou dont vous avez indiqué avoir pris connaissance après un changement, et sa date | Exécution du contrat (garder trace des conditions qui régissent votre usage du service) |
-| Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google, jeton de rafraîchissement délivré par Google (chiffré) | Exécution du contrat (vous choisissez ce mode de connexion) |
+| Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google ; sur le web, le jeton de rafraîchissement que Google délivre parfois (chiffré) ; depuis l'application Android, le jeton d'identité signé par Google que l'application transmet au serveur, vérifié puis oublié, et le nonce à usage unique émis pour cette connexion, valable 5 minutes, dont le serveur ne garde que l'empreinte | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, conservés en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec une clé secrète du serveur, jamais l'adresse ni l'email en clair), avec le nombre de tentatives et leurs horaires | Intérêt légitime (limiter les essais de mot de passe) |
-| Limites d'usage | votre identifiant de membre quand vous importez une recette depuis l'adresse d'une page ; votre adresse email quand une tentative d'inscription avec elle vous fait envoyer l'avis « Vous avez déjà un compte » ; l'adresse IP (en IPv6, réduite à son préfixe /64) de votre navigateur quand il signale de lui-même au serveur un contenu bloqué par la politique de sécurité des pages (rapport CSP) — chacune conservée en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec la clé secrète de la protection de la connexion, jamais en clair), avec les horaires ou le nombre des demandes récentes | Intérêt légitime (sécurité du service, maîtrise des téléchargements que le serveur fait pour vous, éviter qu'un tiers vous fasse envoyer cet avis à répétition) |
+| Limites d'usage | votre identifiant de membre quand vous importez une recette depuis l'adresse d'une page ; votre adresse email quand une tentative d'inscription avec elle vous fait envoyer l'avis « Vous avez déjà un compte » ; l'adresse IP (en IPv6, réduite à son préfixe /64) de votre navigateur quand il signale de lui-même au serveur un contenu bloqué par la politique de sécurité des pages (rapport CSP), ou de votre téléphone quand vous vous connectez avec Google depuis l'application Android — chacune conservée en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec la clé secrète de la protection de la connexion, jamais en clair), avec les horaires ou le nombre des demandes récentes | Intérêt légitime (sécurité du service, maîtrise des téléchargements que le serveur fait pour vous, éviter qu'un tiers vous fasse envoyer cet avis à répétition, limiter les tentatives de connexion avec Google) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
@@ -94,14 +94,20 @@ service tourne sur un serveur loué à un hébergeur, nommé dans les
 possibles sont :
 
 - **Google** (connexion) : uniquement si vous choisissez « Se connecter
-  avec Google ». Votre navigateur passe alors par Google, puis le serveur
-  échange auprès de Google le code d'autorisation obtenu et lit votre
-  profil (identifiant, email, nom). Google sait donc que vous vous
-  connectez à ce service. Dans l'application Android, c'est le téléphone
-  qui passe par Google : son gestionnaire d'identifiants (services Google
-  Play) vous fait choisir un compte Google et remet à la page un jeton
-  d'identité signé par Google, portant ce même profil, que la page envoie
-  au serveur.
+  avec Google ». Sur le web, votre navigateur passe alors par Google, puis
+  le serveur échange auprès de Google le code d'autorisation obtenu et lit
+  votre profil (identifiant, email, nom). Dans l'application Android,
+  c'est le téléphone qui passe par Google : son gestionnaire d'identifiants
+  (services Google Play) vous fait choisir un compte Google et remet un
+  jeton d'identité signé par Google, que l'application transmet au
+  serveur. Le serveur en vérifie la signature avec les clés publiques de
+  Google, qu'il récupère auprès de Google et garde en cache — cette
+  demande ne porte aucune donnée vous concernant —, puis lit dans le jeton
+  votre identifiant, votre email et votre nom. Le jeton porte aussi un
+  nonce à usage unique que le serveur a émis pour cette connexion et que
+  Google y recopie : il lie le jeton au téléphone qui l'a demandé, et un
+  jeton déjà présenté est refusé. Dans les deux cas, Google sait que vous
+  vous connectez à ce service.
 - **Hébergeur du flux calendrier** (import calendrier, en pratique Google
   Agenda) : uniquement si un administrateur ou le propriétaire du groupe
   configure un import avec une URL de flux iCal privée fournie
@@ -344,7 +350,14 @@ de la purge dépasserait.
   vous permet de déconnecter l'une d'elles ou toutes à la fois.
 - **Connexion avec Google** : l'identifiant, l'email et le nom de votre
   profil Google et le jeton de rafraîchissement sont conservés jusqu'à
-  l'anonymisation du compte, qui les supprime.
+  l'anonymisation du compte, qui les supprime. Le jeton d'identité reçu
+  de l'application Android n'est ni conservé ni journalisé : le serveur le
+  vérifie et l'oublie avec la requête. Le nonce émis pour une connexion
+  depuis l'application est valable 5 minutes ; la base n'en garde que
+  l'empreinte et l'échéance (table `google_sign_in_nonces`, sans aucune
+  donnée personnelle), supprimées dès qu'il sert, sinon à la première
+  émission d'un nonce qui suit ces 5 minutes, quelle que soit la personne
+  qui se connecte.
 - **Vérification d'email et réinitialisation du mot de passe** : un jeton
   de vérification est valable 24 heures, un jeton de réinitialisation
   1 heure, et chacun ne sert qu'une fois. Un jeton de réinitialisation est
@@ -372,7 +385,8 @@ de la purge dépasserait.
   sa première tentative — plus tôt à l'arrivée d'une nouvelle tentative
   après ces 30 minutes, ou quand le serveur suit déjà 10 000 couples.
 - **Limites d'usage** (import d'une recette, avis « Vous avez déjà un
-  compte », rapports CSP) : conservées en base, sous forme pseudonymisée
+  compte », rapports CSP, connexion avec Google depuis l'application
+  Android) : conservées en base, sous forme pseudonymisée
   seulement, avec la même clé secrète que la protection de la connexion ;
   ni votre identifiant, ni votre adresse email, ni votre adresse IP n'y
   figurent en clair, mais une donnée pseudonymisée reste une donnée
@@ -389,6 +403,12 @@ de la purge dépasserait.
   fenêtre, plus tôt quand le serveur suit déjà 10 000 adresses. Les
   lectures envoyées à Open Food Facts sont aussi limitées, à 15 par minute
   pour l'ensemble du serveur : ce compteur-là n'est rattaché à aucun membre.
+  La connexion avec Google depuis l'application est limitée à 20 demandes
+  par adresse IP sur 10 minutes glissantes, demande de nonce et envoi du
+  jeton confondus : les horaires d'une adresse sont supprimés au plus tard
+  au premier passage de purge qui suit les 10 minutes de sa dernière
+  demande, plus tôt par la première demande du même genre arrivée après ce
+  délai.
 - **Photo d'un code-barres** (scan d'un article de stock) : pas conservée
   du tout. Elle peut montrer l'intérieur de votre logement ; le serveur la
   lit en mémoire le temps de trouver le code, puis l'oublie avec la
