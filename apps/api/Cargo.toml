@@ -85,6 +85,12 @@ sha2 = "0.11"
 # and of the (address, email) pair, so `login_throttle` holds neither. The
 # newest release, the one aws-sigv4 already pulls next to sha2 0.11.
 hmac = "0.13"
+# Google's ID tokens from the native sign-in (#669, `auth::google_id_token`):
+# the RS256 signature against Google's JWKS. The newest release (dependency
+# policy). `aws_lc_rs`, already in Cargo.lock under rustls, and not
+# `rust_crypto`, which pulls the `rsa` crate (RUSTSEC-2023-0071); no default
+# `use_pem`: keys come as JWKs, never as PEM.
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
 # Decompresses the embedded Open Food Facts category taxonomy (#406,
 # `recipes::taxonomy`): 205 KB gzipped instead of 932 KB in the binary.
 # The newest release (dependency policy), shared with apps/web.

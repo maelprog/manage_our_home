@@ -1133,8 +1133,16 @@ async fn export_accounts_for_every_table(db: PgPool) {
              pseudonyms and admission times, never exported while they lived in memory; and \
              the account-exists notice's per-address counter (#570): the times the notice \
              was mailed to an address, under a pseudonym the server can recompute from \
-             users.email, not exported either (its place in the register: #573); every row \
-             purged within the hour after its last admission leaves its window",
+             users.email, not exported either (its place in the register: #573); and the \
+             native Google sign-in's per-address counter (#669), client addresses not tied \
+             to an account; every row purged within the hour after its last admission \
+             leaves its window",
+        ),
+        (
+            "google_sign_in_nonces",
+            "the native Google sign-in's nonces (#669): the SHA-256 of a random value and \
+             its expiry, tied to no account; deleted when spent, and once past its five \
+             minutes by the next nonce issued",
         ),
         (
             "csp_report_throttle",

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM google_sign_in_nonces\n            WHERE nonce_hash = $1 AND expires_at > now()\n            RETURNING 1 AS \"spent!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "spent!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cde28376a4002319ccdcad1f534fa929643fb2eb664fde1c08cd45e368b58371"
+}

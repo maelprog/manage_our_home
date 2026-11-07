@@ -406,6 +406,116 @@ $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs mhome-1.0.0.apk
 # Signer #1 certificate SHA-256 digest: 1234…ef   (l'empreinte ci-dessus, en minuscules, sans les « : »)
 ```
 
+## Connexion Google native : déclarer l'application chez Google (#669)
+
+Google refuse son écran de connexion dans une WebView (`403
+disallowed_useragent`) : dans l'application, la connexion avec Google passe
+par le gestionnaire d'identifiants d'Android, qui remet un jeton d'identité
+à la page, laquelle l'envoie à l'API (`POST /api/auth/google/nonce`, puis
+`POST /api/auth/google/id-token`). Android ne délivre ce jeton qu'à une
+application que Google connaît : un **client OAuth « Android »** par couple
+(nom du paquet, empreinte SHA-1 de la clé qui signe l'APK), dans le **même
+projet Google Cloud** que le client web du site. C'est vous qui faites les
+étapes 1 à 4, une fois par couple.
+
+### 1. Lire les empreintes SHA-1
+
+Deux clés signent les APK :
+
+- **la clé de publication** (§ « Publier un APK signé », étape 1), qui signe
+  la variante `prod` publiée :
+
+  ```sh
+  keytool -list -v -keystore ~/mhome-release/mhome-release.p12 -alias mhome
+  ```
+
+- **la clé de débogage** d'Android, créée par le premier `./gradlew
+  assembleStagingDebug` (§ « Construire l'APK ») dans `~/.android/`, qui
+  signe les APK construits sur votre poste, dont le `staging` :
+
+  ```sh
+  keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey \
+    -storepass android -keypass android
+  ```
+
+  (Sous Windows : `%USERPROFILE%\.android\debug.keystore`.)
+
+Dans chaque sortie, sous « Certificate fingerprints », la ligne `SHA1:`
+(vingt octets, `12:34:…:AB`) : c'est elle que Google demande, telle que
+`keytool` l'affiche. Autre moyen, depuis `apps/mobile/android` :
+`./gradlew signingReport` affiche `SHA1:` pour chaque variante (la
+`prodRelease` seulement si `MHOME_KEYSTORE_FILE` et
+`MHOME_KEYSTORE_PASSWORD` sont définis).
+
+Les couples à déclarer :
+
+| Nom du paquet | Clé | Pour |
+|---|---|---|
+| `fr.watallo.mhome.staging` | débogage | l'application de test, construite sur votre poste |
+| `fr.watallo.mhome` | publication | l'application des familles (release GitHub) |
+| `fr.watallo.mhome` | débogage | facultatif : un `assembleProdDebug` construit sur votre poste |
+
+La clé de débogage est propre à chaque poste : un autre ordinateur a la
+sienne, à déclarer de même s'il construit des APK de test.
+
+### 2. Créer les clients Android
+
+1. <https://console.cloud.google.com/> → en haut, choisir le **projet du
+   client web existant** (étape 3) — pas un nouveau projet.
+2. Menu ☰ → **Google Auth Platform** → **Clients** → **+ Create client**
+   (sur l'ancienne console : **APIs & Services** → **Credentials** →
+   **+ Create credentials** → **OAuth client ID**).
+3. **Application type** : `Android`.
+4. **Name** : un nom pour s'y retrouver, par exemple `MHome staging
+   (debug)`.
+5. **Package name** : celui du tableau, exactement.
+6. **SHA-1 certificate fingerprint** : la ligne `SHA1:` de l'étape 1.
+7. **Create**. Google affiche un ID de client Android : il ne sert nulle
+   part — ni dans l'application, ni dans l'API. Android reconnaît
+   l'application à son paquet et à sa signature.
+
+Recommencer pour chaque ligne du tableau. Tant que l'application OAuth est
+en mode test (**Google Auth Platform** → **Audience** : « Testing »), seuls
+les comptes listés sous **Test users** peuvent se connecter, comme sur le
+site.
+
+### 3. Retrouver le client ID web
+
+Toujours dans **Google Auth Platform** → **Clients** : le client de type
+**Web application** que le site utilise déjà (son « Authorized redirect
+URI » finit par `/api/auth/google/callback`). Son **Client ID** finit par
+`.apps.googleusercontent.com`. C'est lui que l'application demande à
+Android comme « server client ID » (#670), et lui que l'API exige dans
+le champ `aud` du jeton : un jeton émis pour un autre client est refusé.
+
+### 4. La variable de l'API
+
+Aucune variable nouvelle : l'API vérifie l'audience du jeton contre
+**`GOOGLE_CLIENT_ID`**, la variable du client web, déjà renseignée pour la
+connexion du site. Contrôler qu'elle porte bien le Client ID de l'étape 3 :
+
+- pile Compose : `GOOGLE_CLIENT_ID` dans `infra/.env` ;
+- staging k3s, dans le Secret `api-secrets` (à lancer vous-même) :
+
+  ```sh
+  kubectl -n manage-our-home get secret api-secrets \
+    -o jsonpath='{.data.GOOGLE_CLIENT_ID}' | base64 -d; echo
+  ```
+
+  Il affiche le Client ID : rien à faire s'il est celui de l'étape 3. S'il
+  faut le changer, sceller de nouveau `api-secrets` comme à l'installation
+  (branche `deploy`, `docs/install-k3s.md`, « Les secrets »), avec toutes
+  ses autres valeurs, puis, une fois la PR mergée et le Secret ouvert par
+  le contrôleur, redémarrer l'API :
+
+  ```sh
+  kubectl -n manage-our-home rollout restart deployment/api
+  ```
+
+Facultatif : `GOOGLE_SIGN_IN_POOL_SIZE` (1 par défaut,
+`apps/api/README.md`) dimensionne le pool de la limite de débit de ces
+deux routes.
+
 ## Installer l'application (familles)
 
 Ce qu'il faut : un téléphone Android 7 ou plus récent, et l'adresse de la

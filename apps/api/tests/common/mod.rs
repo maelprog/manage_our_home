@@ -64,9 +64,18 @@ pub fn test_state(db: PgPool) -> AppState {
                 &runtime_db,
                 manage_our_home::auth::account_exists_notice::POOL_SIZE,
             ),
-            pseudonyms,
+            pseudonyms.clone(),
         ),
     );
+    let google_sign_in_throttle =
+        std::sync::Arc::new(manage_our_home::auth::google_id_token::SignInThrottle::new(
+            manage_our_home::db::pool_beside(
+                runtime_pool_options(),
+                &runtime_db,
+                manage_our_home::auth::google_id_token::POOL_SIZE,
+            ),
+            pseudonyms,
+        ));
     AppState {
         message_hubs: manage_our_home::messagerie::MessageHub::new(
             runtime_db.clone(),
@@ -76,6 +85,15 @@ pub fn test_state(db: PgPool) -> AppState {
         admin_db: db,
         google_oauth,
         google_userinfo_url: manage_our_home::auth::oauth_google::GOOGLE_USERINFO_URL.into(),
+        // Nothing listens there: no test reaches Google's real keys. The
+        // native sign-in's tests (`google_id_token_flow`) serve their own.
+        google_id_token: std::sync::Arc::new(
+            manage_our_home::auth::google_id_token::IdTokenVerifier::new(
+                "test-client-id",
+                "http://127.0.0.1:1/certs",
+            ),
+        ),
+        google_sign_in_throttle,
         email,
         public_base_url: "http://localhost:8080".into(),
         frontend_base_url: "http://localhost:5173".into(),

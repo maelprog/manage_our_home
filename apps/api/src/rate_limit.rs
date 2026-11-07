@@ -1,7 +1,9 @@
 //! Sliding-window rate limits shared by every replica (#428): the recipe
 //! import per member (`recipes::import`) and the reads sent to Open Food
 //! Facts (`stocks::openfoodfacts`); since #570, the "account exists" notice
-//! per address (`auth::account_exists_notice`). [`LIMITS`] lists them.
+//! per address (`auth::account_exists_notice`); since #669, the native
+//! Google sign-in per address (`auth::google_id_token`). [`LIMITS`] lists
+//! them.
 //!
 //! Until #428 each was a `Mutex` in the process's memory: with N replicas
 //! behind the ingress, a member had N times their imports and Open Food
@@ -86,12 +88,16 @@ pub const LOG_LOCK: i32 = i32::from_be_bytes(*b"mrll");
 /// kind's window old (#570: the windows run from a minute to a day, and a
 /// ten-minute counter is not kept a day because another limit counts over
 /// one).
-pub const LIMITS: [(&str, SlidingWindow); 3] = [
+pub const LIMITS: [(&str, SlidingWindow); 4] = [
     ("recipe_import", crate::recipes::import::RATE),
     ("openfoodfacts", crate::stocks::openfoodfacts::RATE),
     (
         crate::auth::account_exists_notice::KIND,
         crate::auth::account_exists_notice::RATE,
+    ),
+    (
+        crate::auth::google_id_token::KIND,
+        crate::auth::google_id_token::RATE,
     ),
 ];
 

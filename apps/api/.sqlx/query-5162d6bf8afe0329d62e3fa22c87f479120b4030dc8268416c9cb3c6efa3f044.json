@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH expired AS (DELETE FROM google_sign_in_nonces WHERE expires_at <= now())\n         INSERT INTO google_sign_in_nonces (nonce_hash, expires_at)\n         VALUES ($1, now() + make_interval(secs => $2))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5162d6bf8afe0329d62e3fa22c87f479120b4030dc8268416c9cb3c6efa3f044"
+}
