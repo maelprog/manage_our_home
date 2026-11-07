@@ -3,6 +3,9 @@
 //! `event_occurrence_completions`, never on the shared `events` row, so the
 //! detail lists occurrences and toggles them one at a time), plus the
 //! delete action and the add-reminder form. Edit lives in `edit.rs`.
+//! Opened on an occurrence of a recurring event (`?occ=`), « Supprimer »
+//! leads to `/agenda/:id/delete?occ=`, which asks what goes: the whole
+//! series, this occurrence and the following ones, or this one alone (#710).
 //!
 //! Error table: 404 (`get_event`) unknown/foreign event → introuvable page;
 //! 403 (`update_event`/`delete_event` permission bar) → `?error=forbidden`;
@@ -15,7 +18,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::{DateTime, Duration, Utc};
 use manage_our_home_shared::dto::agenda::{
-    AttachmentResponse, EventResponse, OccurrenceResponse, UpdateEventRequest,
+    AttachmentResponse, EditScope, EventResponse, OccurrenceResponse, UpdateEventRequest,
 };
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{
@@ -30,7 +33,7 @@ use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
-use super::edit::occ_param;
+use super::edit::{occ_param, occurrence_label, read_scope, scope_radios, ScopeChoice};
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context_for, fmt_paris, forbidden_page,
@@ -75,6 +78,17 @@ fn error_text(code: &str) -> Option<&'static str> {
         "upload_failed" => Some("L'envoi de la pièce jointe a échoué, merci de réessayer."),
         "reminder_not_found" => Some("Ce rappel n'existe plus."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
+        // The refusals of a delete scoped to an occurrence (#710).
+        "invalid_form" => Some("Formulaire incomplet ou illisible, merci de réessayer."),
+        "occurrence_not_in_series" => {
+            Some("Cette occurrence ne fait plus partie de la série : rouvrez-la depuis l'agenda.")
+        }
+        "scope_not_allowed_for_imported_event" => {
+            Some("Un événement importé ne se supprime que pour toute la série.")
+        }
+        "scope_requires_recurring_event" => {
+            Some("Cet événement n'est plus récurrent : choisissez « Toute la série ».")
+        }
         _ => None,
     }
 }
@@ -388,12 +402,10 @@ fn page(
         format!(
             r#"<div class="actions">
 <a class="btn secondary" href="{edit}">Modifier</a>
-<form method="post" action="{delete}">
-<button type="submit" class="secondary danger">Supprimer</button>
-</form>
+{delete}
 </div>"#,
             edit = edit_href(urls, event, focus_occ),
-            delete = urls.to("/delete"),
+            delete = delete_control(urls, event, focus_occ),
         )
     } else {
         r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cet événement.</p>"#.to_string()
@@ -444,12 +456,96 @@ fn page(
 /// from (`occ`), for a recurring event, so the edit form can offer to change
 /// that occurrence alone or from it on.
 fn edit_href(urls: EventUrls, event: &EventResponse, focus_occ: Option<&str>) -> String {
-    let occurrence = focus_occ
-        .filter(|_| event.rrule.is_some())
-        .and_then(|occ| occ.parse::<DateTime<Utc>>().ok());
-    match occurrence {
+    match focused_occurrence(event, focus_occ) {
         Some(at) => urls.to(&format!("/edit?occ={}", occ_param(at))),
         None => urls.to("/edit"),
+    }
+}
+
+/// The occurrence of a recurring event the detail was opened from (`occ`),
+/// when it reads as an instant.
+fn focused_occurrence(event: &EventResponse, focus_occ: Option<&str>) -> Option<DateTime<Utc>> {
+    focus_occ
+        .filter(|_| event.rrule.is_some())
+        .and_then(|occ| occ.parse::<DateTime<Utc>>().ok())
+}
+
+/// « Supprimer » (#710): on an occurrence of a recurring event, a link to
+/// the screen that asks which occurrences go; otherwise the form that
+/// deletes the event whole, as before — a series opened without an
+/// occurrence has none to offer the choice on.
+fn delete_control(urls: EventUrls, event: &EventResponse, focus_occ: Option<&str>) -> String {
+    match focused_occurrence(event, focus_occ) {
+        Some(at) => format!(
+            r#"<a class="btn secondary danger" href="{href}">Supprimer</a>"#,
+            href = urls.to(&format!("/delete?occ={}", occ_param(at))),
+        ),
+        None => format!(
+            r#"<form method="post" action="{delete}">
+<button type="submit" class="secondary danger">Supprimer</button>
+</form>"#,
+            delete = urls.to("/delete"),
+        ),
+    }
+}
+
+/// The delete screen of an occurrence of a series (#710): the three
+/// choices of the edit form (#709), « Toute la série » checked.
+fn delete_page(
+    header: &str,
+    event: &EventResponse,
+    choice: &ScopeChoice,
+    family: Option<Uuid>,
+) -> String {
+    let urls = EventUrls {
+        id: event.id,
+        family,
+    };
+    let body = format!(
+        r#"<h1>Supprimer — {title}</h1>
+<p>Cet événement se répète. Vous l'avez ouvert sur l'occurrence du {when}.</p>
+<form method="post" action="{action}">
+<fieldset class="card">
+<legend>Supprimer</legend>
+<input type="hidden" name="occurrence_at" value="{occ}"/>
+{radios}</fieldset>
+<button type="submit" class="danger">Supprimer</button>
+</form>
+<div class="links"><a href="{back}">Annuler</a></div>"#,
+        title = html_escape(&event.title),
+        when = occurrence_label(choice.occurrence_at, event.all_day),
+        action = urls.to("/delete"),
+        occ = occ_param(choice.occurrence_at),
+        radios = scope_radios(choice.scope),
+        back = urls.to(&format!("?occ={}", occ_param(choice.occurrence_at))),
+    );
+    shell_with_header(Width::Form, "Supprimer l'événement", header, &body)
+}
+
+/// The API path a delete calls: the event whole without parameters, as
+/// before #710; one occurrence, or one and the following, with the scope and
+/// the occurrence in the query.
+fn delete_api_path(group_id: Uuid, event_id: Uuid, choice: Option<ScopeChoice>) -> String {
+    let path = format!("/groups/{group_id}/events/{event_id}");
+    let scope = match choice.map(|c| (c.scope, c.occurrence_at)) {
+        None | Some((EditScope::All, _)) => return path,
+        Some((EditScope::This, at)) => ("this", at),
+        Some((EditScope::ThisAndFollowing, at)) => ("this_and_following", at),
+    };
+    format!(
+        "{path}?scope={}&occurrence_at={}",
+        scope.0,
+        occ_param(scope.1)
+    )
+}
+
+/// The detail error a 400 of a scoped delete comes back under (#710).
+fn rejected_delete_code(api_code: Option<&str>) -> &'static str {
+    match api_code {
+        Some("occurrence_not_in_series") => "occurrence_not_in_series",
+        Some("scope_not_allowed_for_imported_event") => "scope_not_allowed_for_imported_event",
+        Some("scope_requires_recurring_event") => "scope_requires_recurring_event",
+        _ => "unavailable",
     }
 }
 
@@ -665,22 +761,95 @@ pub async fn complete(
     Redirect::to(&fam.url(&target)).into_response()
 }
 
+#[derive(serde::Deserialize)]
+pub struct DeleteQuery {
+    /// The occurrence « Supprimer » was pressed on (#710). Read as absent
+    /// when it does not convert (#580).
+    #[serde(default, deserialize_with = "lenient")]
+    occ: Option<DateTime<Utc>>,
+}
+
+/// `GET /agenda/:id/delete?occ=` (#710): the screen that asks which
+/// occurrences of a series go. Without an occurrence of a recurring event
+/// there is nothing to ask, and the detail deletes the event whole.
+pub async fn delete_confirm(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(event_id): Path<Uuid>,
+    EventFamily(requested): EventFamily,
+    LenientQuery(query): LenientQuery<DeleteQuery>,
+) -> Response {
+    let detail = format!("/agenda/{event_id}");
+    let Some(fam) = family_context_for(
+        &state,
+        &headers,
+        &me,
+        &format!("{detail}/delete"),
+        requested,
+    )
+    .await
+    else {
+        return Redirect::to("/groups/new").into_response();
+    };
+    let cookie = agenda_cookie(&headers);
+    let event = match api_request_auth(
+        &state,
+        reqwest::Method::GET,
+        &format!("/groups/{}/events/{}", fam.gid, event_id),
+        cookie.as_deref(),
+        None,
+    )
+    .await
+    {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            match serde_json::from_value::<EventResponse>(resp.body) {
+                Ok(e) => e,
+                Err(_) => return service_unavailable_page().into_response(),
+            }
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+            return event_not_found_page().into_response()
+        }
+        _ => return service_unavailable_page().into_response(),
+    };
+    if !can_modify(&fam.role, event.created_by == me.user_id) {
+        return forbidden_page().into_response();
+    }
+    let Some(occurrence_at) = query.occ.filter(|_| event.rrule.is_some()) else {
+        return Redirect::to(&fam.url(&detail)).into_response();
+    };
+    let choice = ScopeChoice {
+        occurrence_at,
+        scope: EditScope::All,
+    };
+    Html(delete_page(&fam.header, &event, &choice, fam.carried)).into_response()
+}
+
+/// `POST /agenda/:id/delete`: the event whole from the detail's form, or
+/// what the delete screen chose (#710).
 pub async fn delete(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
     EventFamily(requested): EventFamily,
+    raw_body: axum::body::Bytes,
 ) -> Response {
     let detail = format!("/agenda/{event_id}");
     let Some(fam) = family_context_for(&state, &headers, &_me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
+    // A forged occurrence or scope comes back to the detail; nothing is
+    // deleted on a guess.
+    let Ok(choice) = read_scope(&raw_body) else {
+        return Redirect::to(&fam.url(&format!("{detail}?error=invalid_form"))).into_response();
+    };
     let cookie = agenda_cookie(&headers);
     let result = api_request_auth(
         &state,
         reqwest::Method::DELETE,
-        &format!("/groups/{}/events/{}", fam.gid, event_id),
+        &delete_api_path(fam.gid, event_id, choice),
         cookie.as_deref(),
         None,
     )
@@ -695,6 +864,10 @@ pub async fn delete(
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             event_not_found_page().into_response()
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
+            let code = rejected_delete_code(resp.body.get("error").and_then(|v| v.as_str()));
+            Redirect::to(&fam.url(&format!("{detail}?error={code}"))).into_response()
         }
         Ok(_) | Err(_) => service_unavailable_page().into_response(),
     }
@@ -1099,6 +1272,191 @@ mod tests {
             edit_href(EventUrls::from(id), &recurring, Some("demain\"><b>")),
             plain
         );
+    }
+
+    // -- the delete of a recurring event (#710) -----------------------------
+
+    fn weekly() -> EventResponse {
+        let mut recurring = event(false);
+        recurring.rrule = Some("FREQ=WEEKLY".to_string());
+        recurring
+    }
+
+    fn third_week(scope: EditScope) -> ScopeChoice {
+        ScopeChoice {
+            occurrence_at: "2026-09-19T08:00:00Z".parse().unwrap(),
+            scope,
+        }
+    }
+
+    /// « Supprimer » on an occurrence of a series leads to the screen that
+    /// asks which occurrences go, in the family the detail was opened in.
+    #[test]
+    fn deleting_an_occurrence_of_a_series_asks_first() {
+        let id = uid(7);
+        let occ = Some("2026-09-19T08:00:00Z");
+        let html = delete_control(EventUrls::from(id), &weekly(), occ);
+        assert_eq!(
+            html,
+            format!(
+                r#"<a class="btn secondary danger" href="/agenda/{id}/delete?occ=2026-09-19T08:00:00Z">Supprimer</a>"#
+            )
+        );
+        let other = delete_control(
+            EventUrls {
+                id,
+                family: Some(uid(2)),
+            },
+            &weekly(),
+            occ,
+        );
+        assert!(
+            other.contains(&format!(
+                r#"href="/agenda/{id}/delete?occ=2026-09-19T08:00:00Z&famille={}""#,
+                uid(2)
+            )),
+            "{other}"
+        );
+    }
+
+    /// A one-off event, or a series opened without an occurrence it can
+    /// read, is deleted whole, straight from the detail, as before.
+    #[test]
+    fn deleting_a_one_off_event_or_a_whole_series_posts_at_once() {
+        let id = uid(7);
+        let direct = format!(
+            r#"<form method="post" action="/agenda/{id}/delete">
+<button type="submit" class="secondary danger">Supprimer</button>
+</form>"#
+        );
+        let occ = Some("2026-09-19T08:00:00Z");
+        assert_eq!(
+            delete_control(EventUrls::from(id), &event(false), occ),
+            direct
+        );
+        assert_eq!(delete_control(EventUrls::from(id), &weekly(), None), direct);
+        assert_eq!(
+            delete_control(EventUrls::from(id), &weekly(), Some("demain\"><b>")),
+            direct
+        );
+    }
+
+    fn confirm(family: Option<Uuid>) -> String {
+        delete_page("", &weekly(), &third_week(EditScope::All), family)
+    }
+
+    /// The three choices, « Toute la série » first and checked, before the
+    /// button; the occurrence travels with them.
+    #[test]
+    fn the_delete_screen_offers_three_choices_the_whole_series_by_default() {
+        let html = confirm(None);
+        let all = html.find(r#"value="all" checked"#).expect(&html);
+        let following = html
+            .find(r#"value="this_and_following"/> Cet événement et les suivants"#)
+            .expect(&html);
+        let this = html
+            .find(r#"value="this"/> Cet événement uniquement"#)
+            .expect(&html);
+        assert!(all < following && following < this, "{html}");
+        assert_eq!(html.matches(r#"type="radio" name="scope""#).count(), 3);
+        assert_eq!(html.matches(" checked").count(), 1, "{html}");
+        assert!(html.contains("Toute la série"), "{html}");
+        assert!(
+            html.contains(
+                r#"<input type="hidden" name="occurrence_at" value="2026-09-19T08:00:00Z"/>"#
+            ),
+            "{html}"
+        );
+        let button = html
+            .find(r#"<button type="submit" class="danger">"#)
+            .expect(&html);
+        assert!(this < button, "{html}");
+        // The occurrence, on the Paris clock.
+        assert!(html.contains("19/09/2026 à 10:00"), "{html}");
+    }
+
+    #[test]
+    fn the_delete_screen_posts_and_goes_back_in_its_family() {
+        let id = uid(7);
+        let own = confirm(None);
+        assert!(
+            own.contains(&format!(
+                r#"<form method="post" action="/agenda/{id}/delete">"#
+            )),
+            "{own}"
+        );
+        assert!(
+            own.contains(&format!(
+                r#"<a href="/agenda/{id}?occ=2026-09-19T08:00:00Z">Annuler</a>"#
+            )),
+            "{own}"
+        );
+        let other = confirm(Some(uid(2)));
+        let family = format!("famille={}", uid(2));
+        assert!(
+            other.contains(&format!(
+                r#"<form method="post" action="/agenda/{id}/delete?{family}">"#
+            )),
+            "{other}"
+        );
+        assert!(
+            other.contains(&format!(
+                r#"<a href="/agenda/{id}?occ=2026-09-19T08:00:00Z&{family}">Annuler</a>"#
+            )),
+            "{other}"
+        );
+    }
+
+    #[test]
+    fn the_delete_screen_escapes_the_title() {
+        let mut series = weekly();
+        series.title = "<b>Piscine</b>".to_string();
+        let html = delete_page("", &series, &third_week(EditScope::All), None);
+        assert!(html.contains("&lt;b&gt;Piscine&lt;/b&gt;"), "{html}");
+        assert!(!html.contains("<b>Piscine"), "{html}");
+    }
+
+    /// What the API is asked: the whole event without parameters, as
+    /// before; one occurrence, or one and the following, with the scope and
+    /// the occurrence in the query.
+    #[test]
+    fn the_delete_request_carries_the_scope_and_its_occurrence() {
+        let (g, e) = (uid(9), uid(7));
+        let whole = format!("/groups/{g}/events/{e}");
+        assert_eq!(delete_api_path(g, e, None), whole);
+        assert_eq!(
+            delete_api_path(g, e, Some(third_week(EditScope::All))),
+            whole
+        );
+        assert_eq!(
+            delete_api_path(g, e, Some(third_week(EditScope::This))),
+            format!("{whole}?scope=this&occurrence_at=2026-09-19T08:00:00Z")
+        );
+        assert_eq!(
+            delete_api_path(g, e, Some(third_week(EditScope::ThisAndFollowing))),
+            format!("{whole}?scope=this_and_following&occurrence_at=2026-09-19T08:00:00Z")
+        );
+    }
+
+    /// The refusals of a scoped delete say what went wrong on the detail;
+    /// any other 400 reads as the service failing.
+    #[test]
+    fn a_refused_scoped_delete_says_why() {
+        for code in [
+            "occurrence_not_in_series",
+            "scope_not_allowed_for_imported_event",
+            "scope_requires_recurring_event",
+        ] {
+            assert_eq!(rejected_delete_code(Some(code)), code);
+            assert!(error_text(code).is_some(), "{code}");
+        }
+        assert_eq!(
+            error_text("scope_not_allowed_for_imported_event"),
+            Some("Un événement importé ne se supprime que pour toute la série.")
+        );
+        assert_eq!(rejected_delete_code(Some("not_found")), "unavailable");
+        assert_eq!(rejected_delete_code(None), "unavailable");
+        assert!(error_text("invalid_form").is_some());
     }
 
     #[test]

@@ -274,12 +274,31 @@ fn same_rule(submitted: Option<&str>, series: &EventResponse) -> bool {
 /// Native radios in a `fieldset` named by its `legend`: one Tab stop, the
 /// arrows move between them.
 fn scope_fieldset(choice: &ScopeChoice, all_day: bool) -> String {
-    let when = if all_day {
-        fmt_paris(choice.occurrence_at, "%d/%m/%Y")
+    let when = occurrence_label(choice.occurrence_at, all_day);
+    format!(
+        r#"<fieldset class="card">
+<legend>Appliquer la modification à</legend>
+<input type="hidden" name="occurrence_at" value="{occ}"/>
+<p class="muted">Les dates affichées sont celles de l'occurrence du {when}. Pour toute la série, un changement de jour ou d'heure décale chaque occurrence d'autant.</p>
+{radios}</fieldset>"#,
+        occ = occ_param(choice.occurrence_at),
+        radios = scope_radios(choice.scope),
+    )
+}
+
+/// An occurrence as the scope screens name it, on the Paris clock.
+pub(super) fn occurrence_label(occurrence_at: DateTime<Utc>, all_day: bool) -> String {
+    if all_day {
+        fmt_paris(occurrence_at, "%d/%m/%Y")
     } else {
-        fmt_paris(choice.occurrence_at, "%d/%m/%Y à %H:%M")
-    };
-    let radios: String = [
+        fmt_paris(occurrence_at, "%d/%m/%Y à %H:%M")
+    }
+}
+
+/// The three `scope` radios, in the order the edit form and the delete
+/// screen (#710) offer them, `selected` checked.
+pub(super) fn scope_radios(selected: EditScope) -> String {
+    [
         (EditScope::All, "all", "Toute la série"),
         (
             EditScope::ThisAndFollowing,
@@ -290,21 +309,13 @@ fn scope_fieldset(choice: &ScopeChoice, all_day: bool) -> String {
     ]
     .iter()
     .map(|(scope, value, label)| {
-        let checked = if *scope == choice.scope { " checked" } else { "" };
+        let checked = if *scope == selected { " checked" } else { "" };
         format!(
             r#"<label class="field inline"><input type="radio" name="scope" value="{value}"{checked}/> {label}</label>
 "#
         )
     })
-    .collect();
-    format!(
-        r#"<fieldset class="card">
-<legend>Appliquer la modification à</legend>
-<input type="hidden" name="occurrence_at" value="{occ}"/>
-<p class="muted">Les dates affichées sont celles de l'occurrence du {when}. Pour toute la série, un changement de jour ou d'heure décale chaque occurrence d'autant.</p>
-{radios}</fieldset>"#,
-        occ = occ_param(choice.occurrence_at),
-    )
+    .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -631,8 +642,9 @@ pub async fn post(
     }
 }
 
-/// The occurrence and scope fields of the edit form (#709). Both are absent
-/// from the form of an event opened as a whole.
+/// The occurrence and scope fields of the edit form (#709) and of the
+/// delete screen (#710). Both are absent from the form of an event opened as
+/// a whole.
 #[derive(serde::Deserialize)]
 struct ScopeForm {
     #[serde(default)]
@@ -643,7 +655,7 @@ struct ScopeForm {
 
 /// The scope the submitted form chose: `None` without an occurrence, `Err`
 /// for an occurrence or a scope the form cannot have sent.
-fn read_scope(raw_body: &[u8]) -> Result<Option<ScopeChoice>, ()> {
+pub(super) fn read_scope(raw_body: &[u8]) -> Result<Option<ScopeChoice>, ()> {
     let form = serde_urlencoded::from_bytes::<ScopeForm>(raw_body).map_err(|_| ())?;
     let Some(occurrence_at) = form.occurrence_at else {
         return Ok(None);
