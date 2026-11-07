@@ -266,7 +266,10 @@ fn build_router(state: AppState) -> Router {
             "/agenda/{id}/edit",
             get(routes::agenda::edit::get).post(routes::agenda::edit::post),
         )
-        .route("/agenda/{id}/delete", post(routes::agenda::detail::delete))
+        .route(
+            "/agenda/{id}/delete",
+            get(routes::agenda::detail::delete_confirm).post(routes::agenda::detail::delete),
+        )
         .route(
             "/agenda/{id}/complete",
             post(routes::agenda::detail::complete),
