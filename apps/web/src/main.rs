@@ -186,6 +186,11 @@ fn build_router(state: AppState) -> Router {
             "/account/notifications/devices/remove",
             post(routes::account::notifications::remove_devices),
         )
+        // The next reminders the Android app schedules on the phone (#668).
+        .route(
+            "/account/notifications/upcoming",
+            get(routes::account::notifications::upcoming),
+        )
         // What the service worker asks on each push (#536).
         .route(
             "/account/notifications/last-push",
@@ -518,6 +523,9 @@ fn build_router(state: AppState) -> Router {
         // The slot the active family's accent (#538) is recorded into by
         // the shared header, and read back by `app::document`.
         .layer(axum::middleware::from_fn(family::accent_scope))
+        // Whether the request is the Android app's (#668), read back by
+        // `app::document` and `/account/notifications`.
+        .layer(axum::middleware::from_fn(mobile_app::scope))
         // The orchestrator's probes (#424), after every layer so that none
         // applies: they read no cookie and no body.
         .route("/healthz", get(routes::health::healthz))

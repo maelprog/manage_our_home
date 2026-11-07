@@ -200,14 +200,16 @@ pub enum Script {
     ResetPassword,
     MessagerieLive,
     Push,
+    LocalReminders,
 }
 
 impl Script {
-    pub const ALL: [Script; 4] = [
+    pub const ALL: [Script; 5] = [
         Script::Enhance,
         Script::ResetPassword,
         Script::MessagerieLive,
         Script::Push,
+        Script::LocalReminders,
     ];
 
     fn stem(self) -> &'static str {
@@ -216,6 +218,7 @@ impl Script {
             Script::ResetPassword => "reset-password",
             Script::MessagerieLive => "messagerie-live",
             Script::Push => "push",
+            Script::LocalReminders => "local-reminders",
         }
     }
 
@@ -226,6 +229,7 @@ impl Script {
             Script::ResetPassword => crate::routes::auth::reset_password::FRAGMENT_SCRIPT,
             Script::MessagerieLive => crate::routes::messagerie::thread::LIVE_SCRIPT,
             Script::Push => crate::routes::account::notifications::PUSH_SCRIPT,
+            Script::LocalReminders => crate::routes::account::notifications::LOCAL_REMINDERS_SCRIPT,
         }
     }
 
@@ -581,6 +585,21 @@ mod tests {
         let html = crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
         let head = &html[..html.find("</head>").expect("a head")];
         assert!(head.contains(&Script::Enhance.tag()), "{html}");
+    }
+
+    #[test]
+    fn only_the_apps_pages_load_the_local_reminders_script() {
+        // #668: the app's WebView gets it in the head of every page, the
+        // login page included (a 401 there cancels the reminders); a
+        // browser never does.
+        let page = || crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
+        let tag = Script::LocalReminders.tag();
+        assert!(!page().contains(&tag));
+        assert!(!crate::mobile_app::serving(false, page).contains(&tag));
+        let html = crate::mobile_app::serving(true, page);
+        let head = &html[..html.find("</head>").expect("a head")];
+        assert!(head.contains(&tag), "{html}");
+        assert_eq!(html.matches(&tag).count(), 1, "{html}");
     }
 
     #[tokio::test]

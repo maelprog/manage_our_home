@@ -8,11 +8,12 @@ du site.
 
 | Fichier | Rôle |
 |---|---|
-| `package.json`, `package-lock.json` | Capacitor 8.6, `@capacitor/android`, `@capacitor/app` ; TypeScript pour lire la configuration |
+| `package.json`, `package-lock.json` | Capacitor 8.6, `@capacitor/android`, `@capacitor/app`, `@capacitor/local-notifications` ; TypeScript pour lire la configuration |
 | `capacitor.config.ts` | le site ouvert (`staging` ou `prod`), le nom, le marqueur de User-Agent, la page hors ligne |
 | `www/hors-ligne.html` | la page affichée quand le site ne répond pas |
 | `android/` | le projet Android (Gradle), versionné |
 | `scripts/check-shell.test.mjs` | les contrôles de la coquille (`npm test`) |
+| `scripts/local-reminders.test.mjs` | les tests du script des rappels locaux, `apps/web/src/local-reminders.js` (`npm test`) |
 
 ## Ce que fait l'application
 
@@ -52,11 +53,23 @@ du site.
   téléphone, pas dans l'application.
 - **La photo du code-barres** (Stocks → ajouter) ouvre l'appareil photo ;
   l'application demande la permission la première fois.
+- **Les rappels d'événements, programmés sur le téléphone** (#668). Le site
+  sert aux seules pages de l'application un script,
+  `apps/web/src/local-reminders.js`, qui lit les prochains rappels du
+  membre à chaque page et à chaque retour au premier plan, et les confie à
+  Android par le plugin Local Notifications : ils arrivent à leur heure
+  sans réseau, l'application fermée. Un toucher ouvre l'événement dans
+  l'agenda. La déconnexion les retire tous. La permission des
+  notifications (Android 13+) et les alarmes exactes (Android 14+) se
+  demandent sur « Mon compte › Notifications de rappel » ; sans alarmes
+  exactes, les rappels partent quand même, avec quelques minutes de retard
+  possibles. Un événement modifié pendant que le téléphone est hors ligne
+  garde son rappel à l'ancienne heure jusqu'à la prochaine ouverture.
 
 L'APK signé que les familles installent est publié en release GitHub
 (#666) : « Publier un APK signé » et « Installer l'application
-(familles) » plus bas. Hors de ce paquet : les rappels locaux (#668), la
-connexion Google native (#669), iOS.
+(familles) » plus bas. Hors de ce paquet : la connexion Google native
+(#669), iOS.
 
 ## Guide pas à pas : construire et installer l'APK `staging`
 
@@ -255,7 +268,7 @@ Ce que les familles installent : la variante `prod`, en release, signée
 d'une clé qui ne change jamais. Android n'installe une mise à jour par-dessus
 l'application que si elle est signée de la même clé et que son
 `versionCode` est plus grand ; sinon il faut désinstaller, et l'application
-perd ses données (la session, et les rappels locaux une fois #668 livré).
+perd ses données (la session et les rappels programmés).
 
 Le workflow `.github/workflows/mobile-release.yml` fait le reste à chaque
 tag `mobile-vX.Y.Z` : `npm ci`, `npm audit --audit-level=high` (bloquant),
