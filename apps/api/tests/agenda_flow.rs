@@ -3988,8 +3988,8 @@ async fn editing_an_occurrence_and_the_following_ones_splits_the_series(db: PgPo
     );
 }
 
-/// AC (#708): from the first occurrence the series lists,
-/// `this_and_following` is the whole series — the row is updated in place.
+/// AC (#708): from the series' first occurrence, `this_and_following` is
+/// the whole series — the row is updated in place.
 #[sqlx::test]
 async fn this_and_following_from_the_first_occurrence_updates_the_series(db: PgPool) {
     let router = test_router(db.clone());
@@ -4026,6 +4026,65 @@ async fn this_and_following_from_the_first_occurrence_updates_the_series(db: PgP
     .await;
     assert_eq!(listed.len(), 5);
     assert!(listed.iter().all(|o| o.0 == series_id && o.1 == "Aquagym"));
+}
+
+/// AC (#708): the first occurrence the series *lists* is not its start when
+/// earlier ones are excluded. `this_and_following` from there still cuts
+/// the series: a move of that occurrence moves the following ones, and the
+/// count left is shared — not five more occurrences from the moved one.
+#[sqlx::test]
+async fn this_and_following_after_an_excluded_head_still_splits_the_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie = register_verify_login(
+        &router,
+        &db,
+        "scope-excluded-head@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let series_id =
+        daily_series_with_a_reminder(&router, &owner_cookie, &group_id, serde_json::json!({}))
+            .await;
+    let detached = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({"scope": "this", "occurrence_at": nine_paris(0), "title": "Seule"}),
+    )
+    .await;
+    assert_status(&detached, StatusCode::OK);
+
+    let res = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        serde_json::json!({
+            "scope": "this_and_following",
+            "occurrence_at": nine_paris(1),
+            "starts_at": nine_paris(1) + Duration::hours(1),
+            "ends_at": nine_paris(1) + Duration::hours(2),
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let created = json_body(res).await;
+    assert_eq!(created["rrule"], "FREQ=DAILY;COUNT=4");
+
+    let listed = listed_occurrences(
+        &router,
+        &owner_cookie,
+        &group_id,
+        nine_paris(-1),
+        nine_paris(10),
+    )
+    .await;
+    let starts: Vec<_> = listed.iter().map(|o| o.2).collect();
+    let mut expected = vec![nine_paris(0)];
+    expected.extend([1, 2, 3, 4].map(|n| nine_paris(n) + Duration::hours(1)));
+    assert_eq!(starts, expected);
 }
 
 /// AC (#708): a recurring task keeps its completions where they belong — the

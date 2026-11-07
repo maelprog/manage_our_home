@@ -775,10 +775,13 @@ pub async fn update_event(
         .ok()
         .flatten()
         .ok_or_else(|| AppError::BadRequest("occurrence_not_in_series".into()))?;
-        // « This one and the following » from the first occurrence the
-        // series lists is the whole series: nothing is left to cut off, and
-        // the row is updated in place below.
-        if scope == EditScope::This || located.listed_before > 0 {
+        // « This one and the following » from the series' very first
+        // occurrence is the whole series: nothing is left to cut off, and
+        // the row is updated in place below. From the first one it *lists*
+        // after excluded ones, it is not: the excluded ones still hold the
+        // series' start and spend its `COUNT`, so the series is cut there
+        // like anywhere else — it is left listing nothing.
+        if scope == EditScope::This || located.produced_before > 0 {
             // Sorted: the order `assignees_for_events` reads a set written
             // in one statement back in (see `update_event`'s own return).
             let mut assignee_ids = new_assignees.unwrap_or(current_assignees);

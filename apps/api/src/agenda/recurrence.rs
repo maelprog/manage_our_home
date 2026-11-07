@@ -570,10 +570,9 @@ pub struct OccurrenceInSeries {
     /// The occurrence as the series unrolls it.
     pub span: OccurrenceSpan,
     /// How many occurrences the rule produces before it, excluded ones
-    /// included: what `COUNT` has spent by then.
+    /// included: what `COUNT` has spent by then. Zero only for the series'
+    /// very first occurrence, excluded ones counting.
     pub produced_before: u32,
-    /// How many of those are still listed, i.e. not excluded.
-    pub listed_before: u32,
 }
 
 /// The occurrence of a stored series that `at` names, or `None` when it names
@@ -618,12 +617,9 @@ pub fn locate_occurrence(
     if without_excluded(vec![span], exdates, all_day).is_empty() {
         return Ok(None);
     }
-    let before = spans[..index].to_vec();
     Ok(Some(OccurrenceInSeries {
         span,
-        produced_before: u32::try_from(before.len()).unwrap_or(u32::MAX),
-        listed_before: u32::try_from(without_excluded(before, exdates, all_day).len())
-            .unwrap_or(u32::MAX),
+        produced_before: u32::try_from(index).unwrap_or(u32::MAX),
     }))
 }
 
@@ -2575,7 +2571,6 @@ mod tests {
             Some(OccurrenceInSeries {
                 span: (paris(2026, 9, 4, 9, 0), paris(2026, 9, 4, 10, 0)),
                 produced_before: 3,
-                listed_before: 2,
             })
         );
     }
@@ -2670,7 +2665,6 @@ mod tests {
             Some(OccurrenceInSeries {
                 span: (midnight(2026, 10, 26), midnight(2026, 10, 27)),
                 produced_before: 2,
-                listed_before: 2,
             })
         );
     }
