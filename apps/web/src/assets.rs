@@ -194,6 +194,7 @@ async fn serve_stylesheet() -> Response {
 /// - `ResetPassword`, `MessagerieLive`, `Push`: one page each, loaded where
 ///   their inline `<script>` used to sit, so they still run once the markup
 ///   before them is parsed.
+/// - `LocalReminders`: every page of the Android app, in the head (#668).
 /// - `GoogleSignIn`: `/login` and `/register` in the Android app only,
 ///   right after the button it drives (#670).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
