@@ -327,6 +327,9 @@ pub async fn post(
         // unchecked makes the event shared again (#621). apps/api refuses
         // (403) to make private an event its author would not take part in.
         is_private: Some(form.is_private.is_some()),
+        // The form edits the whole series (#708 adds the other scopes to
+        // the API only).
+        scope: None,
     };
 
     let result = api_request_auth(

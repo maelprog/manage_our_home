@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM scheduled_notifications WHERE event_id = $1 AND occurrence_at >= $2 AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d139f1c54e0b9c7b48fbce9ac07853f97d6d5a37abaa18e39b7c41d9c6ca20e"
+}
