@@ -30,9 +30,6 @@ var MHomeLocalReminders = (function () {
   var UPCOMING_URL = "/account/notifications/upcoming";
   // The plugin's "no notification" in the intent that opens the activity.
   var INT_MIN = -2147483648;
-  // An all-day occurrence starts at the Paris midnight that opens its day
-  // (apps/api, recurrence::all_day_anchor): its date is Paris's.
-  var ALL_DAY_ZONE = "Europe/Paris";
   var UUID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 
   // The notification's identifier: Android's is a 32-bit int, the
@@ -54,22 +51,6 @@ var MHomeLocalReminders = (function () {
     return isNaN(at.getTime()) ? null : at;
   }
 
-  // `2026-11-10`, the civil date of `at` in `timeZone` (the phone's when
-  // undefined), for comparing days.
-  function dayOf(at, timeZone) {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: timeZone, year: "numeric", month: "2-digit", day: "2-digit"
-    }).format(at);
-  }
-
-  // `Mardi 10 novembre`.
-  function dateText(at, timeZone) {
-    var text = new Intl.DateTimeFormat("fr-FR", {
-      timeZone: timeZone, weekday: "long", day: "numeric", month: "long"
-    }).format(at);
-    return text.charAt(0).toUpperCase() + text.slice(1);
-  }
-
   // `14:30`, as the agenda writes a time.
   function timeText(at, timeZone) {
     return new Intl.DateTimeFormat("fr-FR", {
@@ -87,8 +68,8 @@ var MHomeLocalReminders = (function () {
   // undefined), `exact` (exact alarms allowed).
   //
   // Its text: the event's title, then the time of the occurrence in the
-  // phone's zone, or « toute la journée »; the date before it when the
-  // occurrence is not on the day the reminder fires.
+  // phone's zone, or « toute la journée ». No date: title and time only
+  // (choice of 2026-11-01, confirmed on 2026-11-07, #724).
   function toNotification(entry, options) {
     if (!entry || typeof entry !== "object") return null;
     var id = notificationId(entry.id);
@@ -98,21 +79,10 @@ var MHomeLocalReminders = (function () {
     if (typeof entry.title !== "string" || !UUID.test(String(entry.event_id)) || !UUID.test(String(entry.group_id))) {
       return null;
     }
-    var zone = options.timeZone;
-    var allDay = entry.all_day === true;
-    var occurrenceZone = allDay ? ALL_DAY_ZONE : zone;
-    var sameDay = dayOf(occurrence, occurrenceZone) === dayOf(fire, zone);
-    var body;
-    if (allDay) {
-      body = sameDay ? "Toute la journée" : dateText(occurrence, occurrenceZone) + ", toute la journée";
-    } else {
-      var time = timeText(occurrence, zone);
-      body = sameDay ? "À " + time : dateText(occurrence, zone) + " à " + time;
-    }
     return {
       id: id,
       title: entry.title,
-      body: body,
+      body: entry.all_day === true ? "Toute la journée" : "À " + timeText(occurrence, options.timeZone),
       schedule: { at: fire, allowWhileIdle: true },
       isExactNotification: options.exact === true,
       extra: {
