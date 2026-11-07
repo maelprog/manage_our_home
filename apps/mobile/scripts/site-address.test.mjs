@@ -83,5 +83,28 @@ test('an empty or unreadable address is refused', () => {
     assert.throws(() => normalizeSiteAddress(typed), Error, String(typed));
   }
   assert.throws(() => normalizeSiteAddress(''), /vide/);
+});
+
+test('a host name made of anything but letters, digits and inner hyphens is refused', () => {
+  // What the URL parser lets through and MainActivity (java.net.URI) would
+  // not open: the address would be stored and then ignored.
+  for (const typed of [
+    'https://ex_ample.com',
+    'https://a..b.example',
+    'https://-a.example',
+    'https://a-.example',
+    'https://*.example',
+    'https://a$b.example',
+    'https://a!b.example',
+    'https://example.1a',
+    'https://example.123x',
+    'ex_ample.com',
+  ]) {
+    assert.throws(() => normalizeSiteAddress(typed), /illisible/, typed);
+  }
+  // Inner hyphens, digits anywhere but at the start of the last label.
+  for (const typed of ['https://a-b.example', 'https://1a.example', 'https://xn--caf-dma.example', 'https://a.b2', 'https://localhost']) {
+    assert.equal(normalizeSiteAddress(typed), typed, typed);
+  }
   assert.throws(() => normalizeSiteAddress('  '), /vide/);
 });

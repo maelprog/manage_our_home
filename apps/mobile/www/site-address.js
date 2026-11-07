@@ -14,7 +14,8 @@
 //   fe80::/10), which a server reached that way rarely has a certificate
 //   for: there, `https://` has to be typed.
 // - Refused: another scheme than https, a path, a query, a fragment (even
-//   empty: `?`, `#`), credentials (`user@`), an empty or unreadable text.
+//   empty: `?`, `#`), credentials (`user@`), an empty or unreadable text,
+//   a host name java.net.URI would not read (isHostName below).
 //
 // A plain script of the web directory, loaded by the shell's own pages and
 // by `node --test` (scripts/site-address.test.mjs) alike: no dependency.
@@ -52,7 +53,7 @@ export function normalizeSiteAddress(typed) {
   } catch {
     throw new Error(`Adresse illisible : ${text}`);
   }
-  if (url.hostname === '') {
+  if (!isIpLiteral(url.hostname) && !isHostName(url.hostname)) {
     throw new Error(`Adresse illisible : ${text}`);
   }
   if (!explicit && isPrivateIp(url.hostname)) {
@@ -63,6 +64,23 @@ export function normalizeSiteAddress(typed) {
 
 // `hostname` as the URL parser leaves it: IPv4 in dotted decimal, IPv6
 // compressed and in brackets.
+function isIpLiteral(hostname) {
+  return hostname.startsWith('[') || /^\d+\.\d+\.\d+\.\d+$/.test(hostname);
+}
+
+// A host name java.net.URI reads as one (RFC 2396, which MainActivity
+// parses the stored origin with), so that what is given back here is what
+// the app opens: labels of letters, digits and inner hyphens, the last one
+// starting with a letter, a final dot allowed. The URL parser lets through
+// `_`, `*`, `$`, empty labels and the like.
+function isHostName(hostname) {
+  const labels = hostname.replace(/\.$/, '').split('.');
+  return (
+    labels.every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)) &&
+    /^[a-z]/.test(labels[labels.length - 1])
+  );
+}
+
 function isPrivateIp(hostname) {
   if (hostname.startsWith('[')) {
     const ip = hostname.slice(1, -1);
