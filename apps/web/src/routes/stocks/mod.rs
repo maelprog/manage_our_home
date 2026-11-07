@@ -168,6 +168,12 @@ pub(crate) struct PlannedTotal {
 /// share. The comparison is made on the quantities as written — rounded to
 /// three decimals, like `format_quantity` — so a total that reads equal to
 /// the stock is never said to exceed it.
+///
+/// apps/api caps each recipe's share at what the line holds
+/// (`recipes::outcome`, `cap(still, left)`): one recipe alone never makes
+/// `short_by` appear, and with several the shortfall is a lower bound —
+/// two recipes wanting 600 g each from 500 g read « Il manque 500 g » where
+/// 700 g are missing.
 pub(crate) fn planned_total(
     usage: &[PlannedUsage],
     quantity: f64,
