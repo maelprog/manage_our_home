@@ -44,7 +44,7 @@ données sont-elles conservées ? ».
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google ; sur le web, le jeton de rafraîchissement que Google délivre parfois (chiffré) ; depuis l'application Android, le jeton d'identité signé par Google que l'application transmet au serveur, vérifié puis oublié, et le nonce à usage unique émis pour cette connexion, dont le serveur ne garde que l'empreinte, 5 minutes au plus | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, conservés en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec une clé secrète du serveur, jamais l'adresse ni l'email en clair), avec le nombre de tentatives et leurs horaires | Intérêt légitime (limiter les essais de mot de passe) |
-| Limites d'usage | votre identifiant de membre quand vous importez une recette depuis l'adresse d'une page ; votre adresse email quand une tentative d'inscription avec elle vous fait envoyer l'avis « Vous avez déjà un compte » ; l'adresse IP (en IPv6, réduite à son préfixe /64) de votre navigateur quand il signale de lui-même au serveur un contenu bloqué par la politique de sécurité des pages (rapport CSP) — chacune conservée en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec la clé secrète de la protection de la connexion, jamais en clair), avec les horaires ou le nombre des demandes récentes | Intérêt légitime (sécurité du service, maîtrise des téléchargements que le serveur fait pour vous, éviter qu'un tiers vous fasse envoyer cet avis à répétition) |
+| Limites d'usage | votre identifiant de membre quand vous importez une recette depuis l'adresse d'une page ; votre adresse email quand une tentative d'inscription avec elle vous fait envoyer l'avis « Vous avez déjà un compte » ; l'adresse IP (en IPv6, réduite à son préfixe /64) de votre navigateur quand il signale de lui-même au serveur un contenu bloqué par la politique de sécurité des pages (rapport CSP), ou de votre téléphone quand vous vous connectez avec Google depuis l'application Android — chacune conservée en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec la clé secrète de la protection de la connexion, jamais en clair), avec les horaires ou le nombre des demandes récentes | Intérêt légitime (sécurité du service, maîtrise des téléchargements que le serveur fait pour vous, éviter qu'un tiers vous fasse envoyer cet avis à répétition, limiter les tentatives de connexion avec Google) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
@@ -385,7 +385,8 @@ de la purge dépasserait.
   sa première tentative — plus tôt à l'arrivée d'une nouvelle tentative
   après ces 30 minutes, ou quand le serveur suit déjà 10 000 couples.
 - **Limites d'usage** (import d'une recette, avis « Vous avez déjà un
-  compte », rapports CSP) : conservées en base, sous forme pseudonymisée
+  compte », rapports CSP, connexion avec Google depuis l'application
+  Android) : conservées en base, sous forme pseudonymisée
   seulement, avec la même clé secrète que la protection de la connexion ;
   ni votre identifiant, ni votre adresse email, ni votre adresse IP n'y
   figurent en clair, mais une donnée pseudonymisée reste une donnée
@@ -402,6 +403,12 @@ de la purge dépasserait.
   fenêtre, plus tôt quand le serveur suit déjà 10 000 adresses. Les
   lectures envoyées à Open Food Facts sont aussi limitées, à 15 par minute
   pour l'ensemble du serveur : ce compteur-là n'est rattaché à aucun membre.
+  La connexion avec Google depuis l'application est limitée à 20 demandes
+  par adresse IP sur 10 minutes glissantes, demande de nonce et envoi du
+  jeton confondus : les horaires d'une adresse sont supprimés au plus tard
+  au premier passage de purge qui suit les 10 minutes de sa dernière
+  demande, plus tôt par la première demande du même genre arrivée après ce
+  délai.
 - **Photo d'un code-barres** (scan d'un article de stock) : pas conservée
   du tout. Elle peut montrer l'intérieur de votre logement ; le serveur la
   lit en mémoire le temps de trouver le code, puis l'oublie avec la
