@@ -237,6 +237,27 @@ adb install -r android/app/build/outputs/apk/staging/debug/app-staging-debug.apk
 L'émulateur passe par le réseau de la machine : si elle est sur Tailscale,
 le staging répond.
 
+### 4d. Ouvrir un autre site que le standard (#736)
+
+Au lancement, l'application ouvre le site mémorisé dans ses préférences
+privées s'il y en a un, sinon le site standard de sa variante (celui du
+`sync`). Aucun écran ne permet encore de le choisir ; sur un APK de
+débogage, on l'écrit à la main (`run-as` ne marche pas sur un APK de
+release) :
+
+```sh
+APP=fr.watallo.mhome.staging   # ou fr.watallo.mhome pour la variante prod
+printf '<map><string name="origin">https://maison.exemple.fr</string></map>' \
+  | adb shell run-as $APP sh -c "'mkdir -p shared_prefs && cat > shared_prefs/site.xml'"
+adb shell am force-stop $APP     # puis rouvrir l'application
+adb shell run-as $APP rm shared_prefs/site.xml   # retour au site standard
+```
+
+La valeur doit être une origine https telle que la rend
+`normalizeSiteAddress` de `www/site-address.js` : `https://hôte[:port]`, en
+minuscules, sans `/` final ni rien après le nom. Une autre valeur est
+ignorée, et le site standard s'ouvre.
+
 ### 5. Contrôler
 
 L'icône **MHome** (la maison blanche sur fond pétrole) est dans la liste

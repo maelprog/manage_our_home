@@ -63,9 +63,10 @@ android {
     buildFeatures {
         resValues = true
     }
-    // Which site the APK opens is chosen at `npx cap sync` (MHOME_TARGET,
-    // capacitor.config.ts); the flavour names it, so the two can be
-    // checked against each other (checkSyncedTarget below). The staging
+    // Which site the APK opens by default is chosen at `npx cap sync`
+    // (MHOME_TARGET, capacitor.config.ts); the flavour names it, so the two
+    // can be checked against each other (checkSyncedTarget below). A site
+    // stored on the phone replaces it at launch (MainActivity). The staging
     // flavour has an id of its own, so one phone can hold both apps.
     flavorDimensions = ["target"]
     productFlavors {
@@ -128,8 +129,8 @@ def copyBrandIcons = tasks.register('copyBrandIcons', Copy) {
 }
 preBuild.dependsOn copyBrandIcons
 
-// A staging APK opens the staging server and nothing else; a prod APK
-// opens an https site that is not the staging server. A sync for the
+// A staging APK opens by default the staging server and nothing else; a
+// prod APK, an https site that is not the staging server. A sync for the
 // other target fails the build here instead of shipping in silence.
 def syncedUrl = syncedConfig.server?.url as String
 def checkSyncedTarget = { String flavor ->

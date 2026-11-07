@@ -176,6 +176,10 @@ test('staging is the default target, and opens the staging server', () => {
   assert.equal(config.server.url, 'https://staging.watallo.fr');
   assert.equal(config.server.hostname, 'staging.watallo.fr');
   assert.equal(config.server.cleartext, false);
+  // The bridge, and the plugins, on the site's origin only: a site stored
+  // on the phone (#736) replaces server.url in MainActivity, it needs no
+  // other origin allowed.
+  assert.equal(config.server.allowNavigation, undefined);
   // MainActivity handles the back button; two handlers would race.
   assert.equal(config.plugins.App.disableBackButtonHandler, true);
   assert.deepEqual(loadConfig({ MHOME_TARGET: 'staging' }).config, config);
