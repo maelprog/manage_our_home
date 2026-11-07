@@ -1782,6 +1782,135 @@ async fn an_all_day_series_is_reminded_on_exactly_the_days_the_agenda_lists(db: 
     assert_eq!(reminded, listed, "{rrule}");
 }
 
+/// #707: an occurrence a series excludes (`events.exdates`) is neither
+/// listed by `GET …/events` nor reminded, on an hour-bound series (the
+/// exact instant) and on an all-day one (the Paris day). No route writes
+/// `exdates` yet, so the test sets it in the base.
+#[sqlx::test]
+async fn an_excluded_occurrence_is_neither_listed_nor_reminded(db: PgPool) {
+    use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
+
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    let first = paris_date(Utc::now()) + Duration::days(2);
+    let midnight = paris_start_of_day(first);
+    // 09:00 on the Paris wall clock `n` days after `first`: what a daily
+    // hour-bound series keeps across a change of hour.
+    let nine_on = |n: i64| {
+        rrule::Tz::Europe__Paris
+            .from_local_datetime(&(first + Duration::days(n)).and_hms_opt(9, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+    let nine = nine_on(0);
+    // (all_day, starts_at, the occurrence excluded, what `exdates` stores)
+    let cases = [
+        (false, nine, nine_on(2), nine_on(2)),
+        // Any instant of the Paris day excludes an all-day occurrence.
+        (
+            true,
+            midnight,
+            paris_start_of_day(first + Duration::days(2)),
+            paris_start_of_day(first + Duration::days(2)) + Duration::hours(15),
+        ),
+    ];
+    for (all_day, starts_at, excluded, stored) in cases {
+        let create = call(
+            &router,
+            Method::POST,
+            &events_path,
+            Some(&owner_cookie),
+            Some(serde_json::json!({
+                "title": format!("Série all_day={all_day}"),
+                "starts_at": starts_at,
+                "ends_at": starts_at + Duration::hours(1),
+                "all_day": all_day,
+                "rrule": "FREQ=DAILY;COUNT=5",
+            })),
+        )
+        .await;
+        assert_status(&create, StatusCode::CREATED);
+        let event_id: Uuid = json_body(create).await["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let mut tx = with_family_scope(&db, &group_id).await;
+        sqlx::query("UPDATE events SET exdates = ARRAY[$1::timestamptz] WHERE id = $2")
+            .bind(stored)
+            .bind(event_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let reminder = call(
+            &router,
+            Method::POST,
+            &format!("{events_path}/{event_id}/reminders"),
+            Some(&owner_cookie),
+            Some(serde_json::json!({"offset_minutes": 0})),
+        )
+        .await;
+        assert_status(&reminder, StatusCode::CREATED);
+
+        let (from, to) = (
+            starts_at - Duration::days(1),
+            starts_at + Duration::days(10),
+        );
+        let list = call(
+            &router,
+            Method::GET,
+            &format!(
+                "{events_path}?from={}&to={}",
+                urlenc(&from.to_rfc3339()),
+                urlenc(&to.to_rfc3339())
+            ),
+            Some(&owner_cookie),
+            None,
+        )
+        .await;
+        assert_status(&list, StatusCode::OK);
+        let body = json_body(list).await;
+        let listed: Vec<DateTime<Utc>> = body["occurrences"]
+            .as_array()
+            .expect("occurrences array")
+            .iter()
+            .filter(|o| o["id"] == event_id.to_string())
+            .map(|o| instant(o, "occurrence_starts_at"))
+            .collect();
+
+        let reminded: Vec<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT occurrence_at FROM scheduled_notifications WHERE event_id = $1 ORDER BY occurrence_at",
+        )
+        .bind(event_id)
+        .fetch_all(&db)
+        .await
+        .unwrap();
+
+        // COUNT=5 less the excluded one: the exclusion does not give the
+        // series a sixth occurrence.
+        let expected: Vec<DateTime<Utc>> = (0..5)
+            .map(|n| {
+                if all_day {
+                    paris_start_of_day(first + Duration::days(n))
+                } else {
+                    nine_on(n)
+                }
+            })
+            .filter(|s| *s != excluded)
+            .collect();
+        assert_eq!(listed, expected, "all_day = {all_day}: {body}");
+        assert_eq!(reminded, expected, "all_day = {all_day}");
+    }
+}
+
 /// AC: tasks-as-events — `completed` can only be toggled on an
 /// `is_task` event, and setting it stamps `completed_at`.
 #[sqlx::test]

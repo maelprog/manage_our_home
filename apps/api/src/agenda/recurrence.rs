@@ -497,6 +497,10 @@ pub fn expand_all_day_occurrences(
 /// 2026-10-10T22:00Z, before the `UNTIL`. On civil dates the 11th is past it.
 /// That is the reading `all_day_until_day` keeps, now that an all-day series
 /// is anchored on that same Paris midnight.
+///
+/// The occurrences the row excludes (`exdates`, #707) are dropped here, for
+/// every reader at once — see `without_excluded`. With none, the spans are
+/// those `expand_occurrences` or `expand_all_day_occurrences` return.
 pub fn expand_series(
     rrule: &str,
     all_day: bool,
@@ -504,13 +508,58 @@ pub fn expand_series(
     ends_at: DateTime<Utc>,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
+    exdates: &[DateTime<Utc>],
 ) -> Result<Vec<OccurrenceSpan>, rrule::RRuleError> {
-    if all_day {
-        expand_all_day_occurrences(rrule, starts_at, ends_at, from, to)
+    let spans = if all_day {
+        expand_all_day_occurrences(rrule, starts_at, ends_at, from, to)?
     } else {
         let duration = ends_at - starts_at;
-        expand_occurrences(rrule, starts_at, from, to)
-            .map(|starts| starts.into_iter().map(|s| (s, s + duration)).collect())
+        expand_occurrences(rrule, starts_at, from, to)?
+            .into_iter()
+            .map(|s| (s, s + duration))
+            .collect()
+    };
+    Ok(without_excluded(spans, exdates, all_day))
+}
+
+/// `spans` without the occurrences a series excludes — the row's `exdates`
+/// (#707), RFC 5545's EXDATE kept in a column of its own.
+///
+/// - **Hour-bound** series: an exclusion is an instant, and drops the
+///   occurrence that starts on exactly that instant. Two occurrences of an
+///   hourly series share a day; only the instant tells them apart. The
+///   instant is the one the unroll produces — `occurrence_starts_at` in the
+///   agenda — DST resolutions included (see `expand_occurrences`).
+/// - **All-day** series: an exclusion names the **Paris day** its instant
+///   falls on, and drops the occurrence opening on that day. A civil date is
+///   what an all-day occurrence is; compared on instants, an exclusion
+///   written as the Paris midnight of a summer day would miss the same day in
+///   winter, whose midnight is an hour later in UTC.
+///
+/// Applied after the unroll, so an excluded occurrence still counts where
+/// the rule counts: under `COUNT=n` the series keeps n − 1 occurrences, not
+/// n, as with an EXDATE (RFC 5545 §3.8.5.3: the exclusions are removed from
+/// the set the rule generates). It also still counts against
+/// `MAX_OCCURRENCES`. With no exclusion the spans come back untouched.
+pub fn without_excluded(
+    spans: Vec<OccurrenceSpan>,
+    exdates: &[DateTime<Utc>],
+    all_day: bool,
+) -> Vec<OccurrenceSpan> {
+    if exdates.is_empty() {
+        return spans;
+    }
+    if all_day {
+        let days: Vec<NaiveDate> = exdates.iter().map(|at| paris_date(*at)).collect();
+        spans
+            .into_iter()
+            .filter(|(start, _)| !days.contains(&paris_date(*start)))
+            .collect()
+    } else {
+        spans
+            .into_iter()
+            .filter(|(start, _)| !exdates.contains(start))
+            .collect()
     }
 }
 
@@ -1686,6 +1735,7 @@ mod tests {
                         starts_at + Duration::hours(1),
                         starts_at,
                         starts_at + Duration::days(30),
+                        &[],
                     )
                 });
                 assert!(read.is_err(), "{rule:?} unrolled, all_day = {all_day}");
@@ -2010,6 +2060,173 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // -- excluded occurrences (#707) -------------------------------------------
+
+    /// Starts of the spans, for assertions that only care about those.
+    fn starts(spans: &[OccurrenceSpan]) -> Vec<DateTime<Utc>> {
+        spans.iter().map(|(start, _)| *start).collect()
+    }
+
+    #[test]
+    fn no_exclusion_leaves_the_spans_as_they_are() {
+        let spans = vec![
+            (paris(2026, 9, 1, 9, 0), paris(2026, 9, 1, 10, 0)),
+            (paris(2026, 9, 2, 9, 0), paris(2026, 9, 2, 10, 0)),
+        ];
+        assert_eq!(without_excluded(spans.clone(), &[], false), spans);
+        assert_eq!(without_excluded(spans.clone(), &[], true), spans);
+    }
+
+    #[test]
+    fn an_hour_bound_exclusion_drops_the_occurrence_starting_on_that_instant() {
+        let spans: Vec<_> = (1..=3)
+            .map(|d| (paris(2026, 9, d, 9, 0), paris(2026, 9, d, 10, 0)))
+            .collect();
+        let kept = without_excluded(spans, &[paris(2026, 9, 2, 9, 0)], false);
+        assert_eq!(
+            starts(&kept),
+            [paris(2026, 9, 1, 9, 0), paris(2026, 9, 3, 9, 0)]
+        );
+    }
+
+    #[test]
+    fn an_hour_bound_exclusion_is_an_instant_not_a_day() {
+        // Same Paris day, a second or an hour off: nothing is excluded. Two
+        // occurrences of an hourly series share a day and are told apart.
+        let spans = vec![
+            (paris(2026, 9, 2, 9, 0), paris(2026, 9, 2, 9, 30)),
+            (paris(2026, 9, 2, 10, 0), paris(2026, 9, 2, 10, 30)),
+        ];
+        let exdates = [
+            paris(2026, 9, 2, 9, 0) + Duration::seconds(1),
+            paris(2026, 9, 2, 0, 0),
+        ];
+        assert_eq!(without_excluded(spans.clone(), &exdates, false), spans);
+        let kept = without_excluded(spans, &[paris(2026, 9, 2, 10, 0)], false);
+        assert_eq!(starts(&kept), [paris(2026, 9, 2, 9, 0)]);
+    }
+
+    #[test]
+    fn an_all_day_exclusion_drops_the_occurrence_opening_on_that_paris_day() {
+        let spans: Vec<_> = (4..=6)
+            .map(|d| (midnight(2026, 9, d), midnight(2026, 9, d + 1)))
+            .collect();
+        // Any instant of the Paris day names it: its midnight, 00:30 (still
+        // the 4th in UTC), or its last second.
+        for exdate in [
+            midnight(2026, 9, 5),
+            paris(2026, 9, 5, 0, 30),
+            paris(2026, 9, 5, 23, 59) + Duration::seconds(59),
+        ] {
+            let kept = without_excluded(spans.clone(), &[exdate], true);
+            assert_eq!(
+                starts(&kept),
+                [midnight(2026, 9, 4), midnight(2026, 9, 6)],
+                "{exdate}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_all_day_exclusion_does_not_reach_the_neighbouring_days() {
+        let spans: Vec<_> = (4..=6)
+            .map(|d| (midnight(2026, 9, d), midnight(2026, 9, d + 1)))
+            .collect();
+        // One second before the 5th opens is the 4th; the 6th's midnight
+        // is the 6th.
+        let kept = without_excluded(
+            spans,
+            &[
+                midnight(2026, 9, 5) - Duration::seconds(1),
+                midnight(2026, 9, 6),
+            ],
+            true,
+        );
+        assert_eq!(starts(&kept), [midnight(2026, 9, 5)]);
+    }
+
+    #[test]
+    fn an_all_day_exclusion_holds_across_the_change_of_hour() {
+        // A monthly rent day on the 5th, created in September (UTC+2). The
+        // exclusion for November is written as the UTC midnight of the 5th,
+        // which is 01:00 in Paris that day (UTC+1): still the 5th.
+        let spans = expand_all_day_occurrences(
+            "FREQ=MONTHLY",
+            midnight(2026, 9, 5),
+            midnight(2026, 9, 6),
+            midnight(2026, 9, 1),
+            midnight(2026, 12, 31),
+        )
+        .unwrap();
+        let exdate = Utc.with_ymd_and_hms(2026, 11, 5, 0, 0, 0).unwrap();
+        let kept = without_excluded(spans, &[exdate], true);
+        assert_eq!(
+            kept.iter().map(|(s, _)| paris_date(*s)).collect::<Vec<_>>(),
+            [day(2026, 9, 5), day(2026, 10, 5), day(2026, 12, 5)]
+        );
+    }
+
+    #[test]
+    fn expand_series_drops_the_excluded_occurrences_on_both_kinds_of_series() {
+        let from = paris(2026, 9, 1, 0, 0);
+        let to = paris(2026, 9, 30, 0, 0);
+        let hour_bound = expand_series(
+            "FREQ=DAILY;COUNT=4",
+            false,
+            paris(2026, 9, 1, 9, 0),
+            paris(2026, 9, 1, 10, 0),
+            from,
+            to,
+            &[paris(2026, 9, 3, 9, 0)],
+        )
+        .unwrap();
+        assert_eq!(
+            hour_bound,
+            [1, 2, 4]
+                .map(|d| (paris(2026, 9, d, 9, 0), paris(2026, 9, d, 10, 0)))
+                .to_vec()
+        );
+
+        let all_day = expand_series(
+            "FREQ=DAILY;COUNT=4",
+            true,
+            midnight(2026, 9, 1),
+            midnight(2026, 9, 2),
+            from,
+            to,
+            &[paris(2026, 9, 2, 15, 0)],
+        )
+        .unwrap();
+        assert_eq!(
+            all_day,
+            [1, 3, 4]
+                .map(|d| (midnight(2026, 9, d), midnight(2026, 9, d + 1)))
+                .to_vec()
+        );
+    }
+
+    #[test]
+    fn expand_series_without_exclusions_is_what_it_was() {
+        let (from, to) = (paris(2026, 9, 1, 0, 0), paris(2026, 12, 1, 0, 0));
+        for (rule, all_day, start) in [
+            ("FREQ=WEEKLY;BYDAY=SA", true, midnight(2026, 9, 5)),
+            ("FREQ=DAILY", false, paris(2026, 9, 1, 9, 0)),
+        ] {
+            let end = start + Duration::hours(1);
+            let series = expand_series(rule, all_day, start, end, from, to, &[]).unwrap();
+            let direct: Vec<OccurrenceSpan> = if all_day {
+                expand_all_day_occurrences(rule, start, end, from, to).unwrap()
+            } else {
+                expand_occurrences(rule, start, from, to)
+                    .unwrap()
+                    .into_iter()
+                    .map(|s| (s, s + Duration::hours(1)))
+                    .collect()
+            };
+            assert_eq!(series, direct, "{rule}");
         }
     }
 }

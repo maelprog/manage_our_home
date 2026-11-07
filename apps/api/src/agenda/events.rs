@@ -188,7 +188,7 @@ pub async fn create_event(
         r#"
         INSERT INTO events (group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, rrule, is_private)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
+        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
         "#,
         group_id,
         auth.user_id,
@@ -371,6 +371,9 @@ struct EventRow {
     completed_at: Option<DateTime<Utc>>,
     rrule: Option<String>,
     is_private: bool,
+    /// The occurrences the series excludes (#707), dropped by
+    /// `recurrence::expand_series`. Not part of `EventResponse`.
+    exdates: Vec<DateTime<Utc>>,
 }
 
 /// `EventRow` doesn't carry `assignee_ids` (it comes from a separate
@@ -421,7 +424,7 @@ pub async fn get_event(
 
     let event = sqlx::query_as!(
         EventRow,
-        r#"SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
+        r#"SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
            FROM events WHERE id = $1 AND group_id = $2"#,
         event_id,
         group_id,
@@ -470,6 +473,9 @@ pub struct OccurrenceResponse {
 /// also the one instance RFC 5545 always grants a series: `DTSTART` is its
 /// first occurrence (§3.8.5.3). What is lost is the rest of the series; the
 /// log is there so it does not go unnoticed.
+///
+/// A series' excluded occurrences (`exdates`, #707) are not rendered: the
+/// unroll drops them. A one-off has none.
 fn row_spans(
     rrule: Option<&str>,
     all_day: bool,
@@ -477,6 +483,7 @@ fn row_spans(
     ends_at: DateTime<Utc>,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
+    exdates: &[DateTime<Utc>],
 ) -> (Vec<recurrence::OccurrenceSpan>, Option<rrule::RRuleError>) {
     let row_on_its_own = || {
         (starts_at <= to && ends_at >= from)
@@ -489,7 +496,7 @@ fn row_spans(
     };
     // The unroll the reminders read as well (#169), all-day on civil
     // dates: see `recurrence::expand_series`.
-    match recurrence::expand_series(rrule, all_day, starts_at, ends_at, from, to) {
+    match recurrence::expand_series(rrule, all_day, starts_at, ends_at, from, to, exdates) {
         Ok(spans) => (spans, None),
         Err(error) => (row_on_its_own(), Some(error)),
     }
@@ -529,7 +536,7 @@ pub async fn list_events(
     let rows = sqlx::query_as!(
         EventRow,
         r#"
-        SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
+        SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
         FROM events
         WHERE group_id = $1
           AND starts_at <= $3
@@ -586,6 +593,7 @@ pub async fn list_events(
             row.ends_at,
             range.from,
             range.to,
+            &row.exdates,
         );
         if let Some(error) = unroll_error {
             tracing::error!(
@@ -826,7 +834,7 @@ pub async fn update_event(
             is_private = $11,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private
+        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
         "#,
         event_id,
         group_id,
@@ -1107,6 +1115,7 @@ mod tests {
             e,
             utc(2026, 9, 1, 0, 0),
             utc(2026, 9, 30, 0, 0),
+            &[],
         );
         assert_eq!(spans, vec![(s, e)]);
         assert!(error.is_none());
@@ -1116,11 +1125,11 @@ mod tests {
     fn a_one_off_row_touching_a_window_bound_is_kept_and_one_outside_is_not() {
         let (s, e) = (utc(2026, 9, 10, 8, 0), utc(2026, 9, 10, 9, 0));
         assert_eq!(
-            row_spans(None, false, s, e, e, utc(2026, 9, 11, 0, 0)).0,
+            row_spans(None, false, s, e, e, utc(2026, 9, 11, 0, 0), &[]).0,
             vec![(s, e)]
         );
         assert_eq!(
-            row_spans(None, false, s, e, utc(2026, 9, 9, 0, 0), s).0,
+            row_spans(None, false, s, e, utc(2026, 9, 9, 0, 0), s, &[]).0,
             vec![(s, e)]
         );
         assert!(row_spans(
@@ -1129,7 +1138,8 @@ mod tests {
             s,
             e,
             utc(2026, 9, 11, 0, 0),
-            utc(2026, 9, 12, 0, 0)
+            utc(2026, 9, 12, 0, 0),
+            &[]
         )
         .0
         .is_empty());
@@ -1145,6 +1155,7 @@ mod tests {
             s + chrono::Duration::hours(1),
             utc(2026, 9, 1, 0, 0),
             utc(2026, 9, 30, 0, 0),
+            &[],
         );
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[2].0, utc(2026, 9, 12, 8, 0));
@@ -1163,6 +1174,7 @@ mod tests {
             e,
             utc(2026, 10, 1, 0, 0),
             utc(2026, 10, 31, 23, 59),
+            &[],
         );
         assert_eq!(spans, vec![(s, e)]);
         assert!(error.is_some());
@@ -1179,6 +1191,7 @@ mod tests {
             e,
             utc(2026, 8, 31, 22, 0),
             utc(2026, 9, 30, 21, 59),
+            &[],
         );
         assert_eq!(spans, vec![(s, e)]);
         assert!(error.is_some());
@@ -1194,6 +1207,7 @@ mod tests {
             e,
             utc(2026, 11, 1, 0, 0),
             utc(2026, 11, 30, 0, 0),
+            &[],
         );
         assert!(spans.is_empty());
         assert!(error.is_some());

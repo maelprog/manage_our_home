@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE events SET\n            title = COALESCE($3, title),\n            description = COALESCE($4, description),\n            location = COALESCE($5, location),\n            starts_at = $6,\n            ends_at = $7,\n            all_day = COALESCE($8, all_day),\n            rrule = $9,\n            completed_at = $10,\n            is_private = $11,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private\n        ",
+  "query": "SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, exdates, is_private, created_at\n               FROM events WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -27,17 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "created_by",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "events",
-            "name": "created_by"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
         "name": "title",
         "type_info": "Text",
         "origin": {
@@ -48,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "description",
         "type_info": "Text",
         "origin": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "location",
         "type_info": "Text",
         "origin": {
@@ -70,7 +59,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "starts_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +70,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "ends_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +81,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "all_day",
         "type_info": "Bool",
         "origin": {
@@ -103,7 +92,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "is_task",
         "type_info": "Bool",
         "origin": {
@@ -114,7 +103,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "completed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,13 +114,24 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "rrule",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "events",
             "name": "rrule"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "exdates",
+        "type_info": "TimestamptzArray",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "exdates"
           }
         }
       },
@@ -145,28 +145,29 @@
             "name": "is_private"
           }
         }
+      },
+      {
+        "ordinal": 13,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Text",
-        "Text",
-        "Timestamptz",
-        "Timestamptz",
-        "Bool",
-        "Text",
-        "Timestamptz",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      false,
       true,
       true,
       false,
@@ -175,8 +176,10 @@
       false,
       true,
       true,
+      false,
+      false,
       false
     ]
   },
-  "hash": "60906164d75fe87b0a06b5802553d3757e1cc0e1da64bb5590b38a5fd1eebd78"
+  "hash": "175a32b92dbb5f9e371048eaad548cbe621e28d8cb5ce80ab538c80bd81b2e8a"
 }
