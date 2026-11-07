@@ -229,16 +229,25 @@ test('the offline page is in the web directory, and loads nothing from elsewhere
   assert.doesNotMatch(page, /var\(--[\w-]+\s*,/);
 });
 
+// What a module imports: each `import … from '…'`, `export … from '…'` and
+// bare `import '…'`, at the start of a line or after a `;`.
+const moduleRefs = (js) =>
+  [...js.matchAll(/(?:^|;)\s*(?:import|export)\b(?:[^;'"]*?\bfrom)?\s*['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+
 // The files of the web directory a page or a module of it loads: each
-// `src`/`href` of the page, each `import … from '…'` of a module, followed
-// from file to file. Throws on anything that is not a relative path to a
-// file of the directory: the first-launch page has nothing else (#737).
+// `src`/`href` of the page and what its inline scripts import, what each
+// module imports, followed from file to file. Throws on anything that is
+// not a relative path to a file of the directory: the first-launch page
+// has nothing else (#737).
 function localClosure(webDir, page) {
   const seen = new Set();
   const visit = (file, text) => {
     const refs = file.endsWith('.html')
-      ? [...uncommented(text).matchAll(/\b(?:src|href)\s*=\s*["']([^"']*)["']/g)].map((m) => m[1])
-      : [...text.matchAll(/^\s*(?:import|export)\b[^;'"]*?from\s*['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+      ? [
+          ...[...uncommented(text).matchAll(/\b(?:src|href)\s*=\s*["']([^"']*)["']/g)].map((m) => m[1]),
+          ...[...uncommented(text).matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].flatMap((m) => moduleRefs(m[1])),
+        ]
+      : moduleRefs(text);
     for (const ref of refs) {
       assert.match(ref, /^(\.\/)?[\w-]+\.(js|css)$/, `${file}: ${ref} is not a file of ${webDir}`);
       const target = ref.replace(/^\.\//, '');
@@ -287,6 +296,9 @@ test('the closure of a page refuses what is not a file of the web directory', ()
       ['<link href="//cdn.example/x.css">', '', /is not a file/],
       ['<script src="missing.js"></script>', '', /is not in/],
       ['<script src="c.js"></script>', "import x from 'https://cdn.example/x.js';", /is not a file/],
+      ['<script src="c.js"></script>', "import 'https://cdn.example/x.js';", /is not a file/],
+      ['<script type="module">import x from "https://cdn.example/x.js";</script>', '', /is not a file/],
+      ['<script type="module">\n  import "https://cdn.example/x.js";\n</script>', '', /is not a file/],
       ['<script src="c.js"></script>', "fetch('https://example.org');", /c\.js loads something/],
       ['<style>body { background: url(x.png) }</style>', '', /p\.html loads something/],
     ]) {
@@ -295,6 +307,8 @@ test('the closure of a page refuses what is not a file of the web directory', ()
       assert.throws(() => localClosure(webDir, 'p.html'), why, html + js);
     }
     writeFileSync(join(dir, 'p.html'), '<script type="module" src="a.js"></script>');
+    assert.deepEqual(localClosure(webDir, 'p.html'), ['a.js', 'b.js']);
+    writeFileSync(join(dir, 'p.html'), '<script type="module">import { x } from "./a.js";</script>');
     assert.deepEqual(localClosure(webDir, 'p.html'), ['a.js', 'b.js']);
   } finally {
     rmSync(dir, { recursive: true, force: true });
