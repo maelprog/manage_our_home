@@ -30,6 +30,7 @@ use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
+use super::edit::occ_param;
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context_for, fmt_paris, forbidden_page,
@@ -391,7 +392,7 @@ fn page(
 <button type="submit" class="secondary danger">Supprimer</button>
 </form>
 </div>"#,
-            edit = urls.to("/edit"),
+            edit = edit_href(urls, event, focus_occ),
             delete = urls.to("/delete"),
         )
     } else {
@@ -437,6 +438,19 @@ fn page(
         private = private_line(event.is_private),
     );
     shell_with_header(Width::Read, &event.title, header, &body)
+}
+
+/// The « Modifier » link (#709): on the occurrence the detail was opened
+/// from (`occ`), for a recurring event, so the edit form can offer to change
+/// that occurrence alone or from it on.
+fn edit_href(urls: EventUrls, event: &EventResponse, focus_occ: Option<&str>) -> String {
+    let occurrence = focus_occ
+        .filter(|_| event.rrule.is_some())
+        .and_then(|occ| occ.parse::<DateTime<Utc>>().ok());
+    match occurrence {
+        Some(at) => urls.to(&format!("/edit?occ={}", occ_param(at))),
+        None => urls.to("/edit"),
+    }
 }
 
 /// The one-shot notice shown after a reminder is created, with its delete
@@ -1049,6 +1063,42 @@ mod tests {
         let kind = html.find(r#"<p class="muted">Événement</p>"#).expect(&html);
         let at = html.find(&line).expect(&html);
         assert!(kind < at, "{html}");
+    }
+
+    /// #709: « Modifier » opens the edit form on the occurrence the detail
+    /// was opened from, when the event is recurring — and only then, and
+    /// only with an instant it could read.
+    #[test]
+    fn the_edit_link_carries_the_occurrence_of_a_recurring_event() {
+        let id = uid(7);
+        let mut recurring = event(false);
+        recurring.rrule = Some("FREQ=WEEKLY".to_string());
+        let occ = Some("2026-09-12T08:00:00Z");
+        assert_eq!(
+            edit_href(EventUrls::from(id), &recurring, occ),
+            format!("/agenda/{id}/edit?occ=2026-09-12T08:00:00Z")
+        );
+        assert_eq!(
+            edit_href(
+                EventUrls {
+                    id,
+                    family: Some(uid(2))
+                },
+                &recurring,
+                occ
+            ),
+            format!(
+                "/agenda/{id}/edit?occ=2026-09-12T08:00:00Z&famille={}",
+                uid(2)
+            )
+        );
+        let plain = format!("/agenda/{id}/edit");
+        assert_eq!(edit_href(EventUrls::from(id), &event(false), occ), plain);
+        assert_eq!(edit_href(EventUrls::from(id), &recurring, None), plain);
+        assert_eq!(
+            edit_href(EventUrls::from(id), &recurring, Some("demain\"><b>")),
+            plain
+        );
     }
 
     #[test]

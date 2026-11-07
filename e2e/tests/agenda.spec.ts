@@ -1104,3 +1104,88 @@ test.describe("Agenda — case « Événement récurrent » (#698)", () => {
     await context.close();
   });
 });
+
+// #709: the edit form of a recurring event opened from one of its
+// occurrences asks what the change applies to — the whole series (by
+// default), this occurrence and the following ones, or this one alone.
+test.describe("Agenda — portée d'une modification de série", () => {
+  /** The calendar chip of `title`'s occurrence on `day` (17:00 in Paris is
+   *  the same UTC day, which the chip's `occ` names). */
+  const chipOn = (page: Page, day: string) => page.locator(`a.chip[href*="occ=${day}T"]`);
+  const scopeGroup = (page: Page) =>
+    page.getByRole("group", { name: "Appliquer la modification à" });
+
+  test("une occurrence seule, puis elle et les suivantes ; le reste de la série ne bouge pas", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agscope", "Scope Editor");
+    await createGroup(page, "Famille Portée");
+    const [first, third, fourth, fifth, sixth] = [10, 12, 13, 14, 15].map(dayThisMonth);
+    await createEvent(page, {
+      title: "Atelier",
+      start: `${first}T17:00`,
+      end: `${first}T18:00`,
+      freq: "daily",
+    });
+
+    // The third occurrence, alone, moved to 19:00 and renamed.
+    await page.goto(`/agenda?date=${first}`);
+    await chipOn(page, third).click();
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await expect(page.getByLabel("Début")).toHaveValue(`${third}T17:00`);
+    const scope = scopeGroup(page);
+    const whole = scope.getByRole("radio", { name: "Toute la série" });
+    await expect(whole).toBeChecked();
+    // Native radios: the arrows move the choice.
+    await whole.focus();
+    await page.keyboard.press("ArrowDown");
+    await expect(scope.getByRole("radio", { name: "Cet événement et les suivants" })).toBeChecked();
+    await page.keyboard.press("ArrowDown");
+    await expect(scope.getByRole("radio", { name: "Cet événement uniquement" })).toBeChecked();
+    await page.getByLabel("Titre").fill("Atelier déplacé");
+    await page.getByLabel("Début").fill(`${third}T19:00`);
+    await page.getByLabel("Fin").fill(`${third}T20:00`);
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Atelier déplacé" })).toBeVisible();
+    await expect(page.getByText("Récurrence :")).toHaveCount(0);
+
+    await page.goto(`/agenda?date=${first}`);
+    await expect(page.locator("a.chip", { hasText: "Atelier déplacé" })).toHaveCount(1);
+    await expect(chipOn(page, third)).toHaveText(/19:00 Atelier déplacé/);
+    await expect(chipOn(page, fourth)).toHaveText(/17:00 Atelier$/);
+
+    // From the fifth on, renamed: the fourth keeps its title.
+    await chipOn(page, fifth).click();
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await scopeGroup(page).getByRole("radio", { name: "Cet événement et les suivants" }).check();
+    await page.getByLabel("Titre").fill("Atelier du soir");
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Atelier du soir" })).toBeVisible();
+    await expect(page.getByText("Récurrence : Tous les jours")).toBeVisible();
+
+    await page.goto(`/agenda?date=${first}`);
+    await expect(chipOn(page, first)).toHaveText(/17:00 Atelier$/);
+    await expect(chipOn(page, fourth)).toHaveText(/17:00 Atelier$/);
+    await expect(chipOn(page, fifth)).toHaveText(/17:00 Atelier du soir$/);
+    await expect(chipOn(page, sixth)).toHaveText(/17:00 Atelier du soir$/);
+  });
+
+  test("sur un événement unique, le formulaire ne demande rien", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agscopenone", "Scope Plain");
+    await createGroup(page, "Famille Portée Bis");
+    const date = dayThisMonth(16);
+    await createEvent(page, {
+      title: "Rendez-vous isolé",
+      start: `${date}T09:00`,
+      end: `${date}T10:00`,
+    });
+    await openEventDetail(page, "Rendez-vous isolé");
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await expect(page.getByRole("heading", { name: /Modifier/ })).toBeVisible();
+    await expect(page.getByRole("radio")).toHaveCount(0);
+  });
+});

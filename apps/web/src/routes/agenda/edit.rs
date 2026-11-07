@@ -6,11 +6,15 @@
 //! creation. Choosing "Aucune" recurrence clears an existing rule (sent as
 //! the empty string, which the backend maps to `NULL`). The « Privé » box
 //! (#621) is always sent: unchecked, the event becomes shared again.
+//! Opened on an occurrence of a recurring event (`?occ=`, #709), the form
+//! shows that occurrence and asks what the change applies to: the whole
+//! series, this occurrence and the following ones, or this one alone.
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use manage_our_home_shared::dto::agenda::{EventResponse, UpdateEventRequest};
+use chrono::{DateTime, Utc};
+use manage_our_home_shared::dto::agenda::{EditScope, EventResponse, UpdateEventRequest};
 use manage_our_home_shared::dto::groups::GroupMember;
 use manage_our_home_shared::validation::agenda::{
     parse_rrule, validate_event_form, EventFormError,
@@ -19,6 +23,7 @@ use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
+use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
@@ -28,9 +33,9 @@ use super::new::{
     EventForm, RecurrenceFields,
 };
 use super::{
-    agenda_cookie, all_day_field_values, can_modify, event_not_found_page, family_context_for,
-    forbidden_page, form_bounds, service_unavailable_page, to_datetime_local, with_family,
-    EventFamily,
+    agenda_cookie, all_day_field_values, can_modify, date_only, event_not_found_page,
+    family_context_for, fmt_paris, forbidden_page, form_bounds, service_unavailable_page,
+    to_datetime_local, with_family, EventFamily,
 };
 
 /// The line under the assignee picker explaining what an empty selection
@@ -52,6 +57,232 @@ fn assignment_hint(members: &[GroupMember]) -> &'static str {
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct EditQuery {
+    /// The occurrence the form was opened from, as the calendar's links and
+    /// the detail's « Modifier » write it (#709). Read as absent when it
+    /// does not convert (#580).
+    #[serde(default, deserialize_with = "lenient")]
+    occ: Option<DateTime<Utc>>,
+}
+
+/// The occurrence the edit form was opened on, and what the change applies
+/// to (#709). Only a recurring event opened from one of its occurrences
+/// carries one; any other edit changes the event as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ScopeChoice {
+    pub occurrence_at: DateTime<Utc>,
+    pub scope: EditScope,
+}
+
+/// An occurrence as the `occ` parameter of the agenda's links writes it.
+pub(super) fn occ_param(occurrence_at: DateTime<Utc>) -> String {
+    occurrence_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// The `scope` radio's value as the API's `EditScope`; `None` for anything
+/// the form does not offer.
+fn scope_from_form(raw: &str) -> Option<EditScope> {
+    match raw {
+        "all" => Some(EditScope::All),
+        "this_and_following" => Some(EditScope::ThisAndFollowing),
+        "this" => Some(EditScope::This),
+        _ => None,
+    }
+}
+
+/// The `Début`/`Fin` values an event is edited with. An all-day event is
+/// edited as two dates, Fin being its last day: the stored exclusive end
+/// shown as `datetime-local` read as one day too many, and "correcting" it
+/// lost a day (#117).
+fn field_values(
+    all_day: bool,
+    starts_at: DateTime<Utc>,
+    ends_at: DateTime<Utc>,
+) -> (String, String) {
+    if all_day {
+        all_day_field_values(starts_at, ends_at)
+    } else {
+        (to_datetime_local(starts_at), to_datetime_local(ends_at))
+    }
+}
+
+/// The `Début`/`Fin` values of the series' occurrence starting at
+/// `occurrence_at`: the series' duration, from that instant.
+fn occurrence_field_values(
+    series: &EventResponse,
+    occurrence_at: DateTime<Utc>,
+) -> (String, String) {
+    let duration = series.ends_at - series.starts_at;
+    field_values(series.all_day, occurrence_at, occurrence_at + duration)
+}
+
+/// A field moved on the occurrence, carried to the series: the series' day
+/// moved by as many days as the field's, at the field's time of day — the
+/// time part of a `datetime-local` value, nothing for a date. Days rather
+/// than a duration, so a move across a change of Paris time keeps its
+/// wall-clock time. `None` when a value does not start with a date.
+fn rebased(submitted: &str, occurrence: &str, series: &str) -> Option<String> {
+    let day = |value: &str| value.get(..10).and_then(date_only);
+    let moved_by = day(submitted)? - day(occurrence)?;
+    let series_day = day(series)? + moved_by;
+    Some(format!(
+        "{}{}",
+        series_day.format("%Y-%m-%d"),
+        &submitted[10..]
+    ))
+}
+
+/// The request a submitted form makes of the event as a whole, or the code
+/// of the error the form comes back under.
+fn update_request(
+    form: &EventForm,
+    assignee_ids: &[Uuid],
+) -> Result<UpdateEventRequest, &'static str> {
+    let (starts_at, ends_at) =
+        form_bounds(&form.starts_at, &form.ends_at).ok_or("ends_before_starts")?;
+    match validate_event_form(&form.title, starts_at, ends_at) {
+        Err(EventFormError::TitleRequired) => return Err("title_required"),
+        Err(EventFormError::EndsBeforeStarts) => return Err("ends_before_starts"),
+        Ok(()) => {}
+    }
+    let rrule_opt = rrule_from_form(form).map_err(|()| "invalid_rrule")?;
+    // "Aucune" clears an existing rule: the backend treats an empty string
+    // as NULL; `None` would instead leave the rule unchanged.
+    let rrule = Some(rrule_opt.unwrap_or_default());
+
+    Ok(UpdateEventRequest {
+        title: Some(form.title.trim().to_string()),
+        description: Some(form.description.trim().to_string()),
+        location: Some(form.location.trim().to_string()),
+        starts_at: Some(starts_at),
+        ends_at: Some(ends_at),
+        all_day: Some(form.all_day.is_some()),
+        rrule,
+        completed: None,
+        occurrence_at: None,
+        // A plain HTML form has no "untouched" signal, so the fieldset
+        // carries one: `ASSIGNEES_PRESENT_FIELD` is emitted only when the
+        // picker actually listed the family's members. With it, the
+        // submitted checkbox state replaces the assignee set (and
+        // `resolve_assignees` on the backend falls back to the creator if
+        // that leaves it empty). Without it — `fetch_group_detail` failed
+        // and the picker rendered blind — the field is omitted entirely and
+        // the backend leaves the assignment alone. Sending `Some(vec![])`
+        // there silently reassigned the event to its creator: a degradation
+        // chosen as decorative was in fact destroying data (#98
+        // verification, round 2).
+        assignee_ids: form
+            .assignees_present
+            .is_some()
+            .then(|| assignee_ids.to_vec()),
+        // The box is always on the form, so its state is always an answer:
+        // unchecked makes the event shared again (#621). apps/api refuses
+        // (403) to make private an event its author would not take part in.
+        is_private: Some(form.is_private.is_some()),
+        // The whole event; `scoped_request` narrows it to an occurrence
+        // when the form was opened on one (#709).
+        scope: None,
+    })
+}
+
+/// The request of an edit opened on an occurrence: `body` as built from
+/// the form, reshaped for the chosen scope. `None` when a moved field cannot
+/// be carried to the series.
+fn scoped_request(
+    body: UpdateEventRequest,
+    choice: ScopeChoice,
+    form: &EventForm,
+    series: &EventResponse,
+) -> Option<UpdateEventRequest> {
+    let mut body = body;
+    // The form shows the occurrence. Its times untouched, none is sent: the
+    // series keeps its own, the occurrence its own.
+    let (occurrence_starts, occurrence_ends) =
+        occurrence_field_values(series, choice.occurrence_at);
+    let untouched = form.starts_at == occurrence_starts
+        && form.ends_at == occurrence_ends
+        && form.all_day.is_some() == series.all_day;
+    if untouched {
+        body.starts_at = None;
+        body.ends_at = None;
+    } else if choice.scope == EditScope::All {
+        // Moved on the occurrence, the series moves by as much from its own
+        // start; sent as they are, the occurrence's times would move the
+        // series' start onto the occurrence.
+        let (series_starts, series_ends) =
+            field_values(series.all_day, series.starts_at, series.ends_at);
+        let starts = rebased(&form.starts_at, &occurrence_starts, &series_starts)?;
+        let ends = rebased(&form.ends_at, &occurrence_ends, &series_ends)?;
+        let (starts_at, ends_at) = form_bounds(&starts, &ends)?;
+        body.starts_at = Some(starts_at);
+        body.ends_at = Some(ends_at);
+    }
+    match choice.scope {
+        // The occurrence becomes a one-off event, whatever the rule says.
+        EditScope::This => body.rrule = None,
+        // The series' rule untouched, none is sent: the API carries on
+        // with what is left of it — `COUNT` less what the series already
+        // produced, where the form's `COUNT` would start over.
+        EditScope::ThisAndFollowing if same_rule(body.rrule.as_deref(), series) => {
+            body.rrule = None
+        }
+        EditScope::ThisAndFollowing | EditScope::All => {}
+    }
+    body.scope = Some(choice.scope);
+    body.occurrence_at = (choice.scope != EditScope::All).then_some(choice.occurrence_at);
+    Some(body)
+}
+
+/// Whether the form's rule (`""` for none) is the series' own.
+fn same_rule(submitted: Option<&str>, series: &EventResponse) -> bool {
+    let submitted = submitted.filter(|r| !r.is_empty());
+    match (submitted, series.rrule.as_deref()) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a == b || matches!((parse_rrule(a), parse_rrule(b)), (Some(x), Some(y)) if x == y)
+        }
+        _ => false,
+    }
+}
+
+/// The three choices, « Toute la série » first and checked by default.
+/// Native radios in a `fieldset` named by its `legend`: one Tab stop, the
+/// arrows move between them.
+fn scope_fieldset(choice: &ScopeChoice, all_day: bool) -> String {
+    let when = if all_day {
+        fmt_paris(choice.occurrence_at, "%d/%m/%Y")
+    } else {
+        fmt_paris(choice.occurrence_at, "%d/%m/%Y à %H:%M")
+    };
+    let radios: String = [
+        (EditScope::All, "all", "Toute la série"),
+        (
+            EditScope::ThisAndFollowing,
+            "this_and_following",
+            "Cet événement et les suivants",
+        ),
+        (EditScope::This, "this", "Cet événement uniquement"),
+    ]
+    .iter()
+    .map(|(scope, value, label)| {
+        let checked = if *scope == choice.scope { " checked" } else { "" };
+        format!(
+            r#"<label class="field inline"><input type="radio" name="scope" value="{value}"{checked}/> {label}</label>
+"#
+        )
+    })
+    .collect();
+    format!(
+        r#"<fieldset class="card">
+<legend>Appliquer la modification à</legend>
+<input type="hidden" name="occurrence_at" value="{occ}"/>
+<p class="muted">Les dates affichées sont celles de l'occurrence du {when}. Pour toute la série, un changement de jour ou d'heure décale chaque occurrence d'autant.</p>
+{radios}</fieldset>"#,
+        occ = occ_param(choice.occurrence_at),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
@@ -69,11 +300,20 @@ fn page(
     selected_assignees: &[Uuid],
     is_private: bool,
     family: Option<Uuid>,
+    scope: Option<&ScopeChoice>,
 ) -> String {
     // The family the event was opened in, when it is not the active one
-    // (#622): the form posts to it and the way back returns to it.
+    // (#622): the form posts to it and the way back returns to it — to the
+    // occurrence the form was opened on, if any (#709).
     let action = with_family(&format!("/agenda/{id}/edit"), family);
-    let back = with_family(&format!("/agenda/{id}"), family);
+    let back = match scope {
+        Some(choice) => format!("/agenda/{id}?occ={}", occ_param(choice.occurrence_at)),
+        None => format!("/agenda/{id}"),
+    };
+    let back = with_family(&back, family);
+    let scope_html = scope
+        .map(|choice| scope_fieldset(choice, all_day))
+        .unwrap_or_default();
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
@@ -96,6 +336,7 @@ fn page(
 {assignees}
 {hint}
 {private}
+{scope_html}
 <button type="submit">Enregistrer</button>
 </form>
 <div class="links"><a href="{back}">Retour au détail</a></div>"#,
@@ -113,6 +354,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(event_id): Path<Uuid>,
     EventFamily(requested): EventFamily,
+    LenientQuery(query): LenientQuery<EditQuery>,
 ) -> Response {
     let Some(fam) = family_context_for(
         &state,
@@ -164,16 +406,18 @@ pub async fn get(
         .and_then(parse_rrule)
         .map(|r| RecurrenceFields::from_recurrence(&r))
         .unwrap_or_default();
-    // An all-day event is edited as two dates, Fin being its last day: the
-    // stored exclusive end shown as `datetime-local` read as one day too
-    // many, and "correcting" it lost a day (#117).
-    let (starts_value, ends_value) = if event.all_day {
-        all_day_field_values(event.starts_at, event.ends_at)
-    } else {
-        (
-            to_datetime_local(event.starts_at),
-            to_datetime_local(event.ends_at),
-        )
+    // Opened on an occurrence of a recurring event (#709): the form shows
+    // that occurrence and asks what the change applies to.
+    let scope = query
+        .occ
+        .filter(|_| event.rrule.is_some())
+        .map(|occurrence_at| ScopeChoice {
+            occurrence_at,
+            scope: EditScope::All,
+        });
+    let (starts_value, ends_value) = match scope {
+        Some(choice) => occurrence_field_values(&event, choice.occurrence_at),
+        None => field_values(event.all_day, event.starts_at, event.ends_at),
     };
     Html(page(
         &fam.header,
@@ -191,6 +435,7 @@ pub async fn get(
         &event.assignee_ids,
         event.is_private,
         fam.carried,
+        scope.as_ref(),
     ))
     .into_response()
 }
@@ -249,10 +494,14 @@ pub async fn post(
                 &assignee_ids,
                 raw_is_private(&raw),
                 fam.carried,
+                None,
             )),
         )
             .into_response();
     };
+    // The occurrence the form was opened on and the scope chosen (#709).
+    let scope = read_scope(&raw_body);
+    let shown_scope = scope.ok().flatten();
 
     // An inline error gives the picker back as it was submitted, a value
     // the rule refused included: read through the rule, it fell back to
@@ -279,57 +528,53 @@ pub async fn post(
             &assignee_ids,
             form.is_private.is_some(),
             fam.carried,
+            shown_scope.as_ref(),
         ))
         .into_response()
     };
 
-    let Some((starts_at, ends_at)) = form_bounds(&form.starts_at, &form.ends_at) else {
-        return render_error("ends_before_starts");
+    // A forged occurrence or scope is the same unreadable form as above.
+    let Ok(scope) = scope else {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            render_error("invalid_form"),
+        )
+            .into_response();
     };
-    match validate_event_form(&form.title, starts_at, ends_at) {
-        Err(EventFormError::TitleRequired) => return render_error("title_required"),
-        Err(EventFormError::EndsBeforeStarts) => return render_error("ends_before_starts"),
-        Ok(()) => {}
-    }
-    let Ok(rrule_opt) = rrule_from_form(&form) else {
-        return render_error("invalid_rrule");
+    let body = match update_request(&form, &assignee_ids) {
+        Ok(body) => body,
+        Err(code) => return render_error(code),
     };
-    // "Aucune" clears an existing rule: the backend treats an empty string
-    // as NULL; `None` would instead leave the rule unchanged.
-    let rrule = Some(rrule_opt.unwrap_or_default());
-
-    let body = UpdateEventRequest {
-        title: Some(form.title.trim().to_string()),
-        description: Some(form.description.trim().to_string()),
-        location: Some(form.location.trim().to_string()),
-        starts_at: Some(starts_at),
-        ends_at: Some(ends_at),
-        all_day: Some(form.all_day.is_some()),
-        rrule,
-        completed: None,
-        occurrence_at: None,
-        // A plain HTML form has no "untouched" signal, so the fieldset
-        // carries one: `ASSIGNEES_PRESENT_FIELD` is emitted only when the
-        // picker actually listed the family's members. With it, the
-        // submitted checkbox state replaces the assignee set (and
-        // `resolve_assignees` on the backend falls back to the creator if
-        // that leaves it empty). Without it — `fetch_group_detail` failed
-        // and the picker rendered blind — the field is omitted entirely and
-        // the backend leaves the assignment alone. Sending `Some(vec![])`
-        // there silently reassigned the event to its creator: a degradation
-        // chosen as decorative was in fact destroying data (#98
-        // verification, round 2).
-        assignee_ids: form
-            .assignees_present
-            .is_some()
-            .then(|| assignee_ids.clone()),
-        // The box is always on the form, so its state is always an answer:
-        // unchecked makes the event shared again (#621). apps/api refuses
-        // (403) to make private an event its author would not take part in.
-        is_private: Some(form.is_private.is_some()),
-        // The form edits the whole series (#708 adds the other scopes to
-        // the API only).
-        scope: None,
+    let body = match scope {
+        None => body,
+        Some(choice) => {
+            // The series as it stands: the form shows the occurrence, and
+            // what it sends depends on the series' own times and rule.
+            let series = match api_request_auth(
+                &state,
+                reqwest::Method::GET,
+                &format!("/groups/{}/events/{}", fam.gid, event_id),
+                cookie.as_deref(),
+                None,
+            )
+            .await
+            {
+                Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+                    match serde_json::from_value::<EventResponse>(resp.body) {
+                        Ok(e) => e,
+                        Err(_) => return render_error("unavailable"),
+                    }
+                }
+                Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+                    return event_not_found_page().into_response()
+                }
+                _ => return render_error("unavailable"),
+            };
+            match scoped_request(body, choice, &form, &series) {
+                Some(body) => body,
+                None => return render_error("ends_before_starts"),
+            }
+        }
     };
 
     let result = api_request_auth(
@@ -342,8 +587,13 @@ pub async fn post(
     .await;
 
     match result {
+        // Changed alone or from it on, the occurrence is now another
+        // event: the detail it leads to is that one's (#709).
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            Redirect::to(&fam.url(&format!("/agenda/{event_id}?notice=updated"))).into_response()
+            let id = serde_json::from_value::<EventResponse>(resp.body)
+                .map(|e| e.id)
+                .unwrap_or(event_id);
+            Redirect::to(&fam.url(&format!("/agenda/{id}?notice=updated"))).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             Redirect::to(&fam.url(&format!("/agenda/{event_id}?error=forbidden"))).into_response()
@@ -352,9 +602,46 @@ pub async fn post(
             event_not_found_page().into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
-            render_error("ends_before_starts")
+            let code = resp.body.get("error").and_then(|v| v.as_str());
+            render_error(rejected_edit_code(code))
         }
         Ok(_) | Err(_) => render_error("unavailable"),
+    }
+}
+
+/// The occurrence and scope fields of the edit form (#709). Both are absent
+/// from the form of an event opened as a whole.
+#[derive(serde::Deserialize)]
+struct ScopeForm {
+    #[serde(default)]
+    occurrence_at: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// The scope the submitted form chose: `None` without an occurrence, `Err`
+/// for an occurrence or a scope the form cannot have sent.
+fn read_scope(raw_body: &[u8]) -> Result<Option<ScopeChoice>, ()> {
+    let form = serde_urlencoded::from_bytes::<ScopeForm>(raw_body).map_err(|_| ())?;
+    let Some(occurrence_at) = form.occurrence_at else {
+        return Ok(None);
+    };
+    let occurrence_at = occurrence_at.trim().parse().map_err(|_| ())?;
+    let scope = scope_from_form(form.scope.as_deref().unwrap_or("all")).ok_or(())?;
+    Ok(Some(ScopeChoice {
+        occurrence_at,
+        scope,
+    }))
+}
+
+/// The form error a 400 of the `PATCH` comes back under. The scope's own
+/// refusals (#708) say what went wrong; anything else reads as before.
+fn rejected_edit_code(api_code: Option<&str>) -> &'static str {
+    match api_code {
+        Some("occurrence_not_in_series") => "occurrence_not_in_series",
+        Some("scope_not_allowed_for_imported_event") => "scope_not_allowed_for_imported_event",
+        Some("scope_requires_recurring_event") => "scope_requires_recurring_event",
+        _ => "ends_before_starts",
     }
 }
 
@@ -389,6 +676,7 @@ mod tests {
             &[],
             is_private,
             None,
+            None,
         )
     }
 
@@ -413,6 +701,7 @@ mod tests {
             &[],
             false,
             Some(g),
+            None,
         );
         let id = Uuid::from_u128(9);
         assert!(
@@ -456,6 +745,7 @@ mod tests {
             &[member("Camille")],
             &[],
             false,
+            None,
             None,
         );
         assert!(
@@ -508,6 +798,7 @@ mod tests {
             &[],
             false,
             None,
+            None,
         );
         assert!(
             html.contains(r#"name="recurring" checked aria-expanded="true""#),
@@ -551,5 +842,297 @@ mod tests {
     #[test]
     fn a_roster_that_failed_to_load_promises_no_fallback() {
         assert_eq!(assignment_hint(&[]), "");
+    }
+
+    // -- the scope of an edit opened on an occurrence (#709) ---------------
+
+    fn at(raw: &str) -> DateTime<Utc> {
+        raw.parse().unwrap()
+    }
+
+    /// A weekly series on Tuesdays at 17:00 in Paris (16:00 UTC in
+    /// November), an hour long, ten times, from 2026-11-03.
+    fn series() -> EventResponse {
+        EventResponse {
+            id: Uuid::from_u128(7),
+            group_id: Uuid::from_u128(2),
+            created_by: Uuid::from_u128(1),
+            title: "Piscine".to_string(),
+            description: None,
+            location: None,
+            starts_at: at("2026-11-03T16:00:00Z"),
+            ends_at: at("2026-11-03T17:00:00Z"),
+            all_day: false,
+            is_task: false,
+            completed_at: None,
+            rrule: Some("FREQ=WEEKLY;BYDAY=TU;COUNT=10".to_string()),
+            assignee_ids: vec![Uuid::from_u128(1)],
+            is_private: false,
+        }
+    }
+
+    /// Its third occurrence, 2026-11-17.
+    fn third(scope: EditScope) -> ScopeChoice {
+        ScopeChoice {
+            occurrence_at: at("2026-11-17T16:00:00Z"),
+            scope,
+        }
+    }
+
+    /// The edit form as it is sent from the third occurrence, its rule
+    /// untouched, with `extra` replacing or adding fields.
+    fn submitted(starts: &str, ends: &str, rule: &str) -> EventForm {
+        serde_urlencoded::from_str(&format!(
+            "title=Piscine&starts_at={starts}&ends_at={ends}\
+             &recurring_box=1&recurring=on&{rule}"
+        ))
+        .unwrap()
+    }
+
+    const SAME_RULE: &str = "freq=weekly&interval=1&byday_tu=on&end_kind=count&count=10";
+
+    /// The request the form makes under `choice`.
+    fn request(form: &EventForm, choice: ScopeChoice) -> UpdateEventRequest {
+        let body = update_request(form, &[]).unwrap();
+        scoped_request(body, choice, form, &series()).unwrap()
+    }
+
+    /// A 400 of the scope says what was refused; any other reads as before.
+    #[test]
+    fn a_refused_scope_comes_back_under_its_own_message() {
+        for code in [
+            "occurrence_not_in_series",
+            "scope_not_allowed_for_imported_event",
+            "scope_requires_recurring_event",
+        ] {
+            assert_eq!(rejected_edit_code(Some(code)), code);
+            assert_ne!(error_message(code), error_message("unknown"), "{code}");
+        }
+        assert_eq!(
+            rejected_edit_code(Some("title_required")),
+            "ends_before_starts"
+        );
+        assert_eq!(rejected_edit_code(None), "ends_before_starts");
+    }
+
+    /// A forged occurrence or scope is an unreadable form; no occurrence is
+    /// an edit of the whole event.
+    #[test]
+    fn the_scope_fields_are_read_from_the_body() {
+        assert_eq!(read_scope(b"title=A"), Ok(None));
+        assert_eq!(
+            read_scope(b"title=A&occurrence_at=2026-11-17T16%3A00%3A00Z&scope=this"),
+            Ok(Some(third(EditScope::This)))
+        );
+        assert_eq!(
+            read_scope(b"occurrence_at=2026-11-17T16%3A00%3A00Z"),
+            Ok(Some(third(EditScope::All)))
+        );
+        assert_eq!(
+            read_scope(b"occurrence_at=2026-11-17T16%3A00%3A00Z&scope=both"),
+            Err(())
+        );
+        assert_eq!(read_scope(b"occurrence_at=demain&scope=this"), Err(()));
+    }
+
+    #[test]
+    fn the_scope_radio_reads_as_the_apis_scope() {
+        assert_eq!(scope_from_form("all"), Some(EditScope::All));
+        assert_eq!(
+            scope_from_form("this_and_following"),
+            Some(EditScope::ThisAndFollowing)
+        );
+        assert_eq!(scope_from_form("this"), Some(EditScope::This));
+        assert_eq!(scope_from_form(""), None);
+        assert_eq!(scope_from_form("everything"), None);
+    }
+
+    #[test]
+    fn an_occurrence_is_shown_at_its_own_day_for_the_series_duration() {
+        assert_eq!(
+            occurrence_field_values(&series(), at("2026-11-17T16:00:00Z")),
+            (
+                "2026-11-17T17:00".to_string(),
+                "2026-11-17T18:00".to_string()
+            )
+        );
+        let mut all_day = series();
+        all_day.all_day = true;
+        all_day.starts_at = at("2026-11-02T23:00:00Z");
+        all_day.ends_at = at("2026-11-03T23:00:00Z");
+        assert_eq!(
+            field_values(true, all_day.starts_at, all_day.ends_at),
+            ("2026-11-03".to_string(), "2026-11-03".to_string())
+        );
+        assert_eq!(
+            occurrence_field_values(&all_day, at("2026-11-16T23:00:00Z")),
+            ("2026-11-17".to_string(), "2026-11-17".to_string())
+        );
+    }
+
+    #[test]
+    fn a_field_moved_on_the_occurrence_moves_the_series_by_as_many_days() {
+        assert_eq!(
+            rebased("2026-11-18T09:30", "2026-11-17T17:00", "2026-11-03T17:00").as_deref(),
+            Some("2026-11-04T09:30")
+        );
+        // Made all-day: the series' day, without a time.
+        assert_eq!(
+            rebased("2026-11-17", "2026-11-17T17:00", "2026-11-03T17:00").as_deref(),
+            Some("2026-11-03")
+        );
+        // Across a month.
+        assert_eq!(
+            rebased("2026-12-01", "2026-11-17", "2026-11-03").as_deref(),
+            Some("2026-11-17")
+        );
+        assert_eq!(rebased("demain", "2026-11-17", "2026-11-03"), None);
+    }
+
+    /// Without an occurrence, the form edits the whole series, as before.
+    #[test]
+    fn an_edit_without_occurrence_sends_no_scope() {
+        let form = submitted("2026-11-03T17:00", "2026-11-03T18:00", SAME_RULE);
+        let body = update_request(&form, &[]).unwrap();
+        assert_eq!(body.scope, None);
+        assert_eq!(body.occurrence_at, None);
+        assert_eq!(body.starts_at, Some(at("2026-11-03T16:00:00Z")));
+        assert_eq!(body.rrule.as_deref(), Some("FREQ=WEEKLY;BYDAY=TU;COUNT=10"));
+    }
+
+    /// « Toute la série » with the occurrence's times untouched leaves the
+    /// series' times alone: the form shows the occurrence's day, and sent
+    /// as it is it would move the series' start there.
+    #[test]
+    fn the_whole_series_keeps_its_times_when_they_are_untouched() {
+        let form = submitted("2026-11-17T17:00", "2026-11-17T18:00", SAME_RULE);
+        let body = request(&form, third(EditScope::All));
+        assert_eq!(body.scope, Some(EditScope::All));
+        assert_eq!(body.occurrence_at, None);
+        assert_eq!((body.starts_at, body.ends_at), (None, None));
+        assert_eq!(body.rrule.as_deref(), Some("FREQ=WEEKLY;BYDAY=TU;COUNT=10"));
+        assert_eq!(body.title.as_deref(), Some("Piscine"));
+    }
+
+    /// Moved on the occurrence, the whole series moves by as much.
+    #[test]
+    fn the_whole_series_moves_as_the_occurrence_was_moved() {
+        let form = submitted("2026-11-18T09:30", "2026-11-18T10:30", SAME_RULE);
+        let body = request(&form, third(EditScope::All));
+        assert_eq!(body.starts_at, Some(at("2026-11-04T08:30:00Z")));
+        assert_eq!(body.ends_at, Some(at("2026-11-04T09:30:00Z")));
+    }
+
+    #[test]
+    fn this_one_only_sends_the_occurrence_and_no_rule() {
+        let form = submitted("2026-11-17T17:00", "2026-11-17T18:00", SAME_RULE);
+        let body = request(&form, third(EditScope::This));
+        assert_eq!(body.scope, Some(EditScope::This));
+        assert_eq!(body.occurrence_at, Some(at("2026-11-17T16:00:00Z")));
+        assert_eq!((body.starts_at, body.ends_at), (None, None));
+        assert_eq!(body.rrule, None);
+
+        let moved = submitted("2026-11-18T09:30", "2026-11-18T10:30", SAME_RULE);
+        let body = request(&moved, third(EditScope::This));
+        assert_eq!(body.starts_at, Some(at("2026-11-18T08:30:00Z")));
+        assert_eq!(body.ends_at, Some(at("2026-11-18T09:30:00Z")));
+    }
+
+    /// The series' rule untouched is not sent: the API carries on with what
+    /// is left of it (`COUNT` less what the series already produced), where
+    /// the form's `COUNT=10` would start ten more.
+    #[test]
+    fn this_and_following_sends_a_rule_only_when_it_changed() {
+        let form = submitted("2026-11-17T17:00", "2026-11-17T18:00", SAME_RULE);
+        let body = request(&form, third(EditScope::ThisAndFollowing));
+        assert_eq!(body.scope, Some(EditScope::ThisAndFollowing));
+        assert_eq!(body.occurrence_at, Some(at("2026-11-17T16:00:00Z")));
+        assert_eq!((body.starts_at, body.ends_at), (None, None));
+        assert_eq!(body.rrule, None);
+
+        let daily = submitted(
+            "2026-11-17T18:00",
+            "2026-11-17T19:00",
+            "freq=daily&interval=1&end_kind=never",
+        );
+        let body = request(&daily, third(EditScope::ThisAndFollowing));
+        assert_eq!(body.rrule.as_deref(), Some("FREQ=DAILY"));
+        assert_eq!(body.starts_at, Some(at("2026-11-17T17:00:00Z")));
+
+        // « Événement récurrent » unchecked: the rest becomes one event.
+        let once: EventForm = serde_urlencoded::from_str(
+            "title=Piscine&starts_at=2026-11-17T17:00&ends_at=2026-11-17T18:00&recurring_box=1",
+        )
+        .unwrap();
+        let body = request(&once, third(EditScope::ThisAndFollowing));
+        assert_eq!(body.rrule.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn the_scope_fieldset_offers_three_choices_the_whole_series_first() {
+        let html = scope_fieldset(&third(EditScope::All), false);
+        assert!(html.starts_with(r#"<fieldset class="card">"#), "{html}");
+        assert!(html.contains("<legend>"), "{html}");
+        assert!(
+            html.contains(
+                r#"<input type="hidden" name="occurrence_at" value="2026-11-17T16:00:00Z"/>"#
+            ),
+            "{html}"
+        );
+        assert!(html.contains("17/11/2026 à 17:00"), "{html}");
+        let all = html
+            .find(
+                r#"<input type="radio" name="scope" value="all" checked/> Toute la série</label>"#,
+            )
+            .expect(&html);
+        let following = html
+            .find(r#"<input type="radio" name="scope" value="this_and_following"/> Cet événement et les suivants</label>"#)
+            .expect(&html);
+        let this = html
+            .find(r#"<input type="radio" name="scope" value="this"/> Cet événement uniquement</label>"#)
+            .expect(&html);
+        assert!(all < following && following < this, "{html}");
+        assert_eq!(html.matches(" checked").count(), 1, "{html}");
+
+        // Back under an error, the choice made stays made.
+        let html = scope_fieldset(&third(EditScope::This), true);
+        assert!(html.contains(r#"value="this" checked/>"#), "{html}");
+        assert_eq!(html.matches(" checked").count(), 1, "{html}");
+        assert!(html.contains("17/11/2026"), "{html}");
+        assert!(!html.contains("17:00"), "{html}");
+    }
+
+    #[test]
+    fn the_scope_is_asked_just_before_saving_and_only_on_an_occurrence() {
+        assert!(!edit_page(false).contains(r#"name="scope""#));
+        let html = page(
+            "",
+            Uuid::from_u128(7),
+            false,
+            "Piscine",
+            "",
+            "",
+            "2026-11-17T17:00",
+            "2026-11-17T18:00",
+            false,
+            &RecurrenceFields::default(),
+            None,
+            &[member("Camille")],
+            &[],
+            false,
+            None,
+            Some(&third(EditScope::All)),
+        );
+        let scope = html.find(r#"name="scope""#).expect(&html);
+        assert!(html.find(r#"name="is_private""#).unwrap() < scope, "{html}");
+        assert!(scope < html.find("Enregistrer").unwrap(), "{html}");
+        // The way back returns to the occurrence it came from.
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/agenda/{}?occ=2026-11-17T16:00:00Z">Retour"#,
+                Uuid::from_u128(7)
+            )),
+            "{html}"
+        );
     }
 }
