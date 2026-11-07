@@ -13,6 +13,11 @@
 // - `prod`: the URL in MHOME_PROD_URL, required, https, which the production
 //   domain is not fixed yet to fill in here.
 //
+// That target is the flavour's standard site. A site stored in the app's
+// preferences (#736, an instance of its own) takes its place at launch:
+// MainActivity then rewrites `server.url` and `server.hostname` below, and
+// keeps the rest.
+//
 // Loaded by Node's own type stripping (Capacitor 8 with TypeScript 7): no
 // enum, no namespace, no parameter property.
 import { readFileSync } from 'node:fs';

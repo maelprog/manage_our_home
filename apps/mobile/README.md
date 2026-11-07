@@ -156,7 +156,7 @@ cd android
 À voir :
 
 - `npm ci` finit par `found 0 vulnerabilities` ;
-- `npm test` affiche `ℹ pass 13` et `ℹ fail 0` ;
+- `npm test` affiche `ℹ pass 66` et `ℹ fail 0` ;
 - `npx cap sync android` finit par `✔ update android` et `[info] Sync
   finished` ; il écrit la configuration du staging dans
   `android/app/src/main/assets/capacitor.config.json` (`"url":
@@ -236,6 +236,27 @@ adb install -r android/app/build/outputs/apk/staging/debug/app-staging-debug.apk
 
 L'émulateur passe par le réseau de la machine : si elle est sur Tailscale,
 le staging répond.
+
+### 4d. Ouvrir un autre site que le standard (#736)
+
+Au lancement, l'application ouvre le site mémorisé dans ses préférences
+privées s'il y en a un, sinon le site standard de sa variante (celui du
+`sync`). Aucun écran ne permet encore de le choisir ; sur un APK de
+débogage, on l'écrit à la main (`run-as` ne marche pas sur un APK de
+release) :
+
+```sh
+APP=fr.watallo.mhome.staging   # ou fr.watallo.mhome pour la variante prod
+printf '<map><string name="origin">https://maison.exemple.fr</string></map>' \
+  | adb shell run-as $APP sh -c "'mkdir -p shared_prefs && cat > shared_prefs/site.xml'"
+adb shell am force-stop $APP     # puis rouvrir l'application
+adb shell run-as $APP rm shared_prefs/site.xml   # retour au site standard
+```
+
+La valeur doit être une origine https telle que la rend
+`normalizeSiteAddress` de `www/site-address.js` : `https://hôte[:port]`, en
+minuscules, sans `/` final ni rien après le nom. Une autre valeur est
+ignorée, et le site standard s'ouvre.
 
 ### 5. Contrôler
 
