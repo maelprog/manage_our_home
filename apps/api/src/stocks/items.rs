@@ -2,7 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, NaiveDate, Utc};
-use manage_our_home_shared::dto::stocks::{ExpiringStockCount, SORT_BY_EXPIRY};
+use manage_our_home_shared::dto::stocks::{ExpiringStockCount, PlannedUsage, SORT_BY_EXPIRY};
 use manage_our_home_shared::validation::auth::paris_day;
 use manage_our_home_shared::validation::stocks::{
     check_quantities, expiring_until, expiry_status, normalize_unit, ExpiryStatus,
@@ -15,7 +15,7 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
 use crate::stocks::barcode::normalize;
-use crate::stocks::can_modify;
+use crate::stocks::{can_modify, planned_usage};
 use crate::AppState;
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -117,6 +117,11 @@ pub struct StockItemResponse {
     pub expiry_status: ExpiryStatus,
     /// EAN/UPC code the article was added under (#402), if any.
     pub barcode: Option<String>,
+    /// What the planned recipes would take from this line (#711,
+    /// `stocks::planned_usage`), on the list and the detail only: absent
+    /// from the other responses, empty when no planned recipe uses it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_usage: Option<Vec<PlannedUsage>>,
 }
 
 #[derive(Clone)]
@@ -168,6 +173,15 @@ impl StockItemResponse {
             expires_on: r.expires_on,
             expiry_status: expiry_status(r.expires_on, today),
             barcode: r.barcode,
+            planned_usage: None,
+        }
+    }
+
+    /// The response with what the planned recipes would take from it.
+    fn with_planned_usage(self, usage: Vec<PlannedUsage>) -> Self {
+        StockItemResponse {
+            planned_usage: Some(usage),
+            ..self
         }
     }
 }
@@ -267,19 +281,21 @@ pub async fn get_stock_item(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
-    let item = sqlx::query_as!(
-        StockItemRow,
-        r#"SELECT id, group_id, created_by, name, category, quantity, unit, reorder_threshold, expires_on, barcode
-           FROM stock_items WHERE id = $1 AND group_id = $2"#,
-        item_id,
-        group_id,
-    )
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    // The whole stock: what a recipe takes from this line depends on the
+    // other lines of its name (`propose`).
+    let stock = planned_usage::group_stock(&mut tx, group_id).await?;
+    let item = stock
+        .iter()
+        .find(|s| s.id == item_id)
+        .cloned()
+        .ok_or(AppError::NotFound)?;
+    let mut usage = planned_usage::for_stock(&mut tx, group_id, &stock).await?;
     tx.commit().await?;
 
-    Ok(Json(StockItemResponse::from_row(item, today())))
+    Ok(Json(
+        StockItemResponse::from_row(item, today())
+            .with_planned_usage(usage.remove(&item_id).unwrap_or_default()),
+    ))
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -349,12 +365,16 @@ pub async fn list_stock_items(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let mut usage = planned_usage::for_stock(&mut tx, group_id, &rows).await?;
     tx.commit().await?;
 
     let today = today();
     let items: Vec<StockItemResponse> = rows
         .into_iter()
-        .map(|row| StockItemResponse::from_row(row, today))
+        .map(|row| {
+            let uses = usage.remove(&row.id).unwrap_or_default();
+            StockItemResponse::from_row(row, today).with_planned_usage(uses)
+        })
         .filter(|item| !query.low_stock || item.low_stock)
         .collect();
 

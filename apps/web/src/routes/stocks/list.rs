@@ -444,6 +444,7 @@ mod tests {
             expires_on: None,
             expiry_status: ExpiryStatus::Unknown,
             barcode: None,
+            planned_usage: None,
         }
     }
 

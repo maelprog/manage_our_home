@@ -1955,6 +1955,7 @@ mod pure_logic_tests {
             expires_on,
             expiry_status: manage_our_home_shared::validation::stocks::ExpiryStatus::Unknown,
             barcode: None,
+            planned_usage: None,
         }
     }
 
