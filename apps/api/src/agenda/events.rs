@@ -751,30 +751,8 @@ pub async fn update_event(
 
     let scope = body.scope.unwrap_or_default();
     if scope != EditScope::All {
-        let occurrence_at = body
-            .occurrence_at
-            .ok_or_else(|| AppError::BadRequest("scope_requires_occurrence".into()))?;
-        let Some(series_rule) = existing.rrule.clone() else {
-            return Err(AppError::BadRequest(
-                "scope_requires_recurring_event".into(),
-            ));
-        };
-        if is_imported(&mut tx, event_id).await? {
-            return Err(AppError::BadRequest(
-                "scope_not_allowed_for_imported_event".into(),
-            ));
-        }
-        let located = recurrence::locate_occurrence(
-            &series_rule,
-            existing.all_day,
-            existing.starts_at,
-            existing.ends_at,
-            &existing.exdates,
-            occurrence_at,
-        )
-        .ok()
-        .flatten()
-        .ok_or_else(|| AppError::BadRequest("occurrence_not_in_series".into()))?;
+        let (series_rule, located) =
+            scoped_occurrence(&mut tx, &existing, body.occurrence_at).await?;
         // « This one and the following » from the series' very first
         // occurrence is the whole series: nothing is left to cut off, and
         // the row is updated in place below. From the first one it *lists*
@@ -928,6 +906,103 @@ async fn is_imported(
     )
     .fetch_one(&mut **tx)
     .await?)
+}
+
+/// The rule of `series` and its occurrence at `occurrence_at`, for a `PATCH`
+/// (#708) or a `DELETE` (#710) with a scope other than `all` — or the 400
+/// that scope is refused with: no occurrence given, a series that is not
+/// one, a series mirrored from an imported calendar, an instant that names
+/// no occurrence the series lists.
+async fn scoped_occurrence(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    series: &EventRow,
+    occurrence_at: Option<DateTime<Utc>>,
+) -> AppResult<(String, recurrence::OccurrenceInSeries)> {
+    let occurrence_at =
+        occurrence_at.ok_or_else(|| AppError::BadRequest("scope_requires_occurrence".into()))?;
+    let Some(series_rule) = series.rrule.clone() else {
+        return Err(AppError::BadRequest(
+            "scope_requires_recurring_event".into(),
+        ));
+    };
+    if is_imported(tx, series.id).await? {
+        return Err(AppError::BadRequest(
+            "scope_not_allowed_for_imported_event".into(),
+        ));
+    }
+    let located = recurrence::locate_occurrence(
+        &series_rule,
+        series.all_day,
+        series.starts_at,
+        series.ends_at,
+        &series.exdates,
+        occurrence_at,
+    )
+    .ok()
+    .flatten()
+    .ok_or_else(|| AppError::BadRequest("occurrence_not_in_series".into()))?;
+    Ok((series_rule, located))
+}
+
+/// Takes the occurrence of `series_id` at `occurrence` out of it (#708,
+/// #710): the series excludes it, and its completion and the notifications
+/// still pending for it go.
+async fn exclude_occurrence(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    series_id: Uuid,
+    occurrence: DateTime<Utc>,
+) -> AppResult<()> {
+    sqlx::query!(
+        "UPDATE events SET exdates = array_append(exdates, $2), updated_at = now() WHERE id = $1",
+        series_id,
+        occurrence,
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
+        series_id,
+        occurrence,
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM scheduled_notifications WHERE event_id = $1 AND occurrence_at = $2 AND status = 'pending'",
+        series_id,
+        occurrence,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Cuts `series` right before its occurrence at `occurrence` (#708, #710,
+/// `recurrence::truncated_before`), and drops the notifications still
+/// pending from it on. Its task completions from there on are the caller's
+/// to move or delete.
+async fn truncate_series(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    series: &EventRow,
+    series_rule: &str,
+    occurrence: DateTime<Utc>,
+) -> AppResult<()> {
+    let cut = recurrence::truncated_before(series_rule, series.all_day, occurrence)
+        .map_err(|_| AppError::BadRequest("invalid_rrule".into()))?;
+    sqlx::query!(
+        "UPDATE events SET rrule = $2, updated_at = now() WHERE id = $1",
+        series.id,
+        cut,
+    )
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM scheduled_notifications WHERE event_id = $1 AND occurrence_at >= $2 AND status = 'pending'",
+        series.id,
+        occurrence,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// What `split_series` works from: the series as locked by `update_event`,
@@ -1092,48 +1167,10 @@ async fn split_series(
     // The series lets go of the occurrence(s), and of the notifications
     // still pending for them.
     match scope {
-        EditScope::This => {
-            sqlx::query!(
-                "UPDATE events SET exdates = array_append(exdates, $2), updated_at = now() WHERE id = $1",
-                series.id,
-                occurrence_starts_at,
-            )
-            .execute(&mut **tx)
-            .await?;
-            sqlx::query!(
-                "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at = $2",
-                series.id,
-                occurrence_starts_at,
-            )
-            .execute(&mut **tx)
-            .await?;
-            sqlx::query!(
-                "DELETE FROM scheduled_notifications WHERE event_id = $1 AND occurrence_at = $2 AND status = 'pending'",
-                series.id,
-                occurrence_starts_at,
-            )
-            .execute(&mut **tx)
-            .await?;
-        }
+        EditScope::This => exclude_occurrence(tx, series.id, occurrence_starts_at).await?,
         _ => {
-            let cut =
-                recurrence::truncated_before(series_rule, series.all_day, occurrence_starts_at)
-                    .map_err(|_| AppError::BadRequest("invalid_rrule".into()))?;
-            sqlx::query!(
-                "UPDATE events SET rrule = $2, updated_at = now() WHERE id = $1",
-                series.id,
-                cut,
-            )
-            .execute(&mut **tx)
-            .await?;
+            truncate_series(tx, series, series_rule, occurrence_starts_at).await?;
             move_completions(tx, series, &created, occurrence_starts_at).await?;
-            sqlx::query!(
-                "DELETE FROM scheduled_notifications WHERE event_id = $1 AND occurrence_at >= $2 AND status = 'pending'",
-                series.id,
-                occurrence_starts_at,
-            )
-            .execute(&mut **tx)
-            .await?;
             if let (Some(completed), false) = (body.completed, one_off) {
                 set_occurrence_completion(tx, created.id, starts_at, completed, actor).await?;
             }
@@ -1263,6 +1300,42 @@ async fn copy_reminders(
     Ok(())
 }
 
+/// What a `DELETE` of a series does (#710).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Deletion {
+    /// The row goes, with its attachments.
+    Series,
+    /// The occurrence joins the series' `exdates`.
+    Occurrence,
+    /// The series is cut right before the occurrence.
+    Following,
+}
+
+/// The deletion `scope` asks for, given what the series' rule produced
+/// before the occurrence (`OccurrenceInSeries::produced_before`; `0` for
+/// `all`, which names none).
+fn deletion(scope: EditScope, produced_before: u32) -> Deletion {
+    match scope {
+        EditScope::All => Deletion::Series,
+        EditScope::This => Deletion::Occurrence,
+        // From the very first occurrence nothing is left before the cut. As
+        // in `update_event`, the first one the series *lists* after excluded
+        // ones is not that: they still hold its start and spend its `COUNT`.
+        EditScope::ThisAndFollowing if produced_before == 0 => Deletion::Series,
+        EditScope::ThisAndFollowing => Deletion::Following,
+    }
+}
+
+/// `DELETE …/events/{event_id}` parameters (#710). Without `scope`, or with
+/// `all`, the whole event goes, as before; `this` and `this_and_following`
+/// need `occurrence_at`, read as by a scoped `PATCH` (#708).
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DeleteEventQuery {
+    pub scope: Option<EditScope>,
+    pub occurrence_at: Option<DateTime<Utc>>,
+}
+
 #[utoipa::path(
     delete,
     path = "/groups/{id}/events/{event_id}",
@@ -1270,9 +1343,11 @@ async fn copy_reminders(
     params(
         ("id" = uuid::Uuid, Path, description = "Group id"),
         ("event_id" = uuid::Uuid, Path, description = "Event id"),
+        DeleteEventQuery,
     ),
     responses(
-        (status = 204, description = "Event deleted, with its attachments"),
+        (status = 204, description = "Event deleted, with its attachments — or, under scope `this`, the occurrence excluded from its series; under `this_and_following`, the series cut before the occurrence (deleted whole from its first occurrence)"),
+        (status = 400, description = "Under a scope other than `all`: `scope_requires_occurrence`, `scope_requires_recurring_event`, `scope_not_allowed_for_imported_event` or `occurrence_not_in_series`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
@@ -1282,6 +1357,7 @@ pub async fn delete_event(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, event_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<DeleteEventQuery>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
@@ -1293,8 +1369,13 @@ pub async fn delete_event(
     // with the cascade, leaving bytes nothing points at. `FOR UPDATE`
     // conflicts with `FOR KEY SHARE`: this read waits for the upload and
     // collects its key, or an upload arriving after it waits and answers 404.
-    let existing = sqlx::query!(
-        "SELECT created_by, is_private FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE",
+    //
+    // A scoped delete (#710) decides on the series' rule and exclusions as
+    // read here, under the same lock as a scoped `PATCH` would take them.
+    let existing = sqlx::query_as!(
+        EventRow,
+        r#"SELECT id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
+           FROM events WHERE id = $1 AND group_id = $2 FOR UPDATE"#,
         event_id,
         group_id,
     )
@@ -1316,6 +1397,36 @@ pub async fn delete_event(
         existing.is_private && is_participant(auth.user_id, existing.created_by, &assignees),
     ) {
         return Err(AppError::Forbidden);
+    }
+
+    // Scoped (#710): the occurrence leaves the series, or the series stops
+    // before it — unless nothing would be left of it. The attachments, the
+    // reminders and the notifications already sent stay with the series.
+    let scope = query.scope.unwrap_or_default();
+    if scope != EditScope::All {
+        let (series_rule, located) =
+            scoped_occurrence(&mut tx, &existing, query.occurrence_at).await?;
+        let (occurrence, _) = located.span;
+        match deletion(scope, located.produced_before) {
+            Deletion::Series => {}
+            Deletion::Occurrence => {
+                exclude_occurrence(&mut tx, event_id, occurrence).await?;
+                tx.commit().await?;
+                return Ok(StatusCode::NO_CONTENT);
+            }
+            Deletion::Following => {
+                truncate_series(&mut tx, &existing, &series_rule, occurrence).await?;
+                sqlx::query!(
+                    "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at >= $2",
+                    event_id,
+                    occurrence,
+                )
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                return Ok(StatusCode::NO_CONTENT);
+            }
+        }
     }
 
     // The attachment rows cascade from `events`, their objects do not:
@@ -1606,5 +1717,38 @@ mod tests {
         );
         assert!(spans.is_empty());
         assert!(error.is_some());
+    }
+
+    // -- deletion (#710) ----------------------------------------------------
+
+    #[test]
+    fn a_delete_of_the_whole_series_deletes_the_row() {
+        assert_eq!(deletion(EditScope::All, 0), Deletion::Series);
+        assert_eq!(deletion(EditScope::All, 3), Deletion::Series);
+    }
+
+    #[test]
+    fn a_delete_of_one_occurrence_excludes_it_wherever_it_falls() {
+        assert_eq!(deletion(EditScope::This, 0), Deletion::Occurrence);
+        assert_eq!(deletion(EditScope::This, 3), Deletion::Occurrence);
+    }
+
+    #[test]
+    fn a_delete_from_an_occurrence_on_cuts_the_series_before_it() {
+        assert_eq!(
+            deletion(EditScope::ThisAndFollowing, 1),
+            Deletion::Following
+        );
+        assert_eq!(
+            deletion(EditScope::ThisAndFollowing, 3),
+            Deletion::Following
+        );
+    }
+
+    /// From the very first occurrence, nothing is left before the cut: the
+    /// series goes, as with `all`.
+    #[test]
+    fn a_delete_from_the_first_occurrence_on_deletes_the_row() {
+        assert_eq!(deletion(EditScope::ThisAndFollowing, 0), Deletion::Series);
     }
 }

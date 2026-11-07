@@ -4412,3 +4412,383 @@ async fn an_assignee_splits_a_private_series_into_private_events(db: PgPool) {
     drop(router);
     drop_prescribed_role(&db, pool, &role).await;
 }
+
+// -- #710: DELETE of a series with a scope ---------------------------------
+
+async fn delete_scoped(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    event_id: &str,
+    query: &str,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/events/{event_id}{query}"),
+        Some(cookie),
+        None,
+    )
+    .await
+}
+
+/// `?scope=…&occurrence_at=…` for the occurrence at `at`.
+fn scoped(scope: &str, at: DateTime<Utc>) -> String {
+    format!("?scope={scope}&occurrence_at={}", urlenc(&at.to_rfc3339()))
+}
+
+/// The occurrences of `event_id` marked done, in order.
+async fn completion_instants(db: &PgPool, group_id: &str, event_id: &str) -> Vec<DateTime<Utc>> {
+    let mut tx = with_family_scope(db, group_id).await;
+    let at = sqlx::query_scalar(
+        "SELECT occurrence_at FROM event_occurrence_completions WHERE event_id = $1 ORDER BY occurrence_at",
+    )
+    .bind(Uuid::parse_str(event_id).unwrap())
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    at
+}
+
+/// A recurring task from `daily_series_with_a_reminder`, its occurrences
+/// `done` marked done.
+async fn daily_task_done_on(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    done: &[i64],
+) -> String {
+    let series_id = daily_series_with_a_reminder(
+        router,
+        cookie,
+        group_id,
+        serde_json::json!({"is_task": true}),
+    )
+    .await;
+    for n in done {
+        let res = patch_event(
+            router,
+            cookie,
+            group_id,
+            &series_id,
+            serde_json::json!({"completed": true, "occurrence_at": nine_paris(*n)}),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+    }
+    series_id
+}
+
+/// AC (#710): `this` takes one occurrence out of its series — and nothing
+/// else: the series keeps its other occurrences, their completions and
+/// notifications, its reminder and its attachments. The occurrence's own
+/// completion and pending notification go with it.
+#[sqlx::test]
+async fn deleting_one_occurrence_excludes_it_from_its_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "del-this@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let owner_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'del-this@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let series_id = daily_task_done_on(&router, &owner_cookie, &group_id, &[2, 3]).await;
+    let mut tx = with_family_scope(&db, &group_id).await;
+    sqlx::query(
+        "INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
+         VALUES ($1::uuid, $2, 'k-710', 'plan.png', 'image/png', 10)",
+    )
+    .bind(&series_id)
+    .bind(owner_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let (from, to) = (nine_paris(-1), nine_paris(10));
+    let before = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+    assert_eq!(before.len(), 5);
+
+    let res = delete_scoped(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        &scoped("this", nine_paris(2)),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+
+    let after = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+    let expected: Vec<_> = before
+        .iter()
+        .filter(|o| o.2 != nine_paris(2))
+        .cloned()
+        .collect();
+    assert_eq!(after, expected);
+    assert_eq!(
+        completion_instants(&db, &group_id, &series_id).await,
+        vec![nine_paris(3)]
+    );
+    assert_eq!(
+        scheduled_occurrences(&db, &series_id).await,
+        [0, 1, 3, 4].map(nine_paris).to_vec()
+    );
+    assert_eq!(attachment_count(&db, &group_id, &series_id).await, 1);
+    assert_eq!(reminder_count(&db, &series_id).await, 1);
+
+    // Gone from the series, the occurrence is no longer one of it.
+    let again = delete_scoped(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        &scoped("this", nine_paris(2)),
+    )
+    .await;
+    assert_status(&again, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(again).await["error"], "occurrence_not_in_series");
+}
+
+/// AC (#710): `this_and_following` cuts the series right before the
+/// occurrence, with the rule #708's split writes: the occurrences before it
+/// are listed as they were, none after, and the completions and pending
+/// notifications from the occurrence on are gone.
+#[sqlx::test]
+async fn deleting_an_occurrence_and_the_following_ones_cuts_the_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "del-follow@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let series_id = daily_task_done_on(&router, &owner_cookie, &group_id, &[1, 3]).await;
+    let (from, to) = (nine_paris(-1), nine_paris(30));
+    let before = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+
+    let res = delete_scoped(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &series_id,
+        &scoped("this_and_following", nine_paris(3)),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+
+    let after = listed_occurrences(&router, &owner_cookie, &group_id, from, to).await;
+    assert_eq!(after, before[..3]);
+    assert_eq!(
+        completion_instants(&db, &group_id, &series_id).await,
+        vec![nine_paris(1)]
+    );
+    assert_eq!(
+        scheduled_occurrences(&db, &series_id).await,
+        [0, 1, 2].map(nine_paris).to_vec()
+    );
+
+    // The same cut as a split of the same series from the same occurrence.
+    let twin_id = daily_task_done_on(&router, &owner_cookie, &group_id, &[]).await;
+    let split = patch_event(
+        &router,
+        &owner_cookie,
+        &group_id,
+        &twin_id,
+        serde_json::json!({"scope": "this_and_following", "occurrence_at": nine_paris(3), "title": "X"}),
+    )
+    .await;
+    assert_status(&split, StatusCode::OK);
+    let rule_of = |id: String| {
+        let (router, cookie, group_id) = (router.clone(), owner_cookie.clone(), group_id.clone());
+        async move {
+            let res = call(
+                &router,
+                Method::GET,
+                &format!("/groups/{group_id}/events/{id}"),
+                Some(&cookie),
+                None,
+            )
+            .await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await["rrule"].as_str().unwrap().to_string()
+        }
+    };
+    let cut = rule_of(series_id.clone()).await;
+    assert!(cut.contains("UNTIL="), "{cut}");
+    assert_eq!(cut, rule_of(twin_id).await);
+}
+
+/// AC (#710): from the series' first occurrence, `this_and_following` is the
+/// whole series — the row goes, as with `all` or no scope at all.
+#[sqlx::test]
+async fn deleting_from_the_first_occurrence_on_deletes_the_series(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "del-first@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let mut series = Vec::new();
+    for query in [
+        scoped("this_and_following", nine_paris(0)),
+        scoped("all", nine_paris(2)),
+        String::new(),
+    ] {
+        let id =
+            daily_series_with_a_reminder(&router, &owner_cookie, &group_id, serde_json::json!({}))
+                .await;
+        let res = delete_scoped(&router, &owner_cookie, &group_id, &id, &query).await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+        series.push(id);
+    }
+    for id in &series {
+        let res = call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_id}/events/{id}"),
+            Some(&owner_cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+        assert_eq!(reminder_count(&db, id).await, 0);
+    }
+    assert!(listed_occurrences(
+        &router,
+        &owner_cookie,
+        &group_id,
+        nine_paris(-1),
+        nine_paris(10)
+    )
+    .await
+    .is_empty());
+}
+
+/// AC (#710): what a scoped delete refuses, and who may send it — the same
+/// as a scoped `PATCH` (#708). None of it touches the series.
+#[sqlx::test]
+async fn a_scoped_delete_is_refused_where_it_has_no_meaning(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "del-refused@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let (member_cookie, _) = private_event_member(
+        &router,
+        &db,
+        &group_id,
+        "del-refused-member@example.test",
+        "standard",
+    )
+    .await;
+    let series_id =
+        daily_series_with_a_reminder(&router, &owner_cookie, &group_id, serde_json::json!({}))
+            .await;
+    let one_off = create_event_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({
+            "title": "Dentiste",
+            "starts_at": nine_paris(0),
+            "ends_at": nine_paris(0) + Duration::hours(1),
+        }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let refused = |id: &str, query: String| {
+        let (router, cookie, group_id, id) = (
+            router.clone(),
+            owner_cookie.clone(),
+            group_id.clone(),
+            id.to_string(),
+        );
+        async move {
+            let res = delete_scoped(&router, &cookie, &group_id, &id, &query).await;
+            assert_status(&res, StatusCode::BAD_REQUEST);
+            json_body(res).await["error"].as_str().unwrap().to_string()
+        }
+    };
+    for scope in ["this", "this_and_following"] {
+        assert_eq!(
+            refused(&series_id, format!("?scope={scope}")).await,
+            "scope_requires_occurrence"
+        );
+        assert_eq!(
+            refused(&one_off, scoped(scope, nine_paris(0))).await,
+            "scope_requires_recurring_event"
+        );
+        for not_one in [nine_paris(1) + Duration::minutes(5), nine_paris(5)] {
+            assert_eq!(
+                refused(&series_id, scoped(scope, not_one)).await,
+                "occurrence_not_in_series"
+            );
+        }
+    }
+
+    // Same permission as any delete: a plain member may not delete someone
+    // else's shared series, one occurrence or more.
+    for scope in ["this", "this_and_following"] {
+        let res = delete_scoped(
+            &router,
+            &member_cookie,
+            &group_id,
+            &series_id,
+            &scoped(scope, nine_paris(1)),
+        )
+        .await;
+        assert_status(&res, StatusCode::FORBIDDEN);
+    }
+
+    // A series mirrored from an imported calendar is deleted whole or not
+    // at all.
+    let owner_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM users WHERE email = 'del-refused@example.test'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let mut tx = with_family_scope(&db, &group_id).await;
+    sqlx::query(
+        "WITH import AS (
+             INSERT INTO calendar_imports (group_id, created_by, label, feed_url)
+             VALUES ($1::uuid, $2, 'Agenda', '\\x00'::bytea) RETURNING id
+         )
+         INSERT INTO calendar_import_events (calendar_import_id, event_id, external_uid)
+         SELECT id, $3::uuid, 'uid-710' FROM import",
+    )
+    .bind(&group_id)
+    .bind(owner_id)
+    .bind(&series_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    for scope in ["this", "this_and_following"] {
+        assert_eq!(
+            refused(&series_id, scoped(scope, nine_paris(1))).await,
+            "scope_not_allowed_for_imported_event"
+        );
+    }
+
+    // Nothing above changed the series.
+    let listed = listed_occurrences(
+        &router,
+        &owner_cookie,
+        &group_id,
+        nine_paris(-1),
+        nine_paris(10),
+    )
+    .await;
+    assert_eq!(
+        listed
+            .iter()
+            .filter(|o| o.0 == series_id)
+            .map(|o| o.2)
+            .collect::<Vec<_>>(),
+        (0..5).map(nine_paris).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        scheduled_occurrences(&db, &series_id).await,
+        (0..5).map(nine_paris).collect::<Vec<_>>()
+    );
+}
