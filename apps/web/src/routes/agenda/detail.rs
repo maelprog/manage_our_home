@@ -490,11 +490,12 @@ fn delete_control(urls: EventUrls, event: &EventResponse, focus_occ: Option<&str
 }
 
 /// The delete screen of an occurrence of a series (#710): the three
-/// choices of the edit form (#709), « Toute la série » checked.
+/// choices of the edit form (#709), « Toute la série » checked — the
+/// screen picks it, whoever opens it.
 fn delete_page(
     header: &str,
     event: &EventResponse,
-    choice: &ScopeChoice,
+    occurrence_at: DateTime<Utc>,
     family: Option<Uuid>,
 ) -> String {
     let urls = EventUrls {
@@ -513,11 +514,11 @@ fn delete_page(
 </form>
 <div class="links"><a href="{back}">Annuler</a></div>"#,
         title = html_escape(&event.title),
-        when = occurrence_label(choice.occurrence_at, event.all_day),
+        when = occurrence_label(occurrence_at, event.all_day),
         action = urls.to("/delete"),
-        occ = occ_param(choice.occurrence_at),
-        radios = scope_radios(choice.scope),
-        back = urls.to(&format!("?occ={}", occ_param(choice.occurrence_at))),
+        occ = occ_param(occurrence_at),
+        radios = scope_radios(EditScope::All),
+        back = urls.to(&format!("?occ={}", occ_param(occurrence_at))),
     );
     shell_with_header(Width::Form, "Supprimer l'événement", header, &body)
 }
@@ -819,11 +820,7 @@ pub async fn delete_confirm(
     let Some(occurrence_at) = query.occ.filter(|_| event.rrule.is_some()) else {
         return Redirect::to(&fam.url(&detail)).into_response();
     };
-    let choice = ScopeChoice {
-        occurrence_at,
-        scope: EditScope::All,
-    };
-    Html(delete_page(&fam.header, &event, &choice, fam.carried)).into_response()
+    Html(delete_page(&fam.header, &event, occurrence_at, fam.carried)).into_response()
 }
 
 /// `POST /agenda/:id/delete`: the event whole from the detail's form, or
@@ -1282,9 +1279,13 @@ mod tests {
         recurring
     }
 
+    fn third_week_at() -> DateTime<Utc> {
+        "2026-09-19T08:00:00Z".parse().unwrap()
+    }
+
     fn third_week(scope: EditScope) -> ScopeChoice {
         ScopeChoice {
-            occurrence_at: "2026-09-19T08:00:00Z".parse().unwrap(),
+            occurrence_at: third_week_at(),
             scope,
         }
     }
@@ -1342,7 +1343,7 @@ mod tests {
     }
 
     fn confirm(family: Option<Uuid>) -> String {
-        delete_page("", &weekly(), &third_week(EditScope::All), family)
+        delete_page("", &weekly(), third_week_at(), family)
     }
 
     /// The three choices, « Toute la série » first and checked, before the
@@ -1411,7 +1412,7 @@ mod tests {
     fn the_delete_screen_escapes_the_title() {
         let mut series = weekly();
         series.title = "<b>Piscine</b>".to_string();
-        let html = delete_page("", &series, &third_week(EditScope::All), None);
+        let html = delete_page("", &series, third_week_at(), None);
         assert!(html.contains("&lt;b&gt;Piscine&lt;/b&gt;"), "{html}");
         assert!(!html.contains("<b>Piscine"), "{html}");
     }
