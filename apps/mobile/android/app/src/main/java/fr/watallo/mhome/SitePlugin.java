@@ -1,0 +1,138 @@
+package fr.watallo.mhome;
+
+import android.content.Context;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.SocketTimeoutException;
+import java.net.URL;
+import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
+import javax.net.ssl.SSLException;
+
+/**
+ * What the first-launch page ({@code www/choix-du-site.html}, #737) asks
+ * of the app: which standard site this APK has, a probe of a typed
+ * address, and storing the choice. Registered by {@link MainActivity} only
+ * while no choice is stored, so the sites the app opens afterwards never
+ * see it: none of them can change the site the app opens.
+ *
+ * <p>What a probe answer means is decided by the page
+ * ({@code www/site-choice.js}); this class only reports it.
+ */
+@CapacitorPlugin(name = "Site")
+public class SitePlugin extends Plugin {
+
+    /** Enough for the web manifest, which is under a kilobyte. */
+    private static final int MAX_BODY = 64 * 1024;
+    private static final int TIMEOUT_MS = 10_000;
+
+    /** The application id, the app's name, and the flavour's standard site. */
+    @PluginMethod
+    public void info(PluginCall call) {
+        Context context = getContext();
+        String standard = MainActivity.standardOrigin(context);
+        if (standard == null) {
+            call.reject("no standard site in the synced config");
+            return;
+        }
+        JSObject info = new JSObject();
+        info.put("applicationId", context.getPackageName());
+        info.put("appName", context.getApplicationInfo().loadLabel(context.getPackageManager()).toString());
+        info.put("standardOrigin", standard);
+        call.resolve(info);
+    }
+
+    /**
+     * A GET of {@code url}, an https URL, through the app's own network
+     * policy (the system authorities only, res/xml/network_security_config.xml),
+     * redirects not followed: {@code {status, location, body}}, or
+     * {@code {failure}} when no answer came: {@code certificate},
+     * {@code unknown-host}, {@code timeout} or {@code unreachable}. Run on
+     * Capacitor's plugin thread, not the UI's.
+     */
+    @PluginMethod
+    public void probe(PluginCall call) {
+        URL url;
+        try {
+            url = new URL(call.getString("url", ""));
+        } catch (MalformedURLException e) {
+            call.reject("not a URL");
+            return;
+        }
+        if (!"https".equals(url.getProtocol())) {
+            call.reject("not an https URL");
+            return;
+        }
+        JSObject result = new JSObject();
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setInstanceFollowRedirects(false);
+            connection.setConnectTimeout(TIMEOUT_MS);
+            connection.setReadTimeout(TIMEOUT_MS);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("Accept", "application/manifest+json, application/json");
+            int status = connection.getResponseCode();
+            result.put("status", status);
+            String location = connection.getHeaderField("Location");
+            if (location != null) {
+                result.put("location", location);
+            }
+            InputStream in = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            result.put("body", in == null ? "" : readCapped(in));
+        } catch (SSLException e) {
+            result.put("failure", "certificate");
+        } catch (UnknownHostException e) {
+            result.put("failure", "unknown-host");
+        } catch (SocketTimeoutException e) {
+            result.put("failure", "timeout");
+        } catch (IOException e) {
+            result.put("failure", "unreachable");
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+        call.resolve(result);
+    }
+
+    /**
+     * Stores {@code {standard: true}} or {@code {origin}}, an origin as
+     * {@code normalizeSiteAddress} gives them back, then restarts the
+     * activity, which opens that site.
+     */
+    @PluginMethod
+    public void choose(PluginCall call) {
+        boolean standard = Boolean.TRUE.equals(call.getBoolean("standard", false));
+        String origin = call.getString("origin");
+        if (!standard && (origin == null || MainActivity.httpsOriginAuthority(origin) == null)) {
+            call.reject("neither the standard site nor an https origin");
+            return;
+        }
+        if (!MainActivity.storeChoice(getContext(), standard ? null : origin)) {
+            call.reject("the choice could not be stored");
+            return;
+        }
+        call.resolve();
+        getActivity().runOnUiThread(() -> getActivity().recreate());
+    }
+
+    private static String readCapped(InputStream in) throws IOException {
+        try (InputStream body = in) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            for (int n; out.size() < MAX_BODY && (n = body.read(chunk, 0, Math.min(chunk.length, MAX_BODY - out.size()))) != -1; ) {
+                out.write(chunk, 0, n);
+            }
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        }
+    }
+}
