@@ -78,17 +78,24 @@ public class MainActivity extends BridgeActivity {
     /** The first-launch page, out of {@code www/}. */
     static final String CHOICE_PAGE = "/choix-du-site.html";
 
-    /** No choice is stored yet: this launch shows {@link #CHOICE_PAGE}. */
-    private boolean choosing;
+    /**
+     * The config of {@link #CHOICE_PAGE} when this launch shows it (no
+     * choice is stored yet, and the config could be rewritten), else null.
+     */
+    private CapConfig choice;
 
     private static final String TAG = "MHome";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         SharedPreferences site = getSharedPreferences(SITE_PREFERENCES, MODE_PRIVATE);
-        choosing = !site.contains(SITE_ORIGIN) && !site.getBoolean(SITE_STANDARD, false);
-        if (choosing) {
-            // Before super.onCreate, which builds the bridge.
+        if (!site.contains(SITE_ORIGIN) && !site.getBoolean(SITE_STANDARD, false)) {
+            choice = choiceConfig();
+        }
+        if (choice != null) {
+            // Before super.onCreate, which builds the bridge; and only when
+            // the page is shown: a standard site opened because the choice
+            // page could not be must not get the plugin.
             registerPlugin(SitePlugin.class);
         }
         super.onCreate(savedInstanceState);
@@ -96,7 +103,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void load() {
-        config = choosing ? choiceConfig() : storedSiteConfig();
+        config = choice != null ? choice : storedSiteConfig();
         super.load();
         bridge.setWebViewClient(new SiteWebViewClient(bridge));
         getOnBackPressedDispatcher()
