@@ -124,6 +124,51 @@ test('an all-day occurrence says « toute la journée », on its Paris date', ()
   assert.equal(R.toNotification(sameDay, PARIS).body, 'Toute la journée');
 });
 
+const NEW_YORK = { ...PARIS, timeZone: 'America/New_York' };
+
+test("a timed occurrence's date is the phone's, not Paris's", () => {
+  // 03:00 UTC on the 10th is 22:00 on the 9th in New York, 04:00 on the
+  // 10th in Paris.
+  const late = { ...ENTRY, occurrence_at: '2026-11-10T03:00:00Z' };
+  // A reminder on the 8th, New York time: another day, dated.
+  assert.equal(
+    R.toNotification({ ...late, fire_at: '2026-11-08T15:00:00Z' }, NEW_YORK).body,
+    'Lundi 9 novembre à 22:00',
+  );
+  // A reminder at 15:00 on the 9th, New York time: the same day there,
+  // the day before in Paris.
+  assert.equal(
+    R.toNotification({ ...late, fire_at: '2026-11-09T20:00:00Z' }, NEW_YORK).body,
+    'À 22:00',
+  );
+});
+
+test("an all-day reminder's day is the phone's, not Paris's", () => {
+  // The occurrence is the 10th (Paris midnight). The reminder fires at
+  // 02:00 UTC on the 10th: the 10th in Paris, 21:00 on the 9th in New York,
+  // where « toute la journée » alone would read as the 9th.
+  const allDay = {
+    ...ENTRY, all_day: true, occurrence_at: '2026-11-09T23:00:00Z', fire_at: '2026-11-10T02:00:00Z',
+  };
+  assert.equal(R.toNotification(allDay, NEW_YORK).body, 'Mardi 10 novembre, toute la journée');
+  assert.equal(R.toNotification(allDay, PARIS).body, 'Toute la journée');
+});
+
+test('an entry it cannot read gives no notification', () => {
+  for (const [what, entry] of [
+    ['id', { ...ENTRY, id: 'nope' }],
+    ['fire_at', { ...ENTRY, fire_at: 'demain' }],
+    ['occurrence_at', { ...ENTRY, occurrence_at: null }],
+    ['title', { ...ENTRY, title: 7 }],
+    ['title', { ...ENTRY, title: undefined }],
+    ['event_id', { ...ENTRY, event_id: 'x' }],
+    ['group_id', { ...ENTRY, group_id: undefined }],
+  ]) {
+    assert.equal(R.toNotification(entry, PARIS), null, what);
+  }
+  assert.ok(R.toNotification(ENTRY, PARIS));
+});
+
 test('a touch opens the event in the agenda, in its family, on its occurrence', () => {
   const n = R.toNotification(ENTRY, PARIS);
   assert.equal(
