@@ -384,6 +384,48 @@ async fn an_expired_nonce_is_refused(db: PgPool) {
     assert_eq!(user_id(&db, "late-669@example.test").await, None);
 }
 
+/// Each new nonce takes the expired ones with it: the table holds only the
+/// last few minutes' nonces, those still in date stay.
+#[sqlx::test]
+async fn issuing_a_nonce_deletes_the_expired_ones(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let (stale, _) = nonce(&router).await;
+    let (fresh, _) = nonce(&router).await;
+    let stale_hash = manage_our_home::auth::token::token_hash(&stale)
+        .unwrap()
+        .to_vec();
+    sqlx::query(
+        "UPDATE google_sign_in_nonces SET expires_at = now() - interval '1 second'
+         WHERE nonce_hash = $1",
+    )
+    .bind(&stale_hash)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (newest, _) = nonce(&router).await;
+
+    let mut stored: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT nonce_hash FROM google_sign_in_nonces")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    stored.sort();
+    let mut expected: Vec<Vec<u8>> = [&fresh, &newest]
+        .iter()
+        .map(|n| {
+            manage_our_home::auth::token::token_hash(n)
+                .unwrap()
+                .to_vec()
+        })
+        .collect();
+    expected.sort();
+    assert_eq!(
+        stored, expected,
+        "the expired nonce is gone, the others stay"
+    );
+}
+
 /// As `callback` does: the verified profile signs in to the password
 /// account with the same email, and the Google identity is bound to it.
 #[sqlx::test]
