@@ -1,0 +1,18 @@
+-- #707: a series can lose single occurrences without touching the rest.
+--
+-- `exdates` lists the occurrences of the row's series that are excluded —
+-- RFC 5545's EXDATE, kept as a column rather than written into `rrule`,
+-- which stays a single RRULE value (`agenda::recurrence::validate` refuses
+-- any line or `:` in it, #165). Every reader of a series unrolls it through
+-- `agenda::recurrence::expand_series`, which drops these occurrences:
+--   * an hour-bound series drops the occurrence starting at that exact
+--     instant;
+--   * an all-day series drops the occurrence opening on the Paris day the
+--     instant falls on, so an exclusion written at any time of that day
+--     holds across a change of hour.
+-- Empty for a one-off event and for every series stored before this
+-- migration, which therefore unroll as they did.
+--
+-- A new column of `events`: the row-level policies of `events` (0042,
+-- 0044) cover it as they cover the rest of the row; no policy changes.
+ALTER TABLE events ADD COLUMN exdates TIMESTAMPTZ[] NOT NULL DEFAULT '{}';

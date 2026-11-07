@@ -215,7 +215,7 @@ pub async fn export_account(
         }
 
         let events = sqlx::query!(
-            r#"SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, created_at
+            r#"SELECT id, group_id, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, exdates, is_private, created_at
                FROM events WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -227,7 +227,8 @@ pub async fn export_account(
                 "id": e.id, "group_id": e.group_id, "title": e.title, "description": e.description,
                 "location": e.location, "starts_at": e.starts_at, "ends_at": e.ends_at,
                 "all_day": e.all_day, "is_task": e.is_task, "completed_at": e.completed_at,
-                "rrule": e.rrule, "is_private": e.is_private, "created_at": e.created_at,
+                "rrule": e.rrule, "exdates": e.exdates, "is_private": e.is_private,
+                "created_at": e.created_at,
             })
         }));
 
@@ -235,7 +236,7 @@ pub async fn export_account(
         // whoever created the event and whoever made the assignment.
         let assignments = sqlx::query!(
             r#"SELECT e.id, e.group_id, e.title, e.description, e.location, e.starts_at, e.ends_at,
-                      e.all_day, e.is_task, e.completed_at, e.rrule, e.is_private, ea.created_at AS assigned_at
+                      e.all_day, e.is_task, e.completed_at, e.rrule, e.exdates, e.is_private, ea.created_at AS assigned_at
                FROM event_assignees ea JOIN events e ON e.id = ea.event_id
                WHERE e.group_id = $1 AND ea.user_id = $2 ORDER BY ea.created_at"#,
             group_id,
@@ -249,7 +250,7 @@ pub async fn export_account(
                 "description": e.description, "location": e.location,
                 "starts_at": e.starts_at, "ends_at": e.ends_at, "all_day": e.all_day,
                 "is_task": e.is_task, "completed_at": e.completed_at, "rrule": e.rrule,
-                "is_private": e.is_private, "assigned_at": e.assigned_at,
+                "exdates": e.exdates, "is_private": e.is_private, "assigned_at": e.assigned_at,
             })
         }));
 

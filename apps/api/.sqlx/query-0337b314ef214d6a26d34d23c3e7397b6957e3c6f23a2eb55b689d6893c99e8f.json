@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO events (group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, rrule, is_private)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n        RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private\n        ",
+  "query": "SELECT e.id, e.group_id, e.title, e.description, e.location, e.starts_at, e.ends_at,\n                      e.all_day, e.is_task, e.completed_at, e.rrule, e.exdates, e.is_private, ea.created_at AS assigned_at\n               FROM event_assignees ea JOIN events e ON e.id = ea.event_id\n               WHERE e.group_id = $1 AND ea.user_id = $2 ORDER BY ea.created_at",
   "describe": {
     "columns": [
       {
@@ -27,17 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "created_by",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "events",
-            "name": "created_by"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
         "name": "title",
         "type_info": "Text",
         "origin": {
@@ -48,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "description",
         "type_info": "Text",
         "origin": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "location",
         "type_info": "Text",
         "origin": {
@@ -70,7 +59,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "starts_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +70,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "ends_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +81,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "all_day",
         "type_info": "Bool",
         "origin": {
@@ -103,7 +92,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "is_task",
         "type_info": "Bool",
         "origin": {
@@ -114,7 +103,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "completed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,13 +114,24 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "rrule",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "events",
             "name": "rrule"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "exdates",
+        "type_info": "TimestamptzArray",
+        "origin": {
+          "Table": {
+            "table": "events",
+            "name": "exdates"
           }
         }
       },
@@ -145,28 +145,29 @@
             "name": "is_private"
           }
         }
+      },
+      {
+        "ordinal": 13,
+        "name": "assigned_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "event_assignees",
+            "name": "created_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid",
-        "Text",
-        "Text",
-        "Text",
-        "Timestamptz",
-        "Timestamptz",
-        "Bool",
-        "Bool",
-        "Text",
-        "Bool"
+        "Uuid"
       ]
     },
     "nullable": [
       false,
       false,
       false,
-      false,
       true,
       true,
       false,
@@ -175,8 +176,10 @@
       false,
       true,
       true,
+      false,
+      false,
       false
     ]
   },
-  "hash": "8738b6036eaf11bd58b63fba5c3b6b300427f85a0811fee80fa7d601990ecbc0"
+  "hash": "0337b314ef214d6a26d34d23c3e7397b6957e3c6f23a2eb55b689d6893c99e8f"
 }

@@ -62,7 +62,7 @@ pub async fn create_reminder(
     require_role(&mut tx, group_id, auth.user_id).await?;
 
     let event = sqlx::query!(
-        "SELECT starts_at, ends_at, all_day, rrule FROM events WHERE id = $1 AND group_id = $2",
+        "SELECT starts_at, ends_at, all_day, rrule, exdates FROM events WHERE id = $1 AND group_id = $2",
         event_id,
         group_id,
     )
@@ -91,6 +91,7 @@ pub async fn create_reminder(
             ends_at: event.ends_at,
             all_day: event.all_day,
             rrule: event.rrule.as_deref(),
+            exdates: &event.exdates,
         },
         body.offset_minutes,
     )
@@ -116,6 +117,9 @@ pub struct EventTimes<'a> {
     pub ends_at: DateTime<Utc>,
     pub all_day: bool,
     pub rrule: Option<&'a str>,
+    /// The occurrences of the series excluded from it (`events.exdates`,
+    /// #707): no reminder is scheduled on them.
+    pub exdates: &'a [DateTime<Utc>],
 }
 
 /// Materializes `scheduled_notifications` rows for every occurrence of
@@ -139,6 +143,7 @@ pub async fn refill_notifications(
         event.ends_at,
         now,
         window_end,
+        event.exdates,
     )?;
 
     for occurrence_at in occurrences {
@@ -207,7 +212,8 @@ pub async fn delete_reminder(
 /// `list_events` renders, so a reminder is scheduled on the occurrences the
 /// agenda lists and on no other (#169). Unrolled on instants whatever the
 /// row, an all-day series with `UNTIL` at the end of its last UTC day got
-/// one reminder past it.
+/// one reminder past it. The occurrences the series excludes (`exdates`,
+/// #707) are dropped by that same unroll, so none is reminded.
 fn reminder_occurrences(
     rrule: Option<&str>,
     all_day: bool,
@@ -215,14 +221,15 @@ fn reminder_occurrences(
     ends_at: DateTime<Utc>,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
+    exdates: &[DateTime<Utc>],
 ) -> Result<Vec<DateTime<Utc>>, rrule::RRuleError> {
     match rrule {
-        Some(r) => Ok(
-            recurrence::expand_series(r, all_day, starts_at, ends_at, from, to)?
-                .into_iter()
-                .map(|(start, _)| start)
-                .collect(),
-        ),
+        Some(r) => Ok(recurrence::expand_series(
+            r, all_day, starts_at, ends_at, from, to, exdates,
+        )?
+        .into_iter()
+        .map(|(start, _)| start)
+        .collect()),
         None => Ok(vec![starts_at]),
     }
 }
@@ -252,7 +259,7 @@ mod tests {
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> Vec<DateTime<Utc>> {
-        recurrence::expand_series(rrule, all_day, starts_at, ends_at, from, to)
+        recurrence::expand_series(rrule, all_day, starts_at, ends_at, from, to, &[])
             .unwrap()
             .into_iter()
             .map(|(start, _)| start)
@@ -273,7 +280,7 @@ mod tests {
         );
 
         let reminded =
-            reminder_occurrences(Some(&rule), true, starts_at, ends_at, from, to).unwrap();
+            reminder_occurrences(Some(&rule), true, starts_at, ends_at, from, to, &[]).unwrap();
         let expected: Vec<DateTime<Utc>> = first
             .iter_days()
             .take_while(|d| *d <= last)
@@ -339,7 +346,13 @@ mod tests {
                 for all_day in [true, false] {
                     let ends_at = first + Duration::days(1);
                     let Ok(listed) = recurrence::expand_series(
-                        rule, all_day, first, ends_at, window.0, window.1,
+                        rule,
+                        all_day,
+                        first,
+                        ends_at,
+                        window.0,
+                        window.1,
+                        &[],
                     ) else {
                         // An UNTIL before this anchor: refused on write.
                         continue;
@@ -352,7 +365,8 @@ mod tests {
                             first,
                             ends_at,
                             window.0,
-                            window.1
+                            window.1,
+                            &[],
                         )
                         .unwrap(),
                         listed,
@@ -411,14 +425,14 @@ mod tests {
                         let ends_at = first + Duration::days(1);
                         let (from, to) = (first - Duration::days(1), first + Duration::days(30));
                         let Ok(listed) =
-                            recurrence::expand_series(&rule, true, first, ends_at, from, to)
+                            recurrence::expand_series(&rule, true, first, ends_at, from, to, &[])
                         else {
                             continue;
                         };
                         let listed: Vec<DateTime<Utc>> =
                             listed.into_iter().map(|(s, _)| s).collect();
                         let reminded = stored(
-                            reminder_occurrences(Some(&rule), true, first, ends_at, from, to)
+                            reminder_occurrences(Some(&rule), true, first, ends_at, from, to, &[])
                                 .unwrap(),
                         );
                         if recurrence::validate(&rule, first, true).is_ok() {
@@ -454,10 +468,42 @@ mod tests {
     }
 
     #[test]
+    fn an_excluded_occurrence_is_not_reminded() {
+        // #707: the reminders unroll through `expand_series`, which drops
+        // the series' exclusions, on both kinds of series.
+        let (from, to) = (midnight(2026, 9, 30), midnight(2026, 10, 10));
+        let first = midnight(2026, 10, 1);
+        let all_day = reminder_occurrences(
+            Some("FREQ=DAILY;COUNT=3"),
+            true,
+            first,
+            midnight(2026, 10, 2),
+            from,
+            to,
+            &[midnight(2026, 10, 2)],
+        )
+        .unwrap();
+        assert_eq!(all_day, [midnight(2026, 10, 1), midnight(2026, 10, 3)]);
+
+        let nine = first + Duration::hours(9);
+        let hour_bound = reminder_occurrences(
+            Some("FREQ=DAILY;COUNT=3"),
+            false,
+            nine,
+            nine + Duration::hours(1),
+            from,
+            to,
+            &[nine + Duration::days(2)],
+        )
+        .unwrap();
+        assert_eq!(hour_bound, [nine, nine + Duration::days(1)]);
+    }
+
+    #[test]
     fn a_one_off_is_reminded_on_its_own_start() {
         let at = midnight(2026, 10, 1);
         assert_eq!(
-            reminder_occurrences(None, true, at, at + Duration::days(1), at, at).unwrap(),
+            reminder_occurrences(None, true, at, at + Duration::days(1), at, at, &[]).unwrap(),
             vec![at]
         );
     }

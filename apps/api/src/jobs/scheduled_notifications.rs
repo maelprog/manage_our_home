@@ -127,7 +127,7 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
     ensure_admin_pool(pool, "refilling recurring reminders").await?;
     let reminders = sqlx::query!(
         r#"
-        SELECT r.id as reminder_id, r.offset_minutes, e.id as event_id, e.starts_at, e.ends_at, e.all_day, e.rrule
+        SELECT r.id as reminder_id, r.offset_minutes, e.id as event_id, e.starts_at, e.ends_at, e.all_day, e.rrule, e.exdates
         FROM event_reminders r
         JOIN events e ON e.id = r.event_id
         WHERE e.rrule IS NOT NULL
@@ -147,6 +147,7 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
                 ends_at: row.ends_at,
                 all_day: row.all_day,
                 rrule: row.rrule.as_deref(),
+                exdates: &row.exdates,
             },
             row.offset_minutes,
         )
