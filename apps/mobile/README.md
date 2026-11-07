@@ -23,11 +23,26 @@ du site.
   l'application : ce ne sont pas ceux de Chrome. La connexion par email et
   mot de passe, la survie de la session au redémarrage et la messagerie en
   direct (WebSocket) restent à contrôler sur téléphone (§ 5).
-- **Pas de connexion Google dans l'application.** La page de Google est sur
-  une autre origine : elle s'ouvre dans Chrome, et la session qu'elle ouvre
-  reste dans Chrome, pas dans l'application. Google refuse de toute façon
-  son OAuth dans une WebView (`403 disallowed_useragent`). La connexion
-  Google native arrive avec #669.
+- **La connexion avec Google, native** (#669, #670). Google refuse son
+  OAuth dans une WebView (`403 disallowed_useragent`) : sur les pages de
+  connexion et d'inscription, l'application n'a donc jamais le lien vers la
+  page de Google, mais un bouton « Continuer avec Google » que sert
+  `apps/web/src/google-sign-in.js`, script chargé dans les seules pages de
+  l'application. Il demande un nonce à l'API, ouvre le sélecteur de compte
+  d'Android (plugin `@capgo/capacitor-social-login`, gestionnaire
+  d'identifiants), envoie le jeton d'identité à l'API, qui ouvre la session
+  dans l'application, puis suit la page que l'API indique : l'accueil, ou
+  la page de connexion avec le motif d'un refus, comme sur le web. Fermer
+  le sélecteur remet la page telle quelle. Le client ID web vient de l'API
+  avec le nonce (`GOOGLE_CLIENT_ID`) : l'APK n'en porte aucun. Le plugin
+  n'embarque que Google (`plugins.SocialLogin.providers` de
+  `capacitor.config.ts`) ; le script lui demande d'effacer le jeton avant
+  de l'envoyer (`logout`), et l'envoie même si cet effacement échoue : le
+  jeton reste alors dans les préférences privées de l'application jusqu'à
+  la connexion suivante. Un APK construit
+  avant #670 n'a pas le plugin : la page lui dit d'installer la dernière
+  version. Chez Google, l'application doit être déclarée : « Connexion
+  Google native » plus bas.
 - **Les autorités de certification du système, et elles seules**
   (`android/app/src/main/res/xml/network_security_config.xml`), pour les deux
   variantes. Pas celles qu'un utilisateur installe dans les réglages du
@@ -68,8 +83,7 @@ du site.
 
 L'APK signé que les familles installent est publié en release GitHub
 (#666) : « Publier un APK signé » et « Installer l'application
-(familles) » plus bas. Hors de ce paquet : la connexion Google native
-(#669), iOS.
+(familles) » plus bas. Hors de ce paquet : iOS.
 
 ## Guide pas à pas : construire et installer l'APK `staging`
 
@@ -261,6 +275,17 @@ des applications. À l'ouverture :
    trop ancienne pour cette fonction ferait
    retomber Capacitor sur un script inline, que la CSP bloquerait :
    mettre à jour « Android System WebView » depuis le Play Store.
+8. **Connexion avec Google** (une fois l'application déclarée chez Google,
+   « Connexion Google native » plus bas). Se déconnecter. Sur la page de
+   connexion, le bouton « Continuer avec Google » ouvre le sélecteur de
+   compte d'Android, pas une page web. Le fermer sans choisir : la page
+   reste telle quelle, sans message. Le toucher de nouveau et choisir un
+   compte qui a déjà un compte MHome : on arrive sur l'accueil, connecté.
+   Fermer l'application et la rouvrir : toujours connecté. Avec un compte
+   Google inconnu du site : le même parcours que sur le web à la première
+   connexion Google (compte créé, déclaration d'âge et conditions à
+   accepter). Pendant tout le parcours, `chrome://inspect` (étape 7)
+   n'affiche aucune ligne « Content Security Policy » dans la console.
 
 ## Publier un APK signé (#666)
 
@@ -487,6 +512,9 @@ URI » finit par `/api/auth/google/callback`). Son **Client ID** finit par
 `.apps.googleusercontent.com`. C'est lui que l'application demande à
 Android comme « server client ID » (#670), et lui que l'API exige dans
 le champ `aud` du jeton : un jeton émis pour un autre client est refusé.
+L'application ne le porte pas : l'API le lui remet avec chaque nonce
+(`client_id` de la réponse de `POST /api/auth/google/nonce`), lu dans la
+même variable que celle de l'étape 4.
 
 ### 4. La variable de l'API
 

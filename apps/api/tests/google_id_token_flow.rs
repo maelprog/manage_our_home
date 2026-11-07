@@ -73,6 +73,9 @@ async fn nonce(router: &axum::Router) -> (String, String) {
     let body = json_body(res).await;
     let nonce = body["nonce"].as_str().unwrap().to_string();
     assert_eq!(nonce, cookie, "the cookie holds the nonce handed out");
+    // #670: the web client the token must be issued for, which the app
+    // hands Credential Manager as its "server client ID".
+    assert_eq!(body["client_id"], AUDIENCE, "{body}");
     (nonce, format!("google_id_token_nonce={cookie}"))
 }
 

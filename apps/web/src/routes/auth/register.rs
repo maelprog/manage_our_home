@@ -79,7 +79,7 @@ fn page(
     error: Option<&str>,
     api_public_base_url: &str,
 ) -> String {
-    let google_start = format!("{api_public_base_url}/auth/google/start");
+    let google = super::google_actions(api_public_base_url);
     let pw = password_field("Mot de passe", "password", "new-password", true);
     // #461: asked twice, and a second entry that differs comes back on its
     // own field.
@@ -134,10 +134,8 @@ fn page(
             <button type="submit">"Créer mon compte"</button>
         </form>
         // #419: stacked, so the Google button takes the width of the form's
-        // own.
-        <div class="actions stacked">
-            <a class="btn secondary" href=google_start>"Continuer avec Google"</a>
-        </div>
+        // own. In the app, a native button in place of the link (#670).
+        <div class="actions stacked" inner_html=google></div>
         // RGPD (front epic F10): the policy must be readable *before*
         // creating an account, so it is linked from the unauthenticated
         // pages and served without a session. Same for the CGU and the
@@ -385,6 +383,25 @@ mod tests {
             html.contains(r#"<div class="actions stacked"><a href="http://api/auth/google/start" class="btn secondary">"#),
             "{html}"
         );
+    }
+
+    /// #670: in the app's WebView, the native button stands in place of
+    /// the link to Google's page, which Google refuses there.
+    #[test]
+    fn the_app_gets_the_native_google_button_and_a_browser_the_link() {
+        let render = || page("", "", Boxes::default(), None, None, None, "/api");
+        let app = crate::mobile_app::serving(true, render);
+        assert!(!app.contains("/auth/google/start"), "{app}");
+        assert!(
+            app.contains(r#"<div class="actions stacked"><button type="button" class="secondary" id="google-native""#),
+            "{app}"
+        );
+        let browser = crate::mobile_app::serving(false, render);
+        assert!(
+            browser.contains(r#"href="/api/auth/google/start""#),
+            "{browser}"
+        );
+        assert!(!browser.contains("google-native"), "{browser}");
     }
 
     #[test]

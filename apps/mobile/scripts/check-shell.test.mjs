@@ -155,6 +155,15 @@ test('the manifest applies that policy, keeps the session off backups, and asks 
   assert.ok(permissions.includes('android.permission.POST_NOTIFICATIONS'));
   assert.ok(permissions.includes('android.permission.SCHEDULE_EXACT_ALARM'));
   assert.ok(!permissions.includes('android.permission.USE_EXACT_ALARM'));
+  // The Social Login plugin's manifest (#670) declares USE_CREDENTIALS, an
+  // AccountManager permission Android stopped using at API 23, below this
+  // app's minSdk: removed from the merged manifest rather than declared
+  // for nothing.
+  assert.deepEqual(
+    elements(manifest, 'uses-permission').filter((p) => p['android:name'] === 'android.permission.USE_CREDENTIALS'),
+    [{ 'android:name': 'android.permission.USE_CREDENTIALS', 'tools:node': 'remove' }],
+  );
+  assert.equal(elements(manifest, 'manifest')[0]['xmlns:tools'], 'http://schemas.android.com/tools');
   assert.deepEqual(
     elements(manifest, 'uses-feature').filter((f) => f['android:name'] === 'android.hardware.camera'),
     [{ 'android:name': 'android.hardware.camera', 'android:required': 'false' }],
@@ -186,6 +195,16 @@ test('prod opens the https origin it is given, and refuses anything else', () =>
     assert.equal(config, undefined, JSON.stringify(env));
     assert.match(error, why);
   }
+});
+
+test('the Social Login plugin brings Google alone, and no client ID of its own', () => {
+  // #670: the plugin's sync hook reads `providers` and leaves the SDKs of
+  // the others out of the APK; the web client ID comes from apps/api with
+  // each nonce.
+  const { config } = loadConfig({});
+  assert.deepEqual(config.plugins.SocialLogin, {
+    providers: { google: true, facebook: false, apple: false, twitter: false },
+  });
 });
 
 test("the app's name and User-Agent marker are apps/web's", () => {

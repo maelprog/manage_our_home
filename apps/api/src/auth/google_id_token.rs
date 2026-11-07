@@ -14,6 +14,8 @@
 //!   flow cookie (the shape `oauth_google` gives its `state`) and in
 //!   `google_sign_in_nonces` by its SHA-256, for [`NONCE_TTL`]. The app
 //!   passes it to Credential Manager, and Google writes it into the token.
+//!   It answers the web client ID too, the audience the app asks Credential
+//!   Manager for (#670), so that the app needs no configuration of its own.
 //! - [`sign_in`] checks the token — RS256 signature against Google's JWKS
 //!   ([`JwksCache`]), then the claims ([`validate_claims`]): issuer,
 //!   audience, expiry, `email_verified`, and `nonce` equal to the cookie's —
@@ -291,6 +293,11 @@ impl IdTokenVerifier {
         }
     }
 
+    /// The web OAuth client ID tokens must be issued for.
+    pub fn audience(&self) -> &str {
+        &self.audience
+    }
+
     /// The verified profile in `token`, whose nonce must be
     /// `expected_nonce`, at `now` (seconds since the epoch).
     pub async fn verify(
@@ -380,6 +387,11 @@ pub struct NonceResponse {
     /// To pass to Credential Manager (`GetGoogleIdOption.setNonce`); Google
     /// writes it into the ID token.
     pub nonce: String,
+    /// The web OAuth client the token must be issued for (`GOOGLE_CLIENT_ID`,
+    /// the audience [`sign_in`] checks): the app hands it to Credential
+    /// Manager as its "server client ID" (#670). A client ID is public; it
+    /// is in every link to Google's consent page.
+    pub client_id: String,
 }
 
 /// `POST /auth/google/nonce` (#669): a fresh nonce for one native sign-in,
@@ -421,6 +433,7 @@ pub async fn issue_nonce(
 
     Ok(Json(NonceResponse {
         nonce: nonce.value().to_owned(),
+        client_id: state.google_id_token.audience().to_owned(),
     }))
 }
 
