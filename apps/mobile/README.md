@@ -366,8 +366,14 @@ des applications. À l'ouverture :
    `staging.watallo.fr` dans « Site personnalisé » : c'est un autre choix
    (une adresse au lieu du site standard), le même serveur. Il s'ouvre sur
    sa page de connexion : la session n'a pas suivi. Ne pas se reconnecter
-   avant l'heure du rappel : il n'arrive pas. En mode avion, la page « Pas
-   de connexion » a un bouton « Changer de site », qui mène au même écran.
+   avant l'heure du rappel : il n'arrive pas. Ce dernier contrôle ne
+   départage pas : toute page du site servie à l'application, la page de
+   connexion comprise, charge `local-reminders.js`, qui retire lui-même
+   tous les rappels quand le site répond 401. Le retrait par le changement
+   de site est vérifié par `npm test` (`forgetReminders` dans
+   `scripts/site-choice.test.mjs`, son appel avant `site.choose` dans
+   `scripts/check-shell.test.mjs`). En mode avion, la page « Pas de
+   connexion » a un bouton « Changer de site », qui mène au même écran.
 
 ## Utiliser son propre serveur
 
