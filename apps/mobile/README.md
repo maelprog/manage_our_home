@@ -11,8 +11,8 @@ du site.
 | `package.json`, `package-lock.json` | Capacitor 8.6, `@capacitor/android`, `@capacitor/app`, `@capacitor/local-notifications` ; TypeScript pour lire la configuration |
 | `capacitor.config.ts` | le site ouvert (`staging` ou `prod`), le nom, le marqueur de User-Agent, la page hors ligne |
 | `www/hors-ligne.html` | la page affichée quand le site ne répond pas |
-| `www/choix-du-site.html`, `www/choix-du-site.js` | l'écran du premier lancement : site standard ou personnalisé (#737) |
-| `www/site-address.js`, `www/site-choice.js` | la lecture d'une adresse tapée (#736) et ce que l'écran décide (#737) |
+| `www/choix-du-site.html`, `www/choix-du-site.js` | l'écran du choix du site : site standard ou personnalisé, au premier lancement (#737) et pour en changer (#738) |
+| `www/site-address.js`, `www/site-choice.js` | la lecture d'une adresse tapée (#736) et ce que l'écran décide (#737, #738) |
 | `android/` | le projet Android (Gradle), versionné |
 | `scripts/check-shell.test.mjs` | les contrôles de la coquille (`npm test`) |
 | `scripts/local-reminders.test.mjs` | les tests du script des rappels locaux, `apps/web/src/local-reminders.js` (`npm test`) |
@@ -32,14 +32,36 @@ du site.
   hors ligne, une redirection ou une autre réponse : un message en
   français, et rien n'est mémorisé. Le site standard est mémorisé comme un
   choix, pas comme une adresse : une mise à jour de l'APK qui change de
-  site standard l'emmène. Changer de site ensuite n'est pas encore
-  possible (désinstaller l'application, ou § 4d sur un APK de débogage).
-- **Le site, à son adresse.** La WebView charge `https://staging.watallo.fr`
-  (variante `staging`) ou l'adresse de production donnée au build (variante
-  `prod`). Les cookies du site restent dans la WebView, propres à
-  l'application : ce ne sont pas ceux de Chrome. La connexion par email et
-  mot de passe, la survie de la session au redémarrage et la messagerie en
-  direct (WebSocket) restent à contrôler sur téléphone (§ 5).
+  site standard l'emmène.
+- **Changer de site ensuite** (#738), sans réinstaller : un appui long sur
+  l'icône de l'application propose le raccourci « Changer de site », et la
+  page hors ligne a un bouton « Changer de site » (une adresse qui ne mène
+  nulle part). Les deux rouvrent l'écran de choix, avec en plus le site
+  actuel et son bouton « Garder … », qui y retourne sans rien changer ; le
+  bouton retour ferme l'application, qui, rouverte depuis son icône, ouvre
+  le site actuel. Choisir un autre site retire d'abord les rappels
+  programmés par l'ancien (à venir et déjà affichés : plugin Local
+  Notifications) ; si l'un des deux retraits échoue, le site n'est pas
+  changé (les rappels à venir peuvent alors être déjà annulés : l'ancien
+  site les reprogramme à sa prochaine page). Puis
+  l'application mémorise le nouveau choix et efface ce que la WebView
+  gardait des sites ouverts jusque-là : les cookies (la session), le
+  stockage web et le cache. Le nouveau site s'ouvre aussitôt, sans
+  session : on s'y connecte. Revenir à l'ancien site demande de s'y
+  reconnecter. Ni le raccourci ni la page hors ligne ne changent rien
+  seuls, et aucun site ouvert par l'application ne peut en choisir un
+  autre : le plugin qui mémorise le choix n'existe que sur l'écran de
+  choix, servi depuis l'APK. Un site ouvert par l'application, ou une
+  autre application du téléphone (l'activité est celle du lanceur), peut
+  tout au plus afficher cet écran, sans pouvoir y choisir.
+- **Le site, à son adresse.** La WebView charge le site choisi : le site
+  standard de la variante, `https://staging.watallo.fr` (variante
+  `staging`) ou l'adresse de production donnée au build (variante `prod`),
+  ou l'adresse d'un site personnalisé (« Utiliser son propre serveur »).
+  Les cookies du site restent dans la WebView, propres à l'application : ce
+  ne sont pas ceux de Chrome. La connexion par email et mot de passe, la
+  survie de la session au redémarrage et la messagerie en direct
+  (WebSocket) restent à contrôler sur téléphone (§ 5).
 - **La connexion avec Google, native** (#669, #670). Google refuse son
   OAuth dans une WebView (`403 disallowed_useragent`) : sur les pages de
   connexion et d'inscription, l'application n'a donc jamais le lien vers la
@@ -76,7 +98,8 @@ du site.
   à chaque build (tâche Gradle `copyBrandIcons`).
 - **Hors ligne** : si le site ne répond pas (pas de réseau, nom qui ne se
   résout pas, serveur muet), l'application affiche `www/hors-ligne.html`,
-  servie depuis l'APK. Son bouton « Réessayer » recharge le site. Une page
+  servie depuis l'APK. Son bouton « Réessayer » recharge le site, « Changer
+  de site » rouvre l'écran de choix. Une page
   d'erreur du serveur (404, 500…) s'affiche telle quelle, pas la page hors
   ligne (`MainActivity.java`).
 - **Le bouton retour** remonte l'historique de la WebView, puis ferme
@@ -173,7 +196,7 @@ cd android
 À voir :
 
 - `npm ci` finit par `found 0 vulnerabilities` ;
-- `npm test` affiche `ℹ pass 80` et `ℹ fail 0` ;
+- `npm test` affiche `ℹ pass 90` et `ℹ fail 0` ;
 - `npx cap sync android` finit par `✔ update android` et `[info] Sync
   finished` ; il écrit la configuration du staging dans
   `android/app/src/main/assets/capacitor.config.json` (`"url":
@@ -254,18 +277,26 @@ adb install -r android/app/build/outputs/apk/staging/debug/app-staging-debug.apk
 L'émulateur passe par le réseau de la machine : si elle est sur Tailscale,
 le staging répond.
 
-### 4d. Choisir le site, ou y revenir (#736, #737)
+### 4d. Choisir le site, ou y revenir (#736, #737, #738)
 
 Au lancement, l'application ouvre le site mémorisé dans ses préférences
 privées (`shared_prefs/site.xml`) : une adresse (`origin`), ou le site
 standard de sa variante, celui du `sync` (`standard`). Sans l'un ni
 l'autre, elle affiche l'écran de choix (« Ce que fait l'application »).
-Aucun écran ne permet encore d'en changer ; sur un APK de débogage, on
-écrit ou on efface le choix à la main (`run-as` ne marche pas sur un APK
-de release) :
+Pour en changer : le raccourci « Changer de site » (appui long sur
+l'icône) ou le bouton de la page hors ligne. Le raccourci se lance aussi
+par `adb` :
 
 ```sh
 APP=fr.watallo.mhome.staging   # ou fr.watallo.mhome pour la variante prod
+adb shell am start -n $APP/fr.watallo.mhome.MainActivity -a fr.watallo.mhome.CHANGE_SITE
+```
+
+Sur un APK de débogage, on peut aussi écrire ou effacer le choix à la main
+(`run-as` ne marche pas sur un APK de release ; ce chemin ne retire ni la
+session ni les rappels de l'ancien site) :
+
+```sh
 printf '<map><string name="origin">https://maison.exemple.fr</string></map>' \
   | adb shell run-as $APP sh -c "'mkdir -p shared_prefs && cat > shared_prefs/site.xml'"
 adb shell am force-stop $APP     # puis rouvrir l'application
@@ -328,6 +359,57 @@ des applications. À l'ouverture :
    connexion Google (compte créé, déclaration d'âge et conditions à
    accepter). Pendant tout le parcours, `chrome://inspect` (étape 7)
    n'affiche aucune ligne « Content Security Policy » dans la console.
+9. **Changer de site** (#738). Connecté au staging, créer un événement
+   dans un quart d'heure avec un rappel 5 minutes avant, et vérifier sur
+   « Mon compte › Notifications de rappel » qu'au moins un rappel est
+   programmé. Appui long sur l'icône → « Changer de site » : l'écran de
+   choix montre « Site actuel » et « Garder staging ». Le toucher : le
+   staging revient, toujours connecté. Recommencer, et taper cette fois
+   `staging.watallo.fr` dans « Site personnalisé » : c'est un autre choix
+   (une adresse au lieu du site standard), le même serveur. Il s'ouvre sur
+   sa page de connexion : la session n'a pas suivi. Ne pas se reconnecter
+   avant l'heure du rappel : il n'arrive pas. Ce dernier contrôle ne
+   départage pas : toute page du site servie à l'application, la page de
+   connexion comprise, charge `local-reminders.js`, qui retire lui-même
+   tous les rappels quand le site répond 401. Le retrait par le changement
+   de site est vérifié par `npm test` (`forgetReminders` dans
+   `scripts/site-choice.test.mjs`, son appel avant `site.choose` dans
+   `scripts/check-shell.test.mjs`). En mode avion, la page « Pas de
+   connexion » a un bouton « Changer de site », qui mène au même écran.
+
+## Utiliser son propre serveur
+
+L'application ouvre aussi une instance de MHome hébergée ailleurs que le
+staging : « Site personnalisé » sur l'écran de choix, au premier lancement
+ou par « Changer de site ». Ce qu'il faut du serveur :
+
+- **https**, à la racine de son nom : `https://maison.exemple.fr` ou
+  `https://maison.exemple.fr:8443`, pas `https://exemple.fr/mhome`. Aucun
+  http en clair, pas même sur le réseau local : l'application le refuse.
+- **Un certificat signé par une autorité que le système Android connaît**
+  (Let's Encrypt, par exemple). L'application ne fait confiance à aucune
+  autre : ni à un certificat auto-signé, ni à une autorité installée à la
+  main dans les réglages du téléphone (« Ce que fait l'application »).
+  Une adresse IP de réseau privé se tape avec `https://` devant, et le
+  certificat doit alors la couvrir.
+- **apps/web servi tel quel**, avec son manifeste : avant de mémoriser
+  l'adresse, l'application lit `/manifest.webmanifest`, sans suivre de
+  redirection, et n'accepte que le nom de l'application (`MHome`) et
+  `start_url` `/`. Une redirection (de `exemple.fr` vers
+  `www.exemple.fr`, par exemple) est refusée : taper l'adresse d'arrivée.
+- **La connexion par email et mot de passe.** « Continuer avec Google »
+  ne marche pas dans l'APK publié face à un autre serveur : Android ne
+  remet le jeton de Google qu'à une application déclarée dans le projet
+  Google Cloud du client web que l'API annonce (`GOOGLE_CLIENT_ID`,
+  « Connexion Google native »), et l'APK publié n'est déclaré que dans
+  celui de ce projet. La page affiche alors « La connexion avec Google n'a
+  pas abouti ». Le `GOOGLE_CLIENT_ID` de votre serveur ne sert qu'à la
+  connexion Google depuis un navigateur.
+
+Ce que l'application garde de ce serveur : son adresse, dans ses
+préférences privées, exclues des sauvegardes et du transfert vers un
+nouveau téléphone ; la session et les rappels, comme pour le staging,
+jusqu'à la déconnexion ou au changement de site.
 
 ## Publier un APK signé (#666)
 

@@ -7,4 +7,7 @@
 <resources>
     <string name="package_name">fr.watallo.mhome</string>
     <string name="custom_url_scheme">fr.watallo.mhome</string>
+    <!-- The launcher's shortcut to the choice of a site (#738, MainActivity). -->
+    <string name="change_site_short">Autre site</string>
+    <string name="change_site_long">Changer de site</string>
 </resources>

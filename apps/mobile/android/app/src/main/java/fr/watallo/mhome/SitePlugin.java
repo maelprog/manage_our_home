@@ -1,6 +1,8 @@
 package fr.watallo.mhome;
 
 import android.content.Context;
+import android.webkit.CookieManager;
+import android.webkit.WebStorage;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -16,13 +18,15 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import javax.net.ssl.SSLException;
+import org.json.JSONObject;
 
 /**
- * What the first-launch page ({@code www/choix-du-site.html}, #737) asks
- * of the app: which standard site this APK has, a probe of a typed
- * address, and storing the choice. Registered by {@link MainActivity} only
- * while no choice is stored, so the sites the app opens afterwards never
- * see it: none of them can change the site the app opens.
+ * What the page of the choice of a site ({@code www/choix-du-site.html},
+ * #737, #738) asks of the app: which standard site this APK has and which
+ * site is stored, a probe of a typed address, storing the choice, and
+ * keeping the current one. Registered by {@link MainActivity} only while
+ * that page is shown, so the sites the app opens never see it: none of
+ * them can change the site the app opens.
  *
  * <p>What a probe answer means is decided by the page
  * ({@code www/site-choice.js}); this class only reports it.
@@ -34,7 +38,10 @@ public class SitePlugin extends Plugin {
     private static final int MAX_BODY = 64 * 1024;
     private static final int TIMEOUT_MS = 10_000;
 
-    /** The application id, the app's name, and the flavour's standard site. */
+    /**
+     * The application id, the app's name, the flavour's standard site, and
+     * the stored choice ({@code current}, absent at the first launch).
+     */
     @PluginMethod
     public void info(PluginCall call) {
         Context context = getContext();
@@ -47,6 +54,10 @@ public class SitePlugin extends Plugin {
         info.put("applicationId", context.getPackageName());
         info.put("appName", context.getApplicationInfo().loadLabel(context.getPackageManager()).toString());
         info.put("standardOrigin", standard);
+        JSONObject current = MainActivity.storedChoice(context);
+        if (current != null) {
+            info.put("current", current);
+        }
         call.resolve(info);
     }
 
@@ -106,8 +117,12 @@ public class SitePlugin extends Plugin {
 
     /**
      * Stores {@code {standard: true}} or {@code {origin}}, an origin as
-     * {@code normalizeSiteAddress} gives them back, then restarts the
-     * activity, which opens that site.
+     * {@code normalizeSiteAddress} gives them back, clears what the WebView
+     * kept of the sites opened before (#738: their cookies, the session
+     * among them, their web storage and the HTTP cache), then restarts the
+     * activity, which opens that site. The page has removed the old site's
+     * reminders first; it does not call this to keep the current site
+     * ({@link #keep}).
      */
     @PluginMethod
     public void choose(PluginCall call) {
@@ -122,7 +137,23 @@ public class SitePlugin extends Plugin {
             return;
         }
         call.resolve();
-        getActivity().runOnUiThread(() -> getActivity().recreate());
+        getActivity()
+            .runOnUiThread(() -> {
+                WebStorage.getInstance().deleteAllData();
+                bridge.getWebView().clearCache(true);
+                CookieManager cookies = CookieManager.getInstance();
+                cookies.removeAllCookies(removed -> {
+                    cookies.flush();
+                    ((MainActivity) getActivity()).openSite();
+                });
+            });
+    }
+
+    /** Restarts the activity on the stored site, as it was left. */
+    @PluginMethod
+    public void keep(PluginCall call) {
+        call.resolve();
+        getActivity().runOnUiThread(() -> ((MainActivity) getActivity()).openSite());
     }
 
     private static String readCapped(InputStream in) throws IOException {
