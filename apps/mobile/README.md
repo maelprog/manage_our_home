@@ -490,7 +490,7 @@ Contrôle sur l'ordinateur, avec les build-tools du § 1 :
 ```sh
 sha256sum -c mhome-1.0.0.apk.sha256        # mhome-1.0.0.apk: OK
 $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs mhome-1.0.0.apk
-# Signer #1 certificate SHA-256 digest: 1234…ef   (l'empreinte ci-dessus, en minuscules, sans les « : »)
+# V2 Signer: certificate SHA-256 digest: 1234…ef   (l'empreinte ci-dessus, en minuscules, sans les « : »)
 ```
 
 ## Connexion Google native : déclarer l'application chez Google (#669)

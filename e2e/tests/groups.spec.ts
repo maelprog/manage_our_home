@@ -61,6 +61,14 @@ function activeFamily(page: Page) {
   return page.locator('header a[href="/account"] .muted');
 }
 
+// The profile's family choice, sent by `enhance.js` as soon as a radio is
+// picked (#751).
+function switchPosted(page: Page) {
+  return page.waitForRequest(
+    (request) => request.method() === "POST" && new URL(request.url()).pathname === "/groups/switch",
+  );
+}
+
 /** A second, independently authenticated user in its own browser context. */
 async function secondUser(
   browser: Browser,
@@ -435,8 +443,10 @@ test.describe("Groups — active-family switcher", () => {
     await expect(activeFamily(page)).toHaveText("Famille Deux");
     await page.getByRole("link", { name: /^Profil/ }).click();
     await expect(page).toHaveURL("/account");
+    // Picking the radio is enough (#751): no button to press.
+    const switched = switchPosted(page);
     await page.getByRole("radio", { name: /Famille Une/ }).check();
-    await page.getByRole("button", { name: "Utiliser cette famille" }).click();
+    await switched;
     await expect(page).toHaveURL("/account");
     await expect(activeFamily(page)).toHaveText("Famille Une");
 
@@ -461,11 +471,31 @@ test.describe("Groups — active-family switcher", () => {
     await expect(one).not.toBeChecked();
     await expect(families.getByText("1 membre · Propriétaire")).toHaveCount(2);
 
+    // #751: with JavaScript the radio applies itself, and the script hides
+    // the button, the fallback without it (below).
+    await expect(page.getByRole("button", { name: "Utiliser cette famille" })).toBeHidden();
+    let switched = switchPosted(page);
     await one.check();
-    await page.getByRole("button", { name: "Utiliser cette famille" }).click();
+    await switched;
     await expect(page).toHaveURL("/account");
     await expect(activeFamily(page)).toHaveText("Famille Une");
     await expect(one).toBeChecked();
+    // The reload gives the focus back to the radio picked.
+    await expect(one).toBeFocused();
+
+    // From the keyboard, each arrow applies the family it lands on, and
+    // the focus stays on it for the next arrow.
+    switched = switchPosted(page);
+    await page.keyboard.press("ArrowDown");
+    await switched;
+    await expect(activeFamily(page)).toHaveText("Famille Deux");
+    await expect(two).toBeChecked();
+    await expect(two).toBeFocused();
+    switched = switchPosted(page);
+    await page.keyboard.press("ArrowDown");
+    await switched;
+    await expect(activeFamily(page)).toHaveText("Famille Une");
+    await expect(one).toBeFocused();
 
     // The header keeps it on the next page.
     await page.goto("/");
@@ -482,5 +512,31 @@ test.describe("Groups — active-family switcher", () => {
       "href",
       "/account/export",
     );
+  });
+
+  // #751: without JavaScript, picking a radio sends nothing; « Utiliser
+  // cette famille » does.
+  test("without JavaScript, the profile's button applies the family picked", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-profile-nojs", "Profil Sans Script");
+    await createGroup(page, "Famille Une");
+    await createGroup(page, "Famille Deux");
+
+    const context = await browser.newContext({
+      javaScriptEnabled: false,
+      storageState: await page.context().storageState(),
+    });
+    const noJs = await context.newPage();
+    await noJs.goto("/account");
+    const families = noJs.getByRole("radiogroup", { name: "Mes familles" });
+    await families.getByRole("radio", { name: /Famille Une/ }).check();
+    await expect(activeFamily(noJs)).toHaveText("Famille Deux");
+    await noJs.getByRole("button", { name: "Utiliser cette famille" }).click();
+    await expect(noJs).toHaveURL("/account");
+    await expect(activeFamily(noJs)).toHaveText("Famille Une");
+    await expect(families.getByRole("radio", { name: /Famille Une/ })).toBeChecked();
+    await context.close();
   });
 });

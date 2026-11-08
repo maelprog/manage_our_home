@@ -110,10 +110,11 @@
     var input = event.target;
     if (!input.hasAttribute) return;
     // `data-submit-on-change` (the stocks' barcode photo, #402; the grocery
-    // list's check boxes until #526). `form.submit()` fires no `submit` event, hence
+    // list's check boxes until #526; the profile's families, #751).
+    // `form.submit()` fires no `submit` event, hence
     // the explicit `keepScroll`.
     if (input.hasAttribute("data-submit-on-change")) {
-      keepScroll(input.form);
+      keepScroll(input.form, input);
       input.form.submit();
     }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).
@@ -122,7 +123,87 @@
     else if (input.hasAttribute("data-min-of")) bound(input, true);
     // `data-recurring` (`agenda::new::recurrence_picker`, #698).
     else if (input.hasAttribute("data-recurring")) recurring(input);
+    // `data-families` (`agenda::calendar::family_selector`, #750).
+    else if (input.form && input.form.hasAttribute("data-families")) families(input);
   });
+
+  // `data-families="<id>"` on the agenda's selector of families, `<id>`
+  // being the active family: each box sends the form, so « Afficher » is
+  // hidden. Ticking « Toutes » ticks every family; unticking it leaves the
+  // active family alone; a family box ticks « Toutes » when it completes
+  // the set, and unticks it otherwise. The last family ticked cannot be
+  // unticked: a modal says so and the box stays ticked, nothing sent.
+  // Without JavaScript the boxes wait for « Afficher », as before.
+  var ALL_FAMILIES = "toutes";
+  var LAST_FAMILY = "Au moins une famille doit rester affichée.";
+
+  function families(box) {
+    var form = box.form;
+    var all = form.querySelector('input[value="' + ALL_FAMILIES + '"]');
+    var boxes = Array.prototype.filter.call(form.querySelectorAll('input[type="checkbox"]'), function (b) {
+      return b !== all;
+    });
+    function ticked(b) {
+      return b.checked;
+    }
+    if (box === all) {
+      var active = form.getAttribute("data-families");
+      boxes.forEach(function (b) {
+        b.checked = all.checked || b.value === active;
+      });
+      // An active family the selector does not list: the first one stays.
+      if (!boxes.some(ticked)) boxes[0].checked = true;
+    } else if (!boxes.some(ticked)) {
+      box.checked = true;
+      lastFamily(box);
+      return;
+    } else if (all) {
+      all.checked = boxes.every(ticked);
+    }
+    keepScroll(form);
+    form.submit();
+  }
+
+  // The modal of the last family (DESIGN.md → `dialog`), made the first
+  // time, after the form. The browser moves the focus into it and closes
+  // it on Escape; the focus then goes back to the box.
+  function lastFamily(box) {
+    var dialog = document.getElementById("last-family");
+    if (!dialog) {
+      dialog = document.createElement("dialog");
+      dialog.id = "last-family";
+      dialog.setAttribute("aria-labelledby", "last-family-text");
+      dialog.innerHTML =
+        '<p id="last-family-text">' +
+        LAST_FAMILY +
+        '</p><form method="dialog" class="actions"><button type="submit" class="secondary">Fermer</button></form>';
+      box.form.insertAdjacentElement("afterend", dialog);
+    }
+    if (typeof dialog.showModal !== "function") {
+      window.alert(LAST_FAMILY);
+      return;
+    }
+    dialog.addEventListener(
+      "close",
+      function () {
+        box.focus();
+      },
+      { once: true }
+    );
+    dialog.showModal();
+  }
+
+  // `data-hidden-with-js` on a button: the fallback of a form that sends
+  // itself without it (the profile's families, #751). Rendered, then
+  // hidden here, so that a page whose script failed to load keeps it.
+  function familySelectors() {
+    var buttons = document.querySelectorAll(
+      'form[data-families] button[type="submit"], button[data-hidden-with-js]'
+    );
+    Array.prototype.forEach.call(buttons, function (button) {
+      button.hidden = true;
+    });
+  }
 
   // `data-recurring` on the « Événement récurrent » box: the box is shown,
   // and it and its `recurring_box` marker — both rendered `disabled`, so a
@@ -265,13 +346,17 @@
   // banner at the top (`?error=…`), which the reader must see, and a
   // redirect elsewhere opens at the top as usual. Kept in sessionStorage,
   // which can be missing or refuse writes: the page then simply opens at
-  // the top.
+  // the top. `field`, a radio sent by `data-submit-on-change` (the
+  // profile's families, #751): the field of the same name and value gets
+  // the focus back, so the arrow keys go on from it after the reload.
   var KEEP_SCROLL = "keep-scroll";
 
-  function keepScroll(form) {
+  function keepScroll(form, field) {
     if (!form || !form.hasAttribute("data-keep-scroll")) return;
+    var kept = { path: location.pathname, y: window.scrollY };
+    if (field && field.type === "radio") kept.focus = [field.name, field.value];
     try {
-      sessionStorage.setItem(KEEP_SCROLL, JSON.stringify({ path: location.pathname, y: window.scrollY }));
+      sessionStorage.setItem(KEEP_SCROLL, JSON.stringify(kept));
     } catch (e) {}
   }
 
@@ -286,6 +371,12 @@
     if (document.querySelector(".notice.error")) return;
     if (kept && kept.path === location.pathname && typeof kept.y === "number") {
       window.scrollTo({ top: kept.y, left: 0, behavior: "instant" });
+      if (kept.focus) {
+        var fields = document.getElementsByName(kept.focus[0]);
+        for (var i = 0; i < fields.length; i++) {
+          if (fields[i].value === kept.focus[1]) fields[i].focus({ preventScroll: true });
+        }
+      }
     }
   }
 
@@ -318,6 +409,7 @@
     strengthMeters();
     bounds();
     recurringBoxes();
+    familySelectors();
     try {
       revealCurrentTab();
     } catch (e) {}

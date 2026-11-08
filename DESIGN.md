@@ -468,7 +468,9 @@ disait pas.
   Au pied de la colonne, haute comme le viewport, le bloc du profil :
   l'initiale, le nom et la famille active, vers `/account`. C'est là que
   se choisit la famille active (un formulaire `POST /groups/switch` qui
-  marche sans JavaScript, #529) et que l'on se déconnecte : l'en-tête ne
+  marche sans JavaScript, #529 ; avec JavaScript, cocher une famille
+  l'applique et le script masque « Utiliser cette famille », qui reste si
+  le script manque ; chaque flèche du clavier recharge donc la page, #751) et que l'on se déconnecte : l'en-tête ne
   porte plus aucun formulaire. Le profil est allumé aussi sur les pages
   des familles (`/groups/…`), qui n'ont pas d'entrée à elles.
 - **Une page sans session ne rend aucune navigation** (authentification,
@@ -603,6 +605,15 @@ affichée, dans la couleur de sa famille (`data-accent` sur la pastille, sa
 `?familles=toutes`) et dans un cookie distinct de la famille active, qui ne
 change pas. Sans l'un ni l'autre : la famille active seule, l'agenda d'avant.
 Avec une seule famille, pas de formulaire.
+
+Depuis #750, avec JavaScript (`data-families` sur le formulaire, qui nomme
+la famille active), chaque case envoie le formulaire et « Afficher » est
+masqué. « Toutes » est cochée dès que toutes les familles sont affichées ;
+la cocher coche toutes les familles, la décocher ne laisse que la famille
+active. La dernière famille cochée ne se décoche pas : un `dialog` dit
+« Au moins une famille doit rester affichée. », la case reste cochée et
+rien n'est envoyé. Sans JavaScript, « Afficher » reste (repli décidé dans
+l'issue).
 
 Dans une vue de plusieurs familles, chaque pastille d'événement porte **sa
 famille** : sa couleur en liseré gauche (`.chip[data-accent]`, `--s1` en
@@ -742,7 +753,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.notifs`, `.notif`, `.dot` | la liste de `/notifications` (#535), dans la disposition de `.settings` — la liste et ses `.filters` (« Toutes » puis un par type), à côté sur PC la carte « Réglages » vers `/account/notifications` — sous des `h2.eyebrow` « Aujourd’hui », « Cette semaine » (les six jours d'avant) et « Plus tôt ». Une entrée est le bouton secondaire de son propre formulaire, donc sans JavaScript : l'icône du type sur `--accent-soft`, le texte sur « Agenda · 18:30 » en `.muted`. Non lue, la carte du bouton, le texte en gras et un `.dot` `--accent` de `--s2x`, `aria-hidden`, que « Non lue » en `.sr-only` dit à l'oreille ; lue, à plat sur la page jusqu'au survol |
 | `.bell` | la cloche de l'accueil sur téléphone (#535), en tête de page à côté de « Bonjour » : un lien vers `/notifications` nommé « Notifications (3 non lues) » par son `aria-label`, l'icône à `--s6` dans `--s12`, la pastille `.badge.warn` sur son coin comme sur un onglet. `.phone` : sur PC, l'entrée de la colonne latérale en tient lieu |
 | `.budget` | la page du budget (#533) : le mois — `.figures`, barre du plafond, « Par catégorie » — et ses dépenses, deux colonnes égales quand elles tiennent à 20 rem, l'une sous l'autre sinon. Le sélecteur de mois (‹ mois ›) est un `.split` au-dessus. Les réglages du budget prennent la disposition de `.settings` |
-| `dialog` | une fenêtre modale (#560) — élément, pas classe : la boîte d'une `.card` (`--surface`, bordure `--border`, `--r-lg`, `--s4`), texte `--fg`, au plus `--w-form` de large, centrée dans la fenêtre (`dialog:modal { margin: auto }` redit la marge du navigateur, qu'un conteneur comme `.list-row` retire à ses enfants). Ouverte par `enhance.js` sur le lien `data-dialog` qui la nomme : le navigateur y met le focus, l'y garde et la ferme sur Échap, le focus revient au lien ensuite ; « Fermer » est un `<form method="dialog">`. Sans JavaScript le lien mène à une page au même contenu. Aucune animation. Aujourd'hui les éléments manquants d'une recette prévue, ouverts par son badge « Il manque n éléments » — un lien en `.badge.soon`, la priorité de péremption à côté en `.badge.late` ou `.badge.soon` selon l'échéance, comme la pastille d'un article |
+| `dialog` | une fenêtre modale (#560) — élément, pas classe : la boîte d'une `.card` (`--surface`, bordure `--border`, `--r-lg`, `--s4`), texte `--fg`, au plus `--w-form` de large, centrée dans la fenêtre (`dialog:modal { margin: auto }` redit la marge du navigateur, qu'un conteneur comme `.list-row` retire à ses enfants). Ouverte par `enhance.js` sur le lien `data-dialog` qui la nomme : le navigateur y met le focus, l'y garde et la ferme sur Échap, le focus revient au lien ensuite ; « Fermer » est un `<form method="dialog">`. Sans JavaScript le lien mène à une page au même contenu. Aucune animation. Depuis #750, aussi l'avertissement du sélecteur de familles de l'agenda, fait par `enhance.js` à la première fois. Aujourd'hui les éléments manquants d'une recette prévue, ouverts par son badge « Il manque n éléments » — un lien en `.badge.soon`, la priorité de péremption à côté en `.badge.late` ou `.badge.soon` selon l'échéance, comme la pastille d'un article |
 | `caption` | le nom d'un tableau pour les technologies d'assistance (#145) — élément, pas classe : aujourd'hui le mois de la grille de l'agenda, que le `<h1>` voisin montre déjà. Partage les deux règles de `.skip-link` : hors du flux et rogné, jamais `display: none` |
 
 Le résiduel de `style="…"` assumé après #68 : une couleur de membre calculée
