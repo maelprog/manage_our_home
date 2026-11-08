@@ -176,9 +176,37 @@ test('signIn: the plugin failing is a failure, nothing posted', async () => {
     { login: () => undefined },
   ]) {
     const { calls, env } = harness(options);
-    assert.deepEqual(plain(await G.signIn(env)), { state: 'failed' });
+    const outcome = plain(await G.signIn(env));
+    assert.equal(outcome.state, 'failed');
+    assert.equal(outcome.step, 'picker');
     assert.ok(!calls.some((c) => c[1] === '/api/auth/google/id-token'));
   }
+});
+
+test('signIn: a failure names its step and what the plugin or the API said', async () => {
+  const plugin = harness({ login: () => { throw Object.assign(new Error('no credentials available'), { code: 'NO_CREDENTIAL' }); } });
+  assert.deepEqual(plain(await G.signIn(plugin.env)), { state: 'failed', step: 'picker', detail: 'NO_CREDENTIAL' });
+  const nonce = harness({ nonce: () => response(500, { error: 'internal' }) });
+  assert.deepEqual(plain(await G.signIn(nonce.env)), { state: 'failed', step: 'nonce', detail: 'HTTP 500' });
+  const token = harness({ idToken: () => response(401, { error: 'unauthorized' }) });
+  assert.deepEqual(plain(await G.signIn(token.env)), { state: 'failed', step: 'id-token', detail: 'HTTP 401' });
+  const network = harness({ idToken: () => { throw new TypeError('Failed to fetch'); } });
+  assert.deepEqual(plain(await G.signIn(network.env)), { state: 'failed', step: 'id-token', detail: 'TypeError' });
+  const redirect = harness({ idToken: () => response(200, { redirect: 'https://evil.example/' }) });
+  assert.deepEqual(plain(await G.signIn(redirect.env)), { state: 'failed', step: 'redirect', detail: 'redirect' });
+});
+
+test('signIn: every outcome is handed to env.log, never the token', async () => {
+  const logged = [];
+  const { env } = harness();
+  env.log = (outcome) => logged.push(plain(outcome));
+  await G.signIn(env);
+  assert.deepEqual(logged, [{ state: 'redirect', to: '/' }]);
+  const failing = harness({ idToken: () => response(401, {}) });
+  failing.env.log = (outcome) => logged.push(plain(outcome));
+  await G.signIn(failing.env);
+  assert.equal(logged.length, 2);
+  assert.ok(!JSON.stringify(logged).includes(ID_TOKEN));
 });
 
 test('signIn: a nonce the API does not give is a failure, the picker never opens', async () => {
@@ -191,7 +219,7 @@ test('signIn: a nonce the API does not give is a failure, the picker never opens
     () => { throw new TypeError('Failed to fetch'); },
   ]) {
     const { calls, env } = harness({ nonce });
-    assert.deepEqual(plain(await G.signIn(env)), { state: 'failed' });
+    assert.equal(plain(await G.signIn(env)).state, 'failed');
     assert.ok(!calls.some((c) => c[0] === 'login'));
   }
 });
@@ -213,7 +241,7 @@ test('signIn: a token the API refuses, or an answer it cannot follow, is a failu
     () => { throw new TypeError('Failed to fetch'); },
   ]) {
     const { env } = harness({ idToken });
-    assert.deepEqual(plain(await G.signIn(env)), { state: 'failed' });
+    assert.equal(plain(await G.signIn(env)).state, 'failed');
   }
 });
 
@@ -231,6 +259,11 @@ test('what the page says of each outcome', () => {
   assert.equal(G.message({ state: 'cancelled' }), null);
   assert.match(G.message({ state: 'throttled' }), /Trop de tentatives/);
   assert.match(G.message({ state: 'failed' }), /Google/);
+  // A failure says where it stopped, for the member to read out.
+  const located = G.message({ state: 'failed', step: 'id-token', detail: 'HTTP 401' });
+  assert.match(located, /Google/);
+  assert.match(located, /id-token/);
+  assert.match(located, /HTTP 401/);
 });
 
 // -- the page -------------------------------------------------------------------
@@ -336,7 +369,7 @@ test('start: a failure is said, the button comes back, and a new touch clears th
   assert.deepEqual(assigned, []);
   assert.equal(elements['google-native'].disabled, false);
   assert.equal(error.hidden, false);
-  assert.equal(error.textContent, G.message({ state: 'failed' }));
+  assert.equal(error.textContent, G.message({ state: 'failed', step: 'id-token', detail: 'HTTP 401' }));
 
   click();
   assert.equal(error.hidden, true);
