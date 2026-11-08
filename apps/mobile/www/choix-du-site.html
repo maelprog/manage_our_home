@@ -6,10 +6,11 @@
 <title>MHome — choix du site</title>
 <!--
   The page the app shows at its first launch (#737), before any site is
-  chosen: the flavour's standard site, or one of the member's own. Served
-  out of the APK by Capacitor's local server, at https://localhost
-  (MainActivity, which sets that up only while no choice is stored), with
-  its two scripts beside it; nothing is fetched from the network but the
+  chosen, and when the site is changed afterwards (#738): the flavour's
+  standard site, or one of the member's own; on a change, the current one
+  can be kept. Served out of the APK by Capacitor's local server, at
+  https://localhost (MainActivity, which sets that up only for this page),
+  with its scripts beside it; nothing is fetched from the network but the
   probe of a typed address, which MainActivity's Site plugin makes.
   The tokens are DESIGN.md's, light and dark, as in hors-ligne.html
   (check-shell.test.mjs keeps the two pages' tokens the same and checks
@@ -86,8 +87,15 @@ button:disabled { cursor: progress; }
 <body>
 <main>
 <h1>Quel site ouvrir ?</h1>
-<p class="muted">MHome affiche le site de votre foyer. Choisissez-le une fois :
+<p class="muted" id="intro">MHome affiche le site de votre foyer. Choisissez-le une fois :
 l'application l'ouvrira ensuite directement.</p>
+
+<!-- Shown when the site is changed afterwards (#738), not at the first launch. -->
+<section aria-labelledby="current-title" id="current" hidden>
+<h2 id="current-title">Site actuel</h2>
+<p class="muted" id="current-host"></p>
+<button type="button" id="keep" aria-describedby="current-host">Garder ce site</button>
+</section>
 
 <section aria-labelledby="standard-title">
 <h2 id="standard-title">Site standard</h2>
