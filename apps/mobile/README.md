@@ -41,7 +41,9 @@ du site.
   bouton retour ferme l'application, qui, rouverte depuis son icône, ouvre
   le site actuel. Choisir un autre site retire d'abord les rappels
   programmés par l'ancien (à venir et déjà affichés : plugin Local
-  Notifications) ; s'ils ne peuvent pas l'être, rien n'est changé. Puis
+  Notifications) ; si l'un des deux retraits échoue, le site n'est pas
+  changé (les rappels à venir peuvent alors être déjà annulés : l'ancien
+  site les reprogramme à sa prochaine page). Puis
   l'application mémorise le nouveau choix et efface ce que la WebView
   gardait des sites ouverts jusque-là : les cookies (la session), le
   stockage web et le cache. Le nouveau site s'ouvre aussitôt, sans
