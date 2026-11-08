@@ -2,7 +2,15 @@
 // started by hand gets (#742): see release-version.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { nextTag, releaseVersion } from './release-version.mjs';
+
+// The script as mobile-release.yml runs it.
+const cli = (...args) =>
+  spawnSync(process.execPath, [fileURLToPath(new URL('./release-version.mjs', import.meta.url)), ...args], {
+    encoding: 'utf8',
+  });
 
 test('a mobile-v tag gives the versionName and a versionCode read off its three numbers', () => {
   assert.deepEqual(releaseVersion('mobile-v1.0.0', []), { versionName: '1.0.0', versionCode: 1_000_000 });
@@ -84,8 +92,28 @@ test('the next tag is the patch after the highest mobile-v tag, in SemVer order'
 });
 
 test('past patch 999 the next tag has to be chosen by hand', () => {
+  // 999 itself is still a patch nextTag gives.
+  assert.equal(nextTag(['mobile-v0.1.998']), 'mobile-v0.1.999');
   assert.throws(() => nextTag(['mobile-v0.1.999']), /mobile-v0\.1\.999.*999.*mobile-v0\.2\.0/s);
   assert.throws(() => nextTag(['mobile-v1.0.0', 'mobile-v2.3.999']), /mobile-v2\.4\.0/);
   // The minor is at its limit too: the hint is the next major.
   assert.throws(() => nextTag(['mobile-v2.999.999']), /mobile-v3\.0\.0/);
+});
+
+test('from the command line, --next prints the tag for $GITHUB_OUTPUT', () => {
+  const first = cli('--next');
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(first.stdout, 'tag=mobile-v0.1.0\n');
+  const next = cli('--next', 'mobile-v0.1.9', 'mobile-v0.1.10', 'v5.0.0');
+  assert.equal(next.status, 0, next.stderr);
+  assert.equal(next.stdout, 'tag=mobile-v0.1.11\n');
+  // A refusal writes nothing for $GITHUB_OUTPUT, and fails the step.
+  const refused = cli('--next', 'mobile-v0.1.999');
+  assert.notEqual(refused.status, 0);
+  assert.equal(refused.stdout, '');
+  assert.match(refused.stderr, /mobile-v0\.2\.0/);
+  // The tag-pushed form is unchanged.
+  const pushed = cli('mobile-v0.1.1', 'mobile-v0.1.0');
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.equal(pushed.stdout, 'version_name=0.1.1\nversion_code=1001\n');
 });
