@@ -14,8 +14,9 @@
 # metrics, logs and alerts, which staging does not run.
 #
 # `deploy` shares no history with `main`, and its tree holds only this
-# workflow: the workflows of `main` (ci.yml, images.yml) are not in it, so
-# neither a push to it nor a PR into it starts them.
+# workflow and mobile-release-trigger.yml (#743), which runs on a push to
+# it, never on a PR: the workflows of `main` (ci.yml, images.yml) are not
+# in it, so neither a push to it nor a PR into it starts them.
 #
 # Nothing here deploys anywhere: each cluster's Argo CD pulls this branch
 # (#432), and no token of it is given to the CI. The throwaway cluster's
@@ -63,6 +64,8 @@ jobs:
         run: ci/platform-test.sh
       - name: Tests on the promotion scripts
         run: ci/promotion-test.sh
+      - name: Tests on the trigger of the APK release
+        run: ci/mobile-release-trigger-test.sh
       - name: Tests on the preload of Argo CD's images
         run: ci/preload-images-test.sh
       # The alerts that mail (#437): promtool on their rules, amtool on

@@ -59,6 +59,7 @@ platform/               socle des clusters, Applications Argo CD (#432)
 docs/install-k3s.md     installer un cluster, y basculer depuis Compose (#438)
 ci/                     scripts de la CI de cette branche
 .github/workflows/deploy.yml
+.github/workflows/mobile-release-trigger.yml   release de l'APK quand prod bouge (« Promotion »)
 .github/rulesets/deploy.json   ruleset de la branche `deploy` (« Promotion »)
 ```
 
@@ -542,6 +543,50 @@ compris.
   de contournement, il ne peut pas pousser directement sur `deploy`. Que
   le bot ne merge jamais tient au code de `promote.yml`, qui n'appelle pas
   cette API, et à qui peut le modifier — pas à la plateforme.
+- **L'APK suit la prod** (#743) : `.github/workflows/mobile-release-trigger.yml`,
+  sur chaque push vers cette branche (jamais sur une PR), lance
+  `mobile-release.yml` de `main` (#742) quand le merge mène prod à un
+  commit de `main` qui change un fichier de `apps/mobile/`. Le commit est
+  lu dans le commentaire de l'empreinte de l'api de `overlays/prod`
+  (`# v0.40.0: main 6a4bd32`), comme le fait `promote.yml`. La décision est
+  celle de `ci/mobile-release-trigger.sh` :
+  - `overlays/prod` inchangé (merge de staging, de la CI…) : rien ;
+  - commit illisible après le merge : rouge ;
+  - commit illisible avant (premier merge qui en porte un) : release ;
+  - même commit avant et après (nouvelle version ou empreinte du même
+    commit) : rien ;
+  - sinon le `compare` de l'API entre les deux commits de `main` : release
+    si un fichier de `apps/mobile/` a changé, rien sinon. Un retour à un
+    commit plus ancien (revert) se compare `behind`, sans fichier : rien.
+    Le `compare` ne liste que 300 fichiers, dans l'ordre des chemins
+    (`apps/api/` peut les remplir seul) : une liste de 300 est complétée
+    par les fichiers de chacun de ses commits, un par un.
+
+  `mobile-release.yml` reçoit le SHA complet résolu par l'API, publie le
+  commit sous le tag `mobile-v` suivant, et ne republie pas un commit qui
+  en a déjà un. Il tourne un à un et ne garde qu'un run en attente : un
+  troisième lancement pendant qu'un run tourne et qu'un autre attend
+  annule celui qui attend (les merges de prod se font à la main, espacés).
+
+  Son identité est une **GitHub App dédiée** (arbitrage du 2026-11-08), pas
+  celle de `promote.yml` : permission `Actions: Read and write` seule,
+  installée sur ce dépôt seul. Un lancement de workflow est tout ce que
+  son jeton peut faire. L'utilisateur la crée une fois (Settings →
+  Developer settings → GitHub Apps → New GitHub App : webhook désactivé,
+  « Repository permissions » → « Actions » : « Read and write », rien
+  d'autre ; « Only on this account » ; puis « Install App » sur
+  `manage_our_home` seul, et « Generate a private key ») :
+
+  ```
+  gh variable set MOBILE_RELEASE_APP_CLIENT_ID --repo maelprog/manage_our_home --body <Client ID de l'App>
+  gh secret set MOBILE_RELEASE_APP_PRIVATE_KEY --repo maelprog/manage_our_home < <clé>.private-key.pem
+  ```
+
+  Ni la variable ni le secret : le workflow est vert avec un
+  avertissement, rien n'est lancé. L'un sans l'autre, ou un jeton
+  refusé : rouge. Le jeton est demandé à chaque push, qu'il y ait ou non
+  une release à lancer, pour qu'une clé expirée ou supprimée soit rouge au
+  merge suivant.
 
 ### Ce que la CI vérifie
 
@@ -655,7 +700,8 @@ qu'il manque, Alertmanager n'envoie rien.
 ## CI de cette branche
 
 `.github/workflows/deploy.yml`, sur chaque PR vers `deploy` et
-chaque push sur `deploy` :
+chaque push sur `deploy` (et, sur chaque push seulement,
+`mobile-release-trigger.yml`, « Promotion ») :
 
 1. `ci/validate.sh` : `kustomize build` de chaque overlay, de son
    Postgres et de la plateforme de chaque cluster, `kubeconform -strict`
@@ -710,7 +756,9 @@ chaque push sur `deploy` :
    14 jours de rétention appliquée, Alloy sans accès aux Secrets.
 4. `ci/promotion-test.sh` : tests de `ci/set-images.sh`,
    `ci/promotion-check.sh`, `ci/verify-signatures.sh` et du ruleset de
-   `deploy` (« Promotion »).
+   `deploy` (« Promotion »). Puis `ci/mobile-release-trigger-test.sh` :
+   la décision de `ci/mobile-release-trigger.sh`, sur une copie jetable
+   des overlays et un `gh` remplacé par un double (« Promotion »).
    Puis `ci/alerts-test.sh` : `promtool` sur les règles des alertes
    envoyées par mail et leurs tests (`ci/alerts-test.yaml`, chacune
    déclenchée par ce qu'elle surveille et seulement par cela), `amtool`
@@ -782,4 +830,4 @@ Les outils (kustomize, kubeconform, yq, kubectl, k3d, helm, kubeseal,
 cosign, promtool, amtool) sont épinglés par version et empreinte SHA-256 dans
 `ci/install-tools.sh`, l'image k3s par étiquette et empreinte dans le
 workflow. En local, avec ces outils dans le `PATH` :
-`ci/validate.sh && ci/render-test.sh && ci/platform-test.sh && ci/promotion-test.sh && ci/alerts-test.sh`.
+`ci/validate.sh && ci/render-test.sh && ci/platform-test.sh && ci/promotion-test.sh && ci/mobile-release-trigger-test.sh && ci/alerts-test.sh`.
