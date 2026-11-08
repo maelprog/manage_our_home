@@ -558,8 +558,8 @@ compris.
   - sinon le `compare` de l'API entre les deux commits de `main` : release
     si un fichier de `apps/mobile/` a changé, rien sinon. Un retour à un
     commit plus ancien (revert) se compare `behind`, sans fichier : rien.
-    Le `compare` ne liste que 300 fichiers, dans l'ordre des chemins
-    (`apps/api/` peut les remplir seul) : une liste de 300 est complétée
+    Le `compare` ne liste que 300 fichiers (`apps/api/` peut les remplir
+    seul) : une liste de 300 est complétée
     par les fichiers de chacun de ses commits, un par un.
 
   `mobile-release.yml` reçoit le SHA complet résolu par l'API, publie le

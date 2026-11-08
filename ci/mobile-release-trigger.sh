@@ -20,9 +20,9 @@
 #   - otherwise the API's compare of `main`, before...after: release if a
 #     file of apps/mobile/ changed, nothing if none did. A move back to an
 #     older commit (a revert) compares as `behind`, with no file: nothing.
-#     The compare lists at most 300 files, in path order, so apps/api/
-#     alone can fill it (6a4bd32...5de48f0: 300 files, the last one under
-#     apps/api/): a list of 300 is then completed by the files of each
+#     The compare lists at most 300 files, and apps/api/ alone can fill
+#     it (6a4bd32...5de48f0: 300 files, none under apps/mobile/ though a
+#     commit of it changes that, the last one under apps/api/): a list of 300 is then completed by the files of each
 #     commit of the compare, one by one, until one changes apps/mobile/. A
 #     commit listing 300 files of its own is taken as one that does. A
 #     file changed by one commit and put back by a later one counts.
