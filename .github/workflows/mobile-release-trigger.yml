@@ -1,0 +1,125 @@
+# The APK follows prod (#743): when a merge into `deploy` moves prod to a
+# commit of `main` that changes a file of apps/mobile/, this workflow
+# starts mobile-release.yml of `main` on that commit, which releases it
+# under the next mobile-v tag (#742). Nothing on a merge of staging alone,
+# on one that leaves prod's commit as it was, or on one that moves prod to
+# a commit that does not change the app. The decision is
+# ci/mobile-release-trigger.sh's, tested by ci/mobile-release-trigger-test.sh
+# (job `render` of deploy.yml).
+#
+# It lives on `deploy` because a workflow started by a push to a branch
+# must be in that branch's tree. Never on a pull request: the App's token
+# is never handed to a run whose code a PR chose. What runs with it is this
+# file and the scripts of `deploy`, which only the user's merges move;
+# nothing of `main` is checked out.
+#
+# Identity: a GitHub App of its own, not promote.yml's (arbitrage of
+# 2026-11-08), with Actions: Read and write and nothing else, installed on
+# this repository only: a dispatch is all it can do. Its client ID is the
+# variable MOBILE_RELEASE_APP_CLIENT_ID, its private key the secret
+# MOBILE_RELEASE_APP_PRIVATE_KEY (README, « Promotion »).
+#
+# Green or red, as in promote.yml: neither the variable nor the secret,
+# green with a warning and nothing started; one without the other, red;
+# both, the token is asked first thing on every push, so that a key that
+# no longer works is red on the next merge and not on the next release.
+#
+# The dispatch is queued: mobile-release.yml runs one at a time and keeps
+# one pending run, so a third dispatch while one runs and one waits
+# cancels the waiting one. Prod merges are made by hand, far apart.
+
+name: Mobile release trigger
+
+on:
+  push:
+    branches: [deploy]
+
+# Nothing by default; the job below asks for what it uses.
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One push at a time. GitHub keeps one pending run per group: a third
+    # push while one run goes and another waits cancels the waiting one,
+    # whose release is then not started. Prod merges are made by hand, far
+    # apart; a cancelled run is restarted from the Actions tab.
+    concurrency:
+      group: mobile-release-trigger
+      cancel-in-progress: false
+    permissions:
+      # The checkout of `deploy`, and the compare and commits of `main`
+      # through the API.
+      contents: read
+    steps:
+      - name: App configured
+        id: app
+        env:
+          CLIENT_ID: ${{ vars.MOBILE_RELEASE_APP_CLIENT_ID }}
+          HAS_KEY: ${{ secrets.MOBILE_RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ -n "$CLIENT_ID" ] && [ "$HAS_KEY" = true ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$CLIENT_ID" ] && [ "$HAS_KEY" != true ]; then
+            echo "::warning::the mobile release App is not set up yet (neither the variable MOBILE_RELEASE_APP_CLIENT_ID nor the secret MOBILE_RELEASE_APP_PRIVATE_KEY): no APK release is started"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$CLIENT_ID" ]; then
+            echo "::error::the mobile release App is half set up: the variable MOBILE_RELEASE_APP_CLIENT_ID is there, the secret MOBILE_RELEASE_APP_PRIVATE_KEY is missing or empty"
+            exit 1
+          else
+            echo "::error::the mobile release App is half set up: the secret MOBILE_RELEASE_APP_PRIVATE_KEY is there, the variable MOBILE_RELEASE_APP_CLIENT_ID is missing or empty"
+            exit 1
+          fi
+
+      # Asked even when nothing will be started (header, « Green or red »).
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: token
+        if: steps.app.outputs.ready == 'true'
+        with:
+          client-id: ${{ vars.MOBILE_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MOBILE_RELEASE_APP_PRIVATE_KEY }}
+          permission-actions: write
+
+      # The commits before and after the push, with their trees.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.app.outputs.ready == 'true'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tools
+        if: steps.app.outputs.ready == 'true'
+        run: |
+          ci/install-tools.sh "$RUNNER_TEMP/bin" yq
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Does prod move to a commit that changes apps/mobile/?
+        id: decide
+        if: steps.app.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: ci/mobile-release-trigger.sh "$BEFORE" "$GITHUB_SHA"
+
+      # The SHA is the API's, checked by the script; checked again here, as
+      # the only input of the dispatch.
+      - name: Start mobile-release.yml on main
+        if: steps.decide.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SHA: ${{ steps.decide.outputs.sha }}
+        run: |
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::'${SHA}' is not a full SHA"
+            exit 1
+          fi
+          # The dispatch endpoint itself (Actions: write), with -f: every
+          # field a string.
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/workflows/mobile-release.yml/dispatches" \
+            -f ref=main -f "inputs[sha]=${SHA}"
+          echo "::notice::mobile-release.yml started on main for ${SHA}: https://github.com/${GITHUB_REPOSITORY}/actions/workflows/mobile-release.yml"
