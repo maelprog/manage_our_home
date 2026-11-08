@@ -193,8 +193,13 @@
     dialog.showModal();
   }
 
+  // `data-hidden-with-js` on a button: the fallback of a form that sends
+  // itself without it (the profile's families, #751). Rendered, then
+  // hidden here, so that a page whose script failed to load keeps it.
   function familySelectors() {
-    var buttons = document.querySelectorAll('form[data-families] button[type="submit"]');
+    var buttons = document.querySelectorAll(
+      'form[data-families] button[type="submit"], button[data-hidden-with-js]'
+    );
     Array.prototype.forEach.call(buttons, function (button) {
       button.hidden = true;
     });

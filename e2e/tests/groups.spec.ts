@@ -471,9 +471,9 @@ test.describe("Groups — active-family switcher", () => {
     await expect(one).not.toBeChecked();
     await expect(families.getByText("1 membre · Propriétaire")).toHaveCount(2);
 
-    // #751: with JavaScript the radio applies itself, the button is the
-    // fallback without it (below).
-    await expect(page.getByRole("button", { name: "Utiliser cette famille" })).toHaveCount(0);
+    // #751: with JavaScript the radio applies itself, and the script hides
+    // the button, the fallback without it (below).
+    await expect(page.getByRole("button", { name: "Utiliser cette famille" })).toBeHidden();
     let switched = switchPosted(page);
     await one.check();
     await switched;

@@ -7,8 +7,9 @@
 //! posted group against the caller's memberships and sets the
 //! `active_group_id` cookie, then comes back here. With JavaScript,
 //! picking a radio sends the form by itself (`data-submit-on-change`,
-//! `enhance.js`), and « Utiliser cette famille » is only rendered without
-//! it (`<noscript>`). This is a choice made on 2026-11-08 (#751), against
+//! `enhance.js`), and « Utiliser cette famille » is hidden by it
+//! (`data-hidden-with-js`): without JavaScript, or when the script fails to
+//! load, the button stays and sends the form. This is a choice made on 2026-11-08 (#751), against
 //! the one made here before under WCAG 3.2.2: the arrow keys walk a radio
 //! group, so each arrow now makes that family the active one and reloads
 //! the page, the scroll position and the focus on that radio kept
@@ -89,7 +90,7 @@ pub(crate) fn families_section(
             r#"<form method="post" action="/groups/switch" data-keep-scroll>
 <div role="radiogroup" aria-labelledby="families">{rows}</div>
 <input type="hidden" name="redirect_to" value="/account">
-<noscript><button type="submit">Utiliser cette famille</button></noscript>
+<button type="submit" data-hidden-with-js>Utiliser cette famille</button>
 </form>"#
         )
     };
@@ -300,8 +301,9 @@ mod tests {
             "{html}"
         );
         // #751: with JavaScript, picking a radio sends the form
-        // (`enhance.js`'s `data-submit-on-change`), so the button is only
-        // the fallback without it.
+        // (`enhance.js`'s `data-submit-on-change`), which hides the button
+        // (`data-hidden-with-js`): it is the fallback without the script,
+        // rendered in the markup rather than inside a `<noscript>`.
         let radios: Vec<&str> = html
             .split(r#"<input type="radio""#)
             .skip(1)
@@ -313,11 +315,12 @@ mod tests {
         }
         assert!(
             html.contains(
-                "<noscript><button type=\"submit\">Utiliser cette famille</button></noscript>"
+                "<button type=\"submit\" data-hidden-with-js>Utiliser cette famille</button>"
             ),
             "{html}"
         );
         assert_eq!(html.matches("Utiliser cette famille").count(), 1, "{html}");
+        assert!(!html.contains("<noscript>"), "{html}");
     }
 
     #[test]
