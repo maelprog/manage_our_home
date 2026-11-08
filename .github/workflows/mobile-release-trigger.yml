@@ -45,8 +45,10 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # One push at a time, in order: two merges close together dispatch
-    # their commits in the order of the merges.
+    # One push at a time. GitHub keeps one pending run per group: a third
+    # push while one run goes and another waits cancels the waiting one,
+    # whose release is then not started. Prod merges are made by hand, far
+    # apart; a cancelled run is restarted from the Actions tab.
     concurrency:
       group: mobile-release-trigger
       cancel-in-progress: false
