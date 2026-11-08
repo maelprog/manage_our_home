@@ -419,7 +419,7 @@ l'affiche, **avant** le premier tag. Le workflow lit cette ligne et refuse
 de publier un APK signé d'une autre clé, ou si elle n'est pas remplie. Ne
 pas changer la forme de la ligne.
 
-Empreinte SHA-256 du certificat de signature : `aucune clé générée`
+Empreinte SHA-256 du certificat de signature : `9D:F1:55:2E:98:47:33:C4:89:9B:73:AC:4C:89:D4:0E:8B:87:7A:86:7F:13:C6:74:D9:54:50:B3:CD:FA:24:12`
 
 Le **SHA-1** sert à la connexion Google native (#669) : c'est l'empreinte
 que Google Cloud demande pour un client OAuth Android.
