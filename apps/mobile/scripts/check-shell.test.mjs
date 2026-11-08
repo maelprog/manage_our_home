@@ -297,6 +297,26 @@ test('the first-launch page is in the web directory, and loads nothing from else
   assert.match(page, /<button [^>]*id="keep"/);
 });
 
+test("the choice page keeps the current site as it is, and leaves another one's reminders first", () => {
+  // choix-du-site.js drives the DOM and the plugins, which node does not
+  // have: its `store` is read, not run. The decisions are site-choice.js's,
+  // tested in site-choice.test.mjs; this is how the page follows them.
+  const js = read('www/choix-du-site.js');
+  const store = js.match(/\nasync function store\(choice, onError\) \{\n([\s\S]*?)\n\}\n/);
+  assert.ok(store, 'choix-du-site.js: async function store(choice, onError)');
+  const body = store[1].replace(/\s+/g, ' ');
+  // The same site: reopened, and nothing else.
+  assert.match(body, /^ const kind = changeKind\(current, choice\); if \(kind === 'keep'\) \{ await reopen\(onError\); return; \}/);
+  // Another site: its reminders gone first, or no change at all.
+  const leave = body.indexOf(
+    "if (kind === 'change') { const forgot = await forgetReminders(window.Capacitor?.Plugins?.LocalNotifications); if (forgot.error) { onError(forgot.error); return; } }",
+  );
+  const choose = body.indexOf('await site.choose(choice);');
+  assert.ok(leave !== -1, 'store leaves the old site through forgetReminders, and stops on its error');
+  assert.ok(choose > leave, 'store chooses after the reminders are gone');
+  assert.equal(body.split('site.choose').length, 2, 'site.choose is called once, after them');
+});
+
 test('the closure of a page refuses what is not a file of the web directory', () => {
   const dir = mkdtempSync(join(mobile, 'www-check-'));
   const webDir = dir.slice(mobile.length).replace(/^\//, '');
