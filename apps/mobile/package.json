@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/check-shell.test.mjs scripts/release-version.test.mjs scripts/local-reminders.test.mjs scripts/google-sign-in.test.mjs scripts/site-address.test.mjs"
+    "test": "node --test scripts/check-shell.test.mjs scripts/release-version.test.mjs scripts/local-reminders.test.mjs scripts/google-sign-in.test.mjs scripts/site-address.test.mjs scripts/site-choice.test.mjs"
   },
   "engines": {
     "node": ">=22.18.0"

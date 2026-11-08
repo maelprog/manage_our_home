@@ -1,5 +1,8 @@
 package fr.watallo.mhome;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.Bundle;
 import android.util.Log;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -24,7 +27,16 @@ import org.json.JSONObject;
 /**
  * The app's one screen: Capacitor's WebView on the site's origin.
  *
- * <p>What it changes in Capacitor's behaviour, three times.
+ * <p>What it changes in Capacitor's behaviour, four times.
+ *
+ * <p>At the first launch (#737), while no choice is stored, it opens no
+ * site but the APK's own {@code www/choix-du-site.html}, served by
+ * Capacitor's local server at {@code https://localhost}, and registers
+ * {@link SitePlugin} for that page alone: the flavour's standard site
+ * ({@link #SITE_STANDARD}, stored as a choice and not as an address, so
+ * that a later APK with another standard site moves the app along) or an
+ * address of the member's own ({@link #SITE_ORIGIN}). Storing either
+ * restarts the activity on it.
  *
  * <p>The site it opens (#736) is the one stored in the app's private
  * preferences ({@link #SITE_PREFERENCES}, key {@link #SITE_ORIGIN}) when
@@ -61,12 +73,37 @@ public class MainActivity extends BridgeActivity {
     static final String SITE_PREFERENCES = "site";
     /** Its key: an origin, {@code https://host[:port]}. */
     static final String SITE_ORIGIN = "origin";
+    /** Its other key: true when the flavour's standard site was chosen. */
+    static final String SITE_STANDARD = "standard";
+    /** The first-launch page, out of {@code www/}. */
+    static final String CHOICE_PAGE = "/choix-du-site.html";
+
+    /**
+     * The config of {@link #CHOICE_PAGE} when this launch shows it (no
+     * choice is stored yet, and the config could be rewritten), else null.
+     */
+    private CapConfig choice;
 
     private static final String TAG = "MHome";
 
     @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        SharedPreferences site = getSharedPreferences(SITE_PREFERENCES, MODE_PRIVATE);
+        if (!site.contains(SITE_ORIGIN) && !site.getBoolean(SITE_STANDARD, false)) {
+            choice = choiceConfig();
+        }
+        if (choice != null) {
+            // Before super.onCreate, which builds the bridge; and only when
+            // the page is shown: a standard site opened because the choice
+            // page could not be must not get the plugin.
+            registerPlugin(SitePlugin.class);
+        }
+        super.onCreate(savedInstanceState);
+    }
+
+    @Override
     protected void load() {
-        config = storedSiteConfig();
+        config = choice != null ? choice : storedSiteConfig();
         super.load();
         bridge.setWebViewClient(new SiteWebViewClient(bridge));
         getOnBackPressedDispatcher()
@@ -103,29 +140,81 @@ public class MainActivity extends BridgeActivity {
             return null;
         }
         try {
-            JSONObject synced = new JSONObject(readAsset("capacitor.config.json"));
+            JSONObject synced = new JSONObject(readAsset(this, "capacitor.config.json"));
             JSONObject server = synced.getJSONObject("server");
             server.put("url", stored);
             server.put("hostname", authority);
-            // CapConfig takes a config from a file (loadFromFile), and then
-            // still reads what it reads from the app: a debug build's
-            // WebView debugging and logs.
-            File dir = new File(getNoBackupFilesDir(), "site-config");
-            if (!dir.isDirectory() && !dir.mkdirs()) {
-                throw new IOException("cannot create " + dir);
-            }
-            try (OutputStream out = new FileOutputStream(new File(dir, "capacitor.config.json"))) {
-                out.write(synced.toString().getBytes(StandardCharsets.UTF_8));
-            }
-            return CapConfig.loadFromFile(this, dir.getPath() + "/");
+            return writtenConfig(synced);
         } catch (IOException | JSONException e) {
             Log.e(TAG, "cannot open the stored site " + stored + ": opening the standard site", e);
             return null;
         }
     }
 
-    private String readAsset(String name) throws IOException {
-        try (InputStream in = getAssets().open(name)) {
+    /**
+     * The synced config without {@code server.url}, so that Capacitor
+     * serves the APK's web directory, at {@code https://localhost} (not at
+     * the standard site's host, whose cookies the WebView keeps), starting
+     * at {@link #CHOICE_PAGE}; null if it cannot be rewritten, and the
+     * standard site then opens.
+     */
+    private CapConfig choiceConfig() {
+        try {
+            JSONObject synced = new JSONObject(readAsset(this, "capacitor.config.json"));
+            JSONObject server = synced.getJSONObject("server");
+            server.remove("url");
+            server.put("hostname", "localhost");
+            server.put("appStartPath", CHOICE_PAGE);
+            return writtenConfig(synced);
+        } catch (IOException | JSONException e) {
+            Log.e(TAG, "cannot show the choice of a site: opening the standard site", e);
+            return null;
+        }
+    }
+
+    /**
+     * {@code config} as a CapConfig. CapConfig takes a config from a file
+     * (loadFromFile), and then still reads what it reads from the app: a
+     * debug build's WebView debugging and logs.
+     */
+    private CapConfig writtenConfig(JSONObject config) throws IOException {
+        File dir = new File(getNoBackupFilesDir(), "site-config");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            throw new IOException("cannot create " + dir);
+        }
+        try (OutputStream out = new FileOutputStream(new File(dir, "capacitor.config.json"))) {
+            out.write(config.toString().getBytes(StandardCharsets.UTF_8));
+        }
+        return CapConfig.loadFromFile(this, dir.getPath() + "/");
+    }
+
+    /** The flavour's standard site, {@code server.url} of the synced config, or null. */
+    static String standardOrigin(Context context) {
+        try {
+            return new JSONObject(readAsset(context, "capacitor.config.json")).getJSONObject("server").getString("url");
+        } catch (IOException | JSONException e) {
+            Log.e(TAG, "cannot read the synced config", e);
+            return null;
+        }
+    }
+
+    /**
+     * Stores the choice of the first launch: {@code origin}, or the
+     * standard site when it is null. Written at once (commit), since the
+     * activity restarts on it right after.
+     */
+    static boolean storeChoice(Context context, String origin) {
+        SharedPreferences.Editor site = context.getSharedPreferences(SITE_PREFERENCES, MODE_PRIVATE).edit();
+        if (origin == null) {
+            site.remove(SITE_ORIGIN).putBoolean(SITE_STANDARD, true);
+        } else {
+            site.remove(SITE_STANDARD).putString(SITE_ORIGIN, origin);
+        }
+        return site.commit();
+    }
+
+    private static String readAsset(Context context, String name) throws IOException {
+        try (InputStream in = context.getAssets().open(name)) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] chunk = new byte[8192];
             for (int n; (n = in.read(chunk)) != -1; ) {

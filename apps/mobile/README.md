@@ -11,12 +11,29 @@ du site.
 | `package.json`, `package-lock.json` | Capacitor 8.6, `@capacitor/android`, `@capacitor/app`, `@capacitor/local-notifications` ; TypeScript pour lire la configuration |
 | `capacitor.config.ts` | le site ouvert (`staging` ou `prod`), le nom, le marqueur de User-Agent, la page hors ligne |
 | `www/hors-ligne.html` | la page affichée quand le site ne répond pas |
+| `www/choix-du-site.html`, `www/choix-du-site.js` | l'écran du premier lancement : site standard ou personnalisé (#737) |
+| `www/site-address.js`, `www/site-choice.js` | la lecture d'une adresse tapée (#736) et ce que l'écran décide (#737) |
 | `android/` | le projet Android (Gradle), versionné |
 | `scripts/check-shell.test.mjs` | les contrôles de la coquille (`npm test`) |
 | `scripts/local-reminders.test.mjs` | les tests du script des rappels locaux, `apps/web/src/local-reminders.js` (`npm test`) |
+| `scripts/site-address.test.mjs`, `scripts/site-choice.test.mjs` | les tests de `www/site-address.js` et de `www/site-choice.js` (`npm test`) |
 
 ## Ce que fait l'application
 
+- **Au premier lancement, le choix du site** (#737). Tant qu'aucun choix
+  n'est mémorisé, l'application n'ouvre aucun site mais sa page
+  `www/choix-du-site.html`, servie depuis l'APK : le **site standard** de
+  la variante (« staging » ou « MHome »), ou un **site personnalisé**, dont
+  on tape l'adresse. L'adresse est lue par `normalizeSiteAddress`
+  (`www/site-address.js`) ; avant de la mémoriser, l'application demande
+  `/manifest.webmanifest` au site, sans suivre de redirection, et n'accepte
+  qu'un manifeste au nom de l'application (`name`) dont `start_url` est
+  `/`. Un certificat refusé, un nom inconnu, un site muet, le téléphone
+  hors ligne, une redirection ou une autre réponse : un message en
+  français, et rien n'est mémorisé. Le site standard est mémorisé comme un
+  choix, pas comme une adresse : une mise à jour de l'APK qui change de
+  site standard l'emmène. Changer de site ensuite n'est pas encore
+  possible (désinstaller l'application, ou § 4d sur un APK de débogage).
 - **Le site, à son adresse.** La WebView charge `https://staging.watallo.fr`
   (variante `staging`) ou l'adresse de production donnée au build (variante
   `prod`). Les cookies du site restent dans la WebView, propres à
@@ -156,7 +173,7 @@ cd android
 À voir :
 
 - `npm ci` finit par `found 0 vulnerabilities` ;
-- `npm test` affiche `ℹ pass 66` et `ℹ fail 0` ;
+- `npm test` affiche `ℹ pass 80` et `ℹ fail 0` ;
 - `npx cap sync android` finit par `✔ update android` et `[info] Sync
   finished` ; il écrit la configuration du staging dans
   `android/app/src/main/assets/capacitor.config.json` (`"url":
@@ -237,23 +254,25 @@ adb install -r android/app/build/outputs/apk/staging/debug/app-staging-debug.apk
 L'émulateur passe par le réseau de la machine : si elle est sur Tailscale,
 le staging répond.
 
-### 4d. Ouvrir un autre site que le standard (#736)
+### 4d. Choisir le site, ou y revenir (#736, #737)
 
 Au lancement, l'application ouvre le site mémorisé dans ses préférences
-privées s'il y en a un, sinon le site standard de sa variante (celui du
-`sync`). Aucun écran ne permet encore de le choisir ; sur un APK de
-débogage, on l'écrit à la main (`run-as` ne marche pas sur un APK de
-release) :
+privées (`shared_prefs/site.xml`) : une adresse (`origin`), ou le site
+standard de sa variante, celui du `sync` (`standard`). Sans l'un ni
+l'autre, elle affiche l'écran de choix (« Ce que fait l'application »).
+Aucun écran ne permet encore d'en changer ; sur un APK de débogage, on
+écrit ou on efface le choix à la main (`run-as` ne marche pas sur un APK
+de release) :
 
 ```sh
 APP=fr.watallo.mhome.staging   # ou fr.watallo.mhome pour la variante prod
 printf '<map><string name="origin">https://maison.exemple.fr</string></map>' \
   | adb shell run-as $APP sh -c "'mkdir -p shared_prefs && cat > shared_prefs/site.xml'"
 adb shell am force-stop $APP     # puis rouvrir l'application
-adb shell run-as $APP rm shared_prefs/site.xml   # retour au site standard
+adb shell run-as $APP rm shared_prefs/site.xml   # retour à l'écran de choix
 ```
 
-La valeur doit être une origine https telle que la rend
+L'adresse doit être une origine https telle que la rend
 `normalizeSiteAddress` de `www/site-address.js` : `https://hôte[:port]`, en
 minuscules, sans `/` final ni rien après le nom. Une autre valeur est
 ignorée, et le site standard s'ouvre.
@@ -263,7 +282,9 @@ ignorée, et le site standard s'ouvre.
 L'icône **MHome** (la maison blanche sur fond pétrole) est dans la liste
 des applications. À l'ouverture :
 
-1. **La page de connexion du staging**, sans avertissement de certificat.
+1. **L'écran de choix du site**, au premier lancement : toucher « Ouvrir
+   staging ». Puis **la page de connexion du staging**, sans avertissement
+   de certificat ; aux lancements suivants, elle s'ouvre directement.
    Se connecter par email et mot de passe ; ouvrir la messagerie d'une
    famille et envoyer un message depuis un autre appareil : il arrive sans
    recharger (WebSocket).

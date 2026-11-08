@@ -228,3 +228,134 @@ test('the offline page is in the web directory, and loads nothing from elsewhere
   // DESIGN.md: no var(--x, #hex) fallback.
   assert.doesNotMatch(page, /var\(--[\w-]+\s*,/);
 });
+
+// What a module imports: each `import … from '…'`, `export … from '…'` and
+// bare `import '…'`, at the start of a line or after a `;`.
+const moduleRefs = (js) =>
+  [...js.matchAll(/(?:^|;)\s*(?:import|export)\b(?:[^;'"]*?\bfrom)?\s*['"]([^'"]+)['"]/gm)].map((m) => m[1]);
+
+// The files of the web directory a page or a module of it loads: each
+// `src`/`href` of the page and what its inline scripts import, what each
+// module imports, followed from file to file. Throws on anything that is
+// not a relative path to a file of the directory: the first-launch page
+// has nothing else (#737).
+function localClosure(webDir, page) {
+  const seen = new Set();
+  const visit = (file, text) => {
+    const refs = file.endsWith('.html')
+      ? [
+          ...[...uncommented(text).matchAll(/\b(?:src|href)\s*=\s*["']([^"']*)["']/g)].map((m) => m[1]),
+          ...[...uncommented(text).matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].flatMap((m) => moduleRefs(m[1])),
+        ]
+      : moduleRefs(text);
+    for (const ref of refs) {
+      assert.match(ref, /^(\.\/)?[\w-]+\.(js|css)$/, `${file}: ${ref} is not a file of ${webDir}`);
+      const target = ref.replace(/^\.\//, '');
+      assert.ok(existsSync(`${mobile}/${webDir}/${target}`), `${file}: ${target} is not in ${webDir}`);
+      if (!seen.has(target)) {
+        seen.add(target);
+        visit(target, read(`${webDir}/${target}`));
+      }
+    }
+    // No other way out: no dynamic import, no request of its own (the probe
+    // is MainActivity's Site plugin), no stylesheet or font from elsewhere.
+    assert.doesNotMatch(text, /\bimport\s*\(|\bfetch\s*\(|XMLHttpRequest|WebSocket|url\(|@import/, `${file} loads something of its own`);
+  };
+  visit(page, read(`${webDir}/${page}`));
+  return [...seen].sort();
+}
+
+test('the first-launch page is in the web directory, and loads nothing from elsewhere', () => {
+  const { config } = loadConfig({});
+  // MainActivity opens it at the first launch (#737), out of the APK.
+  const activity = read('android/app/src/main/java/fr/watallo/mhome/MainActivity.java');
+  const path = activity.match(/static final String CHOICE_PAGE = "\/([\w-]+\.html)";/);
+  assert.ok(path, 'MainActivity.CHOICE_PAGE');
+  const page = read(`${config.webDir}/${path[1]}`);
+  assert.match(page, /<html lang="fr">/);
+  assert.match(page, /Site standard/);
+  assert.match(page, /Site personnalisé/);
+  assert.match(page, />Continuer</);
+  assert.deepEqual(localClosure(config.webDir, path[1]), ['choix-du-site.js', 'site-address.js', 'site-choice.js']);
+  // DESIGN.md: no var(--x, #hex) fallback.
+  assert.doesNotMatch(page, /var\(--[\w-]+\s*,/);
+  // The field is labelled, and the error is read out and tied to it.
+  assert.match(page, /<label for="address">/);
+  assert.match(page, /<input id="address"[^>]*aria-describedby="[^"]*\baddress-error\b/);
+  assert.match(page, /<p id="address-error"[^>]*role="alert"/);
+});
+
+test('the closure of a page refuses what is not a file of the web directory', () => {
+  const dir = mkdtempSync(join(mobile, 'www-check-'));
+  const webDir = dir.slice(mobile.length).replace(/^\//, '');
+  try {
+    writeFileSync(join(dir, 'a.js'), "import { x } from './b.js';\n");
+    writeFileSync(join(dir, 'b.js'), 'export const x = 1;\n');
+    for (const [html, js, why] of [
+      ['<script src="https://cdn.example/x.js"></script>', '', /is not a file/],
+      ['<link href="//cdn.example/x.css">', '', /is not a file/],
+      ['<script src="missing.js"></script>', '', /is not in/],
+      ['<script src="c.js"></script>', "import x from 'https://cdn.example/x.js';", /is not a file/],
+      ['<script src="c.js"></script>', "import 'https://cdn.example/x.js';", /is not a file/],
+      ['<script type="module">import x from "https://cdn.example/x.js";</script>', '', /is not a file/],
+      ['<script type="module">\n  import "https://cdn.example/x.js";\n</script>', '', /is not a file/],
+      ['<script src="c.js"></script>', "fetch('https://example.org');", /c\.js loads something/],
+      ['<style>body { background: url(x.png) }</style>', '', /p\.html loads something/],
+    ]) {
+      writeFileSync(join(dir, 'p.html'), html);
+      writeFileSync(join(dir, 'c.js'), js);
+      assert.throws(() => localClosure(webDir, 'p.html'), why, html + js);
+    }
+    writeFileSync(join(dir, 'p.html'), '<script type="module" src="a.js"></script>');
+    assert.deepEqual(localClosure(webDir, 'p.html'), ['a.js', 'b.js']);
+    writeFileSync(join(dir, 'p.html'), '<script type="module">import { x } from "./a.js";</script>');
+    assert.deepEqual(localClosure(webDir, 'p.html'), ['a.js', 'b.js']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The custom properties a page declares in `:root`, light and dark.
+function pageTokens(page) {
+  const block = (css) => Object.fromEntries([...css.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, k, v]) => [k, v.trim()]));
+  const light = page.match(/<style>\s*:root \{([^}]*)\}/);
+  const dark = page.match(/@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]*)\}/);
+  assert.ok(light && dark, 'a light and a dark :root');
+  return { light: block(light[1]), dark: block(dark[1]) };
+}
+
+// The WCAG 2.x contrast ratio of two #RRGGBB.
+function contrast(a, b) {
+  const luminance = (hex) => {
+    const linear = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+    const [r, g, bl] = [1, 3, 5].map((i) => linear(parseInt(hex.slice(i, i + 2), 16) / 255));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test("the shell's two pages share DESIGN.md's tokens, and their text meets AA in both themes", () => {
+  assert.equal(contrast('#000000', '#FFFFFF').toFixed(2), '21.00');
+  assert.equal(contrast('#777777', '#FFFFFF').toFixed(2), '4.48');
+  const offline = pageTokens(read('www/hors-ligne.html'));
+  const choice = pageTokens(read('www/choix-du-site.html'));
+  assert.deepEqual(Object.keys(choice.dark).sort(), Object.keys(choice.light).sort(), 'each token redeclared in dark');
+  for (const theme of ['light', 'dark']) {
+    for (const [name, value] of Object.entries(offline[theme])) {
+      assert.equal(choice[theme][name], value, `${theme} ${name}`);
+    }
+    const t = choice[theme];
+    // Each text colour of the first-launch page on each ground it is
+    // painted on: the card, the page around it, a button, a hovered
+    // secondary button, the error notice.
+    for (const [fg, bg] of [
+      ['--fg', '--surface'], ['--fg', '--bg'], ['--muted', '--surface'], ['--muted', '--bg'],
+      ['--accent-fg', '--accent'], ['--accent-fg', '--accent-hover'],
+      ['--fg', '--hover'], ['--error', '--error-soft'], ['--error', '--surface'],
+    ]) {
+      const ratio = contrast(t[fg], t[bg]);
+      assert.ok(ratio >= 4.5, `${theme}: ${fg} on ${bg} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
