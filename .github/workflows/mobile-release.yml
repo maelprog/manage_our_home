@@ -203,7 +203,9 @@ jobs:
           apk=android/app/build/outputs/apk/staging/release/app-staging-release.apk
           build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
           "$build_tools/apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
-          signed=$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9a-f]{64})$/\1/p' "$RUNNER_TEMP/certs.txt")
+          # "Signer #1 certificate" under v1 (JAR) signing, "V2 Signer: certificate"
+          # (V3…) when the APK carries only an APK Signature Scheme signature.
+          signed=$(sed -nE 's/^(Signer #1|V[0-9.]+ Signer:) certificate SHA-256 digest: ([0-9a-f]{64})$/\2/p' "$RUNNER_TEMP/certs.txt" | head -n 1)
           if ! grep -qx 'Number of signers: 1' "$RUNNER_TEMP/certs.txt" || [ "$signed" != "$EXPECTED_SHA256" ]; then
             echo "::error::the APK is signed by certificate ${signed:-none}, not the one apps/mobile/README.md records ($EXPECTED_SHA256): the secret MHOME_KEYSTORE_BASE64 holds another key"
             exit 1
