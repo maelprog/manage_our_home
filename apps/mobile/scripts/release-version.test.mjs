@@ -1,7 +1,8 @@
-// The version a signed APK gets from its tag (#666): see release-version.mjs.
+// The version a signed APK gets from its tag (#666), and the tag a release
+// started by hand gets (#742): see release-version.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { releaseVersion } from './release-version.mjs';
+import { nextTag, releaseVersion } from './release-version.mjs';
 
 test('a mobile-v tag gives the versionName and a versionCode read off its three numbers', () => {
   assert.deepEqual(releaseVersion('mobile-v1.0.0', []), { versionName: '1.0.0', versionCode: 1_000_000 });
@@ -61,4 +62,30 @@ test('the versionCode is above every other mobile-v tag', () => {
     releaseVersion('mobile-v1.0.1', ['mobile-v9.0.0-rc.1', 'mobile-v1.0.0', 'v9.0.0', 'mobile-v1.1000.0']).versionCode,
     1_000_001,
   );
+});
+
+test('the first release started by hand is mobile-v0.1.0', () => {
+  assert.equal(nextTag([]), 'mobile-v0.1.0');
+  // Tags that are not mobile-vX.Y.Z never made a release.
+  assert.equal(nextTag(['v1.0.0', 'mobile-v1.0.0-rc.1', 'mobile-v01.0.0', 'mobile-v0.0.0']), 'mobile-v0.1.0');
+});
+
+test('the next tag is the patch after the highest mobile-v tag, in SemVer order', () => {
+  assert.equal(nextTag(['mobile-v0.1.0']), 'mobile-v0.1.1');
+  // 0.1.10 is above 0.1.9, although it sorts below it as text.
+  assert.equal(nextTag(['mobile-v0.1.9', 'mobile-v0.1.10', 'mobile-v0.1.2']), 'mobile-v0.1.11');
+  assert.equal(nextTag(['mobile-v1.2.0', 'mobile-v0.9.999', 'mobile-v1.10.0', 'mobile-v1.9.5']), 'mobile-v1.10.1');
+  assert.equal(nextTag(['mobile-v10.0.0', 'mobile-v9.99.99', 'mobile-v2.0.0']), 'mobile-v10.0.1');
+  // Invalid tags are left out, even when they would sort above.
+  assert.equal(nextTag(['mobile-v0.1.3', 'mobile-v9.0.0-rc.1', 'mobile-v1.1000.0', 'v9.0.0']), 'mobile-v0.1.4');
+  // The tag it gives is one releaseVersion takes.
+  const existing = ['mobile-v0.1.9', 'mobile-v0.1.10'];
+  assert.equal(releaseVersion(nextTag(existing), existing).versionCode, 1_011);
+});
+
+test('past patch 999 the next tag has to be chosen by hand', () => {
+  assert.throws(() => nextTag(['mobile-v0.1.999']), /mobile-v0\.1\.999.*999.*mobile-v0\.2\.0/s);
+  assert.throws(() => nextTag(['mobile-v1.0.0', 'mobile-v2.3.999']), /mobile-v2\.4\.0/);
+  // The minor is at its limit too: the hint is the next major.
+  assert.throws(() => nextTag(['mobile-v2.999.999']), /mobile-v3\.0\.0/);
 });

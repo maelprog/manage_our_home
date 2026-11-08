@@ -346,7 +346,9 @@ La version vient du tag : `versionName` X.Y.Z, `versionCode`
 X × 1 000 000 + Y × 1 000 + Z (`scripts/release-version.mjs`). Pas de
 suffixe (`-rc.1`), mineure et correctif jusqu'à 999, et un tag qui n'est
 pas au-dessus de tous les `mobile-v…` déjà poussés est refusé : aucun
-téléphone ne pourrait l'installer par-dessus.
+téléphone ne pourrait l'installer par-dessus. Le même workflow se lance
+aussi à la main sur un commit de `main`, et calcule alors le tag lui-même
+(§ 5).
 
 La variante `staging` n'a pas de release : elle ouvre le serveur de test,
 joignable par le VPN seulement. `./gradlew assembleStagingRelease` échoue
@@ -464,6 +466,28 @@ Onglet **Actions** → « Mobile release » : le run finit vert, et la release
 un premier essai, deux tags de test (`mobile-v0.1.0` puis `mobile-v0.1.1`)
 suffisent à vérifier que la seconde s'installe par-dessus la première sans
 désinstaller ; `mobile-v1.0.0` passera au-dessus des deux.
+
+**Sans pousser de tag** (#742) : onglet **Actions** → « Mobile release » →
+**Run workflow**, branche `main`, et dans `sha` le SHA complet (40
+caractères) d'un commit de `main`. Ou, avec `gh` :
+
+```sh
+git fetch origin
+gh workflow run mobile-release.yml --repo maelprog/manage_our_home \
+  --ref main -f sha="$(git rev-parse origin/main)"
+```
+
+Le workflow refuse un `sha` abrégé, inconnu ou qui n'est pas sur `main`, en
+disant lequel des trois. Il calcule le tag : `mobile-v0.1.0` s'il n'y a
+encore aucun `mobile-v…`, sinon le correctif suivant du plus haut dans
+l'ordre SemVer (`mobile-v0.1.10` donne `mobile-v0.1.11`, et passe devant
+`mobile-v0.1.9`) ; les tags qui ne sont pas de la forme `mobile-vX.Y.Z`
+sont ignorés (`scripts/release-version.mjs --next`). Il construit, signe et
+vérifie l'APK comme pour un tag poussé, puis crée la release, qui crée le
+tag sur ce commit. Si le commit porte déjà un tag `mobile-v…`, le run finit
+vert sans rien publier : le relancer ne double pas la release. Après
+`mobile-vX.Y.999`, le correctif ne peut plus monter : le run échoue, et le
+tag suivant (`mobile-vX.(Y+1).0`) se pousse à la main comme ci-dessus.
 
 Contrôle sur l'ordinateur, avec les build-tools du § 1 :
 
