@@ -145,15 +145,15 @@ def checkSyncedTarget = { String flavor ->
                 : "run `MHOME_TARGET=prod MHOME_PROD_URL=https://… npx cap sync android`"))
     }
 }
-// A release is what families install: the prod flavour only, signed with
-// the release key, and numbered from its tag. Without one of them the
-// build stops here, saying which, rather than produce an unsigned APK, a
-// staging one (it opens the test server, reachable by the VPN only), or a
-// versionCode 1 that no update could follow.
+// A release is what families install, signed with the release key and
+// numbered from its tag. Without one of them the build stops here, saying
+// which, rather than produce an unsigned APK or a versionCode 1 that no
+// update could follow. Only the staging flavour is released for now: the
+// published APK opens the staging server, the only one deployed.
 def checkRelease = { String flavor ->
     def problems = []
-    if (flavor != 'prod') {
-        problems << "the ${flavor} flavour has no release build: release the prod flavour (assembleProdRelease)"
+    if (flavor != 'staging') {
+        problems << "the ${flavor} flavour has no release build: release the staging flavour (assembleStagingRelease)"
     }
     if (!keystorePath) {
         problems << 'MHOME_KEYSTORE_FILE is not set: the path of the release keystore (apps/mobile/README.md, signed APK)'

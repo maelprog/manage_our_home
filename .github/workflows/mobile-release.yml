@@ -1,6 +1,6 @@
 # The signed Android APK, published as a GitHub release (#666).
 #
-# A tag mobile-vX.Y.Z builds the prod flavour in release, signs it with the
+# A tag mobile-vX.Y.Z builds the staging flavour in release, signs it with the
 # release key, checks the signature against the certificate fingerprint
 # recorded in apps/mobile/README.md, and publishes the APK and its SHA-256
 # in a release of that tag. The families install it by hand, and every
@@ -12,7 +12,6 @@
 # signé »):
 # - secret MHOME_KEYSTORE_BASE64: the PKCS12 keystore, base64-encoded;
 # - secret MHOME_KEYSTORE_PASSWORD: its password;
-# - variable MHOME_PROD_URL: the https origin the app opens.
 # Missing any of them stops the run at its first step, saying which.
 #
 # A tag mobile-v… does not start with v: images.yml and promote.yml, which
@@ -120,11 +119,10 @@ jobs:
       # Empty for a pushed tag.
       TARGET_SHA: ${{ needs.target.outputs.sha }}
     steps:
-      - name: Signing secrets and production URL
+      - name: Signing secrets
         env:
           MHOME_KEYSTORE_BASE64: ${{ secrets.MHOME_KEYSTORE_BASE64 }}
           MHOME_KEYSTORE_PASSWORD: ${{ secrets.MHOME_KEYSTORE_PASSWORD }}
-          MHOME_PROD_URL: ${{ vars.MHOME_PROD_URL }}
         working-directory: .
         run: |
           missing=0
@@ -134,10 +132,6 @@ jobs:
               missing=1
             fi
           done
-          if [ -z "$MHOME_PROD_URL" ]; then
-            echo "::error::variable MHOME_PROD_URL is not set (Settings → Secrets and variables → Actions → Variables): the https origin the app opens"
-            missing=1
-          fi
           exit "$missing"
 
       # Every tag, for the versionCode check. No persisted credentials: the
@@ -182,10 +176,8 @@ jobs:
       - run: npm audit --audit-level=high
       - run: npm test
 
-      - name: Sync the prod target
-        env:
-          MHOME_TARGET: prod
-          MHOME_PROD_URL: ${{ vars.MHOME_PROD_URL }}
+      # No MHOME_TARGET: the default target is the staging server.
+      - name: Sync the staging target
         run: npx cap sync android
 
       - name: Build and sign
@@ -199,7 +191,7 @@ jobs:
         run: |
           printf '%s' "$MHOME_KEYSTORE_BASE64" | base64 --decode > "$MHOME_KEYSTORE_FILE"
           trap 'rm -f "$MHOME_KEYSTORE_FILE"' EXIT
-          ./gradlew assembleProdRelease --no-daemon \
+          ./gradlew assembleStagingRelease --no-daemon \
             -PmhomeVersionName="$VERSION_NAME" -PmhomeVersionCode="$VERSION_CODE"
 
       - name: Check the APK
@@ -208,7 +200,7 @@ jobs:
           VERSION_NAME: ${{ steps.version.outputs.version_name }}
           VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: |
-          apk=android/app/build/outputs/apk/prod/release/app-prod-release.apk
+          apk=android/app/build/outputs/apk/staging/release/app-staging-release.apk
           build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
           "$build_tools/apksigner" verify --verbose --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
           signed=$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9a-f]{64})$/\1/p' "$RUNNER_TEMP/certs.txt")
@@ -217,7 +209,7 @@ jobs:
             exit 1
           fi
           "$build_tools/aapt2" dump badging "$apk" | head -n 1 | tee "$RUNNER_TEMP/badging.txt"
-          expected="package: name='fr.watallo.mhome' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
+          expected="package: name='fr.watallo.mhome.staging' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
           if ! grep -qF "$expected" "$RUNNER_TEMP/badging.txt"; then
             echo "::error::expected $expected"
             exit 1
@@ -233,7 +225,7 @@ jobs:
           dir="$RUNNER_TEMP/release"
           mkdir -p "$dir"
           name="mhome-$VERSION_NAME.apk"
-          cp android/app/build/outputs/apk/prod/release/app-prod-release.apk "$dir/$name"
+          cp android/app/build/outputs/apk/staging/release/app-staging-release.apk "$dir/$name"
           (cd "$dir" && sha256sum "$name" > "$name.sha256")
           cat > "$dir/notes.md" <<EOF
           Application Android de MHome, version $VERSION_NAME (versionCode $VERSION_CODE).

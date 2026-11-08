@@ -339,8 +339,8 @@ perd ses données (la session et les rappels programmés).
 
 Le workflow `.github/workflows/mobile-release.yml` fait le reste à chaque
 tag `mobile-vX.Y.Z` : `npm ci`, `npm audit --audit-level=high` (bloquant),
-`npm test`, `npx cap sync android` vers la production, `./gradlew
-assembleProdRelease` signé, contrôle de la signature et de la version, puis
+`npm test`, `npx cap sync android` vers le staging, `./gradlew
+assembleStagingRelease` signé, contrôle de la signature et de la version, puis
 une release GitHub du tag avec `mhome-X.Y.Z.apk` et `mhome-X.Y.Z.apk.sha256`.
 La version vient du tag : `versionName` X.Y.Z, `versionCode`
 X × 1 000 000 + Y × 1 000 + Z (`scripts/release-version.mjs`). Pas de
@@ -433,20 +433,16 @@ Sur GitHub, page du dépôt → **Settings** → **Secrets and variables** →
   - `MHOME_KEYSTORE_BASE64` : le fichier encodé en base64, sur une ligne
     (`base64 -w0 ~/mhome-release/mhome-release.p12` l'affiche) ;
   - `MHOME_KEYSTORE_PASSWORD` : le mot de passe ;
-- onglet **Variables** → **New repository variable** :
-  - `MHOME_PROD_URL` : l'adresse que l'application ouvre, une origine https
-    sans chemin (`https://exemple.fr`). Ce n'est pas un secret.
 
 Ou, avec `gh` (connecté au compte propriétaire du dépôt) :
 
 ```sh
 base64 -w0 ~/mhome-release/mhome-release.p12 | gh secret set MHOME_KEYSTORE_BASE64 --repo maelprog/manage_our_home
 gh secret set MHOME_KEYSTORE_PASSWORD --repo maelprog/manage_our_home   # demande la valeur ; la coller
-gh variable set MHOME_PROD_URL --body https://exemple.fr --repo maelprog/manage_our_home
 gh secret list --repo maelprog/manage_our_home     # les deux noms, sans leur valeur
 ```
 
-Il manque l'un des trois : le workflow s'arrête à sa première étape en
+Il manque l'un des deux : le workflow s'arrête à sa première étape en
 nommant celui qui manque. Le build Gradle fait de même hors CI
 (`MHOME_KEYSTORE_FILE`, `MHOME_KEYSTORE_PASSWORD`, `-PmhomeVersionName`,
 `-PmhomeVersionCode`).
@@ -543,7 +539,7 @@ Les couples à déclarer :
 | Nom du paquet | Clé | Pour |
 |---|---|---|
 | `fr.watallo.mhome.staging` | débogage | l'application de test, construite sur votre poste |
-| `fr.watallo.mhome` | publication | l'application des familles (release GitHub) |
+| `fr.watallo.mhome.staging` | publication | l'application des familles (release GitHub), qui ouvre le staging |
 | `fr.watallo.mhome` | débogage | facultatif : un `assembleProdDebug` construit sur votre poste |
 
 La clé de débogage est propre à chaque poste : un autre ordinateur a la
