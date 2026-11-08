@@ -230,7 +230,13 @@ n=$(grep -cE "^api repos/$REPO/commits/[0-9a-f]{40}$" "$FAKE_GH_LOG" || true)
 api_commit_files P-120 apps/api/src/x.rs apps/mobile/lib/main.dart
 expect release "300 files compared, commit 120 of 150 in apps/mobile/" "$c11" "$c12" "$(full P-120)"
 [ "$(released_sha)" = "$(full F)" ] || fail "released '$(released_sha)', expected $(full F)"
+api_commit_files P-120 apps/mobile-notes.md apps/api/src/apps/mobile/x.rs
+expect nothing "300 files compared, a commit beside apps/mobile/, not in it" "$c11" "$c12" "150 commits"
 api_commit_files P-120 apps/api/src/120.rs
+printf '{"commits": [{"sha": "%s"}, {"sha": "%s; echo pwned"}]}\n' "$(full P-101)" "$(full P-102)" \
+  | api "repos/$REPO/compare/$(full B)...$(full F)?per_page=100&page=2"
+expect red "300 files compared, a page of commits listing a SHA that is not one" "$c11" "$c12" "lists '$(full P-102);' as a commit"
+api_compare_page B F 2 P 101 150
 api_commit_files P-30 "${many[@]}"
 expect release "300 files compared, a commit of 300 files" "$c11" "$c12" "$(full P-30) of it lists 300"
 api_commit_files P-30 apps/api/src/30.rs
