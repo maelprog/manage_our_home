@@ -110,10 +110,11 @@
     var input = event.target;
     if (!input.hasAttribute) return;
     // `data-submit-on-change` (the stocks' barcode photo, #402; the grocery
-    // list's check boxes until #526). `form.submit()` fires no `submit` event, hence
+    // list's check boxes until #526; the profile's families, #751).
+    // `form.submit()` fires no `submit` event, hence
     // the explicit `keepScroll`.
     if (input.hasAttribute("data-submit-on-change")) {
-      keepScroll(input.form);
+      keepScroll(input.form, input);
       input.form.submit();
     }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).
@@ -340,13 +341,17 @@
   // banner at the top (`?error=…`), which the reader must see, and a
   // redirect elsewhere opens at the top as usual. Kept in sessionStorage,
   // which can be missing or refuse writes: the page then simply opens at
-  // the top.
+  // the top. `field`, a radio sent by `data-submit-on-change` (the
+  // profile's families, #751): the field of the same name and value gets
+  // the focus back, so the arrow keys go on from it after the reload.
   var KEEP_SCROLL = "keep-scroll";
 
-  function keepScroll(form) {
+  function keepScroll(form, field) {
     if (!form || !form.hasAttribute("data-keep-scroll")) return;
+    var kept = { path: location.pathname, y: window.scrollY };
+    if (field && field.type === "radio") kept.focus = [field.name, field.value];
     try {
-      sessionStorage.setItem(KEEP_SCROLL, JSON.stringify({ path: location.pathname, y: window.scrollY }));
+      sessionStorage.setItem(KEEP_SCROLL, JSON.stringify(kept));
     } catch (e) {}
   }
 
@@ -361,6 +366,12 @@
     if (document.querySelector(".notice.error")) return;
     if (kept && kept.path === location.pathname && typeof kept.y === "number") {
       window.scrollTo({ top: kept.y, left: 0, behavior: "instant" });
+      if (kept.focus) {
+        var fields = document.getElementsByName(kept.focus[0]);
+        for (var i = 0; i < fields.length; i++) {
+          if (fields[i].value === kept.focus[1]) fields[i].focus({ preventScroll: true });
+        }
+      }
     }
   }
 
