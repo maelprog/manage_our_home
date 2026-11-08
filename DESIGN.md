@@ -468,7 +468,9 @@ disait pas.
   Au pied de la colonne, haute comme le viewport, le bloc du profil :
   l'initiale, le nom et la famille active, vers `/account`. C'est là que
   se choisit la famille active (un formulaire `POST /groups/switch` qui
-  marche sans JavaScript, #529) et que l'on se déconnecte : l'en-tête ne
+  marche sans JavaScript, #529 ; avec JavaScript, cocher une famille
+  l'applique et le script masque « Utiliser cette famille », qui reste si
+  le script manque ; chaque flèche du clavier recharge donc la page, #751) et que l'on se déconnecte : l'en-tête ne
   porte plus aucun formulaire. Le profil est allumé aussi sur les pages
   des familles (`/groups/…`), qui n'ont pas d'entrée à elles.
 - **Une page sans session ne rend aucune navigation** (authentification,

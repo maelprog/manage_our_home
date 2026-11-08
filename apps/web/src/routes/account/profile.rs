@@ -5,10 +5,16 @@
 //! The family choice is the header switcher's form under another face: the
 //! same `POST /groups/switch` (`routes::groups::switch`), which re-checks the
 //! posted group against the caller's memberships and sets the
-//! `active_group_id` cookie, then comes back here. Picking a radio does not
-//! submit by itself: the arrow keys walk a radio group, and a page that
-//! reloaded on each step would change context under the keyboard
-//! (WCAG 3.2.2). The button does.
+//! `active_group_id` cookie, then comes back here. With JavaScript,
+//! picking a radio sends the form by itself (`data-submit-on-change`,
+//! `enhance.js`), and « Utiliser cette famille » is hidden by it
+//! (`data-hidden-with-js`): without JavaScript, or when the script fails to
+//! load, the button stays and sends the form. This is a choice made on 2026-11-08 (#751), against
+//! the one made here before under WCAG 3.2.2: the arrow keys walk a radio
+//! group, so each arrow now makes that family the active one and reloads
+//! the page, the scroll position and the focus on that radio kept
+//! (`data-keep-scroll`). Tab reaches the checked radio without changing
+//! anything.
 
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
@@ -60,7 +66,7 @@ pub(crate) fn family_choice(g: &GroupSummary, members: Option<usize>, active: bo
         None => role.to_string(),
     };
     format!(
-        r#"<label class="list-row"><input type="radio" name="group_id" value="{id}"{checked}><span><strong>{name}</strong>{badge}<br><span class="muted">{meta}</span></span></label>"#,
+        r#"<label class="list-row"><input type="radio" name="group_id" value="{id}"{checked} data-submit-on-change><span><strong>{name}</strong>{badge}<br><span class="muted">{meta}</span></span></label>"#,
         id = g.group_id,
         name = html_escape(&g.name),
     )
@@ -81,10 +87,10 @@ pub(crate) fn families_section(
             .map(|(g, members)| family_choice(g, *members, active == Some(g.group_id)))
             .collect();
         format!(
-            r#"<form method="post" action="/groups/switch">
+            r#"<form method="post" action="/groups/switch" data-keep-scroll>
 <div role="radiogroup" aria-labelledby="families">{rows}</div>
 <input type="hidden" name="redirect_to" value="/account">
-<button type="submit">Utiliser cette famille</button>
+<button type="submit" data-hidden-with-js>Utiliser cette famille</button>
 </form>"#
         )
     };
@@ -215,7 +221,7 @@ mod tests {
         let html = family_choice(&g, Some(4), false);
         assert!(
             html.contains(&format!(
-                r#"<input type="radio" name="group_id" value="{}">"#,
+                r#"<input type="radio" name="group_id" value="{}" data-submit-on-change>"#,
                 g.group_id
             )),
             "{html}"
@@ -269,8 +275,10 @@ mod tests {
             (group(2, "Deux", "member"), Some(3)),
         ];
         let html = families_section(&groups, Some(Uuid::from_u128(2)));
+        // `data-keep-scroll`: the page comes back at the same height, the
+        // focus on the radio picked (#751).
         assert!(
-            html.contains(r#"<form method="post" action="/groups/switch">"#),
+            html.contains(r#"<form method="post" action="/groups/switch" data-keep-scroll>"#),
             "{html}"
         );
         assert!(
@@ -292,10 +300,27 @@ mod tests {
             html[..checked].ends_with(&format!(r#"value="{}""#, Uuid::from_u128(2))),
             "{html}"
         );
+        // #751: with JavaScript, picking a radio sends the form
+        // (`enhance.js`'s `data-submit-on-change`), which hides the button
+        // (`data-hidden-with-js`): it is the fallback without the script,
+        // rendered in the markup rather than inside a `<noscript>`.
+        let radios: Vec<&str> = html
+            .split(r#"<input type="radio""#)
+            .skip(1)
+            .map(|rest| &rest[..rest.find('>').expect("closed tag")])
+            .collect();
+        assert_eq!(radios.len(), 2, "{html}");
+        for radio in radios {
+            assert!(radio.contains(" data-submit-on-change"), "{radio}");
+        }
         assert!(
-            html.contains("<button type=\"submit\">Utiliser cette famille</button>"),
+            html.contains(
+                "<button type=\"submit\" data-hidden-with-js>Utiliser cette famille</button>"
+            ),
             "{html}"
         );
+        assert_eq!(html.matches("Utiliser cette famille").count(), 1, "{html}");
+        assert!(!html.contains("<noscript>"), "{html}");
     }
 
     #[test]
