@@ -17,32 +17,108 @@
 #
 # A tag mobile-v… does not start with v: images.yml and promote.yml, which
 # follow v* tags, are not triggered.
+#
+# Started by hand (workflow_dispatch, #742) with the SHA of a commit of
+# main, it releases that commit under the next tag: mobile-v0.1.0 when there
+# is no mobile-v tag, else the patch after the highest one in SemVer order
+# (scripts/release-version.mjs --next). The release creates the tag, through
+# the API with github.token: a tag created that way starts no workflow, so
+# this one does not run a second time for it. A commit that already has a
+# mobile-v tag is not released again: the run ends green, with nothing
+# published. Another workflow that wants a release dispatches this one: a
+# tag it pushed with GITHUB_TOKEN would start nothing.
 
 name: Mobile release
 
 on:
   push:
     tags: ["mobile-v*"]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full SHA of the commit of main to release
+        required: true
+        type: string
 
 # Nothing by default; the job below asks for what it uses.
 permissions: {}
 
-# Two releases at once would each check the other's tag as already there.
+# Two releases at once would each check the other's tag as already there,
+# and two dispatches would compute the same next tag.
 concurrency:
   group: mobile-release
   cancel-in-progress: false
 
 jobs:
-  release:
+  # The tag to release, and on a dispatch the commit: the pushed tag as it
+  # is, or the next one for a commit of main that has none. No tag means
+  # nothing to publish, and the release job is skipped.
+  target:
     runs-on: ubuntu-latest
     permissions:
-      # gh release create.
+      contents: read
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
+      sha: ${{ steps.target.outputs.sha }}
+    steps:
+      # Every branch and tag: main for the ancestry check, the mobile-v tags
+      # for the next one.
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Tag and commit
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          if [ "$EVENT" != workflow_dispatch ]; then
+            echo "tag=$PUSHED_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! printf '%s' "$SHA" | grep -qxE '[0-9a-f]{40}'; then
+            echo "::error::input sha: expected the full SHA of a commit of main, 40 lowercase hexadecimal characters"
+            exit 1
+          fi
+          if ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
+            echo "::error::commit $SHA is not in the repository"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::commit $SHA is not on main: only a commit of main is released"
+            exit 1
+          fi
+          already=$(git tag --points-at "$SHA" --list 'mobile-v*' | paste -sd ' ' -)
+          if [ -n "$already" ]; then
+            echo "::notice::commit $SHA already has $already: nothing to publish"
+            exit 0
+          fi
+          mapfile -t tags < <(git tag --list 'mobile-v*')
+          node apps/mobile/scripts/release-version.mjs --next "${tags[@]}" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: target
+    if: needs.target.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release create, and on a dispatch the tag it creates.
       contents: write
     defaults:
       run:
         working-directory: apps/mobile
     env:
-      TAG: ${{ github.ref_name }}
+      TAG: ${{ needs.target.outputs.tag }}
+      # Empty for a pushed tag.
+      TARGET_SHA: ${{ needs.target.outputs.sha }}
     steps:
       - name: Signing secrets and production URL
         env:
@@ -65,9 +141,11 @@ jobs:
           exit "$missing"
 
       # Every tag, for the versionCode check. No persisted credentials: the
-      # only write, the release, goes through GH_TOKEN below.
+      # only write, the release, goes through GH_TOKEN below. The pushed tag
+      # (ref empty), or the dispatched commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.target.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       # No dependency cache: a release build starts from the lockfile alone.
@@ -165,6 +243,18 @@ jobs:
 
           Installation et vérification : [apps/mobile/README.md](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/apps/mobile/README.md#installer-lapplication-familles).
           EOF
+          if [ -z "$TARGET_SHA" ]; then
+            # The pushed tag.
+            where=(--verify-tag)
+          else
+            # The tag is created with the release, on the dispatched commit.
+            # Pushed meanwhile, it would be on another commit.
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::tag $TAG was pushed while this run built it: start the release again"
+              exit 1
+            fi
+            where=(--target "$TARGET_SHA")
+          fi
           gh release create "$TAG" "$dir/$name" "$dir/$name.sha256" \
-            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --repo "$GITHUB_REPOSITORY" "${where[@]}" \
             --title "MHome Android $VERSION_NAME" --notes-file "$dir/notes.md"
