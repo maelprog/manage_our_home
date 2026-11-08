@@ -1,6 +1,7 @@
 package fr.watallo.mhome;
 
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Log;
@@ -8,6 +9,9 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
+import androidx.core.content.pm.ShortcutInfoCompat;
+import androidx.core.content.pm.ShortcutManagerCompat;
+import androidx.core.graphics.drawable.IconCompat;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
 import com.getcapacitor.CapConfig;
@@ -27,7 +31,7 @@ import org.json.JSONObject;
 /**
  * The app's one screen: Capacitor's WebView on the site's origin.
  *
- * <p>What it changes in Capacitor's behaviour, four times.
+ * <p>What it changes in Capacitor's behaviour, five times.
  *
  * <p>At the first launch (#737), while no choice is stored, it opens no
  * site but the APK's own {@code www/choix-du-site.html}, served by
@@ -37,6 +41,16 @@ import org.json.JSONObject;
  * that a later APK with another standard site moves the app along) or an
  * address of the member's own ({@link #SITE_ORIGIN}). Storing either
  * restarts the activity on it.
+ *
+ * <p>The same page comes back to change the site afterwards (#738), with
+ * the current one to keep: on the intent {@link #ACTION_CHANGE_SITE},
+ * which the launcher's shortcut « Changer de site » sends (long press on
+ * the icon), and on {@link #CHANGE_SITE_URL}, which the offline page opens
+ * and the WebView never loads. Neither changes anything by itself: the
+ * site changes when the member chooses another one on that page, which
+ * then clears the old one's session ({@link SitePlugin#choose}). Another
+ * app can send the intent too, the activity being the launcher's, and a
+ * site open the URL: either only shows that page.
  *
  * <p>The site it opens (#736) is the one stored in the app's private
  * preferences ({@link #SITE_PREFERENCES}, key {@link #SITE_ORIGIN}) when
@@ -77,10 +91,16 @@ public class MainActivity extends BridgeActivity {
     static final String SITE_STANDARD = "standard";
     /** The first-launch page, out of {@code www/}. */
     static final String CHOICE_PAGE = "/choix-du-site.html";
+    /** The intent that shows {@link #CHOICE_PAGE} over a stored choice. */
+    static final String ACTION_CHANGE_SITE = "fr.watallo.mhome.CHANGE_SITE";
+    /** What the offline page opens for it: taken by the WebView client, never loaded. */
+    static final String CHANGE_SITE_URL = "mhome:changer-de-site";
+    private static final String CHANGE_SITE_SHORTCUT = "changer-de-site";
 
     /**
      * The config of {@link #CHOICE_PAGE} when this launch shows it (no
-     * choice is stored yet, and the config could be rewritten), else null.
+     * choice is stored yet, or the site is being changed, and the config
+     * could be rewritten), else null.
      */
     private CapConfig choice;
 
@@ -89,7 +109,8 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         SharedPreferences site = getSharedPreferences(SITE_PREFERENCES, MODE_PRIVATE);
-        if (!site.contains(SITE_ORIGIN) && !site.getBoolean(SITE_STANDARD, false)) {
+        boolean changing = ACTION_CHANGE_SITE.equals(getIntent().getAction());
+        if (changing || (!site.contains(SITE_ORIGIN) && !site.getBoolean(SITE_STANDARD, false))) {
             choice = choiceConfig();
         }
         if (choice != null) {
@@ -99,6 +120,52 @@ public class MainActivity extends BridgeActivity {
             registerPlugin(SitePlugin.class);
         }
         super.onCreate(savedInstanceState);
+        addChangeSiteShortcut();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent != null && ACTION_CHANGE_SITE.equals(intent.getAction())) {
+            changeSite();
+        }
+    }
+
+    /** Restarts the activity on {@link #CHOICE_PAGE}, unless it is shown already. */
+    void changeSite() {
+        if (choice != null) {
+            return;
+        }
+        setIntent(new Intent(this, MainActivity.class).setAction(ACTION_CHANGE_SITE));
+        recreate();
+    }
+
+    /** Restarts the activity on the stored site, once chosen or kept. */
+    void openSite() {
+        setIntent(new Intent(this, MainActivity.class).setAction(Intent.ACTION_MAIN));
+        recreate();
+    }
+
+    /**
+     * The launcher's shortcut to {@link #ACTION_CHANGE_SITE}. A dynamic one:
+     * a static shortcut names its target package, which the staging
+     * flavour changes. None below Android 7.1, where ShortcutManagerCompat
+     * does nothing; a failure leaves the app without it, and nothing else.
+     */
+    private void addChangeSiteShortcut() {
+        try {
+            ShortcutManagerCompat.pushDynamicShortcut(
+                this,
+                new ShortcutInfoCompat.Builder(this, CHANGE_SITE_SHORTCUT)
+                    .setShortLabel(getString(R.string.change_site_short))
+                    .setLongLabel(getString(R.string.change_site_long))
+                    .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
+                    .setIntent(new Intent(ACTION_CHANGE_SITE).setClass(this, MainActivity.class))
+                    .build()
+            );
+        } catch (RuntimeException e) {
+            Log.w(TAG, "cannot add the shortcut to change the site", e);
+        }
     }
 
     @Override
@@ -156,7 +223,7 @@ public class MainActivity extends BridgeActivity {
      * serves the APK's web directory, at {@code https://localhost} (not at
      * the standard site's host, whose cookies the WebView keeps), starting
      * at {@link #CHOICE_PAGE}; null if it cannot be rewritten, and the
-     * standard site then opens.
+     * stored site, or else the standard one, then opens.
      */
     private CapConfig choiceConfig() {
         try {
@@ -199,9 +266,26 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * Stores the choice of the first launch: {@code origin}, or the
-     * standard site when it is null. Written at once (commit), since the
-     * activity restarts on it right after.
+     * The stored choice, as {@code www/site-choice.js} reads it:
+     * {@code {standard: true}}, {@code {origin}}, or null when none is.
+     */
+    static JSONObject storedChoice(Context context) {
+        SharedPreferences site = context.getSharedPreferences(SITE_PREFERENCES, MODE_PRIVATE);
+        try {
+            String origin = site.getString(SITE_ORIGIN, null);
+            if (origin != null) {
+                return new JSONObject().put("origin", origin);
+            }
+            return site.getBoolean(SITE_STANDARD, false) ? new JSONObject().put("standard", true) : null;
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Stores the choice made on {@link #CHOICE_PAGE}: {@code origin}, or
+     * the standard site when it is null. Written at once (commit), since
+     * the activity restarts on it right after.
      */
     static boolean storeChoice(Context context, String origin) {
         SharedPreferences.Editor site = context.getSharedPreferences(SITE_PREFERENCES, MODE_PRIVATE).edit();
@@ -257,8 +341,23 @@ public class MainActivity extends BridgeActivity {
 
     static final class SiteWebViewClient extends BridgeWebViewClient {
 
+        private final com.getcapacitor.Bridge bridge;
+
         SiteWebViewClient(com.getcapacitor.Bridge bridge) {
             super(bridge);
+            this.bridge = bridge;
+        }
+
+        /** {@link #CHANGE_SITE_URL} is the app's, and goes nowhere else. */
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            if (CHANGE_SITE_URL.equals(request.getUrl().toString())) {
+                if (bridge.getActivity() instanceof MainActivity) {
+                    ((MainActivity) bridge.getActivity()).changeSite();
+                }
+                return true;
+            }
+            return super.shouldOverrideUrlLoading(view, request);
         }
 
         /**

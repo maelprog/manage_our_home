@@ -1,9 +1,11 @@
-// What the first-launch screen (choix-du-site.html, #737) decides: store
-// the flavour's standard site, probe a typed address, or say why not; and,
-// once probed, store it or say why not. No I/O here: the page asks
-// MainActivity's Site plugin to probe and to store, and shows what this
-// file returns. Loaded by that page and by `node --test`
-// (scripts/site-choice.test.mjs) alike.
+// What the screen of the choice of a site (choix-du-site.html) decides, at
+// the first launch (#737) and when the site is changed afterwards (#738):
+// store the flavour's standard site, probe a typed address, or say why not;
+// once probed, store it or say why not; on a change, keep the current site
+// or leave it, its reminders first. No I/O here but the reminders, through
+// the plugin handed in: the page asks MainActivity's Site plugin to probe
+// and to store, and shows what this file returns. Loaded by that page and
+// by `node --test` (scripts/site-choice.test.mjs) alike.
 //
 // The probe is a GET of MANIFEST_PATH, without following redirects: the
 // web manifest apps/web serves to anyone (apps/web/src/brand.rs), whose
@@ -107,4 +109,45 @@ function isManifestOf(body, appName) {
     return false;
   }
   return manifest !== null && typeof manifest === 'object' && manifest.name === appName && manifest.start_url === '/';
+}
+
+// The choice stored, `current` (`{ standard: true }`, `{ origin }`, or
+// nothing at the first launch, as the Site plugin's `info` gives it), and
+// the one just made, `store`: `first`, nothing to leave; `keep`, the same
+// site, whose session and reminders stay; `change`, another site.
+export function changeKind(current, store) {
+  const standard = current?.standard === true;
+  const origin = typeof current?.origin === 'string' ? current.origin : null;
+  if (!standard && origin === null) return 'first';
+  if (standard ? store?.standard === true : store?.origin === origin) return 'keep';
+  return 'change';
+}
+
+// The current site's readable name: the standard site's, or its host;
+// null when there is none.
+export function currentLabel(current, applicationId, appName) {
+  if (current?.standard === true) return standardLabel(applicationId, appName);
+  if (typeof current?.origin !== 'string') return null;
+  try {
+    return new URL(current.origin).host;
+  } catch {
+    return null;
+  }
+}
+
+// Leaving a site: its reminders, scheduled on the phone by
+// apps/web/src/local-reminders.js, would still fire, and a touch would open
+// the old site's event on the new one. Cancels those scheduled, then clears
+// those already shown, through the Local Notifications plugin: `{}`, or
+// `{ error }` if either fails, and the change is then not made. No plugin,
+// no reminder was ever scheduled.
+export async function forgetReminders(plugin) {
+  if (plugin === undefined || plugin === null) return {};
+  try {
+    await plugin.cancelAll();
+    await plugin.removeAllDeliveredNotifications();
+  } catch {
+    return { error: `Les rappels de l'ancien site n'ont pas pu être retirés du téléphone. ${NOTHING_STORED} Réessayez.` };
+  }
+  return {};
 }

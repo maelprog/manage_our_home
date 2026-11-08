@@ -1,20 +1,24 @@
-// The first-launch page (choix-du-site.html, #737): reads the form, lets
-// site-choice.js decide, and hands the probe and the storing to
-// MainActivity's Site plugin. Storing a choice restarts the activity on
-// it: this page is then gone.
-import { judgeProbe, readChoice, standardLabel } from './site-choice.js';
+// The page of the choice of a site (choix-du-site.html), at the first
+// launch (#737) and when the site is changed afterwards (#738): reads the
+// form, lets site-choice.js decide, and hands the probe and the storing to
+// MainActivity's Site plugin. Storing a choice, or keeping the current
+// one, restarts the activity on that site: this page is then gone.
+import { changeKind, currentLabel, forgetReminders, judgeProbe, readChoice, standardLabel } from './site-choice.js';
 
 const site = window.Capacitor?.Plugins?.Site;
 const standard = document.getElementById('standard');
+const keep = document.getElementById('keep');
 const form = document.getElementById('custom');
 const address = document.getElementById('address');
 const error = document.getElementById('address-error');
 const status = document.getElementById('status');
 let appName = 'MHome';
+// The choice stored before this page, if the site is being changed.
+let current = null;
 
 function busy(text) {
   status.textContent = text;
-  for (const button of [standard, form.querySelector('button')]) button.disabled = text !== '';
+  for (const button of [standard, keep, form.querySelector('button')]) button.disabled = text !== '';
 }
 
 // A typed address refused: the message is the field's.
@@ -32,10 +36,33 @@ function fail(message) {
   status.textContent = message;
 }
 
-// `onError` says the failure: refuse for a typed address, fail for the
-// standard site.
-async function store(choice, onError) {
+async function reopen(onError) {
   busy('Ouverture du site…');
+  try {
+    await site.keep();
+  } catch {
+    onError("Le site actuel n'a pas pu être rouvert. Réessayez.");
+  }
+}
+
+// `onError` says the failure: refuse for a typed address, fail for the
+// standard site. The current site chosen again is kept as it is; another
+// one leaves it, its reminders first (the Site plugin then clears its
+// session).
+async function store(choice, onError) {
+  const kind = changeKind(current, choice);
+  if (kind === 'keep') {
+    await reopen(onError);
+    return;
+  }
+  busy('Ouverture du site…');
+  if (kind === 'change') {
+    const forgot = await forgetReminders(window.Capacitor?.Plugins?.LocalNotifications);
+    if (forgot.error) {
+      onError(forgot.error);
+      return;
+    }
+  }
   try {
     await site.choose(choice);
   } catch {
@@ -43,8 +70,9 @@ async function store(choice, onError) {
   }
 }
 
-// The app's name and its standard site's host, from the Site plugin; null,
-// the page left disabled with a message, if it cannot give them.
+// The app's name, its standard site's host and the current choice, from
+// the Site plugin; null, the page left disabled with a message, if it
+// cannot give them.
 async function readInfo() {
   try {
     const info = await site.info();
@@ -61,6 +89,17 @@ function start(info) {
   const label = standardLabel(info.applicationId, info.appName);
   standard.textContent = `Ouvrir ${label}`;
   document.getElementById('standard-host').textContent = `${label} : ${info.host}`;
+
+  const kept = currentLabel(info.current, info.applicationId, info.appName);
+  if (kept !== null) {
+    current = info.current;
+    document.getElementById('intro').textContent =
+      "Un autre site vous déconnecte de celui-ci et retire ses rappels de ce téléphone. Vous pourrez y revenir en vous reconnectant.";
+    document.getElementById('current-host').textContent = kept;
+    keep.textContent = `Garder ${kept}`;
+    document.getElementById('current').hidden = false;
+    keep.addEventListener('click', () => reopen(fail));
+  }
 
   standard.addEventListener('click', () => store(readChoice({ kind: 'standard' }).store, fail));
 
@@ -98,8 +137,8 @@ function start(info) {
 }
 
 if (!site) {
-  // Opened anywhere but in the app's first launch: nothing to store into.
-  busy("Cette page ne sert qu'au premier lancement de l'application.");
+  // Opened anywhere but in the app's choice of a site: nothing to store into.
+  busy("Cette page ne sert qu'au choix du site, dans l'application.");
 } else {
   busy('Chargement…');
   const info = await readInfo();

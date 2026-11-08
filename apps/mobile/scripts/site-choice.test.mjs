@@ -1,7 +1,16 @@
-// The first-launch choice of a site (#737): see www/site-choice.js.
+// The choice of a site, at the first launch (#737) and afterwards (#738):
+// see www/site-choice.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MANIFEST_PATH, judgeProbe, readChoice, standardLabel } from '../www/site-choice.js';
+import {
+  MANIFEST_PATH,
+  changeKind,
+  currentLabel,
+  forgetReminders,
+  judgeProbe,
+  readChoice,
+  standardLabel,
+} from '../www/site-choice.js';
 
 const MANIFEST = JSON.stringify({ name: 'MHome', short_name: 'MHome', id: '/', start_url: '/', lang: 'fr' });
 const answer = (status, body = '', extra = {}) => ({ status, body, ...extra });
@@ -147,4 +156,68 @@ test('an answer that is not an MHome manifest is foreign', () => {
     assert.match(decision.error, /pas un site MHome/, JSON.stringify(probe));
   }
   assert.match(judgeProbe('https://maison.example.org', answer(404, ''), ONLINE).error, /404/);
+});
+
+// -- changing the site afterwards (#738) ------------------------------------
+
+test('a choice is a first one, a change, or the current site kept', () => {
+  const standard = { standard: true };
+  const maison = { origin: 'https://maison.example.org' };
+  for (const current of [undefined, null, {}, { origin: 42 }, { standard: false }]) {
+    assert.equal(changeKind(current, standard), 'first', JSON.stringify(current));
+    assert.equal(changeKind(current, maison), 'first', JSON.stringify(current));
+  }
+  assert.equal(changeKind(standard, standard), 'keep');
+  assert.equal(changeKind(maison, { origin: 'https://maison.example.org' }), 'keep');
+  assert.equal(changeKind(standard, maison), 'change');
+  assert.equal(changeKind(maison, standard), 'change');
+  assert.equal(changeKind(maison, { origin: 'https://maison.example.org:8443' }), 'change');
+  assert.equal(changeKind(maison, { origin: 'https://autre.example.org' }), 'change');
+});
+
+test('the current site is named as the screen names the standard one, or by its host', () => {
+  assert.equal(currentLabel({ standard: true }, 'fr.watallo.mhome.staging', 'MHome'), 'staging');
+  assert.equal(currentLabel({ standard: true }, 'fr.watallo.mhome', 'MHome'), 'MHome');
+  assert.equal(currentLabel({ origin: 'https://maison.example.org:8443' }, 'fr.watallo.mhome', 'MHome'), 'maison.example.org:8443');
+  for (const current of [undefined, null, {}, { origin: 'pas une adresse' }, { origin: 42 }]) {
+    assert.equal(currentLabel(current, 'fr.watallo.mhome', 'MHome'), null, JSON.stringify(current));
+  }
+});
+
+// A Local Notifications plugin that records its calls, and fails those named
+// in `failing`.
+function notifications(failing = []) {
+  const calls = [];
+  const method = (name) => async () => {
+    calls.push(name);
+    if (failing.includes(name)) throw new Error(name);
+  };
+  return {
+    calls,
+    plugin: { cancelAll: method('cancelAll'), removeAllDeliveredNotifications: method('removeAllDeliveredNotifications') },
+  };
+}
+
+test("leaving a site cancels its scheduled reminders and clears those shown", async () => {
+  const { calls, plugin } = notifications();
+  assert.deepEqual(await forgetReminders(plugin), {});
+  assert.deepEqual(calls, ['cancelAll', 'removeAllDeliveredNotifications']);
+});
+
+test('reminders that could not be removed stop the change, and say so', async () => {
+  for (const failing of [['cancelAll'], ['removeAllDeliveredNotifications']]) {
+    const { calls, plugin } = notifications(failing);
+    const { error } = await forgetReminders(plugin);
+    assert.match(error, /rappels/, failing[0]);
+    assert.match(error, /Rien n'a été enregistré/, failing[0]);
+    // The scheduled ones first: they are the ones that would still fire.
+    assert.equal(calls[0], 'cancelAll');
+  }
+  // A plugin that lacks a method is no plugin to trust either.
+  assert.match((await forgetReminders({ cancelAll: async () => {} })).error, /rappels/);
+});
+
+test('without the Local Notifications plugin, no reminder was ever scheduled', async () => {
+  assert.deepEqual(await forgetReminders(undefined), {});
+  assert.deepEqual(await forgetReminders(null), {});
 });
