@@ -196,6 +196,33 @@ test('signIn: a failure names its step and what the plugin or the API said', asy
   assert.deepEqual(plain(await G.signIn(redirect.env)), { state: 'failed', step: 'redirect', detail: 'redirect' });
 });
 
+// A stand-in for env.after: fires the timeout at once, so a call that never
+// answers ends the sign-in.
+const hang = () => new Promise(() => {});
+const immediately = (ms, fn) => setImmediate(fn);
+
+test('signIn: a call that never answers ends in a failure naming its step', async () => {
+  for (const [options, step] of [
+    [{ nonce: hang }, 'nonce'],
+    [{ initialize: hang }, 'picker'],
+    [{ login: hang }, 'picker'],
+    [{ idToken: hang }, 'id-token'],
+  ]) {
+    const { env } = harness(options);
+    env.after = immediately;
+    assert.deepEqual(plain(await G.signIn(env)), { state: 'failed', step, detail: 'timeout' }, step);
+  }
+});
+
+test('signIn: a logout that never answers does not stop the sign-in', async () => {
+  const { env } = harness({ logout: hang });
+  env.after = (ms, fn) => {
+    // Only the logout's own short timeout fires; the others never do.
+    if (ms <= 5000) setImmediate(fn);
+  };
+  assert.deepEqual(plain(await G.signIn(env)), { state: 'redirect', to: '/' });
+});
+
 test('signIn: every outcome is handed to env.log, never the token', async () => {
   const logged = [];
   const { env } = harness();
@@ -293,6 +320,8 @@ function page({ plugin = false, button = true, ...answers } = {}) {
   const win = {
     document: { getElementById: (id) => elements[id] ?? null },
     fetch: env.fetch,
+    // The limits never fire here: `signIn`'s tests cover them.
+    setTimeout: () => 0,
     location: { assign: (to) => assigned.push(to) },
   };
   if (plugin) win.Capacitor = { Plugins: { SocialLogin: env.plugin } };

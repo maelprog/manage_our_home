@@ -77,6 +77,21 @@ var MHomeGoogleSignIn = (function () {
     return error;
   }
 
+  // How long each call may take before the sign-in gives up, in ms. The
+  // picker waits for the member, so its limit is long; the logout only
+  // tidies the phone, so its limit is short.
+  var LIMITS = { api: 20000, plugin: 15000, picker: 120000, logout: 3000 };
+
+  // `promise`, or a rejection (`stop("failed", "timeout")`) once `ms` have
+  // passed. Without `env.after` there is no limit (the tests' default).
+  function within(env, ms, promise) {
+    if (typeof env.after !== "function") return promise;
+    return new Promise(function (resolve, reject) {
+      env.after(ms, function () { reject(stop("failed", "timeout")); });
+      Promise.resolve(promise).then(resolve, reject);
+    });
+  }
+
   // A short, token-free account of what a thrown value was: the plugin's
   // code, else the error's name.
   function describe(error) {
@@ -97,7 +112,7 @@ var MHomeGoogleSignIn = (function () {
     // Where a failure stopped: `nonce`, `picker`, `id-token`, `redirect`.
     var step = "nonce";
     return Promise.resolve()
-      .then(function () { return post(env, "/auth/google/nonce"); })
+      .then(function () { return within(env, LIMITS.api, post(env, "/auth/google/nonce")); })
       .then(function (res) {
         if (res.status === 429) throw stop("throttled");
         if (!res.ok) throw stop("failed", "HTTP " + res.status);
@@ -108,14 +123,15 @@ var MHomeGoogleSignIn = (function () {
         step = "picker";
         // Online: the ID token only. No scope beyond the sign-in's, so
         // nothing to authorise after the picker either.
-        return Promise.resolve(plugin.initialize({
+        return within(env, LIMITS.plugin, Promise.resolve(plugin.initialize({
           google: {
             webClientId: body.client_id,
             mode: "online",
             skipAuthOnlyAuthorizationAfterSignIn: true
           }
-        })).then(function () {
-          return plugin.login({ provider: "google", options: { nonce: body.nonce } });
+        }))).then(function () {
+          return within(env, LIMITS.picker,
+            Promise.resolve(plugin.login({ provider: "google", options: { nonce: body.nonce } })));
         });
       })
       .then(function (answer) {
@@ -125,9 +141,13 @@ var MHomeGoogleSignIn = (function () {
         // The plugin keeps the token on the phone; the session is what
         // the app needs, the token goes to apps/api only.
         return Promise.resolve()
-          .then(function () { return plugin.logout({ provider: "google" }); })
+          .then(function () {
+            return within(env, LIMITS.logout, Promise.resolve(plugin.logout({ provider: "google" })));
+          })
           .then(null, function () { return undefined; })
-          .then(function () { return post(env, "/auth/google/id-token", { id_token: token }); });
+          .then(function () {
+            return within(env, LIMITS.api, post(env, "/auth/google/id-token", { id_token: token }));
+          });
       })
       .then(function (res) {
         if (res.status === 429) throw stop("throttled");
@@ -200,6 +220,7 @@ var MHomeGoogleSignIn = (function () {
         plugin: plugin,
         fetch: function (url, init) { return win.fetch(url, init); },
         api: button.getAttribute("data-api") || "",
+        after: function (ms, fn) { win.setTimeout(fn, ms); },
         log: function (outcome) {
           if (win.console && win.console.debug) win.console.debug("MHomeGoogleSignIn", JSON.stringify(outcome));
         }
