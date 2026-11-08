@@ -68,11 +68,21 @@ var MHomeGoogleSignIn = (function () {
     return typeof value === "string" && value !== "";
   }
 
-  // A failure that says what the page shows.
-  function stop(state) {
+  // A failure that says what the page shows. `detail`: what the API or the
+  // plugin said, short (never the token).
+  function stop(state, detail) {
     var error = new Error(state);
     error.outcome = { state: state };
+    if (detail) error.detail = detail;
     return error;
+  }
+
+  // A short, token-free account of what a thrown value was: the plugin's
+  // code, else the error's name.
+  function describe(error) {
+    if (error && typeof error.code === "string" && error.code) return error.code.slice(0, 40);
+    if (error && typeof error.name === "string" && error.name) return error.name.slice(0, 40);
+    return "error";
   }
 
   // One sign-in. `env`: `plugin` (Social Login), `fetch`, `api` (the
@@ -84,15 +94,18 @@ var MHomeGoogleSignIn = (function () {
   // - `failed`: anything else.
   function signIn(env) {
     var plugin = env.plugin;
+    // Where a failure stopped: `nonce`, `picker`, `id-token`, `redirect`.
+    var step = "nonce";
     return Promise.resolve()
       .then(function () { return post(env, "/auth/google/nonce"); })
       .then(function (res) {
         if (res.status === 429) throw stop("throttled");
-        if (!res.ok) throw stop("failed");
+        if (!res.ok) throw stop("failed", "HTTP " + res.status);
         return json(res);
       })
       .then(function (body) {
-        if (!body || !nonEmpty(body.nonce) || !nonEmpty(body.client_id)) throw stop("failed");
+        if (!body || !nonEmpty(body.nonce) || !nonEmpty(body.client_id)) throw stop("failed", "body");
+        step = "picker";
         // Online: the ID token only. No scope beyond the sign-in's, so
         // nothing to authorise after the picker either.
         return Promise.resolve(plugin.initialize({
@@ -107,7 +120,8 @@ var MHomeGoogleSignIn = (function () {
       })
       .then(function (answer) {
         var token = answer && answer.result && answer.result.idToken;
-        if (!nonEmpty(token)) throw stop("failed");
+        if (!nonEmpty(token)) throw stop("failed", "no token");
+        step = "id-token";
         // The plugin keeps the token on the phone; the session is what
         // the app needs, the token goes to apps/api only.
         return Promise.resolve()
@@ -117,18 +131,34 @@ var MHomeGoogleSignIn = (function () {
       })
       .then(function (res) {
         if (res.status === 429) throw stop("throttled");
-        if (!res.ok) throw stop("failed");
+        if (!res.ok) throw stop("failed", "HTTP " + res.status);
+        step = "redirect";
         return json(res);
       })
       .then(function (body) {
         var to = redirectTarget(body);
-        if (!to) throw stop("failed");
+        if (!to) throw stop("failed", "redirect");
         return { state: "redirect", to: to };
       })
       .then(null, function (error) {
-        if (error && error.outcome) return error.outcome;
+        if (error && error.outcome) {
+          var known = error.outcome;
+          if (known.state === "failed") {
+            known = { state: "failed", step: step };
+            if (error.detail) known.detail = error.detail;
+          }
+          return known;
+        }
         if (isCancelled(error)) return { state: "cancelled" };
-        return { state: "failed" };
+        return { state: "failed", step: step, detail: describe(error) };
+      })
+      .then(function (outcome) {
+        // Kept in the console (logcat on the phone): the only trace of a
+        // sign-in that goes wrong inside the WebView.
+        if (typeof env.log === "function") {
+          try { env.log(outcome); } catch (ignored) { /* a logger never fails a sign-in */ }
+        }
+        return outcome;
       });
   }
 
@@ -138,7 +168,10 @@ var MHomeGoogleSignIn = (function () {
       case "throttled":
         return "Trop de tentatives de connexion. Merci de réessayer dans quelques minutes.";
       case "failed":
-        return "La connexion avec Google n'a pas abouti. Merci de réessayer.";
+        return "La connexion avec Google n'a pas abouti. Merci de réessayer." +
+          (outcome.step
+            ? " (étape : " + outcome.step + (outcome.detail ? ", " + outcome.detail : "") + ")"
+            : "");
       default:
         return null;
     }
@@ -166,7 +199,10 @@ var MHomeGoogleSignIn = (function () {
       signIn({
         plugin: plugin,
         fetch: function (url, init) { return win.fetch(url, init); },
-        api: button.getAttribute("data-api") || ""
+        api: button.getAttribute("data-api") || "",
+        log: function (outcome) {
+          if (win.console && win.console.debug) win.console.debug("MHomeGoogleSignIn", JSON.stringify(outcome));
+        }
       }).then(function (outcome) {
         if (outcome.state === "redirect") {
           win.location.assign(outcome.to);
