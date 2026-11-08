@@ -62,14 +62,33 @@ function activeFamily(page: Page) {
   return page.locator('header a[href="/account"] .muted');
 }
 
-/** Ticks exactly `families` in the selector and submits it. */
+function selector(page: Page) {
+  return page.getByRole("form", { name: "Familles affichées" });
+}
+
+function box(page: Page, name: string) {
+  return selector(page).getByRole("checkbox", { name, exact: true });
+}
+
+/** Clicks a box of the selector, which sends the form at once (#750). */
+async function toggle(page: Page, name: string): Promise<void> {
+  const before = page.url();
+  await box(page, name).click();
+  await page.waitForURL((url) => url.href !== before);
+}
+
+/**
+ * Ticks exactly `families` in the selector, one box at a time, each one
+ * reloading the agenda (#750): the wanted ones first, so that the last
+ * family ticked is never the one unticked.
+ */
 async function show(page: Page, families: string[]): Promise<void> {
-  const selector = page.getByRole("form", { name: "Familles affichées" });
   for (const name of [F1, F2]) {
-    await selector.getByRole("checkbox", { name, exact: true }).setChecked(families.includes(name));
+    if (families.includes(name) && !(await box(page, name).isChecked())) await toggle(page, name);
   }
-  await selector.getByRole("checkbox", { name: "Toutes", exact: true }).setChecked(false);
-  await selector.getByRole("button", { name: "Afficher" }).click();
+  for (const name of [F1, F2]) {
+    if (!families.includes(name) && (await box(page, name).isChecked())) await toggle(page, name);
+  }
   await expect(page).toHaveURL(/familles=/);
 }
 
@@ -115,9 +134,8 @@ test.describe("Agenda — several families (#622)", () => {
     // The next month keeps the selection, in the URL.
     await page.getByRole("link", { name: "Mois suivant" }).click();
     await expect(page).toHaveURL(/familles=/);
-    const selector = page.getByRole("form", { name: "Familles affichées" });
-    await expect(selector.getByRole("checkbox", { name: F1, exact: true })).toBeChecked();
-    await expect(selector.getByRole("checkbox", { name: F2, exact: true })).toBeChecked();
+    await expect(box(page, F1)).toBeChecked();
+    await expect(box(page, F2)).toBeChecked();
 
     // And /agenda with no parameter at all, through the cookie.
     await page.goto("/agenda");
@@ -176,6 +194,78 @@ test.describe("Agenda — several families (#622)", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Goûter Deux" })).toBeVisible();
     await expect(page).toHaveURL(/famille=/);
     await expect(page.getByText(`Famille : ${F2}`)).toBeVisible();
+    await expect(activeFamily(page)).toHaveText(F1);
+  });
+});
+
+// #750 — on a phone, the selector applies each box at once: no « Afficher »
+// to press, « Toutes » ticking every family or leaving the active one, and
+// the last family kept ticked.
+const F3 = "Foyer Trois";
+
+test.describe("Agenda — the selector applies each box (#750)", () => {
+  test("Toutes ticks every family, unticked leaves the active one; the last one stays", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agfamauto", "Agenda Familles Auto");
+    // F3, F2, then F1: F1 is the active family.
+    await createGroup(page, F3);
+    await page.goto("/agenda/new");
+    await submitSheet(page, "Judo Trois", 14);
+    await createGroup(page, F2);
+    await page.goto("/agenda/new");
+    await submitSheet(page, "Piscine Deux", 15);
+    await createGroup(page, F1);
+    await page.goto("/agenda/new");
+    await submitSheet(page, "Dentiste Un", 16);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/agenda");
+    await expect(box(page, F1)).toBeChecked();
+    await expect(box(page, "Toutes")).not.toBeChecked();
+    await expect(selector(page).getByRole("button", { name: "Afficher" })).toBeHidden();
+
+    // « Toutes »: every family ticked and shown, without « Afficher ».
+    await toggle(page, "Toutes");
+    await expect(page).toHaveURL(/familles=toutes/);
+    for (const name of [F1, F2, F3, "Toutes"]) await expect(box(page, name)).toBeChecked();
+    await expect(page.getByRole("link", { name: `Judo Trois (${F3})` })).toBeVisible();
+    await expect(page.getByRole("link", { name: `Piscine Deux (${F2})` })).toBeVisible();
+    await expect(page.getByRole("link", { name: `Dentiste Un (${F1})` })).toBeVisible();
+
+    // Unticked: the active family alone.
+    await toggle(page, "Toutes");
+    await expect(page).not.toHaveURL(/familles=toutes/);
+    await expect(box(page, F1)).toBeChecked();
+    for (const name of [F2, F3, "Toutes"]) await expect(box(page, name)).not.toBeChecked();
+    await expect(chip(page, "Dentiste Un")).toBeVisible();
+    await expect(chip(page, "Piscine Deux")).toHaveCount(0);
+    await expect(chip(page, "Judo Trois")).toHaveCount(0);
+
+    // One family, then the two others one by one: « Toutes » follows.
+    await toggle(page, F2);
+    await expect(box(page, "Toutes")).not.toBeChecked();
+    await expect(page.getByRole("link", { name: `Piscine Deux (${F2})` })).toBeVisible();
+    await toggle(page, F3);
+    await expect(box(page, "Toutes")).toBeChecked();
+    await toggle(page, F2);
+    await toggle(page, F1);
+    await expect(box(page, F3)).toBeChecked();
+    for (const name of [F1, F2, "Toutes"]) await expect(box(page, name)).not.toBeChecked();
+    await expect(chip(page, "Judo Trois")).toBeVisible();
+
+    // The last family: a modal, the box still ticked, nothing sent.
+    const before = page.url();
+    await box(page, F3).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toHaveText(/Au moins une famille doit rester affichée\./);
+    await expect(box(page, F3)).toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(box(page, F3)).toBeFocused();
+    expect(page.url()).toBe(before);
+    await expect(chip(page, "Judo Trois")).toBeVisible();
+
+    // The active family has not moved.
+    await page.setViewportSize({ width: 1440, height: 900 });
     await expect(activeFamily(page)).toHaveText(F1);
   });
 });

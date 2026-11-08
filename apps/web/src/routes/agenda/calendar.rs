@@ -81,7 +81,8 @@
 //! (`family_selector`): a box per family, and « Toutes ». It is a `GET`
 //! form, `?familles=<id>&familles=<id>` or `?familles=toutes`; the cookie
 //! `agenda_familles` remembers it, apart from the active family, which it
-//! never changes (`family::resolve_selection` and its neighbours). Without
+//! never changes (`family::resolve_selection` and its neighbours); with
+//! JavaScript each box sends it, without « Afficher » (#750). Without
 //! either, the agenda shows the active family alone, as before. apps/api
 //! answers per family, so each family shown is read on its own, all at
 //! once, and their occurrences merged (`merge_occurrences`); one that
@@ -276,15 +277,21 @@ fn family_of<'t, 'a>(
 }
 
 /// The selector of the families the agenda shows (#622), when the visitor
-/// has more than one: a `GET` form without a script, a pill per family in
-/// its colour (`.pick` and the `.swatch` its `[data-accent]` paints) and
-/// « Toutes ». It keeps the view and the day on screen. The empty
-/// `familles` field makes a form with every box unticked an answer — an
-/// empty selection, the active family again — rather than no answer.
+/// has more than one: a `GET` form, a pill per family in its colour
+/// (`.pick` and the `.swatch` its `[data-accent]` paints) and « Toutes »,
+/// ticked whenever every family is shown, asked for one by one or not
+/// (#750). It keeps the view and the day on screen. The empty `familles`
+/// field makes a form with every box unticked an answer — an empty
+/// selection, the active family again — rather than no answer.
+///
+/// `data-families` names the active family for `enhance.js` (#750), which
+/// sends the form on each box, hides « Afficher », keeps at least one
+/// family ticked, and ticks every family or the active one alone from
+/// « Toutes ». Without JavaScript the boxes wait for « Afficher ».
 fn family_selector(
     groups: &[GroupSummary],
     shown: &[&GroupSummary],
-    all: bool,
+    active: Uuid,
     is_week: bool,
     focus: NaiveDate,
 ) -> String {
@@ -305,13 +312,14 @@ fn family_selector(
         })
         .collect();
     format!(
-        r#"<form class="actions" method="get" action="/agenda" aria-label="Familles affichées">
+        r#"<form class="actions" method="get" action="/agenda" aria-label="Familles affichées" data-families="{active}">
 <input type="hidden" name="view" value="{view}"/><input type="hidden" name="date" value="{focus}"/><input type="hidden" name="{FAMILIES_PARAM}" value=""/>
 {boxes}<label class="field inline pick"><input type="checkbox" name="{FAMILIES_PARAM}" value="{ALL_FAMILIES}"{all}/>Toutes</label>
 <button type="submit" class="secondary">Afficher</button>
 </form>"#,
         view = if is_week { "week" } else { "month" },
-        all = checked(all),
+        // `shown` is a part of `groups`: as long, it is all of them.
+        all = checked(shown.len() == groups.len()),
     )
 }
 
@@ -562,13 +570,7 @@ async fn body(
         &families,
     );
     let nav_html = render_nav(is_week, focus, &title, &families_query(&carried))
-        + &family_selector(
-            groups,
-            &shown,
-            carried == ShownFamilies::All,
-            is_week,
-            focus,
-        );
+        + &family_selector(groups, &shown, active.group_id, is_week, focus);
     // One family's events that could not be read: the generic notice of
     // #455. Several families shown: the one that is missing, by name.
     let notice_html = if shown.len() < 2 {
@@ -1616,7 +1618,7 @@ mod tests {
     fn a_visitor_of_one_family_gets_no_selector() {
         let groups = [summary(1, "Seule", "sarcelle")];
         assert_eq!(
-            family_selector(&groups, &[&groups[0]], false, false, day(15)),
+            family_selector(&groups, &[&groups[0]], groups[0].group_id, false, day(15)),
             ""
         );
     }
@@ -1624,11 +1626,14 @@ mod tests {
     #[test]
     fn the_selector_is_a_get_form_of_a_box_per_family_and_toutes() {
         let groups = two_families();
-        let html = family_selector(&groups, &[&groups[1]], false, true, day(15));
+        let html = family_selector(&groups, &[&groups[1]], groups[0].group_id, true, day(15));
+        // The hook of `enhance.js` names the active family (#750): unticking
+        // « Toutes » keeps it, and only it.
         assert!(
-            html.starts_with(
-                r#"<form class="actions" method="get" action="/agenda" aria-label="Familles affichées">"#
-            ),
+            html.starts_with(&format!(
+                r#"<form class="actions" method="get" action="/agenda" aria-label="Familles affichées" data-families="{}">"#,
+                Uuid::from_u128(1)
+            )),
             "{html}"
         );
         // It keeps the view and the day, and answers even unticked.
@@ -1665,15 +1670,42 @@ mod tests {
             ),
             "{html}"
         );
+        // Still rendered: without JavaScript it is how the form is sent;
+        // with it, `enhance.js` hides it and sends the form on each box.
         assert!(html.contains(r#"<button type="submit" class="secondary">Afficher</button>"#));
     }
 
     #[test]
-    fn toutes_is_ticked_when_it_was_asked_for() {
+    fn toutes_is_ticked_when_every_family_is_shown() {
+        // Whether « Toutes » or each family was asked for (#750).
         let groups = two_families();
-        let html = family_selector(&groups, &[&groups[0], &groups[1]], true, false, day(15));
+        let html = family_selector(
+            &groups,
+            &[&groups[0], &groups[1]],
+            groups[0].group_id,
+            false,
+            day(15),
+        );
         assert!(html.contains(r#"value="toutes" checked/>Toutes"#), "{html}");
         assert_eq!(html.matches(" checked").count(), 3, "{html}");
+    }
+
+    #[test]
+    fn toutes_is_unticked_while_a_family_is_left_out() {
+        let groups = [
+            summary(1, "Les Dupont", "sarcelle"),
+            summary(2, "Les Martin", "ocean"),
+            summary(3, "Les Petit", "prune"),
+        ];
+        let html = family_selector(
+            &groups,
+            &[&groups[0], &groups[2]],
+            groups[0].group_id,
+            false,
+            day(15),
+        );
+        assert!(html.contains(r#"value="toutes"/>Toutes"#), "{html}");
+        assert_eq!(html.matches(" checked").count(), 2, "{html}");
     }
 
     #[test]
