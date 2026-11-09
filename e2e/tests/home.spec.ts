@@ -533,9 +533,9 @@ test.describe("Accueil — la maquette sur PC", () => {
   });
 });
 
-// Issue #584 — a card's title leads where the link in its head does. The
-// title is still the `<h2>` (the cards above are found by it); the link is
-// inside it. On a PC, so that the week card is drawn too. The grocery card
+// Issue #584 — a card's title leads to the card's page, and since #749 it
+// is the only link in the card's head. The title is still the `<h2>` (the
+// cards above are found by it); the link is inside it. On a PC, so that the week card is drawn too. The grocery card
 // has been a tile since #524: the whole card is the link, so it is clicked
 // as such.
 test.describe("Accueil — le titre de chaque carte mène à sa page", () => {
@@ -556,8 +556,8 @@ test.describe("Accueil — le titre de chaque carte mène à sa page", () => {
       await page.goto("/");
       const head = page.locator("section.card").filter({ has: page.locator("h2", { hasText: name }) });
       await expect(head).toHaveCount(1);
-      // The same destination as the card's own `.more`.
-      await expect(head.locator("a.more")).toHaveAttribute("href", href);
+      // The title is the card's only way out: no "Voir…" beside it (#749).
+      await expect(head.locator("a.more")).toHaveCount(0);
       await head.locator("h2").getByRole("link").click();
       await expect(page).toHaveURL(href);
     }
@@ -565,5 +565,27 @@ test.describe("Accueil — le titre de chaque carte mène à sa page", () => {
     await page.goto("/");
     await page.locator('a.tile[href="/grocery-list"]').click();
     await expect(page).toHaveURL("/grocery-list");
+  });
+});
+
+// Issue #749 — with the "Voir…" link gone, a card's title is its only way
+// out: on a phone it is a 44 px target (DESIGN.md → Espacement), though the
+// heading's own line is shorter. The week card is not drawn on a phone.
+test.describe("Accueil — le titre d'une carte est une cible tactile", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("le lien du titre fait au moins 44 px de haut", async ({ page }) => {
+    await registerAndLogin(page, "e2e-hometarget", "Target Owner");
+    await createGroup(page, FAMILY);
+    await page.goto("/");
+
+    const links = page.locator("section.card h2 > a");
+    await expect(links).toHaveCount(5);
+    const visible = links.filter({ visible: true });
+    await expect(visible).toHaveCount(4);
+    for (const link of await visible.all()) {
+      const box = await link.boundingBox();
+      expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+    }
   });
 });

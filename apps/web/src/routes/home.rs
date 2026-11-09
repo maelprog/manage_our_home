@@ -333,16 +333,16 @@ fn agenda_row(occ: &OccurrenceResponse, today: NaiveDate, members: &[GroupMember
     )
 }
 
-/// A card's head: its title, and the link that leads to the whole of it —
-/// `.more`, 48px (--s12), over the 44px of any target (DESIGN.md → Espacement).
-/// The title leads to the same page (#584): a link inside the `<h2>`, so the
-/// heading the page is navigated by stays a heading, whatever the card's
-/// body says — an empty card, or an agenda that could not be read.
-fn card_head(title: &str, href: &str, label: &str) -> String {
+/// A card's head: its title, the link that leads to the whole of it (#584).
+/// The link sits inside the `<h2>`, so the heading the page is navigated by
+/// stays a heading, whatever the card's body says — an empty card, or an
+/// agenda that could not be read. The "Voir…" `.more` that repeated it beside
+/// the title is gone (#749); the sheet makes the title's link 48px (--s12)
+/// tall, over the 44px of any target (DESIGN.md → Espacement).
+fn card_head(title: &str, href: &str) -> String {
     format!(
-        r#"<div class="split"><h2><a href="{href}">{title}</a></h2><a class="more" href="{href}">{label}</a></div>"#,
+        r#"<div class="split"><h2><a href="{href}">{title}</a></h2></div>"#,
         title = html_escape(title),
-        label = html_escape(label),
     )
 }
 
@@ -398,7 +398,7 @@ fn agenda_block(
     };
     format!(
         "<section class=\"card\">\n{head}\n{body}\n</section>",
-        head = card_head("Aujourd'hui", "/agenda", "Agenda"),
+        head = card_head("Aujourd'hui", "/agenda"),
     )
 }
 
@@ -455,11 +455,7 @@ fn week_block(occurrences: Option<&[OccurrenceResponse]>, today: NaiveDate) -> S
     };
     format!(
         "<section class=\"card pc\">\n{head}\n{body}\n</section>",
-        head = card_head(
-            "Les sept prochains jours",
-            "/agenda?view=week",
-            "Ouvrir l'agenda"
-        ),
+        head = card_head("Les sept prochains jours", "/agenda?view=week"),
     )
 }
 
@@ -607,7 +603,7 @@ fn stocks_block(items: &[&StockItemResponse]) -> String {
     };
     format!(
         "<section class=\"card\">\n{head}\n{body}\n</section>",
-        head = card_head("Stock bas", "/stocks?low_stock=1", "Voir le stock"),
+        head = card_head("Stock bas", "/stocks?low_stock=1"),
     )
 }
 
@@ -634,7 +630,7 @@ fn budget_block(total: Option<f64>, today: NaiveDate) -> String {
     };
     format!(
         "<section class=\"card\">\n{head}\n{body}\n</section>",
-        head = card_head(&budget_title(today.month()), "/budget", "Voir le budget"),
+        head = card_head(&budget_title(today.month()), "/budget"),
     )
 }
 
@@ -693,7 +689,7 @@ fn messages_block(
     };
     format!(
         "<section class=\"card\">\n{head}\n{body}\n</section>",
-        head = card_head("Messages non lus", "/messagerie", "Voir la messagerie"),
+        head = card_head("Messages non lus", "/messagerie"),
     )
 }
 
@@ -2073,34 +2069,31 @@ mod pure_logic_tests {
         assert!(html.contains(r#"href="/messagerie""#), "{html}");
     }
 
-    /// Each card's way out is a link in its head, 44 px tall (`.more`), and
-    /// its title leads to the same page (#584).
+    /// Each card's way out is its title, a link inside the `<h2>` (#584),
+    /// and nothing beside it repeats it (#749).
     #[test]
-    fn a_card_head_holds_its_title_and_its_link() {
+    fn a_card_head_holds_its_title_as_its_link() {
         assert_eq!(
-            card_head("Stock bas", "/stocks?low_stock=1", "Voir le stock"),
-            r#"<div class="split"><h2><a href="/stocks?low_stock=1">Stock bas</a></h2><a class="more" href="/stocks?low_stock=1">Voir le stock</a></div>"#
+            card_head("Stock bas", "/stocks?low_stock=1"),
+            r#"<div class="split"><h2><a href="/stocks?low_stock=1">Stock bas</a></h2></div>"#
         );
     }
 
-    // -- the titles lead where the head's link leads (#584) ----------------
+    // -- the title is the card's only way out (#584, #749) ----------------
 
-    /// The `href` of the link the card's `<h2>` holds, and that of its
-    /// `.more`, in that order. `None` for a title that is not a link.
-    fn head_hrefs(html: &str) -> (Option<&str>, Option<&str>) {
-        let href_after = |marker: &str| {
-            html.split_once(marker)
-                .and_then(|(_, rest)| rest.split_once('"'))
-                .map(|(href, _)| href)
-        };
-        (
-            href_after(r#"<h2><a href=""#),
-            href_after(r#"<a class="more" href=""#),
-        )
+    /// The `href` of the link the card's `<h2>` holds. `None` for a title
+    /// that is not a link.
+    fn title_href(html: &str) -> Option<&str> {
+        html.split_once(r#"<h2><a href=""#)
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(href, _)| href)
     }
 
+    /// The card's title leads to `dest`, and nothing else in the card
+    /// repeats it as a `.more` "Voir…" link (#749).
     fn assert_title_leads_to(html: &str, dest: &str) {
-        assert_eq!(head_hrefs(html), (Some(dest), Some(dest)), "{html}");
+        assert_eq!(title_href(html), Some(dest), "{html}");
+        assert!(!html.contains(r#"class="more""#), "{html}");
     }
 
     #[test]
@@ -2142,6 +2135,6 @@ mod pure_logic_tests {
 
     #[test]
     fn a_title_s_text_is_escaped_inside_its_link() {
-        assert!(card_head("A & B", "/x", "Voir").contains(r#"<h2><a href="/x">A &amp; B</a></h2>"#));
+        assert!(card_head("A & B", "/x").contains(r#"<h2><a href="/x">A &amp; B</a></h2>"#));
     }
 }
