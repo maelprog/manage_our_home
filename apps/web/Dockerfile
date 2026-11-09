@@ -5,7 +5,7 @@
 # said which base a published image was built on. The tag stays readable in
 # the diff; Renovate (renovate.json) opens a PR when the digest behind it
 # is republished.
-FROM rust:1-slim-bookworm@sha256:16113eb5d5c1e25d9359f40115225ce8719997fb0d9a3dab83e921da0308992f AS builder
+FROM rust:1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS builder
 WORKDIR /workspace
 COPY . .
 RUN cargo build --release -p manage_our_home_web
