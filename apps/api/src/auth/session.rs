@@ -210,27 +210,6 @@ pub async fn list_active_sessions(
     ))
 }
 
-/// Revokes one session of `user_id` (#225). `false` when the caller has no
-/// such unrevoked session — someone else's included, so the answer does
-/// not tell whether that id exists.
-pub async fn revoke_own_session(
-    pool: &PgPool,
-    user_id: Uuid,
-    session_id: Uuid,
-) -> Result<bool, sqlx::Error> {
-    let done = sqlx::query!(
-        r#"
-        UPDATE sessions SET revoked_at = now()
-        WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
-        "#,
-        session_id,
-        user_id
-    )
-    .execute(pool)
-    .await?;
-    Ok(done.rows_affected() == 1)
-}
-
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: Uuid,

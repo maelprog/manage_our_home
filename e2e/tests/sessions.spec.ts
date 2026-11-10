@@ -2,9 +2,9 @@ import { BrowserContext, expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
 
 // Issue #225 — the member's live sessions (/account/sessions): see them,
-// end one, end them all. Dates only, no device information (arbitrated
-// 2026-10-02), and the global button ends this session too: the member is
-// sent back to the login page.
+// end them all. Dates only, no device information (arbitrated 2026-10-02),
+// and the global button ends this session too: the member is sent back to
+// the login page. No session ends on its own any more (#753).
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -61,7 +61,7 @@ async function registerAndLogin(page: Page, prefix: string): Promise<string> {
 }
 
 test.describe("Account — active sessions (#225)", () => {
-  test("lists this session and another, ends the other, then ends them all", async ({
+  test("lists this session and another, then ends them all", async ({
     page,
     context,
     browser,
@@ -81,23 +81,11 @@ test.describe("Account — active sessions (#225)", () => {
     await expect(rows.first()).toContainText("Cette session");
     await expect(page.getByText("ni l'adresse IP ni le navigateur")).toBeVisible();
 
-    // The other session's own button, named by its opening date.
-    const revoke = page.getByRole("button", { name: /^Déconnecter la session ouverte le / });
-    await expect(revoke).toHaveCount(1);
-    await revoke.click();
-    await expect(page).toHaveURL(/\/account\/sessions\?notice=session_revoked$/);
-    await expect(page.getByText("La session a été déconnectée.")).toBeVisible();
-    await expect(rows).toHaveCount(1);
+    // No row ends its session on its own (#753): only the global button.
+    await expect(rows.locator("form, button")).toHaveCount(0);
+    await expect(page.locator('form[action$="/revoke"]')).toHaveCount(0);
 
-    // The ended session is logged out on its next page load.
-    await other.goto("/account");
-    await expect(other).toHaveURL(/\/login$/);
-
-    // A third session, then the global button: every session ends, this
-    // one included.
-    await login(other, email);
-    await page.reload();
-    await expect(rows).toHaveCount(2);
+    // The global button: every session ends, this one included.
     expect(await sessionCookies(context)).toEqual([SESSION_COOKIE]);
     await page.getByRole("button", { name: "Déconnecter toutes les sessions" }).click();
     await expect(page).toHaveURL(/\/login$/);
@@ -111,28 +99,32 @@ test.describe("Account — active sessions (#225)", () => {
     await elsewhere.close();
   });
 
-  test("ending this very session clears its cookie in the browser (#368)", async ({
-    page,
-    context,
-  }) => {
+  test("a request naming one session ends nothing (#753)", async ({ page, context }) => {
     await registerAndLogin(page, "sessions-self");
     await page.goto("/account/sessions");
     const current = page.locator("li.list-row", { hasText: "Cette session" });
     await expect(current).toHaveCount(1);
     const id = await current.getAttribute("data-session");
     expect(id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(await sessionCookies(context)).toEqual([SESSION_COOKIE]);
 
-    // The page offers no button for this session, but a request can name
-    // it: the form the other rows carry, posted from this page.
-    await page.evaluate((sessionId) => {
-      const form = document.createElement("form");
-      form.method = "post";
-      form.action = `/account/sessions/${sessionId}/revoke`;
-      document.body.appendChild(form);
-      form.submit();
-    }, id);
-    await expect(page).toHaveURL(/\/login$/);
-    expect(await sessionCookies(context)).toEqual([]);
+    // The form the rows used to carry, posted from this page: the route
+    // is gone, and the session lives on.
+    // A same-origin fetch, so the cross-origin guard (#223) lets it reach
+    // the router.
+    const status = await page.evaluate(
+      async (sessionId) =>
+        (
+          await fetch(`/account/sessions/${sessionId}/revoke`, {
+            method: "POST",
+            redirect: "manual",
+          })
+        ).status,
+      id,
+    );
+    expect(status).toBe(404);
+    expect(await sessionCookies(context)).toEqual([SESSION_COOKIE]);
+    await page.goto("/account/sessions");
+    await expect(page).toHaveURL(/\/account\/sessions$/);
+    await expect(current).toHaveCount(1);
   });
 });

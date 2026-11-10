@@ -3010,50 +3010,26 @@ async fn sessions_lists_the_callers_live_sessions_only(db: PgPool) {
     assert_status(&res, StatusCode::UNAUTHORIZED);
 }
 
-/// `POST /auth/sessions/:id/revoke` ends that session and only that one.
-/// Another account's session is a 404 and stays alive, as is a session
-/// already revoked and an id that names nothing.
+/// No session ends on its own (#753): `POST /auth/sessions/:id/revoke` is
+/// gone, a 404 like any unknown route, whichever session it names — the
+/// caller's other one, the current one, another account's, or nothing —
+/// and every session it named stays alive. Ending sessions is
+/// `revoke-all`'s, or `logout`'s.
 #[sqlx::test]
-async fn revoking_one_session_ends_it_and_spares_the_rest(db: PgPool) {
+async fn a_single_session_cannot_be_revoked_on_its_own(db: PgPool) {
     let router = test_router(db.clone());
     let mine = register_verify_login(&router, &db, "sess-one@example.test", "one-password1").await;
     let forgotten = login_again(&router, "sess-one@example.test", "one-password1").await;
     let theirs =
         register_verify_login(&router, &db, "sess-theirs@example.test", "theirs-password1").await;
-    let forgotten_id = session_id_of(&db, &forgotten).await;
-    let theirs_id = session_id_of(&db, &theirs).await;
+    let ids = [
+        session_id_of(&db, &forgotten).await,
+        session_id_of(&db, &mine).await,
+        session_id_of(&db, &theirs).await,
+        Uuid::new_v4(),
+    ];
 
-    let res = call(
-        &router,
-        Method::POST,
-        &format!("/auth/sessions/{theirs_id}/revoke"),
-        Some(&mine),
-        None,
-    )
-    .await;
-    assert_status(&res, StatusCode::NOT_FOUND);
-    assert!(is_logged_in(&router, &theirs).await);
-
-    let res = call(
-        &router,
-        Method::POST,
-        &format!("/auth/sessions/{forgotten_id}/revoke"),
-        Some(&mine),
-        None,
-    )
-    .await;
-    assert_status(&res, StatusCode::NO_CONTENT);
-    assert_eq!(
-        set_cookie(&res),
-        None,
-        "another session's revocation keeps this cookie"
-    );
-    assert!(!is_logged_in(&router, &forgotten).await);
-    assert!(is_logged_in(&router, &mine).await);
-    assert!(is_logged_in(&router, &theirs).await);
-    assert_eq!(sessions_of(&router, &mine).await.len(), 1);
-
-    for id in [forgotten_id, Uuid::new_v4()] {
+    for id in ids {
         let res = call(
             &router,
             Method::POST,
@@ -3063,28 +3039,12 @@ async fn revoking_one_session_ends_it_and_spares_the_rest(db: PgPool) {
         )
         .await;
         assert_status(&res, StatusCode::NOT_FOUND);
+        assert_eq!(set_cookie(&res), None, "{id}: the cookie stays");
     }
-}
-
-/// Revoking the current session by its id logs the caller out, cookie
-/// cleared, as `POST /auth/logout` would.
-#[sqlx::test]
-async fn revoking_the_current_session_by_id_logs_out(db: PgPool) {
-    let router = test_router(db.clone());
-    let mine =
-        register_verify_login(&router, &db, "sess-self@example.test", "self-password1").await;
-    let id = session_id_of(&db, &mine).await;
-    let res = call(
-        &router,
-        Method::POST,
-        &format!("/auth/sessions/{id}/revoke"),
-        Some(&mine),
-        None,
-    )
-    .await;
-    assert_status(&res, StatusCode::NO_CONTENT);
-    assert_eq!(set_cookie(&res), Some(cookie_name_of(&mine)));
-    assert!(!is_logged_in(&router, &mine).await);
+    for cookie in [&mine, &forgotten, &theirs] {
+        assert!(is_logged_in(&router, cookie).await);
+    }
+    assert_eq!(sessions_of(&router, &mine).await.len(), 2);
 }
 
 /// `name=` — what [`set_cookie`] returns for the removal of `cookie`.

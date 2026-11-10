@@ -184,8 +184,8 @@ pub struct ReactivationRequestBody {
 /// One entry of `GET /auth/sessions` (#225): a live session of the caller.
 /// Only what the table already keeps — no IP, no user-agent (arbitrated
 /// 2026-10-02, data minimization) — and never the token: `id` is the
-/// internal `sessions.id`, which opens nothing since #222, and is what
-/// `POST /auth/sessions/:id/revoke` takes.
+/// internal `sessions.id`, which opens nothing since #222, and names the
+/// row for apps/web; no route takes it (#753).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ActiveSession {

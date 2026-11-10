@@ -38,8 +38,7 @@ use crate::AppState;
 
 use self::session::{
     clear_session_cookie, create_restricted_session, create_session, list_active_sessions,
-    revoke_all_sessions, revoke_own_session, revoke_session, set_session_cookie, user_scoped_tx,
-    AnySession, AuthUser,
+    revoke_all_sessions, revoke_session, set_session_cookie, user_scoped_tx, AnySession, AuthUser,
 };
 use self::timing::{LoginBranch, LoginTiming};
 use self::token::{new_token, token_hash};
@@ -644,43 +643,12 @@ pub async fn list_sessions(
     ))
 }
 
-/// `POST /auth/sessions/:id/revoke` (#225): ends one of the caller's
-/// sessions. 404 when the caller has no such unrevoked session, someone
-/// else's included. Ending the current one also clears its cookie, as
-/// `logout` does.
-#[utoipa::path(
-    post,
-    path = "/auth/sessions/{id}/revoke",
-    tag = "auth",
-    params(
-        ("id" = uuid::Uuid, Path, description = "Session id"),
-    ),
-    responses(
-        (status = 204, description = "Session revoked"),
-        (status = 404, description = "`not_found`: no such session of this account", body = manage_our_home_shared::dto::auth::ErrorResponse),
-        crate::api_docs::SessionErrors,
-    ),
-    security(("session_cookie" = [])),
-)]
-pub async fn revoke_one_session(
-    State(state): State<AppState>,
-    cookies: Cookies,
-    auth: AuthUser,
-    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
-) -> AppResult<impl IntoResponse> {
-    if !revoke_own_session(&state.db, auth.user_id, session_id).await? {
-        return Err(AppError::NotFound);
-    }
-    if session_id == auth.session_id {
-        clear_session_cookie(&cookies, state.secure_cookies);
-    }
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// `POST /auth/sessions/revoke-all` (#225): ends every session of the
 /// caller, the current one included (arbitrated 2026-10-02), and clears
 /// its cookie: the caller is logged out everywhere, here too. The one way
-/// out for a Google-only account, which has no password to change.
+/// out for a Google-only account, which has no password to change. No
+/// route ends a single session other than the caller's own, `logout`
+/// (#753).
 #[utoipa::path(
     post,
     path = "/auth/sessions/revoke-all",
