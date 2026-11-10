@@ -199,10 +199,6 @@ fn build_router(state: AppState) -> Router {
         // The member's live sessions (#225).
         .route("/account/sessions", get(routes::account::sessions::get))
         .route(
-            "/account/sessions/{id}/revoke",
-            post(routes::account::sessions::revoke),
-        )
-        .route(
             "/account/sessions/revoke-all",
             post(routes::account::sessions::revoke_all),
         )

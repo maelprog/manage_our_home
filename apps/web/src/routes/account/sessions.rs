@@ -1,7 +1,8 @@
 //! `/account/sessions` — the member's live sessions (#225): when each was
-//! opened and last used, which one is this one, a button to end any other,
-//! and one to end them all, this one included (arbitrated 2026-10-02): the
-//! member is then sent back to the login page.
+//! opened and last used, which one is this one, and one button that ends
+//! them all, this one included (arbitrated 2026-10-02): the member is then
+//! sent back to the login page. No session ends on its own (#753): no
+//! button per row.
 //!
 //! Dates only. The service keeps no IP and no user-agent for a session
 //! (data minimization, arbitrated 2026-10-02), so the page says so rather
@@ -10,11 +11,10 @@
 //! The one way out for a Google-only account, which has no password to
 //! change — changing it was the only other way to end the other sessions.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::auth::ActiveSession;
-use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
@@ -24,21 +24,11 @@ use super::{account_cookie, account_header, format_rgpd_datetime, service_unavai
 
 #[derive(serde::Deserialize)]
 pub struct PageQuery {
-    notice: Option<String>,
     error: Option<String>,
-}
-
-fn notice_html(notice: Option<&str>) -> String {
-    let text = match notice {
-        Some("session_revoked") => "La session a été déconnectée.",
-        _ => return String::new(),
-    };
-    format!(r#"<p class="notice success">{}</p>"#, html_escape(text))
 }
 
 fn error_html(error: Option<&str>) -> String {
     let text = match error {
-        Some("session_not_found") => "Cette session était déjà terminée.",
         Some("unavailable") => "Service momentanément indisponible, merci de réessayer.",
         _ => return String::new(),
     };
@@ -46,12 +36,12 @@ fn error_html(error: Option<&str>) -> String {
 }
 
 /// The body of the page, from `GET /auth/sessions`'s answer.
-fn page_body(sessions: &[ActiveSession], notice: &str, error: &str) -> String {
+fn page_body(sessions: &[ActiveSession], error: &str) -> String {
     let rows: String = sessions.iter().map(session_row).collect();
     format!(
         r#"<p><a href="/account">← Retour à mon compte</a></p>
 <h1>Sessions actives</h1>
-{notice}{error}
+{error}
 <p>Chaque connexion ouvre une session, sur un appareil ou un navigateur. Une session prend fin d'elle-même après 7 jours sans activité, et au plus tard 30 jours après la connexion.</p>
 <p class="muted">Le service ne conserve ni l'adresse IP ni le navigateur d'une session : seules ses dates permettent de la reconnaître.</p>
 <ul class="list">{rows}</ul>
@@ -65,21 +55,14 @@ fn page_body(sessions: &[ActiveSession], notice: &str, error: &str) -> String {
     )
 }
 
-/// One session: its dates, then either the "this session" badge or the
-/// form that ends it. The button's visible text is the same on every row,
-/// so its accessible name carries the opening date that tells them apart.
+/// One session: its dates, and the "this session" badge on the current one.
 fn session_row(session: &ActiveSession) -> String {
     let opened = html_escape(&format_rgpd_datetime(session.created_at));
     let last_seen = html_escape(&format_rgpd_datetime(session.last_seen_at));
     let end = if session.current {
-        r#"<span class="badge">Cette session</span>"#.to_string()
+        r#"<span class="badge">Cette session</span>"#
     } else {
-        format!(
-            r#"<form method="post" action="/account/sessions/{id}/revoke">
-<button type="submit" class="secondary" aria-label="Déconnecter la session ouverte le {opened}">Déconnecter</button>
-</form>"#,
-            id = session.id,
-        )
+        ""
     };
     format!(
         r#"<li class="list-row" data-session="{id}">
@@ -113,11 +96,7 @@ pub async fn get(
         return service_unavailable_page().into_response();
     };
     let header = account_header(&state, &headers, &me, "/account/sessions").await;
-    let body = page_body(
-        &sessions,
-        &notice_html(query.notice.as_deref()),
-        &error_html(query.error.as_deref()),
-    );
+    let body = page_body(&sessions, &error_html(query.error.as_deref()));
     Html(shell_with_header(
         Width::Read,
         "Sessions actives",
@@ -135,41 +114,6 @@ fn back_to_login(set_cookie: Option<String>) -> Response {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
     response
-}
-
-/// `POST /account/sessions/:id/revoke` — relays to
-/// `POST /auth/sessions/:id/revoke`. 204 → back to the list; 204 with the
-/// cookie cleared (the page offers no button for this session, but a
-/// request can name it) → the login page; 404 → the "already ended"
-/// banner; any other status → the generic banner; a transport error → the
-/// service-unavailable page.
-pub async fn revoke(
-    CurrentUser(_me): CurrentUser,
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<Uuid>,
-) -> Response {
-    let cookie = account_cookie(&headers);
-    let path = format!("/auth/sessions/{id}/revoke");
-    match api_request_auth(
-        &state,
-        reqwest::Method::POST,
-        &path,
-        cookie.as_deref(),
-        None,
-    )
-    .await
-    {
-        Ok(resp) if resp.status == reqwest::StatusCode::NO_CONTENT => match resp.set_cookie {
-            Some(cleared) => back_to_login(Some(cleared)),
-            None => Redirect::to("/account/sessions?notice=session_revoked").into_response(),
-        },
-        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            Redirect::to("/account/sessions?error=session_not_found").into_response()
-        }
-        Ok(_) => Redirect::to("/account/sessions?error=unavailable").into_response(),
-        Err(_) => service_unavailable_page().into_response(),
-    }
 }
 
 /// `POST /account/sessions/revoke-all` — relays to
@@ -203,6 +147,7 @@ pub async fn revoke_all(
 mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
+    use uuid::Uuid;
 
     fn at(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
@@ -230,47 +175,42 @@ mod tests {
     /// write them.
     #[test]
     fn each_session_shows_when_it_was_opened_and_last_used() {
-        let body = page_body(&[session(1, true)], "", "");
+        let body = page_body(&[session(1, true)], "");
         let row = row_of(&body, 1);
         assert!(row.contains("28/09/2026 à 09:30"), "{row}");
         assert!(row.contains("02/10/2026 à 14:05"), "{row}");
     }
 
-    /// The current session is named, and offers no button of its own:
-    /// ending it is the global button's, or logging out.
+    /// The current session is named; no other row is.
     #[test]
-    fn the_current_session_is_marked_and_has_no_revoke_button() {
-        let body = page_body(&[session(1, true), session(2, false)], "", "");
+    fn the_current_session_is_marked() {
+        let body = page_body(&[session(1, true), session(2, false)], "");
         let current = row_of(&body, 1);
         assert!(current.contains("Cette session"), "{current}");
-        assert!(!current.contains("<form"), "{current}");
         let other = row_of(&body, 2);
         assert!(!other.contains("Cette session"), "{other}");
     }
 
-    /// Every other session has its own form, posting to its own id, and a
-    /// button whose name says which session it ends.
+    /// No row ends its session on its own (#753): ending sessions is the
+    /// global button's, all of them at once, or logging out. The page
+    /// holds one form, the global one.
     #[test]
-    fn every_other_session_has_its_own_revoke_form() {
-        let body = page_body(&[session(1, true), session(2, false)], "", "");
-        let other = row_of(&body, 2);
-        let action = format!(
-            r#"<form method="post" action="/account/sessions/{}/revoke""#,
-            Uuid::from_u128(2)
-        );
-        assert!(other.contains(&action), "{other}");
-        assert!(
-            other.contains(r#"aria-label="Déconnecter la session ouverte le 28/09/2026 à 09:30""#),
-            "{other}"
-        );
-        assert!(other.contains(">Déconnecter</button>"), "{other}");
+    fn no_row_has_a_revoke_button_of_its_own() {
+        let body = page_body(&[session(1, true), session(2, false)], "");
+        for id in [1, 2] {
+            let row = row_of(&body, id);
+            assert!(!row.contains("<form"), "{row}");
+            assert!(!row.contains("<button"), "{row}");
+        }
+        assert_eq!(body.matches("<form").count(), 1, "{body}");
+        assert!(!body.contains(r#"/revoke""#), "{body}");
     }
 
     /// The global button ends every session, this one included
     /// (arbitrated 2026-10-02), and says so before it is pressed.
     #[test]
     fn the_global_button_ends_every_session_this_one_included() {
-        let body = page_body(&[session(1, true)], "", "");
+        let body = page_body(&[session(1, true)], "");
         assert!(body.contains(r#"<form method="post" action="/account/sessions/revoke-all">"#));
         assert!(body.contains(">Déconnecter toutes les sessions</button>"));
         assert!(body.contains("celle-ci comprise"), "{body}");
@@ -281,19 +221,23 @@ mod tests {
     /// there is to tell sessions apart.
     #[test]
     fn the_page_says_no_device_information_is_kept() {
-        let body = page_body(&[session(1, true)], "", "");
+        let body = page_body(&[session(1, true)], "");
         assert!(body.contains("ni l'adresse IP ni le navigateur"), "{body}");
     }
 
     #[test]
     fn the_banners_are_rendered_where_given() {
-        let body = page_body(
-            &[session(1, true)],
-            &notice_html(Some("session_revoked")),
-            &error_html(None),
+        let body = page_body(&[session(1, true)], &error_html(Some("unavailable")));
+        assert!(
+            body.contains("Service momentanément indisponible"),
+            "{body}"
         );
-        assert!(body.contains("La session a été déconnectée."));
         assert_eq!(error_html(Some("bogus")), "");
-        assert!(error_html(Some("session_not_found")).contains("déjà terminée"));
+    }
+
+    /// The banners of the per-session revocation went with it (#753).
+    #[test]
+    fn the_per_session_banners_are_gone() {
+        assert_eq!(error_html(Some("session_not_found")), "");
     }
 }

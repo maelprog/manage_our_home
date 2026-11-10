@@ -236,7 +236,6 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/auth/logout", post(auth::logout))
         .route("/auth/sessions", get(auth::list_sessions))
-        .route("/auth/sessions/{id}/revoke", post(auth::revoke_one_session))
         .route(
             "/auth/sessions/revoke-all",
             post(auth::revoke_every_session),

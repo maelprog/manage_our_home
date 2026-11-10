@@ -87,7 +87,6 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::auth::resend_verification,
         crate::auth::reset_password,
         crate::auth::revoke_every_session,
-        crate::auth::revoke_one_session,
         crate::auth::set_password,
         crate::auth::terms_acceptance::accept,
         crate::auth::verify_email,
