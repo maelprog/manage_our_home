@@ -616,3 +616,89 @@ async fn an_heir_is_not_chosen_among_members_leaving_concurrently(db: PgPool) {
     .unwrap();
     assert_eq!(audited, vec![staying.to_string()]);
 }
+
+/// The superadmin designates the member as they are once a concurrent
+/// departure of that member has committed (#400): `designate_owner` goes
+/// through `lock_members` like the succession, waits on the leaving
+/// member's row, and finds them gone. Without the lock it would accept them
+/// from what it read before the departure committed, its `UPDATE` would
+/// then touch no row, and the group would stay without an owner while the
+/// response says 204 and `audit_log` names one.
+#[sqlx::test]
+async fn a_member_leaving_concurrently_is_not_designated_owner(db: PgPool) {
+    let (group, _) = ownerless_group(&db).await;
+    let leaving = insert_user(&db, "leaving@example.test", None).await;
+    add_member(&db, group, leaving, "standard", 10).await;
+    let router = test_router(db.clone());
+    let (_, admin_cookie) = superadmin_cookie(&router, &db).await;
+
+    // The departure: its membership row is deleted, not yet committed.
+    let mut departure = manage_our_home::db::begin(&db).await.unwrap();
+    sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND user_id = $2")
+        .bind(group)
+        .bind(leaving)
+        .execute(&mut *departure)
+        .await
+        .unwrap();
+
+    // Designating `leaving` meanwhile must be waiting on the departure's
+    // row lock before the departure commits.
+    let designation = tokio::spawn({
+        let router = router.clone();
+        let path = format!("/admin/groups/{group}/owner");
+        async move {
+            call(
+                &router,
+                Method::POST,
+                &path,
+                Some(&admin_cookie),
+                Some(serde_json::json!({ "user_id": leaving })),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity
+                 WHERE datname = current_database() AND wait_event_type = 'Lock'",
+            )
+            .fetch_one(&db)
+            .await
+            .unwrap();
+            if waiting > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the designation never waited on the departure's lock");
+    departure.commit().await.unwrap();
+
+    let res = tokio::time::timeout(std::time::Duration::from_secs(10), designation)
+        .await
+        .expect("the designation did not finish once the departure committed")
+        .unwrap();
+    assert_status(&res, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_body(res).await["error"], "not_a_member");
+    let owners: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM group_members WHERE group_id = $1 AND role = 'owner'",
+    )
+    .bind(group)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(owners, 0);
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log
+         WHERE action = 'ownership_transferred' AND target_id = $1
+           AND metadata->>'new_owner_id' = $2",
+    )
+    .bind(group.to_string())
+    .bind(leaving.to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audited, 0);
+}
