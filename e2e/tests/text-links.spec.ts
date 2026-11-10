@@ -144,11 +144,16 @@ test.describe("links with a box of their own — phone", () => {
     await other.hover();
     await expect(other).toHaveCSS("text-decoration-line", "none");
 
-    // A filter pill: no underline under the pointer either. « Stock bas »,
-    // a toggle, is never inert (`pointer-events: none`) as the shown filter is.
+    // A filter pill without a class — what the text-link rule would match
+    // without `.filters a` — keeps its weight and gets no underline under the
+    // pointer. The sort pill: never the shown filter, so never inert
+    // (`pointer-events: none`) as « Tout » is here.
     const filter = page
       .getByRole("navigation", { name: "Filtres" })
-      .getByRole("link", { name: "Stock bas" });
+      .getByRole("link", { name: "À consommer en premier" });
+    await expect(filter).not.toHaveAttribute("class", /./);
+    await expect(filter).toHaveCSS("font-weight", "600");
+    await expect(filter).toHaveCSS("text-decoration-line", "none");
     await filter.hover();
     await expect(filter).toHaveCSS("text-decoration-line", "none");
   });

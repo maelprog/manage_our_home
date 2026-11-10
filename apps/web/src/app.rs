@@ -2575,6 +2575,7 @@ mod tests {
         ("--accent", "--surface", "links in a card"),
         ("--accent", "--hover", "a link in a hovered .list-row"),
         ("--accent", "--warning-soft", "a link in .notice.warning"),
+        ("--accent", "--success-soft", "a link in .notice.success"),
         (
             "--accent",
             "--accent-soft",
@@ -2784,10 +2785,10 @@ mod tests {
                 }
             }
         }
-        // 11 pairs of TEXT_PAIRS name an accent token (`--accent-fg` on
+        // 12 pairs of TEXT_PAIRS name an accent token (`--accent-fg` on
         // `--error` among them, unchanged by the hue), 8 accents, 3 themes:
         // a pair dropped from the list, or an accent from the loop, shows.
-        assert_eq!(measured, 11 * 8 * 3);
+        assert_eq!(measured, 12 * 8 * 3);
         assert!(
             failures.is_empty(),
             "a family accent under the 4.5:1 DESIGN.md asks for:\n{}",
