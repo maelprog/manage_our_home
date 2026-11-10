@@ -1,21 +1,10 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, created_at, last_seen_at, expires_at, restricted\n        FROM sessions\n        WHERE user_id = $1 AND revoked_at IS NULL\n        ",
+  "query": "SELECT created_at, last_seen_at, expires_at, revoked_at, restricted, client\n           FROM sessions WHERE user_id = $1 ORDER BY created_at",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "sessions",
-            "name": "id"
-          }
-        }
-      },
-      {
-        "ordinal": 1,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -26,7 +15,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 1,
         "name": "last_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -37,13 +26,24 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
             "table": "sessions",
             "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "revoked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "revoked_at"
           }
         }
       },
@@ -57,6 +57,17 @@
             "name": "restricted"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "client",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "client"
+          }
+        }
       }
     ],
     "parameters": {
@@ -68,9 +79,10 @@
       false,
       false,
       false,
+      true,
       false,
-      false
+      true
     ]
   },
-  "hash": "ed7e1b80ad2a62044a6b3f99c82ad54690e399cf87dbee30b27c3b60df64ed80"
+  "hash": "78e50e961768cd80b1d22ea56f9dcf99c1441df417c57f8d774da5f7497217fc"
 }

@@ -183,7 +183,8 @@ pub struct ReactivationRequestBody {
 
 /// One entry of `GET /auth/sessions` (#225): a live session of the caller.
 /// Only what the table already keeps — no IP, no user-agent (arbitrated
-/// 2026-10-02, data minimization) — and never the token: `id` is the
+/// 2026-10-02, data minimization; #754 keeps only whether the session was
+/// opened in the app or on the web) — and never the token: `id` is the
 /// internal `sessions.id`, which opens nothing since #222, and names the
 /// row for apps/web; no route takes it (#753).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,4 +195,63 @@ pub struct ActiveSession {
     pub last_seen_at: DateTime<Utc>,
     /// Whether this is the session the request was made with.
     pub current: bool,
+    /// The client the session was opened from (#754); `None` for a session
+    /// opened before it was recorded.
+    #[serde(default)]
+    pub client: Option<SessionClient>,
+}
+
+/// The client a session was opened from (#754), `sessions.client`: the
+/// Android app or the web. Deduced from the User-Agent at the opening
+/// (`mobile_app::client_of_user_agent`), which is not kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SessionClient {
+    Web,
+    App,
+}
+
+impl SessionClient {
+    /// The value `sessions.client` stores, one its CHECK allows; the JSON
+    /// spells it the same way.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SessionClient::Web => "web",
+            SessionClient::App => "app",
+        }
+    }
+
+    /// The client a `sessions.client` value names; `None` for any other
+    /// text, which the column's CHECK keeps out.
+    pub fn from_column(value: &str) -> Option<Self> {
+        [SessionClient::Web, SessionClient::App]
+            .into_iter()
+            .find(|client| client.as_str() == value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_column_values_are_web_and_app() {
+        assert_eq!(SessionClient::Web.as_str(), "web");
+        assert_eq!(SessionClient::App.as_str(), "app");
+    }
+
+    #[test]
+    fn a_column_value_reads_back_as_its_client() {
+        for client in [SessionClient::Web, SessionClient::App] {
+            assert_eq!(SessionClient::from_column(client.as_str()), Some(client));
+        }
+    }
+
+    #[test]
+    fn any_other_column_value_is_no_client() {
+        assert_eq!(SessionClient::from_column(""), None);
+        assert_eq!(SessionClient::from_column("App"), None);
+        assert_eq!(SessionClient::from_column("android"), None);
+    }
 }

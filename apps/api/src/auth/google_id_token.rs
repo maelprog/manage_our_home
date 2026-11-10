@@ -33,6 +33,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::Json;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -46,6 +47,7 @@ use crate::rate_limit::{SlidingLimiter, SlidingWindow};
 use crate::AppState;
 
 use super::oauth_google::{flow_cookie, sign_in_profile, GoogleProfile, SignIn};
+use super::session::client_of_headers;
 use super::throttle::{address_scope, Pseudonyms};
 use super::token::{new_token, token_hash};
 
@@ -474,6 +476,7 @@ pub async fn sign_in(
     State(state): State<AppState>,
     ClientIp(client): ClientIp,
     cookies: Cookies,
+    headers: HeaderMap,
     body: Result<Json<IdTokenRequest>, JsonRejection>,
 ) -> AppResult<Json<SignInResponse>> {
     state.google_sign_in_throttle.admit(client).await?;
@@ -514,8 +517,11 @@ pub async fn sign_in(
         return Err(refuse(Rejection::NonceMismatch));
     }
 
+    // The app's WebView calls this route itself: its User-Agent names the
+    // client (#754).
+    let client = client_of_headers(&headers);
     Ok(Json(
-        match sign_in_profile(&state, &cookies, &profile, None).await? {
+        match sign_in_profile(&state, &cookies, &profile, None, client).await? {
             SignIn::Session => SignInResponse {
                 redirect: "/".into(),
                 refusal: None,

@@ -648,6 +648,11 @@ async fn export_covers_what_concerns_the_caller_beyond_what_they_wrote(db: PgPoo
 
         let sessions = doc["sessions"].as_array().unwrap();
         assert!(!sessions.is_empty(), "{label}");
+        // #754: the client each was opened from; a login with no
+        // User-Agent is the web's.
+        for session in sessions {
+            assert_eq!(session["client"], "web", "{label}: {session}");
+        }
         let session_id = member_cookie
             .split(';')
             .next()

@@ -145,11 +145,20 @@ pub async fn fetch_me(state: &AppState, cookie_header: Option<&str>) -> Option<M
 /// route apps/api keys anything on the client address (#178); the other
 /// callers pass `None` and their requests are unchanged. The neighbouring
 /// `api_request_auth` relays `Cookie` the same way.
+///
+/// `from_app`: the incoming request was the Android app's
+/// (`crate::mobile_app::from_headers`). The call then carries the app's
+/// marker, alone, as its `User-Agent`, so that apps/api records the
+/// session a login opens as the app's (#754); otherwise it carries none,
+/// which apps/api reads as the web. The browser's own User-Agent is never
+/// relayed. Only the login page passes `true`, the one relay that opens a
+/// session.
 pub async fn api_post_json(
     state: &AppState,
     path: &str,
     body: impl Serialize,
     forwarded_for: Option<&str>,
+    from_app: bool,
 ) -> Result<ApiResponse, String> {
     let mut req = state
         .http
@@ -157,6 +166,12 @@ pub async fn api_post_json(
         .json(&body);
     if let Some(chain) = forwarded_for {
         req = req.header(crate::client_ip::FORWARDED_FOR, chain);
+    }
+    if from_app {
+        req = req.header(
+            reqwest::header::USER_AGENT,
+            crate::mobile_app::USER_AGENT_MARKER,
+        );
     }
     let resp = req.send().await.map_err(|e| e.to_string())?;
 

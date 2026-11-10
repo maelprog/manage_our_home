@@ -111,6 +111,7 @@ pub async fn post(
         "/auth/verify-email/resend",
         ResendVerificationRequest { email: form.email },
         None,
+        false,
     )
     .await;
     Html(page(Some(outcome(result.ok().map(|r| r.status)))))

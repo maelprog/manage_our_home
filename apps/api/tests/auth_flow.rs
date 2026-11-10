@@ -2668,17 +2668,45 @@ async fn router_with_google_stub(db: PgPool, sub: &str, email: &str) -> axum::Ro
 /// A callback whose state and PKCE cookies check out, as the browser sends
 /// it on its way back from Google's consent screen.
 async fn google_callback(router: &axum::Router) -> axum::response::Response {
+    google_callback_as(router, None).await
+}
+
+/// [`google_callback`] from a browser whose User-Agent is `user_agent`
+/// (none: no header).
+async fn google_callback_as(
+    router: &axum::Router,
+    user_agent: Option<&str>,
+) -> axum::response::Response {
     let verifier = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
-    call(
-        router,
-        Method::GET,
-        "/auth/google/callback?code=c&state=s",
-        Some(&format!(
-            "google_oauth_state=s; google_oauth_pkce_verifier={verifier}"
-        )),
-        None,
+    let mut request = axum::http::Request::builder()
+        .method(Method::GET)
+        .uri("/auth/google/callback?code=c&state=s")
+        .header(
+            axum::http::header::COOKIE,
+            format!("google_oauth_state=s; google_oauth_pkce_verifier={verifier}"),
+        );
+    if let Some(ua) = user_agent {
+        request = request.header(axum::http::header::USER_AGENT, ua);
+    }
+    tower::ServiceExt::oneshot(
+        router.clone(),
+        request.body(axum::body::Body::empty()).unwrap(),
     )
     .await
+    .unwrap()
+}
+
+/// The User-Agent of the app's WebView: Chrome's, with the app's marker.
+const WEBVIEW_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 \
+    (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 MHomeApp";
+
+/// `sessions.client` of the session a `name=value` cookie pair names.
+async fn session_client(db: &PgPool, cookie: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT client FROM sessions WHERE id = $1")
+        .bind(session_id_of(db, cookie).await)
+        .fetch_one(db)
+        .await
+        .unwrap()
 }
 
 async fn user_id_by_email(db: &PgPool, email: &str) -> Uuid {
@@ -2778,7 +2806,8 @@ async fn google_callback_opens_only_a_restricted_session_for_an_account_deactiva
     deactivate_through_support(&router, &db, user_id).await;
     let sessions_at_lock = session_rows(&db, user_id).await;
 
-    let after_lock = google_callback(&router).await;
+    // From the app's WebView: the restricted session records it (#754).
+    let after_lock = google_callback_as(&router, Some(WEBVIEW_UA)).await;
     assert!(
         after_lock.status().is_redirection(),
         "{}",
@@ -2788,6 +2817,7 @@ async fn google_callback_opens_only_a_restricted_session_for_an_account_deactiva
     assert_eq!(session_rows(&db, user_id).await, sessions_at_lock + 1);
     assert_eq!(session_restrictions(&db, user_id).await.last(), Some(&true));
     let cookie = session_cookie_of(&after_lock);
+    assert_eq!(session_client(&db, &cookie).await.as_deref(), Some("app"));
     let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
     assert_status(&me, StatusCode::FORBIDDEN);
     assert_eq!(json_body(me).await["error"], "account_deactivated");
@@ -2801,6 +2831,26 @@ async fn google_callback_opens_only_a_restricted_session_for_an_account_deactiva
     .await;
     assert_status(&page, StatusCode::OK);
     assert_eq!(google_identity_rows(&db, user_id).await, 1);
+}
+
+/// #754: the browser follows Google's redirect to `callback` itself, so
+/// its User-Agent names the client of the session opened: the app's
+/// WebView opens an `app` session, a browser a `web` one.
+#[sqlx::test]
+async fn google_callback_records_whether_it_came_from_the_app_or_the_web(db: PgPool) {
+    let router =
+        router_with_google_stub(db.clone(), "google-sub-754", "callback-754@example.test").await;
+    let firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
+    for (user_agent, client) in [(WEBVIEW_UA, "app"), (firefox, "web")] {
+        let response = google_callback_as(&router, Some(user_agent)).await;
+        assert!(response.status().is_redirection(), "{}", response.status());
+        let cookie = session_cookie_of(&response);
+        assert_eq!(
+            session_client(&db, &cookie).await.as_deref(),
+            Some(client),
+            "{user_agent}"
+        );
+    }
 }
 
 /// #194, #289: a deactivated account with no Google identity yet is
@@ -3003,11 +3053,149 @@ async fn sessions_lists_the_callers_live_sessions_only(db: PgPool) {
     );
     for s in listed {
         assert!(s["created_at"].is_string() && s["last_seen_at"].is_string());
-        assert_eq!(s.as_object().unwrap().len(), 4, "{s}");
+        // #754: opened by a login with no User-Agent, as the web's.
+        assert_eq!(s["client"], "web", "{s}");
+        assert_eq!(s.as_object().unwrap().len(), 5, "{s}");
     }
 
     let res = call(&router, Method::GET, "/auth/sessions", None, None).await;
     assert_status(&res, StatusCode::UNAUTHORIZED);
+}
+
+/// A password login whose request says `user_agent` (none: no header),
+/// returning its session cookie.
+async fn login_as(
+    router: &axum::Router,
+    email: &str,
+    password: &str,
+    user_agent: Option<&str>,
+) -> String {
+    let mut request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/auth/login")
+        .header(axum::http::header::CONTENT_TYPE, "application/json");
+    if let Some(ua) = user_agent {
+        request = request.header(axum::http::header::USER_AGENT, ua);
+    }
+    let body = serde_json::json!({"email": email, "password": password}).to_string();
+    let login = tower::ServiceExt::oneshot(
+        router.clone(),
+        request.body(axum::body::Body::from(body)).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_status(&login, StatusCode::OK);
+    set_cookie(&login).unwrap()
+}
+
+/// #754: a login records the client it came from — the app when its
+/// User-Agent carries the app's marker (the WebView's own, or the bare
+/// marker apps/web relays), the web for a browser's or none — and
+/// `GET /auth/sessions` says it. Neither the User-Agent nor any part of it
+/// is kept in the row or sent back.
+#[sqlx::test]
+async fn a_login_records_whether_it_came_from_the_app_or_the_web(db: PgPool) {
+    const WEBVIEW: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 \
+        (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 MHomeApp";
+    const FIREFOX: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
+    let router = test_router(db.clone());
+    let (email, password) = ("sess-client@example.test", "client-password1");
+    let none = register_verify_login(&router, &db, email, password).await;
+    let webview = login_as(&router, email, password, Some(WEBVIEW)).await;
+    let relayed = login_as(&router, email, password, Some("MHomeApp")).await;
+    let browser = login_as(&router, email, password, Some(FIREFOX)).await;
+
+    for (cookie, client) in [
+        (&none, "web"),
+        (&webview, "app"),
+        (&relayed, "app"),
+        (&browser, "web"),
+    ] {
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT client FROM sessions WHERE id = $1")
+                .bind(session_id_of(&db, cookie).await)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(stored.as_deref(), Some(client), "{cookie}");
+    }
+
+    let listed = sessions_of(&router, &browser).await;
+    let mut clients: Vec<(String, String)> = listed
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_str().unwrap().to_string(),
+                s["client"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    clients.sort();
+    let mut expected = Vec::new();
+    for (cookie, client) in [
+        (&none, "web"),
+        (&webview, "app"),
+        (&relayed, "app"),
+        (&browser, "web"),
+    ] {
+        expected.push((
+            session_id_of(&db, cookie).await.to_string(),
+            client.to_string(),
+        ));
+    }
+    expected.sort();
+    assert_eq!(clients, expected);
+
+    // Nothing of the User-Agents, in the rows or in the answer.
+    let rows: Vec<String> = sqlx::query_scalar("SELECT row_to_json(s)::text FROM sessions s")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    let answer = serde_json::Value::Array(listed).to_string();
+    for text in rows.iter().chain([&answer]) {
+        for fragment in ["Mozilla", "Firefox", "Android", "MHomeApp"] {
+            assert!(!text.contains(fragment), "{fragment} kept: {text}");
+        }
+    }
+}
+
+/// #289, #754: the restricted session a correct password opens on a
+/// deactivated account records its client like any other.
+#[sqlx::test]
+async fn a_restricted_session_records_the_client_it_came_from(db: PgPool) {
+    let router = test_router(db.clone());
+    let (email, password) = ("sess-locked-754@example.test", "locked-password1");
+    register_verify_login(&router, &db, email, password).await;
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE email = $1")
+        .bind(email)
+        .execute(&db)
+        .await
+        .unwrap();
+    let cookie = login_as(&router, email, password, Some(WEBVIEW_UA)).await;
+    let (restricted, client): (bool, Option<String>) =
+        sqlx::query_as("SELECT restricted, client FROM sessions WHERE id = $1")
+            .bind(session_id_of(&db, &cookie).await)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(restricted);
+    assert_eq!(client.as_deref(), Some("app"));
+}
+
+/// A session opened before #754 has no known client: `null`.
+#[sqlx::test]
+async fn a_session_without_a_recorded_client_is_listed_with_none(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "sess-old@example.test", "old-password1").await;
+    sqlx::query("UPDATE sessions SET client = NULL WHERE id = $1")
+        .bind(session_id_of(&db, &cookie).await)
+        .execute(&db)
+        .await
+        .unwrap();
+    let listed = sessions_of(&router, &cookie).await;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0]["client"].is_null(), "{}", listed[0]);
 }
 
 /// No session ends on its own (#753): `POST /auth/sessions/:id/revoke` is
