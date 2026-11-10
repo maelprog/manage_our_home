@@ -2806,7 +2806,8 @@ async fn google_callback_opens_only_a_restricted_session_for_an_account_deactiva
     deactivate_through_support(&router, &db, user_id).await;
     let sessions_at_lock = session_rows(&db, user_id).await;
 
-    let after_lock = google_callback(&router).await;
+    // From the app's WebView: the restricted session records it (#754).
+    let after_lock = google_callback_as(&router, Some(WEBVIEW_UA)).await;
     assert!(
         after_lock.status().is_redirection(),
         "{}",
@@ -2816,6 +2817,7 @@ async fn google_callback_opens_only_a_restricted_session_for_an_account_deactiva
     assert_eq!(session_rows(&db, user_id).await, sessions_at_lock + 1);
     assert_eq!(session_restrictions(&db, user_id).await.last(), Some(&true));
     let cookie = session_cookie_of(&after_lock);
+    assert_eq!(session_client(&db, &cookie).await.as_deref(), Some("app"));
     let me = call(&router, Method::GET, "/auth/me", Some(&cookie), None).await;
     assert_status(&me, StatusCode::FORBIDDEN);
     assert_eq!(json_body(me).await["error"], "account_deactivated");
@@ -3155,6 +3157,29 @@ async fn a_login_records_whether_it_came_from_the_app_or_the_web(db: PgPool) {
             assert!(!text.contains(fragment), "{fragment} kept: {text}");
         }
     }
+}
+
+/// #289, #754: the restricted session a correct password opens on a
+/// deactivated account records its client like any other.
+#[sqlx::test]
+async fn a_restricted_session_records_the_client_it_came_from(db: PgPool) {
+    let router = test_router(db.clone());
+    let (email, password) = ("sess-locked-754@example.test", "locked-password1");
+    register_verify_login(&router, &db, email, password).await;
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE email = $1")
+        .bind(email)
+        .execute(&db)
+        .await
+        .unwrap();
+    let cookie = login_as(&router, email, password, Some(WEBVIEW_UA)).await;
+    let (restricted, client): (bool, Option<String>) =
+        sqlx::query_as("SELECT restricted, client FROM sessions WHERE id = $1")
+            .bind(session_id_of(&db, &cookie).await)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(restricted);
+    assert_eq!(client.as_deref(), Some("app"));
 }
 
 /// A session opened before #754 has no known client: `null`.
