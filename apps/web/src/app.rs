@@ -2573,6 +2573,8 @@ mod tests {
         ("--muted", "--accent-soft", "today off the month, .outside"),
         ("--accent", "--bg", "links, summary"),
         ("--accent", "--surface", "links in a card"),
+        ("--accent", "--hover", "a link in a hovered .list-row"),
+        ("--accent", "--warning-soft", "a link in .notice.warning"),
         (
             "--accent",
             "--accent-soft",
@@ -2782,10 +2784,10 @@ mod tests {
                 }
             }
         }
-        // 9 pairs of TEXT_PAIRS name an accent token (`--accent-fg` on
+        // 11 pairs of TEXT_PAIRS name an accent token (`--accent-fg` on
         // `--error` among them, unchanged by the hue), 8 accents, 3 themes:
         // a pair dropped from the list, or an accent from the loop, shows.
-        assert_eq!(measured, 9 * 8 * 3);
+        assert_eq!(measured, 11 * 8 * 3);
         assert!(
             failures.is_empty(),
             "a family accent under the 4.5:1 DESIGN.md asks for:\n{}",
@@ -3686,6 +3688,58 @@ mod tests {
         ] {
             assert!(css.contains(selector), "no `{selector}` rule in style.css");
         }
+    }
+
+    /// The links #752 sets in bold rather than underlined: every link with
+    /// no class of its own, but the kitchen segment's halves, plus the two
+    /// accent links that carry one (`.more`, `.replies`).
+    const TEXT_LINK: &str = ":where(:not(.segment) > a:not([class]), .more, .replies)";
+
+    #[test]
+    fn a_text_link_is_bold_in_the_accent_and_not_underlined_at_rest() {
+        // #752: « les textes cliquables en gras plutôt que soulignés ». In
+        // `:where()`, the rule weighs nothing: any rule that names a link
+        // with a box of its own (`.filters a`, `.mini a`, `.dash h2 > a`)
+        // keeps its colour and its decoration.
+        let rest = top_level_rule(TEXT_LINK).unwrap_or_default();
+        for declaration in [
+            "color: var(--accent)",
+            "font-weight: 600",
+            "text-decoration: none",
+        ] {
+            assert!(
+                rest.contains(declaration),
+                "`{TEXT_LINK}` lacks `{declaration}`: {rest:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_text_link_is_underlined_under_the_pointer_and_the_keyboard() {
+        // WCAG 1.4.1: the accent is not the only sign of a link inside a
+        // run of text. The underline comes back on hover and on keyboard
+        // focus, beside the focus ring.
+        let selector = format!("{TEXT_LINK}:is(:hover, :focus-visible)");
+        let active = top_level_rule(&selector).unwrap_or_default();
+        assert!(
+            active.contains("text-decoration-line: underline"),
+            "no underline on `{selector}`: {active:?}"
+        );
+    }
+
+    #[test]
+    fn a_card_title_keeps_its_underline_and_only_a_card_title_does() {
+        // A card's title is its link (#584): the heading's colour, and the
+        // underline that says it is a link — the text-link rule would take
+        // it away. Keyed on `.dash` since #752: a bare `h2 > a` also took
+        // any link a markdown document put in a heading.
+        let title = top_level_rule(".dash h2 > a").unwrap_or_default();
+        assert!(title.contains("color: inherit"), "{title:?}");
+        assert!(title.contains("text-decoration: underline"), "{title:?}");
+        assert!(
+            top_level_rule("h2 > a").is_none(),
+            "`h2 > a` still styles every link in a heading"
+        );
     }
 
     #[test]

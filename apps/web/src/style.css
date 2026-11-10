@@ -587,8 +587,9 @@ dialog:modal { margin: auto; }
   min-width: var(--s12);
   color: inherit;
 }
-/* An occurrence inside a calendar day. `color` is stated: the sheet has no
-   `a { color }`, so a chip fell to the UA's #0000EE — 1.48:1 on --hover. */
+/* An occurrence inside a calendar day. `color` is stated: the text-link
+   rule (#752) leaves a link with a class alone, so a chip fell to the UA's
+   #0000EE — 1.48:1 on --hover. */
 .chip {
   display: block;
   margin-top: var(--s2);
@@ -635,9 +636,11 @@ hgroup > h1 { margin: 0; }
 .more { display: inline-flex; align-items: center; min-height: var(--s12); color: var(--accent); font-weight: 600; }
 /* A card's title is the link to its page (#584), the only one since its
    "Voir…" `.more` went (#749). It keeps the heading's colour, not the
-   browser's blue: the underline says it is a link. 48px (--s12) tall, over
-   the 44px of a target — the heading's own line is under 30. */
-h2 > a { display: inline-flex; align-items: center; min-height: var(--s12); color: inherit; }
+   accent of a text link, and so keeps the underline that says it is a
+   link (#752). 48px (--s12) tall, over the 44px of a target — the
+   heading's own line is under 30. Keyed on `.dash`: a bare `h2 > a` also
+   took a link a markdown document puts in a heading. */
+.dash h2 > a { display: inline-flex; align-items: center; min-height: var(--s12); color: inherit; text-decoration: underline; }
 /* A tile is a card that is itself the link: an icon, a count, what it
    counts. Its colour is the text's, not the link's; the pointer colours
    its edge, the transparent border every card keeps. */
@@ -890,7 +893,7 @@ dd { margin: var(--s2) 0 0 0; }
 .links { margin-top: var(--s4); display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
 /* Each link of the column is a target of its own, not a word in a sentence:
    one --t-sm line plus --s3 above and below is 44px (#74). */
-.links a { color: var(--accent); padding: var(--s3) 0; }
+.links a { padding: var(--s3) 0; }
 /* The same links as a centred row, wrapping when the line is full (#419):
    the login page's account links under the form, and the footer every page
    closes on — the three legal documents, with a session or without. Quiet on
@@ -932,11 +935,9 @@ dd { margin: var(--s2) 0 0 0; }
 .composer { flex-flow: row wrap; align-items: flex-end; gap: var(--s2x); margin-top: var(--s4); }
 .composer > .notice { flex-basis: 100%; margin: 0; }
 .composer textarea { flex: 1 1 12rem; field-sizing: content; max-height: calc(var(--s16) * 2); }
-/* The send button's icon keeps its distance from the word, and the reply
-   notice's « Annuler » reads as a link in the app's colour, not the
-   browser's. */
+/* The send button's icon keeps its distance from the word. The reply
+   notice's « Annuler » is a text link (#752). */
 .composer button { display: inline-flex; align-items: center; gap: var(--s1); }
-.composer > .notice a { color: var(--accent); font-weight: 600; }
 /* The live thread's send box stays in reach at the foot of the screen
    (#528), on a phone as on a PC — it stuck on a PC only until then (#72),
    when it was three lines high. `.content >` is the point of the selector:
@@ -957,7 +958,6 @@ dd { margin: var(--s2) 0 0 0; }
 .prose ul { padding-left: 1.2rem; }
 .prose li { margin-bottom: 0.4rem; }
 .prose th, .prose td { white-space: normal; vertical-align: top; }
-.prose a { color: var(--accent); }
 
 /* -- Interaction ---------------------------------------------------------
    The sheet had no `:hover`, no `:focus-visible`, no `transition` and no
@@ -999,8 +999,17 @@ html { -webkit-tap-highlight-color: transparent; }
 /* `color` too: a done occurrence (`.chip.done`) is --muted, which measures
    4.34:1 (light) and 4.38:1 (dark) on --border. Hovered, it reads --fg. */
 .chip:hover { background: var(--border); color: var(--fg); }
-/* A link that carries no box of its own answers with its underline, since it
-   has one to thicken and a background would box a run of body text. */
+/* A text link (#752): every link without a class, but the halves of the
+   kitchen segment, and the two accent links that have one. Bold in the
+   accent rather than underlined — it reads better. `:where()` weighs
+   nothing, so a link with a box of its own (`.filters a`, `.mini a`, the
+   card title) keeps its colour and decoration. The accent is never the
+   only sign (WCAG 1.4.1): the weight is one, and the underline comes back
+   under the pointer and the keyboard — beside the focus ring below. A
+   background would box a run of body text. */
+:where(:not(.segment) > a:not([class]), .more, .replies) { color: var(--accent); font-weight: 600; text-decoration: none; }
+:where(:not(.segment) > a:not([class]), .more, .replies):is(:hover, :focus-visible) { text-decoration-line: underline; }
+/* An underline a link already has (the card title, `.member`) thickens. */
 a:hover { text-decoration-thickness: 2px; }
 /* The password toggle is a `<button>` with no box at all — the primary hover
    above would paint it one. */
