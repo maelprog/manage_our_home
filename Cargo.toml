@@ -2,6 +2,23 @@
 resolver = "2"
 members = ["apps/api", "apps/web", "apps/shared", "apps/http_guard", "infra/tailscale"]
 
+# #765: RUSTSEC-2026-0459 (libsqlite3-sys < 0.39, the SQLite it bundles).
+# apps/api enables sqlx's `postgres` driver only, so `sqlx-sqlite` and
+# `libsqlite3-sys` are never compiled (`cargo tree -i sqlx-sqlite --target
+# all --all-features` prints nothing). They still appear in Cargo.lock:
+# sqlx's features name `sqlx-sqlite?/json`, `sqlx-sqlite?/chrono`… and
+# Cargo locks an optional dependency that a weak `dep?/feature` names, even
+# when nothing enables it (`sqlx-mysql` sits in the lock the same way).
+# `cargo audit` reads the lock, so it reports the advisory all the same.
+# sqlx 0.9.0, the newest release, caps libsqlite3-sys at `<0.38`; upstream
+# raised the cap to `<0.40` in launchbadge/sqlx#4502, not released yet.
+# This takes `sqlx-sqlite` alone from that commit, so the lock can resolve
+# libsqlite3-sys 0.39: sqlx-core, sqlx-postgres and the macros — the code
+# that is compiled — stay on the 0.9.0 release. Remove this patch once a
+# sqlx release includes #4502, and move sqlx to that release.
+[patch.crates-io]
+sqlx-sqlite = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
+
 # The picture codecs, optimised in the dev profile that `cargo test` and
 # `cargo nextest` build with (the test profile inherits it), and in that
 # profile only: apps/api's avatar and apps/web's barcode photo decode and
