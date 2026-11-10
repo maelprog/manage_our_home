@@ -4,9 +4,11 @@
 //! sent back to the login page. No session ends on its own (#753): no
 //! button per row.
 //!
-//! Dates only. The service keeps no IP and no user-agent for a session
-//! (data minimization, arbitrated 2026-10-02), so the page says so rather
-//! than leaving the member to wonder which device is which.
+//! Dates and origin only. The service keeps no IP and no user-agent for a
+//! session (data minimization, arbitrated 2026-10-02), only whether it was
+//! opened from the app or the website (#754): the page says so rather than
+//! leaving the member to wonder which device is which. Each row is a
+//! disclosure (#755): its summary shows the dates, opening it the origin.
 //!
 //! The one way out for a Google-only account, which has no password to
 //! change — changing it was the only other way to end the other sessions.
