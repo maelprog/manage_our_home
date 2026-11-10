@@ -2668,17 +2668,45 @@ async fn router_with_google_stub(db: PgPool, sub: &str, email: &str) -> axum::Ro
 /// A callback whose state and PKCE cookies check out, as the browser sends
 /// it on its way back from Google's consent screen.
 async fn google_callback(router: &axum::Router) -> axum::response::Response {
+    google_callback_as(router, None).await
+}
+
+/// [`google_callback`] from a browser whose User-Agent is `user_agent`
+/// (none: no header).
+async fn google_callback_as(
+    router: &axum::Router,
+    user_agent: Option<&str>,
+) -> axum::response::Response {
     let verifier = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
-    call(
-        router,
-        Method::GET,
-        "/auth/google/callback?code=c&state=s",
-        Some(&format!(
-            "google_oauth_state=s; google_oauth_pkce_verifier={verifier}"
-        )),
-        None,
+    let mut request = axum::http::Request::builder()
+        .method(Method::GET)
+        .uri("/auth/google/callback?code=c&state=s")
+        .header(
+            axum::http::header::COOKIE,
+            format!("google_oauth_state=s; google_oauth_pkce_verifier={verifier}"),
+        );
+    if let Some(ua) = user_agent {
+        request = request.header(axum::http::header::USER_AGENT, ua);
+    }
+    tower::ServiceExt::oneshot(
+        router.clone(),
+        request.body(axum::body::Body::empty()).unwrap(),
     )
     .await
+    .unwrap()
+}
+
+/// The User-Agent of the app's WebView: Chrome's, with the app's marker.
+const WEBVIEW_UA: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 \
+    (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 MHomeApp";
+
+/// `sessions.client` of the session a `name=value` cookie pair names.
+async fn session_client(db: &PgPool, cookie: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT client FROM sessions WHERE id = $1")
+        .bind(session_id_of(db, cookie).await)
+        .fetch_one(db)
+        .await
+        .unwrap()
 }
 
 async fn user_id_by_email(db: &PgPool, email: &str) -> Uuid {
@@ -2801,6 +2829,26 @@ async fn google_callback_opens_only_a_restricted_session_for_an_account_deactiva
     .await;
     assert_status(&page, StatusCode::OK);
     assert_eq!(google_identity_rows(&db, user_id).await, 1);
+}
+
+/// #754: the browser follows Google's redirect to `callback` itself, so
+/// its User-Agent names the client of the session opened: the app's
+/// WebView opens an `app` session, a browser a `web` one.
+#[sqlx::test]
+async fn google_callback_records_whether_it_came_from_the_app_or_the_web(db: PgPool) {
+    let router =
+        router_with_google_stub(db.clone(), "google-sub-754", "callback-754@example.test").await;
+    let firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
+    for (user_agent, client) in [(WEBVIEW_UA, "app"), (firefox, "web")] {
+        let response = google_callback_as(&router, Some(user_agent)).await;
+        assert!(response.status().is_redirection(), "{}", response.status());
+        let cookie = session_cookie_of(&response);
+        assert_eq!(
+            session_client(&db, &cookie).await.as_deref(),
+            Some(client),
+            "{user_agent}"
+        );
+    }
 }
 
 /// #194, #289: a deactivated account with no Google identity yet is
