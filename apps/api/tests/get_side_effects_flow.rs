@@ -1,5 +1,5 @@
 //! No `GET` route of apps/api changes anything (#414), outside the closed
-//! list the arbitrage of 2026-10-26 admits. `SameSite=Lax` sends the session
+//! list the arbitrages of 2026-10-26 and 2026-11-11 admit. `SameSite=Lax` sends the session
 //! cookie on a cross-site navigation, so a `GET` that writes is one a third
 //! site can trigger (#223, point 4).
 //!
@@ -36,6 +36,18 @@ const ADMITTED: [&str; 3] = [
     "/auth/google/start",
     // Opens the session, or the account (`state` + PKCE, #193).
     "/auth/google/callback",
+];
+
+/// The `GET` routes the arbitrage of 2026-11-11 admits writing to
+/// `audit_log`, and to nothing else: who read whose data is itself recorded.
+/// Called like the others; they must write that row, and only it.
+const AUDITED: [&str; 4] = [
+    // `account_data_exported`: the account holder downloaded their data.
+    "/account/export",
+    // The superadmin's reads of the accounts and families (#24).
+    "/admin/groups",
+    "/admin/groups/{id}/members",
+    "/admin/users",
 ];
 
 /// The `GET` routes the spec leaves out (`openapi_flow::NOT_DOCUMENTED`),
@@ -374,6 +386,12 @@ async fn no_get_route_outside_the_admitted_list_changes_anything(db: PgPool) {
             "{admitted} is admitted but is no GET route"
         );
     }
+    for audited in AUDITED {
+        assert!(
+            routes.iter().any(|r| r == audited),
+            "{audited} is admitted but is no GET route"
+        );
+    }
     for (route, _) in NOT_REACHED {
         assert!(
             routes.iter().any(|r| r == route),
@@ -396,8 +414,13 @@ async fn no_get_route_outside_the_admitted_list_changes_anything(db: PgPool) {
         let after = snapshot(&db).await;
 
         let changed = changed_tables(&before, &after);
-        assert!(
-            changed.is_empty(),
+        let admitted: &[&str] = if AUDITED.contains(&route.as_str()) {
+            &["audit_log"]
+        } else {
+            &[]
+        };
+        assert_eq!(
+            changed, admitted,
             "GET {route} ({status}) changed {changed:?}"
         );
         assert!(
