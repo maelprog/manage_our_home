@@ -1,5 +1,7 @@
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Redirect};
+use manage_our_home_shared::dto::auth::SessionClient;
 use manage_our_home_shared::validation::auth::{normalize_email, validate_email_ascii};
 use oauth2::url::Url;
 use oauth2::{
@@ -11,7 +13,9 @@ use tower_cookies::{Cookie, Cookies};
 use crate::error::{AppError, AppResult};
 use crate::{AppState, GoogleOauthClient};
 
-use super::session::{create_restricted_session, create_session, set_session_cookie};
+use super::session::{
+    client_of_headers, create_restricted_session, create_session, set_session_cookie,
+};
 
 const OAUTH_STATE_COOKIE: &str = "google_oauth_state";
 /// PKCE `code_verifier` (RFC 7636) minted by `start`, spent by `callback`.
@@ -194,6 +198,7 @@ async fn exchange_code(
 pub async fn callback(
     State(state): State<AppState>,
     cookies: Cookies,
+    headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> AppResult<impl IntoResponse> {
     let expected_state = cookies
@@ -234,7 +239,12 @@ pub async fn callback(
         name: userinfo.name,
     };
 
-    let to = match sign_in_profile(&state, &cookies, &profile, refresh_token.as_deref()).await? {
+    // The browser itself follows Google's redirect here: its User-Agent
+    // names the client (#754).
+    let client = client_of_headers(&headers);
+    let to = match sign_in_profile(&state, &cookies, &profile, refresh_token.as_deref(), client)
+        .await?
+    {
         SignIn::Session => state.frontend_base_url.clone(),
         SignIn::Refused(reason) => format!("{}/login?google={reason}", state.frontend_base_url),
     };
@@ -269,6 +279,7 @@ pub(crate) async fn sign_in_profile(
     cookies: &Cookies,
     profile: &GoogleProfile,
     refresh_token: Option<&str>,
+    client: SessionClient,
 ) -> AppResult<SignIn> {
     // Stored and matched in the same form as a password account's (#459),
     // so a Google profile finds the account its holder registered by hand.
@@ -339,7 +350,7 @@ pub(crate) async fn sign_in_profile(
     // the account, no identity is bound to it, and no full session opens.
     if let Some(account) = existing_account.as_ref().filter(|a| a.deactivated) {
         tx.rollback().await?;
-        let token = create_restricted_session(&state.db, account.user_id).await?;
+        let token = create_restricted_session(&state.db, account.user_id, client).await?;
         set_session_cookie(cookies, &token, state.secure_cookies);
         return Ok(SignIn::Session);
     }
@@ -395,7 +406,7 @@ pub(crate) async fn sign_in_profile(
 
     tx.commit().await?;
 
-    let token = create_session(&state.db, user_id).await?;
+    let token = create_session(&state.db, user_id, client).await?;
     set_session_cookie(cookies, &token, state.secure_cookies);
 
     Ok(SignIn::Session)

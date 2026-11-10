@@ -12,7 +12,10 @@ pub mod token;
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use axum::{http::StatusCode, Json};
+use axum::{
+    http::{HeaderMap, StatusCode},
+    Json,
+};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,7 +26,7 @@ use uuid::Uuid;
 use manage_our_home_shared::dto::auth::{
     ActiveSession, ChangePasswordRequest, DeleteAccountRequest, ForgotPasswordRequest,
     LoginRequest, MeResponse, RegisterRequest, ResendVerificationRequest, ResetPasswordRequest,
-    SetPasswordRequest,
+    SessionClient, SetPasswordRequest,
 };
 
 use manage_our_home_shared::validation::auth::{
@@ -37,8 +40,9 @@ use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 use self::session::{
-    clear_session_cookie, create_restricted_session, create_session, list_active_sessions,
-    revoke_all_sessions, revoke_session, set_session_cookie, user_scoped_tx, AnySession, AuthUser,
+    clear_session_cookie, client_of_headers, create_restricted_session, create_session,
+    list_active_sessions, revoke_all_sessions, revoke_session, set_session_cookie, user_scoped_tx,
+    AnySession, AuthUser,
 };
 use self::timing::{LoginBranch, LoginTiming};
 use self::token::{new_token, token_hash};
@@ -440,11 +444,15 @@ pub async fn login(
     State(state): State<AppState>,
     ClientIp(client_ip): ClientIp,
     cookies: Cookies,
+    headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> AppResult<impl IntoResponse> {
     let started = Instant::now();
     let mut timing = LoginTiming::default();
-    let (branch, result) = login_inner(&state, client_ip, &cookies, body, &mut timing).await;
+    // apps/web relays the app's marker as its own User-Agent (#754).
+    let client = client_of_headers(&headers);
+    let (branch, result) =
+        login_inner(&state, client_ip, client, &cookies, body, &mut timing).await;
     timing.total = started.elapsed();
     timing.emit(timing::outcome_label(&result));
 
@@ -478,6 +486,7 @@ fn refused(
 async fn login_inner(
     state: &AppState,
     client_ip: std::net::IpAddr,
+    client: SessionClient,
     cookies: &Cookies,
     mut body: LoginRequest,
     timing: &mut LoginTiming,
@@ -574,9 +583,9 @@ async fn login_inner(
     // restricted session, good for the deactivated-account page only.
     let at = Instant::now();
     let session = if user.deactivated {
-        create_restricted_session(&state.db, user.id).await
+        create_restricted_session(&state.db, user.id, client).await
     } else {
-        create_session(&state.db, user.id).await
+        create_session(&state.db, user.id, client).await
     };
     let token = match session {
         Ok(token) => token,

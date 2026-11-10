@@ -159,6 +159,7 @@ mod tests {
             created_at: at("2026-09-28T07:30:00Z"),
             last_seen_at: at("2026-10-02T12:05:00Z"),
             current,
+            client: None,
         }
     }
 

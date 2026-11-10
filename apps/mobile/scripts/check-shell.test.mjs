@@ -107,8 +107,8 @@ test('a source set that names a policy attribute or ships a policy file at res/x
 });
 
 function rustConst(file, name) {
-  const found = read(`../web/src/${file}`).match(new RegExp(`^pub const ${name}: &str = "([^"]*)";$`, 'm'));
-  assert.ok(found, `${name} in apps/web/src/${file}`);
+  const found = read(`../${file}`).match(new RegExp(`^pub const ${name}: &str = "([^"]*)";$`, 'm'));
+  assert.ok(found, `${name} in apps/${file}`);
   return found[1];
 }
 
@@ -211,10 +211,10 @@ test('the Social Login plugin brings Google alone, and no client ID of its own',
   });
 });
 
-test("the app's name and User-Agent marker are apps/web's", () => {
+test("the app's name and User-Agent marker are the site's", () => {
   const { config } = loadConfig({});
-  assert.equal(config.appName, rustConst('brand.rs', 'NAME'));
-  assert.equal(config.appendUserAgent, rustConst('mobile_app.rs', 'USER_AGENT_MARKER'));
+  assert.equal(config.appName, rustConst('web/src/brand.rs', 'NAME'));
+  assert.equal(config.appendUserAgent, rustConst('shared/src/mobile_app.rs', 'USER_AGENT_MARKER'));
 });
 
 test('the offline page is in the web directory, and loads nothing from elsewhere', () => {

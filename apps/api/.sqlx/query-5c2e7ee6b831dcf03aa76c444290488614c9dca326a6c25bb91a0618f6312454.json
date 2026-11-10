@@ -1,10 +1,21 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_at, last_seen_at, expires_at, revoked_at, restricted\n           FROM sessions WHERE user_id = $1 ORDER BY created_at",
+  "query": "\n        SELECT id, created_at, last_seen_at, expires_at, restricted, client\n        FROM sessions\n        WHERE user_id = $1 AND revoked_at IS NULL\n        ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -15,7 +26,7 @@
         }
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "last_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -26,24 +37,13 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
             "table": "sessions",
             "name": "expires_at"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "revoked_at",
-        "type_info": "Timestamptz",
-        "origin": {
-          "Table": {
-            "table": "sessions",
-            "name": "revoked_at"
           }
         }
       },
@@ -57,6 +57,17 @@
             "name": "restricted"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "client",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "client"
+          }
+        }
       }
     ],
     "parameters": {
@@ -68,9 +79,10 @@
       false,
       false,
       false,
-      true,
-      false
+      false,
+      false,
+      true
     ]
   },
-  "hash": "aea2744940dde220b4332b01e989846d3976d0351508a3e8758b21445867111a"
+  "hash": "5c2e7ee6b831dcf03aa76c444290488614c9dca326a6c25bb91a0618f6312454"
 }

@@ -144,6 +144,9 @@ pub async fn post(
             password: form.password.clone(),
         },
         forwarded.as_deref(),
+        // The session opened is recorded as the app's when the login was
+        // made in the app (#754): only the marker is relayed.
+        crate::mobile_app::from_headers(&request_headers),
     )
     .await;
 
@@ -375,6 +378,71 @@ mod route_tests {
         assert!(
             !browser.contains(&crate::assets::Script::GoogleSignIn.tag()),
             "{browser}"
+        );
+    }
+
+    /// #754: the login relayed to apps/api carries the app's marker, and
+    /// nothing else, as its `User-Agent` when it was made in the app; made
+    /// in a browser, or with no User-Agent, it carries none. The browser's
+    /// own User-Agent never reaches apps/api.
+    #[tokio::test]
+    async fn the_login_relay_names_the_app_and_nothing_else() {
+        use std::sync::{Arc, Mutex};
+
+        let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+        let record = seen.clone();
+        let api = Router::new()
+            .route("/auth/me", get(|| async { StatusCode::UNAUTHORIZED }))
+            .route(
+                "/auth/login",
+                axum::routing::post(move |headers: axum::http::HeaderMap| async move {
+                    record.lock().unwrap().push(
+                        headers
+                            .get(axum::http::header::USER_AGENT)
+                            .map(|v| v.to_str().unwrap().to_string()),
+                    );
+                    axum::Json(serde_json::json!({}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, api).await.unwrap() });
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        });
+
+        let app = format!("{ANDROID_CHROME} {}", crate::mobile_app::USER_AGENT_MARKER);
+        for user_agent in [Some(app.as_str()), Some(ANDROID_CHROME), None] {
+            let mut request = Request::builder().method("POST").uri("/login").header(
+                axum::http::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            );
+            if let Some(ua) = user_agent {
+                request = request.header(axum::http::header::USER_AGENT, ua);
+            }
+            let response = router
+                .clone()
+                .oneshot(
+                    request
+                        .body(Body::from("email=a%40b.test&password=pw"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER, "{user_agent:?}");
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                Some(crate::mobile_app::USER_AGENT_MARKER.to_string()),
+                None,
+                None,
+            ]
         );
     }
 }

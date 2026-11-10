@@ -25,18 +25,18 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const STAGING_URL = 'https://staging.watallo.fr';
 
-// A `pub const NAME: &str = "…";` of a Rust file of apps/web, so the app
+// A `pub const NAME: &str = "…";` of a Rust file under apps/, so the app
 // and the site cannot disagree: the app's name is the manifest's
-// (apps/web/src/brand.rs), and the User-Agent marker is the one
-// apps/web/src/mobile_app.rs looks for.
+// (apps/web/src/brand.rs), and the User-Agent marker is the one apps/web
+// and apps/api look for (apps/shared/src/mobile_app.rs, #754).
 function rustConst(file: string, name: string, shape: RegExp): string {
-  const source = readFileSync(new URL(`../web/src/${file}`, import.meta.url), 'utf8');
+  const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
   const found = source.match(new RegExp(`^pub const ${name}: &str = "([^"\\\\]*)";$`, 'm'));
   if (!found) {
-    throw new Error(`apps/web/src/${file}: no \`pub const ${name}: &str = "…";\` line`);
+    throw new Error(`apps/${file}: no \`pub const ${name}: &str = "…";\` line`);
   }
   if (!shape.test(found[1])) {
-    throw new Error(`apps/web/src/${file}: ${name} = "${found[1]}" does not match ${shape}`);
+    throw new Error(`apps/${file}: ${name} = "${found[1]}" does not match ${shape}`);
   }
   return found[1];
 }
@@ -64,11 +64,11 @@ const url = serverUrl();
 
 const config: CapacitorConfig = {
   appId: 'fr.watallo.mhome',
-  appName: rustConst('brand.rs', 'NAME', /^[^<>&]+$/),
+  appName: rustConst('web/src/brand.rs', 'NAME', /^[^<>&]+$/),
   // Nothing of apps/web is bundled (model A); the directory holds only the
   // page shown when the site cannot be loaded.
   webDir: 'www',
-  appendUserAgent: rustConst('mobile_app.rs', 'USER_AGENT_MARKER', /^[A-Za-z0-9]+$/),
+  appendUserAgent: rustConst('shared/src/mobile_app.rs', 'USER_AGENT_MARKER', /^[A-Za-z0-9]+$/),
   server: {
     url,
     // The host of the error page: with it, the page is served (out of the

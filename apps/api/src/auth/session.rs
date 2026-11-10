@@ -1,12 +1,14 @@
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
+use axum::http::{header::USER_AGENT, HeaderMap};
 use chrono::{DateTime, Duration, Utc};
 use cookie::{Cookie, SameSite};
 use sqlx::{PgPool, Postgres, Transaction};
 use tower_cookies::Cookies;
 use uuid::Uuid;
 
-use manage_our_home_shared::dto::auth::ActiveSession;
+use manage_our_home_shared::dto::auth::{ActiveSession, SessionClient};
+use manage_our_home_shared::mobile_app::client_of_user_agent;
 
 use super::token::{new_token, token_hash, BearerToken};
 use crate::error::AppError;
@@ -131,6 +133,8 @@ pub struct ListedSession {
     pub expires_at: DateTime<Utc>,
     pub revoked: bool,
     pub restricted: bool,
+    /// `sessions.client` (#754), `None` before it was recorded.
+    pub client: Option<SessionClient>,
 }
 
 /// The caller's sessions that are still live (#225), `current` first, then
@@ -166,6 +170,7 @@ pub fn active_sessions(
             created_at: row.created_at,
             last_seen_at: row.last_seen_at,
             current: row.id == current,
+            client: row.client,
         })
         .collect();
     live.sort_by(|a, b| {
@@ -186,7 +191,7 @@ pub async fn list_active_sessions(
 ) -> Result<Vec<ActiveSession>, sqlx::Error> {
     let rows = sqlx::query!(
         r#"
-        SELECT id, created_at, last_seen_at, expires_at, restricted
+        SELECT id, created_at, last_seen_at, expires_at, restricted, client
         FROM sessions
         WHERE user_id = $1 AND revoked_at IS NULL
         "#,
@@ -205,6 +210,7 @@ pub async fn list_active_sessions(
                 expires_at: r.expires_at,
                 revoked: false,
                 restricted: r.restricted,
+                client: r.client.as_deref().and_then(SessionClient::from_column),
             })
             .collect(),
     ))
@@ -598,10 +604,31 @@ fn expired_session_cookie(secure: bool) -> Cookie<'static> {
     c
 }
 
-/// Opens a session for `user_id` and returns the token its cookie carries.
-/// The table keeps only the token's hash (#222).
-pub async fn create_session(pool: &PgPool, user_id: Uuid) -> Result<BearerToken, sqlx::Error> {
-    insert_session(pool, user_id, false).await
+/// The client a session opened by the request with `headers` is recorded
+/// as (#754), from its `User-Agent` alone ([`client_of_user_agent`]): the
+/// app's WebView when it carries the marker, the web otherwise, no header
+/// or one that is not text included. apps/web relays the marker on the
+/// password login it forwards (`apps/web/src/routes/auth/login.rs`); the
+/// Google routes are reached by the browser itself. The header is read,
+/// never kept.
+pub fn client_of_headers(headers: &HeaderMap) -> SessionClient {
+    client_of_user_agent(
+        headers
+            .get(USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default(),
+    )
+}
+
+/// Opens a session for `user_id`, opened from `client` (#754), and returns
+/// the token its cookie carries. The table keeps only the token's hash
+/// (#222).
+pub async fn create_session(
+    pool: &PgPool,
+    user_id: Uuid,
+    client: SessionClient,
+) -> Result<BearerToken, sqlx::Error> {
+    insert_session(pool, user_id, false, client).await
 }
 
 /// The session a correct login on a deactivated account opens (#289): same
@@ -610,14 +637,16 @@ pub async fn create_session(pool: &PgPool, user_id: Uuid) -> Result<BearerToken,
 pub async fn create_restricted_session(
     pool: &PgPool,
     user_id: Uuid,
+    client: SessionClient,
 ) -> Result<BearerToken, sqlx::Error> {
-    insert_session(pool, user_id, true).await
+    insert_session(pool, user_id, true, client).await
 }
 
 async fn insert_session(
     pool: &PgPool,
     user_id: Uuid,
     restricted: bool,
+    client: SessionClient,
 ) -> Result<BearerToken, sqlx::Error> {
     let token = new_token();
     // `expires_at` on the database's clock, the one `created_at` and
@@ -625,13 +654,14 @@ async fn insert_session(
     // which bounds what closing the admin access takes off it (#339).
     sqlx::query!(
         r#"
-        INSERT INTO sessions (user_id, expires_at, restricted, token_hash)
-        VALUES ($1, now() + make_interval(days => $2), $3, $4)
+        INSERT INTO sessions (user_id, expires_at, restricted, token_hash, client)
+        VALUES ($1, now() + make_interval(days => $2), $3, $4, $5)
         "#,
         user_id,
         SESSION_TTL_DAYS as i32,
         restricted,
-        &token.hash()[..]
+        &token.hash()[..],
+        client.as_str()
     )
     .execute(pool)
     .await?;
@@ -1155,6 +1185,7 @@ mod tests {
             expires_at: now + Duration::days(28),
             revoked: false,
             restricted: false,
+            client: Some(SessionClient::Web),
         }
     }
 
@@ -1169,7 +1200,68 @@ mod tests {
                 created_at: now - Duration::days(2),
                 last_seen_at: now,
                 current: true,
+                client: Some(SessionClient::Web),
             }]
+        );
+    }
+
+    /// The `User-Agent` header decides (#754); none, or one that is not
+    /// text, is the web's.
+    #[test]
+    fn the_user_agent_header_names_the_client() {
+        fn with(user_agent: Option<&[u8]>) -> HeaderMap {
+            let mut headers = HeaderMap::new();
+            if let Some(ua) = user_agent {
+                headers.insert(USER_AGENT, ua.try_into().unwrap());
+            }
+            headers
+        }
+        let chrome = "Mozilla/5.0 (Linux; Android 14) Chrome/130.0.0.0 Mobile Safari/537.36";
+        assert_eq!(
+            client_of_headers(&with(Some(format!("{chrome} MHomeApp").as_bytes()))),
+            SessionClient::App
+        );
+        assert_eq!(
+            client_of_headers(&with(Some(b"MHomeApp"))),
+            SessionClient::App
+        );
+        assert_eq!(
+            client_of_headers(&with(Some(chrome.as_bytes()))),
+            SessionClient::Web
+        );
+        assert_eq!(client_of_headers(&with(None)), SessionClient::Web);
+        assert_eq!(
+            client_of_headers(&with(Some(b"MHomeApp \xff"))),
+            SessionClient::Web
+        );
+    }
+
+    /// The client is passed on as the row has it (#754), unknown included.
+    #[test]
+    fn each_session_keeps_the_client_it_was_opened_from() {
+        let now = at("2026-10-02T12:00:00Z");
+        let rows = vec![
+            ListedSession {
+                client: Some(SessionClient::App),
+                ..listed(1, now, 0)
+            },
+            ListedSession {
+                client: None,
+                ..listed(2, now, 5)
+            },
+            listed(3, now, 10),
+        ];
+        let clients: Vec<_> = active_sessions(now, Uuid::from_u128(1), rows)
+            .into_iter()
+            .map(|s| (s.id.as_u128(), s.client))
+            .collect();
+        assert_eq!(
+            clients,
+            vec![
+                (1, Some(SessionClient::App)),
+                (2, None),
+                (3, Some(SessionClient::Web)),
+            ]
         );
     }
 

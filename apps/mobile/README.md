@@ -89,9 +89,11 @@ du site.
   un certificat Let's Encrypt depuis #683 : il n'a plus besoin de l'autorité
   maison (`home-ca`), retirée.
 - **Un marqueur dans le User-Agent** : la WebView ajoute ` MHomeApp` à son
-  User-Agent. `apps/web` le reconnaît avec `mobile_app::is_mobile_app`
-  (`apps/web/src/mobile_app.rs`), d'où `capacitor.config.ts` lit la
-  constante : les deux ne peuvent pas diverger.
+  User-Agent. `apps/web` et `apps/api` le reconnaissent avec
+  `mobile_app::is_mobile_app` (`apps/shared/src/mobile_app.rs`), d'où
+  `capacitor.config.ts` lit la constante : les deux ne peuvent pas diverger.
+  L'API en déduit seulement si une session a été ouverte dans l'application
+  ou sur le web (#754) ; le User-Agent lui-même n'est pas conservé.
 - **Le nom et les icônes du manifeste web** : le nom vient de
   `apps/web/src/brand.rs` (`NAME`), les couleurs aussi (`THEME_COLOR`,
   `BACKGROUND_COLOR`), et les icônes sont copiées depuis `apps/web/src/brand/`

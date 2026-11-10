@@ -62,6 +62,7 @@ pub async fn post(
         "/auth/password/forgot",
         ForgotPasswordRequest { email: form.email },
         None,
+        false,
     )
     .await;
     Html(form_page(true))

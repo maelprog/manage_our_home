@@ -453,6 +453,60 @@ async fn the_email_of_an_existing_password_account_signs_in_to_it(db: PgPool) {
     assert_eq!(json_body(me).await["user_id"], user.to_string());
 }
 
+/// #754: the session the app's sign-in opens is recorded as the app's, by
+/// the marker its WebView appends to the User-Agent; the same sign-in from
+/// a browser, or with no User-Agent, as the web's. The User-Agent itself is
+/// not kept.
+#[sqlx::test]
+async fn the_session_records_whether_it_came_from_the_app_or_the_web(db: PgPool) {
+    const WEBVIEW: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 \
+        (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 MHomeApp";
+    const CHROME: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 \
+        (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36";
+    let router = router(db.clone(), false).await;
+    for (user_agent, client) in [(Some(WEBVIEW), "app"), (Some(CHROME), "web"), (None, "web")] {
+        let (nonce, cookie) = nonce(&router).await;
+        let token = id_token(&claims("google-sub-754", "client-754@example.test", &nonce));
+        let mut request = axum::http::Request::builder()
+            .method(Method::POST)
+            .uri("/auth/google/id-token")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(ua) = user_agent {
+            request = request.header(header::USER_AGENT, ua);
+        }
+        let body = serde_json::json!({ "id_token": token }).to_string();
+        let res = tower::ServiceExt::oneshot(
+            router.clone(),
+            request.body(axum::body::Body::from(body)).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_status(&res, StatusCode::OK);
+        let session = session_cookie(&res).expect("a session");
+        let (_, value) = session.split_once('=').unwrap();
+        let hash = manage_our_home::auth::token::token_hash(value).unwrap();
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT client FROM sessions WHERE token_hash = $1")
+                .bind(&hash[..])
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(stored.as_deref(), Some(client), "{user_agent:?}");
+    }
+    let rows: Vec<String> = sqlx::query_scalar("SELECT row_to_json(s)::text FROM sessions s")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        assert!(
+            !row.contains("Mozilla") && !row.contains("MHomeApp"),
+            "{row}"
+        );
+    }
+}
+
 /// As `callback` does (#194, #289): an account deactivated by support gets
 /// a restricted session, and no identity is bound to it.
 #[sqlx::test]

@@ -3003,11 +3003,126 @@ async fn sessions_lists_the_callers_live_sessions_only(db: PgPool) {
     );
     for s in listed {
         assert!(s["created_at"].is_string() && s["last_seen_at"].is_string());
-        assert_eq!(s.as_object().unwrap().len(), 4, "{s}");
+        // #754: opened by a login with no User-Agent, as the web's.
+        assert_eq!(s["client"], "web", "{s}");
+        assert_eq!(s.as_object().unwrap().len(), 5, "{s}");
     }
 
     let res = call(&router, Method::GET, "/auth/sessions", None, None).await;
     assert_status(&res, StatusCode::UNAUTHORIZED);
+}
+
+/// A password login whose request says `user_agent` (none: no header),
+/// returning its session cookie.
+async fn login_as(
+    router: &axum::Router,
+    email: &str,
+    password: &str,
+    user_agent: Option<&str>,
+) -> String {
+    let mut request = axum::http::Request::builder()
+        .method(Method::POST)
+        .uri("/auth/login")
+        .header(axum::http::header::CONTENT_TYPE, "application/json");
+    if let Some(ua) = user_agent {
+        request = request.header(axum::http::header::USER_AGENT, ua);
+    }
+    let body = serde_json::json!({"email": email, "password": password}).to_string();
+    let login = tower::ServiceExt::oneshot(
+        router.clone(),
+        request.body(axum::body::Body::from(body)).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_status(&login, StatusCode::OK);
+    set_cookie(&login).unwrap()
+}
+
+/// #754: a login records the client it came from — the app when its
+/// User-Agent carries the app's marker (the WebView's own, or the bare
+/// marker apps/web relays), the web for a browser's or none — and
+/// `GET /auth/sessions` says it. Neither the User-Agent nor any part of it
+/// is kept in the row or sent back.
+#[sqlx::test]
+async fn a_login_records_whether_it_came_from_the_app_or_the_web(db: PgPool) {
+    const WEBVIEW: &str = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 \
+        (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36 MHomeApp";
+    const FIREFOX: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
+    let router = test_router(db.clone());
+    let (email, password) = ("sess-client@example.test", "client-password1");
+    let none = register_verify_login(&router, &db, email, password).await;
+    let webview = login_as(&router, email, password, Some(WEBVIEW)).await;
+    let relayed = login_as(&router, email, password, Some("MHomeApp")).await;
+    let browser = login_as(&router, email, password, Some(FIREFOX)).await;
+
+    for (cookie, client) in [
+        (&none, "web"),
+        (&webview, "app"),
+        (&relayed, "app"),
+        (&browser, "web"),
+    ] {
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT client FROM sessions WHERE id = $1")
+                .bind(session_id_of(&db, cookie).await)
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(stored.as_deref(), Some(client), "{cookie}");
+    }
+
+    let listed = sessions_of(&router, &browser).await;
+    let mut clients: Vec<(String, String)> = listed
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_str().unwrap().to_string(),
+                s["client"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    clients.sort();
+    let mut expected = Vec::new();
+    for (cookie, client) in [
+        (&none, "web"),
+        (&webview, "app"),
+        (&relayed, "app"),
+        (&browser, "web"),
+    ] {
+        expected.push((
+            session_id_of(&db, cookie).await.to_string(),
+            client.to_string(),
+        ));
+    }
+    expected.sort();
+    assert_eq!(clients, expected);
+
+    // Nothing of the User-Agents, in the rows or in the answer.
+    let rows: Vec<String> = sqlx::query_scalar("SELECT row_to_json(s)::text FROM sessions s")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    let answer = serde_json::Value::Array(listed).to_string();
+    for text in rows.iter().chain([&answer]) {
+        for fragment in ["Mozilla", "Firefox", "Android", "MHomeApp"] {
+            assert!(!text.contains(fragment), "{fragment} kept: {text}");
+        }
+    }
+}
+
+/// A session opened before #754 has no known client: `null`.
+#[sqlx::test]
+async fn a_session_without_a_recorded_client_is_listed_with_none(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "sess-old@example.test", "old-password1").await;
+    sqlx::query("UPDATE sessions SET client = NULL WHERE id = $1")
+        .bind(session_id_of(&db, &cookie).await)
+        .execute(&db)
+        .await
+        .unwrap();
+    let listed = sessions_of(&router, &cookie).await;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0]["client"].is_null(), "{}", listed[0]);
 }
 
 /// No session ends on its own (#753): `POST /auth/sessions/:id/revoke` is

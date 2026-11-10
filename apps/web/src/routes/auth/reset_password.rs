@@ -133,6 +133,7 @@ pub async fn post(
             new_password: form.new_password,
         },
         None,
+        false,
     )
     .await;
 

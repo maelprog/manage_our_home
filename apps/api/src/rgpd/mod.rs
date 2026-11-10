@@ -586,7 +586,7 @@ pub async fn export_account(
 
     // Account-level tables, not family-scoped and not under RLS.
     let sessions = sqlx::query!(
-        r#"SELECT created_at, last_seen_at, expires_at, revoked_at, restricted
+        r#"SELECT created_at, last_seen_at, expires_at, revoked_at, restricted, client
            FROM sessions WHERE user_id = $1 ORDER BY created_at"#,
         auth.user_id
     )
@@ -598,7 +598,7 @@ pub async fn export_account(
             json!({
                 "created_at": s.created_at, "last_seen_at": s.last_seen_at,
                 "expires_at": s.expires_at, "revoked_at": s.revoked_at,
-                "restricted": s.restricted,
+                "restricted": s.restricted, "client": s.client,
             })
         })
         .collect();
