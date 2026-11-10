@@ -2,8 +2,8 @@ import { BrowserContext, expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
 
 // Issue #225 — the member's live sessions (/account/sessions): see them,
-// end them all. Dates only, no device information (arbitrated 2026-10-02),
-// and the global button ends this session too: the member is sent back to
+// end them all. Dates and origin (app or website, #754–#755) only, no device
+// information (arbitrated 2026-10-02), and the global button ends this session too: the member is sent back to
 // the login page. No session ends on its own any more (#753).
 
 function uniqueEmail(prefix: string): string {
@@ -80,6 +80,15 @@ test.describe("Account — active sessions (#225)", () => {
     await expect(rows).toHaveCount(2);
     await expect(rows.first()).toContainText("Cette session");
     await expect(page.getByText("ni l'adresse IP ni le navigateur")).toBeVisible();
+
+    // Each row is a disclosure (#755): opened from the keyboard, it
+    // reveals where the session was opened from — the website here, the
+    // browser carrying no app marker.
+    const origin = rows.first().getByText("Ouverte depuis : le site web");
+    await expect(origin).toBeHidden();
+    await rows.first().locator("summary").focus();
+    await page.keyboard.press("Enter");
+    await expect(origin).toBeVisible();
 
     // No row ends its session on its own (#753): only the global button.
     await expect(rows.locator("form, button")).toHaveCount(0);
