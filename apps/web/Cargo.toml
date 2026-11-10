@@ -103,3 +103,8 @@ jpeg-encoder = "0.7"
 # rxing's own writers: `encoders` is a feature of the crate above, enabled
 # for the tests only (resolver 2 keeps it out of the shipped binary).
 rxing = { version = "0.9", default-features = false, features = ["encoders"] }
+# The guard against a GET route that writes (#414, src/get_side_effects.rs)
+# reads this crate's source: which handler calls what, and which calls send
+# apps/api a change. Parsing only, the version and features apps/api's
+# OpenAPI test already uses: no new crate in Cargo.lock.
+syn = { version = "3.0.9", default-features = false, features = ["full", "parsing", "visit"] }
