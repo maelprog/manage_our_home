@@ -1,7 +1,22 @@
-//! No `GET` route of apps/web asks apps/api for a change (#414), outside the
-//! closed list the arbitrage of 2026-10-26 admits. `SameSite=Lax` sends the
-//! session cookie on a cross-site navigation, so a `GET` that writes is one a
-//! third site can trigger (#223, point 4).
+//! No `GET` route of apps/web asks apps/api for a change or sets a cookie
+//! (#414), outside the closed list the arbitrages of 2026-10-26 and
+//! 2026-11-11 admit. `SameSite=Lax` sends the session cookie on a cross-site
+//! navigation, so a `GET` that writes is one a third site can trigger (#223,
+//! point 4).
+//!
+//! The list, both apps together:
+//! - apps/api: `/auth/verify-email` (consumes the token), `/auth/google/start`
+//!   (the `state` cookie), `/auth/google/callback` (opens the session, or
+//!   the account), and a row of `audit_log` on `/account/export` and the
+//!   three `/admin/*` reads — `apps/api/tests/get_side_effects_flow.rs`;
+//! - apps/web: `/verify-email` and `/auth/google/callback` relay apps/api's
+//!   `GET`s above; `/admin/*` ends a superadmin session apps/api asks to
+//!   reauthenticate ([`ADMIN_REAUTHENTICATION`]); the cookies of
+//!   [`ADMITTED_COOKIES`]; and, until their issues land, the three
+//!   [`TEMPORARY`] exceptions.
+//!
+//! Not counted, per the arbitrage: authentication refreshing a session's
+//! `last_seen_at` and `expires_at`, and closing a session found idle.
 //!
 //! apps/web keeps no data: what it changes, it changes through apps/api, by a
 //! `POST`, `PUT`, `PATCH` or `DELETE` (apps/api's own `GET` routes are held
@@ -24,9 +39,46 @@ use syn::punctuated::Punctuated;
 use syn::visit::Visit;
 
 /// The function through which `/admin/*` ends the session of a superadmin
-/// apps/api asks to reauthenticate (`routes::admin::reauthenticate`): the
-/// effect the arbitrage admits on those routes, and on no other.
-const ADMIN_REAUTHENTICATION: (&[&str], &str) = (&["routes", "admin"], "reauthenticate");
+/// apps/api asks to reauthenticate: the effect the arbitrage of 2026-10-26
+/// admits on those routes, and on no other. Not followed from them.
+const ADMIN_REAUTHENTICATION: &[&str] = &["routes", "admin", "reauthenticate"];
+
+/// The `GET` routes that still ask apps/api for a change, each through the
+/// one function named, until the issue beside it moves the change to a
+/// `POST` (arbitrage of 2026-11-11). What else the route reaches is still
+/// checked, and an exception the route no longer needs fails the test.
+const TEMPORARY: [(&str, &[&str]); 3] = [
+    // Opening the live thread advances the read watermark (#73):
+    // `POST /groups/{id}/messages/read`. TODO retirer avec #781.
+    ("/messagerie", &["routes", "messagerie", "thread", "get"]),
+    // A scanned code is looked up by `POST /groups/{id}/stock-items/scan`,
+    // which fills the Open Food Facts cache and the throttle's counters.
+    // TODO retirer avec #782.
+    ("/stocks/new", &["routes", "stocks", "new", "scanned"]),
+    // The service worker's question takes the push off the device's count:
+    // `POST /account/push-subscriptions/received`. TODO retirer avec #783.
+    (
+        "/account/notifications/last-push",
+        &["routes", "account", "notifications", "last_push"],
+    ),
+];
+
+/// The cookies the arbitrage admits a `GET` setting (2026-10-26 and
+/// 2026-11-11), by route and the function that sets them; `*` for every
+/// route. Any other `Set-Cookie` written on the way of a `GET` fails the
+/// test.
+const ADMITTED_COOKIES: [(&str, &[&str]); 4] = [
+    // `return_to` (#462): a visitor with no session sent to `/login` from a
+    // page they come back to once logged in — an invitation. The
+    // extractor `CurrentUser`, so on every route that takes it.
+    ("*", &["layout", "to_login"]),
+    // `return_to` again, from `/login?next=…`.
+    ("/login", &["routes", "auth", "login", "get"]),
+    // The families shown on the agenda (#622), from `/agenda?families=…`.
+    ("/agenda", &["routes", "agenda", "calendar", "get"]),
+    // `return_to` cleared once used (#576).
+    ("/", &["routes", "home", "get"]),
+];
 
 /// What a function references: a path (a call, or a function passed by
 /// name), or a method called by name.
@@ -48,6 +100,8 @@ struct Item {
     arg_types: Vec<String>,
     /// The request to apps/api it sends itself, if one changes something.
     sink: Option<String>,
+    /// Whether it writes a `Set-Cookie` header itself.
+    cookie: Option<String>,
 }
 
 /// A `GET` route: its path (or the function that builds it) and what its
@@ -129,6 +183,7 @@ fn is_get_method(expr: &syn::Expr) -> bool {
 struct Body {
     refs: Vec<Ref>,
     sink: Option<String>,
+    cookie: Option<String>,
     /// The names it binds: arguments, `let`, closures, patterns. A path of
     /// one of these names is the variable, not a function.
     bindings: BTreeSet<String>,
@@ -154,6 +209,9 @@ impl<'ast> Visit<'ast> for Body {
     }
 
     fn visit_expr_path(&mut self, p: &'ast syn::ExprPath) {
+        if last_ident(&p.path).as_deref() == Some("SET_COOKIE") {
+            self.cookie = Some("Set-Cookie".into());
+        }
         self.refs.push(Ref::Path(segments(&p.path)));
     }
 
@@ -185,6 +243,19 @@ impl<'ast> Visit<'ast> for Body {
             if changes {
                 self.sink = Some(format!("http.{method}"));
             }
+        }
+        // `headers.get(SET_COOKIE)`: reading apps/api's answer sets nothing.
+        if matches!(method.as_str(), "get" | "get_all") {
+            self.visit_expr(&call.receiver);
+            for arg in &call.args {
+                let names_set_cookie = matches!(arg, syn::Expr::Path(p)
+                    if last_ident(&p.path).as_deref() == Some("SET_COOKIE"));
+                if !names_set_cookie {
+                    self.visit_expr(arg);
+                }
+            }
+            self.refs.push(Ref::Method(method));
+            return;
         }
         self.refs.push(Ref::Method(method));
         syn::visit::visit_expr_method_call(self, call);
@@ -368,6 +439,7 @@ impl Crate {
             self_ty,
             name,
             sink: body.sink.clone(),
+            cookie: body.cookie.clone(),
             refs: body.into_refs(),
             arg_types,
         });
@@ -511,6 +583,19 @@ impl Crate {
     /// The chain of calls from `route`'s handler to a request that changes
     /// something on apps/api, if there is one. `stop` is not followed.
     fn path_to_sink(&self, route: &Route, stop: &[usize]) -> Option<Vec<String>> {
+        self.path_to(route, stop, &[], |i| i.sink.as_ref())
+    }
+
+    /// The chain of calls from `route`'s handler to a function `effect`
+    /// picks, if there is one. `stop` is not followed; `admitted` is
+    /// followed, but its own effect does not count.
+    fn path_to(
+        &self,
+        route: &Route,
+        stop: &[usize],
+        admitted: &[usize],
+        effect: impl Fn(&Item) -> Option<&String>,
+    ) -> Option<Vec<String>> {
         let mut parent: BTreeMap<usize, Option<usize>> = BTreeMap::new();
         let mut queue = VecDeque::new();
         for r in &route.refs {
@@ -523,7 +608,7 @@ impl Crate {
         }
         while let Some(n) = queue.pop_front() {
             let item = &self.items[n];
-            if let Some(sink) = &item.sink {
+            if let Some(sink) = effect(item).filter(|_| !admitted.contains(&n)) {
                 let mut chain = vec![format!("{} ({sink})", self.name_of(n))];
                 let mut at = parent[&n];
                 while let Some(p) = at {
@@ -556,11 +641,20 @@ impl Crate {
         path.join("::")
     }
 
-    fn index_of(&self, module: &[&str], name: &str) -> usize {
+    /// The free function `path` names: `["routes", "home", "get"]`.
+    fn index_of(&self, path: &[&str]) -> usize {
+        let (name, module) = path.split_last().unwrap();
         let module: Vec<String> = module.iter().map(|s| s.to_string()).collect();
         let found: Vec<usize> = self.free_fns(&module, name).collect();
-        assert_eq!(found.len(), 1, "{}::{name}", module.join("::"));
+        assert_eq!(found.len(), 1, "{}", path.join("::"));
         found[0]
+    }
+
+    fn route(&self, path: &str) -> &Route {
+        self.routes
+            .iter()
+            .find(|r| r.path == path)
+            .unwrap_or_else(|| panic!("no GET {path} route"))
     }
 }
 
@@ -571,8 +665,7 @@ fn src_dir() -> PathBuf {
 /// The `GET` routes from which a request that changes something on apps/api
 /// can be reached, with the chain that leads there.
 fn offending_routes(krate: &Crate) -> Vec<String> {
-    let (module, name) = ADMIN_REAUTHENTICATION;
-    let reauthenticate = krate.index_of(module, name);
+    let reauthenticate = krate.index_of(ADMIN_REAUTHENTICATION);
     krate
         .routes
         .iter()
@@ -582,8 +675,39 @@ fn offending_routes(krate: &Crate) -> Vec<String> {
             } else {
                 vec![]
             };
+            let admitted: Vec<usize> = TEMPORARY
+                .iter()
+                .filter(|(path, _)| *path == route.path)
+                .map(|(_, f)| krate.index_of(f))
+                .collect();
             krate
-                .path_to_sink(route, &stop)
+                .path_to(route, &stop, &admitted, |i| i.sink.as_ref())
+                .map(|chain| format!("GET {}: {}", route.path, chain.join(" -> ")))
+        })
+        .collect()
+}
+
+/// The `GET` routes on whose way a `Set-Cookie` the arbitrage does not
+/// admit is written, with the chain that leads there.
+fn cookie_setting_routes(krate: &Crate) -> Vec<String> {
+    let reauthenticate = krate.index_of(ADMIN_REAUTHENTICATION);
+    krate
+        .routes
+        .iter()
+        .filter_map(|route| {
+            // Ending the session ends its cookie too.
+            let stop = if route.path.starts_with("/admin") {
+                vec![reauthenticate]
+            } else {
+                vec![]
+            };
+            let admitted: Vec<usize> = ADMITTED_COOKIES
+                .iter()
+                .filter(|(path, _)| *path == "*" || *path == route.path)
+                .map(|(_, f)| krate.index_of(f))
+                .collect();
+            krate
+                .path_to(route, &stop, &admitted, |i| i.cookie.as_ref())
                 .map(|chain| format!("GET {}: {}", route.path, chain.join(" -> ")))
         })
         .collect()
@@ -607,6 +731,60 @@ fn no_get_route_outside_the_admitted_list_asks_apps_api_for_a_change() {
     assert!(offending.is_empty(), "{}", offending.join("\n"));
 }
 
+/// Each temporary exception is still needed: once its issue moves the
+/// change to a `POST`, the route reaches nothing, and the entry must go.
+#[test]
+fn every_temporary_exception_is_still_needed() {
+    let krate = Crate::read(&src_dir());
+    for (path, function) in TEMPORARY {
+        let chain = krate
+            .path_to_sink(krate.route(path), &[])
+            .unwrap_or_else(|| panic!("GET {path} no longer needs its exception: remove it"));
+        assert!(
+            chain[chain.len() - 1].starts_with(&format!("{} (", function.join("::"))),
+            "GET {path}: {chain:?}"
+        );
+    }
+}
+
+#[test]
+fn no_get_route_outside_the_admitted_list_sets_a_cookie() {
+    let krate = Crate::read(&src_dir());
+    assert!(
+        krate.items.iter().filter(|i| i.cookie.is_some()).count() > 5,
+        "too few Set-Cookie found"
+    );
+    let offending = cookie_setting_routes(&krate);
+    assert!(offending.is_empty(), "{}", offending.join("\n"));
+}
+
+/// Each admitted cookie is set where the list says: through the extractor
+/// on a page that takes a session, and by the handler of each route named.
+#[test]
+fn the_parse_finds_the_admitted_cookies() {
+    let krate = Crate::read(&src_dir());
+    let cookie = |path: &str| {
+        krate
+            .path_to(krate.route(path), &[], &[], |i| i.cookie.as_ref())
+            .unwrap_or_else(|| panic!("GET {path} sets no cookie"))
+    };
+    assert!(
+        cookie("/groups")
+            .iter()
+            .any(|c| c.starts_with("layout::to_login")),
+        "{:?}",
+        cookie("/groups")
+    );
+    for (path, function) in ADMITTED_COOKIES.iter().filter(|(p, _)| *p != "*") {
+        let chain = cookie(path);
+        assert_eq!(
+            chain[0],
+            format!("{} (Set-Cookie)", function.join("::")),
+            "GET {path}"
+        );
+    }
+}
+
 /// The parse finds what it is meant to find: on the admin routes, the
 /// reauthentication leads to `POST /auth/logout`, and so do the `POST`
 /// routes it is not asked about.
@@ -621,6 +799,9 @@ fn the_parse_finds_the_admin_reauthentication_and_the_post_routes() {
     let chain = krate
         .path_to_sink(admin, &[])
         .expect("the reauthentication");
+    assert!(krate
+        .path_to_sink(admin, &[krate.index_of(ADMIN_REAUTHENTICATION)])
+        .is_none());
     assert!(
         chain
             .iter()
@@ -667,4 +848,16 @@ fn the_parse_tells_a_change_from_a_read() {
     assert!(sink("api_request_auth(&state, reqwest::Method::GET, &p, c, None)").is_none());
     // A `post` that is not apps/api's client.
     assert!(sink("router.post(handler)").is_none());
+
+    let cookie = |body: &str| {
+        let block: syn::Block = syn::parse_str(&format!("{{ {body} }}")).unwrap();
+        let mut b = Body::default();
+        b.visit_block(&block);
+        b.cookie
+    };
+    assert!(cookie("headers.insert(header::SET_COOKIE, v)").is_some());
+    assert!(cookie("([(SET_COOKIE, value)], page)").is_some());
+    // Reading apps/api's answer.
+    assert!(cookie("resp.headers().get(reqwest::header::SET_COOKIE)").is_none());
+    assert!(cookie("resp.headers().get_all(header::SET_COOKIE)").is_none());
 }
