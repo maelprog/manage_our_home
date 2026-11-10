@@ -14,7 +14,7 @@
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use manage_our_home_shared::dto::auth::ActiveSession;
+use manage_our_home_shared::dto::auth::{ActiveSession, SessionClient};
 
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
@@ -43,7 +43,7 @@ fn page_body(sessions: &[ActiveSession], error: &str) -> String {
 <h1>Sessions actives</h1>
 {error}
 <p>Chaque connexion ouvre une session, sur un appareil ou un navigateur. Une session prend fin d'elle-même après 7 jours sans activité, et au plus tard 30 jours après la connexion.</p>
-<p class="muted">Le service ne conserve ni l'adresse IP ni le navigateur d'une session : seules ses dates permettent de la reconnaître.</p>
+<p class="muted">Le service ne conserve ni l'adresse IP ni le navigateur d'une session : seulement ses dates et son origine, l'application ou le site web.</p>
 <ul class="list">{rows}</ul>
 <section class="card">
 <h2>Déconnecter toutes les sessions</h2>
@@ -55,7 +55,18 @@ fn page_body(sessions: &[ActiveSession], error: &str) -> String {
     )
 }
 
-/// One session: its dates, and the "this session" badge on the current one.
+/// Where a session was opened from, as its row reveals it; `None` is a
+/// session opened before the origin was recorded (#754).
+fn origin_label(client: Option<SessionClient>) -> &'static str {
+    match client {
+        Some(SessionClient::App) => "l'application",
+        Some(SessionClient::Web) => "le site web",
+        None => "origine inconnue",
+    }
+}
+
+/// One session, a disclosure (#755): its dates and the "this session"
+/// badge on the current one in the summary, its origin once opened.
 fn session_row(session: &ActiveSession) -> String {
     let opened = html_escape(&format_rgpd_datetime(session.created_at));
     let last_seen = html_escape(&format_rgpd_datetime(session.last_seen_at));
@@ -65,11 +76,14 @@ fn session_row(session: &ActiveSession) -> String {
         ""
     };
     format!(
-        r#"<li class="list-row" data-session="{id}">
-<span>Ouverte le {opened}<br/><span class="muted">Dernière activité le {last_seen}</span></span>
-{end}
+        r#"<li class="list-row stacked" data-session="{id}">
+<details>
+<summary>Ouverte le {opened}<br/><span class="muted">Dernière activité le {last_seen}</span> {end}</summary>
+<p>Ouverte depuis : {origin}</p>
+</details>
 </li>"#,
         id = session.id,
+        origin = origin_label(session.client),
     )
 }
 
@@ -163,6 +177,28 @@ mod tests {
         }
     }
 
+    fn session_from(id: u128, client: Option<SessionClient>) -> ActiveSession {
+        ActiveSession {
+            client,
+            ..session(id, false)
+        }
+    }
+
+    /// The `<summary>` of a row: what shows while it is closed.
+    fn summary_of(row: &str) -> &str {
+        let start = row.find("<summary>").expect("the row has a summary");
+        let end = row.find("</summary>").expect("the summary is closed");
+        &row[start..end]
+    }
+
+    /// What a row reveals once opened: after its summary, inside its
+    /// `<details>`.
+    fn detail_of(row: &str) -> &str {
+        let start = row.find("</summary>").expect("the summary is closed");
+        let end = row.find("</details>").expect("the disclosure is closed");
+        &row[start..end]
+    }
+
     /// The `<li>` of the session `id`, which the assertions below look into.
     fn row_of(body: &str, id: u128) -> String {
         let marker = format!(r#"data-session="{}""#, Uuid::from_u128(id));
@@ -182,14 +218,45 @@ mod tests {
         assert!(row.contains("02/10/2026 à 14:05"), "{row}");
     }
 
-    /// The current session is named; no other row is.
+    /// The current session is named, closed row included; no other row is.
     #[test]
     fn the_current_session_is_marked() {
         let body = page_body(&[session(1, true), session(2, false)], "");
         let current = row_of(&body, 1);
-        assert!(current.contains("Cette session"), "{current}");
+        assert!(summary_of(&current).contains("Cette session"), "{current}");
         let other = row_of(&body, 2);
         assert!(!other.contains("Cette session"), "{other}");
+    }
+
+    /// Each row is a disclosure without JavaScript (#755): closed, it
+    /// shows the dates; the origin is in what it reveals.
+    #[test]
+    fn each_session_is_a_disclosure_whose_summary_shows_the_dates() {
+        let body = page_body(&[session_from(1, Some(SessionClient::App))], "");
+        let row = row_of(&body, 1);
+        assert!(row.contains("<details>"), "{row}");
+        let summary = summary_of(&row);
+        assert!(summary.contains("28/09/2026 à 09:30"), "{summary}");
+        assert!(summary.contains("02/10/2026 à 14:05"), "{summary}");
+        assert!(!summary.contains("Ouverte depuis"), "{summary}");
+        assert!(!body.contains("<script"), "{body}");
+    }
+
+    /// The origin, one wording per value of `ActiveSession.client` (#754):
+    /// the app, the website, or unknown for a session opened before the
+    /// origin was recorded.
+    #[test]
+    fn opening_a_session_reveals_where_it_was_opened_from() {
+        let cases = [
+            (Some(SessionClient::App), "Ouverte depuis : l'application"),
+            (Some(SessionClient::Web), "Ouverte depuis : le site web"),
+            (None, "Ouverte depuis : origine inconnue"),
+        ];
+        for (client, expected) in cases {
+            let body = page_body(&[session_from(1, client)], "");
+            let row = row_of(&body, 1);
+            assert!(detail_of(&row).contains(expected), "{client:?}: {row}");
+        }
     }
 
     /// No row ends its session on its own (#753): ending sessions is the
@@ -218,12 +285,17 @@ mod tests {
         assert!(!body.contains("toutes les autres"), "{body}");
     }
 
-    /// No IP and no user-agent are kept: the page says the dates are all
-    /// there is to tell sessions apart.
+    /// No IP and no user-agent are kept: the page says so, and that the
+    /// dates and the origin (#754) are what tells sessions apart.
     #[test]
     fn the_page_says_no_device_information_is_kept() {
         let body = page_body(&[session(1, true)], "");
         assert!(body.contains("ni l'adresse IP ni le navigateur"), "{body}");
+        assert!(
+            body.contains("ses dates et son origine, l'application ou le site web"),
+            "{body}"
+        );
+        assert!(!body.contains("seules ses dates"), "{body}");
     }
 
     #[test]
