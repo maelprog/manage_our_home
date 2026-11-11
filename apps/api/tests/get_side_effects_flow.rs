@@ -379,7 +379,7 @@ async fn no_get_route_outside_the_admitted_list_changes_anything(db: PgPool) {
 
     let routes = get_routes();
     // A sanity bound on the enumeration itself.
-    assert!(routes.len() > 40, "{} GET routes found", routes.len());
+    assert!(routes.len() >= 50, "{} GET routes found", routes.len());
     for admitted in ADMITTED {
         assert!(
             routes.iter().any(|r| r == admitted),
