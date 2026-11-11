@@ -14,6 +14,9 @@ import { fetchVerificationToken } from "../lib/db";
 // decoding apps/web's unit tests cover: here, the string one decodes to.
 // Issue #404 adds the date a known product's category proposes, and the
 // "+3 j / +1 sem. / +1 mois" shortcuts the script puts next to the field.
+// Issue #782: the lookup writes in apps/api (the Open Food Facts cache, the
+// throttle's counters), so it runs on a POST only; `?scan=` on a GET only
+// puts the code back in the field.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -108,6 +111,15 @@ async function createGroup(page: Page, name: string): Promise<void> {
   await expect(page).toHaveURL(/\/groups\?notice=group_created$/);
 }
 
+/** Looks `raw` up as the "Code-barres" field does: the page's GET puts it
+ *  in the field, "Chercher le produit" sends it by POST. */
+async function scan(page: Page, raw: string): Promise<void> {
+  await page.goto(`/stocks/new?scan=${encodeURIComponent(raw)}`);
+  await expect(page.getByLabel("Code-barres")).toHaveValue(raw);
+  await page.getByRole("button", { name: "Chercher le produit" }).click();
+  await expect(page).toHaveURL(/\/stocks\/new\/scan$/);
+}
+
 test.describe("Stocks — barcode scan", () => {
   test("a photo of a known code pre-fills the form, and scanning it again adds one", async ({
     page,
@@ -122,7 +134,7 @@ test.describe("Stocks — barcode scan", () => {
       mimeType: "image/png",
       buffer: ean13Photo(KNOWN),
     });
-    await expect(page).toHaveURL(new RegExp(`/stocks/new\\?scan=${KNOWN}$`));
+    await expect(page).toHaveURL(/\/stocks\/new\/photo$/);
     await expect(page.getByText("Produit trouvé")).toBeVisible();
     await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
     await expect(page.getByLabel("Quantité")).toHaveValue("1");
@@ -133,7 +145,7 @@ test.describe("Stocks — barcode scan", () => {
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
 
     // The same code again: the article already in stock, and "+1".
-    await page.goto(`/stocks/new?scan=${KNOWN}`);
+    await scan(page, KNOWN);
     await expect(page.getByRole("heading", { name: "Déjà en stock" })).toBeVisible();
     await expect(page.getByText("Déjà en stock : Pâte à tartiner (400 g) (1)")).toBeVisible();
     await page.getByRole("button", { name: "+1" }).click();
@@ -141,8 +153,8 @@ test.describe("Stocks — barcode scan", () => {
     await expect(page.getByText("Quantité : 2", { exact: true })).toBeVisible();
 
     // "Créer quand même un autre article": the form, without the code.
-    await page.goto(`/stocks/new?scan=${KNOWN}`);
-    await page.getByRole("link", { name: "Créer quand même un autre article" }).click();
+    await scan(page, KNOWN);
+    await page.getByRole("button", { name: "Créer quand même un autre article" }).click();
     await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
     await expect(page.getByText("Cet article ne portera pas le code-barres")).toBeVisible();
     await expect(page.getByText("Code-barres associé")).toHaveCount(0);
@@ -171,7 +183,7 @@ test.describe("Stocks — barcode scan", () => {
       mimeType: "image/png",
       buffer: ean13Photo(KNOWN),
     });
-    await expect(page).toHaveURL(new RegExp(`/stocks/new\\?scan=${KNOWN}$`));
+    await expect(page).toHaveURL(/\/stocks\/new\/photo$/);
     await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
 
     // Or the digits, typed: the scan runs on them.
@@ -186,7 +198,7 @@ test.describe("Stocks — barcode scan", () => {
     await registerAndLogin(page, "e2e-scan-weighed");
     await createGroup(page, "Famille Pesée");
 
-    await page.goto(`/stocks/new?scan=${WEIGHED}`);
+    await scan(page, WEIGHED);
     await expect(page.getByText("Étiquette de pesée du magasin")).toBeVisible();
     await expect(page.getByLabel("Nom")).toHaveValue("");
     await expect(page.getByText(`Code-barres associé : ${WEIGHED}`)).toBeVisible();
@@ -200,8 +212,7 @@ test.describe("Stocks — barcode scan", () => {
     // (01) KNOWN as a GTIN-14, (10) a lot ended by FNC1 (ASCII 29), (17)
     // 2027-01-31: what a GS1 DataMatrix decodes to (#403).
     const gs1 = (yymmdd: string) => `010301762042200310LOT-42\u001d17${yymmdd}`;
-    await page.goto(`/stocks/new?scan=${encodeURIComponent(gs1("270131"))}`);
-    expect(page.url()).toContain("%1D17270131");
+    await scan(page, gs1("270131"));
     await expect(page.getByText("Produit trouvé")).toBeVisible();
     await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
     await expect(page.getByText(`Code-barres associé : ${KNOWN}`)).toBeVisible();
@@ -213,7 +224,7 @@ test.describe("Stocks — barcode scan", () => {
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
 
     // The same product, a sooner date: proposed, not written.
-    await page.goto(`/stocks/new?scan=${encodeURIComponent(gs1("270115"))}`);
+    await scan(page, gs1("270115"));
     await expect(page.getByRole("heading", { name: "Déjà en stock" })).toBeVisible();
     await expect(
       page.getByText(
@@ -234,7 +245,7 @@ test.describe("Stocks — barcode scan", () => {
     await createGroup(page, "Famille Yaourt");
 
     // apps/api counts from the Paris day of the scan.
-    await page.goto(`/stocks/new?scan=${YOGURT}`);
+    await scan(page, YOGURT);
     await expect(page.getByText("Produit trouvé")).toBeVisible();
     await expect(page.getByLabel("Nom")).toHaveValue("Yaourt nature");
     await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(21));
@@ -261,9 +272,21 @@ test.describe("Stocks — barcode scan", () => {
     await registerAndLogin(page, "e2e-scan-invalid");
     await createGroup(page, "Famille Invalide");
 
-    await page.goto("/stocks/new?scan=12345");
+    await scan(page, "12345");
     await expect(page.getByText("Ce code-barres n'est pas reconnu")).toBeVisible();
     await expect(page.getByLabel("Code-barres")).toHaveValue("12345");
+    await expect(page.getByText("Code-barres associé")).toHaveCount(0);
+  });
+
+  test("a GET with a code only puts it in the field", async ({ page }) => {
+    await registerAndLogin(page, "e2e-scan-get");
+    await createGroup(page, "Famille Lecture");
+
+    // No lookup on a GET (#782): no product, no notice, the manual form.
+    await page.goto(`/stocks/new?scan=${KNOWN}`);
+    await expect(page.getByLabel("Code-barres")).toHaveValue(KNOWN);
+    await expect(page.getByText("Produit trouvé")).toHaveCount(0);
+    await expect(page.getByLabel("Nom")).toHaveValue("");
     await expect(page.getByText("Code-barres associé")).toHaveCount(0);
   });
 });
@@ -289,7 +312,7 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await page.goto("/stocks/new");
     await page.getByLabel("Code-barres").fill(UNKNOWN);
     await page.getByRole("button", { name: "Chercher le produit" }).click();
-    await expect(page).toHaveURL(new RegExp(`/stocks/new\\?scan=${UNKNOWN}$`));
+    await expect(page).toHaveURL(/\/stocks\/new\/scan$/);
     await expect(page.getByText("Aucune fiche produit pour ce code")).toBeVisible();
     await page.getByLabel("Nom").fill("Surligneurs");
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
@@ -309,7 +332,7 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
 
     // A known category: the date is proposed, with its mention, and no
     // shortcut is put next to it.
-    await page.goto(`/stocks/new?scan=${YOGURT}`);
+    await scan(page, YOGURT);
     await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(21));
     await expect(page.getByText("Proposée d'après la catégorie « Yaourts »")).toBeVisible();
     await expect(page.getByRole("button", { name: "+1 sem." })).toHaveCount(0);

@@ -6,8 +6,8 @@
 //! The photo is never written anywhere and never sent on — not to apps/api,
 //! not to Open Food Facts. It lives in this process's memory for the length
 //! of the request, and only the decoded code goes further — its digits, or
-//! the text of a GS1 DataMatrix or QR code (#403) — through the same
-//! `GET /stocks/new?scan=…` the "Code-barres" field uses. A photo can show
+//! the text of a GS1 DataMatrix or QR code (#403) — through the same lookup
+//! as `POST /stocks/new/scan`, the "Code-barres" field's. A photo can show
 //! the inside of a home: that is why it goes no further than this module
 //! (`docs/registre-traitements.md`, Stocks).
 //!
