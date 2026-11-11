@@ -33,7 +33,8 @@ ce qu'elle promet) ; **basse** (cas limite, course, durcissement) ; **info**
 
 Aucun constat de sévérité haute. Aucun handler relu ne lit ni n'écrit les
 données d'une famille sans vérifier, dans le code Rust, que l'appelant en est
-membre. En revanche, la RLS ne vérifie pas cette appartenance (constat 1). Elle
+membre, à une exception près : `upload_attachment` ne revérifie pas
+l'appartenance dans la transaction qui écrit (constat 1). En revanche, la RLS ne vérifie pas cette appartenance (constat 1). Elle
 filtre sur un identifiant de groupe que fournit l'appelant. Deux fuites réelles
 touchent les **anciens membres** d'une famille (constats 2 et 3). Une règle de
 permission de l'agenda n'est pas appliquée aux rappels ni aux pièces jointes
@@ -84,11 +85,21 @@ permission de l'agenda n'est pas appliquée aux rappels ni aux pièces jointes
   `UPDATE 1`, et `INSERT INTO group_members (G1, étranger, 'standard')` rend
   `INSERT 0 1` (annexe, R2). Avec `user_scoped_tx` seul, il ne voit aucun
   groupe (R3).
-- **Aujourd'hui** : aucun chemin exploitable trouvé. Les 90 appels sont suivis
-  d'un contrôle d'appartenance, ou relèvent d'un cas où il n'en faut pas :
-  `create_group` sur un id neuf, `accept_invitation` via le jeton,
-  `export_account` sur les seules lignes de l'appelant, `list_upcoming` sur ses
-  seules appartenances.
+- **Aujourd'hui** : aucun chemin ouvert à un étranger au groupe n'a été
+  trouvé. Les 90 appels sont suivis d'un contrôle d'appartenance, ou relèvent
+  d'un cas où il n'en faut pas (`create_group` sur un id neuf,
+  `accept_invitation` via le jeton, `export_account` sur les seules lignes de
+  l'appelant, `list_upcoming` sur ses seules appartenances), à **une
+  exception près**, de sévérité basse : la seconde transaction de
+  `upload_attachment` (`apps/api/src/agenda/attachments.rs:145`). Elle rouvre
+  `scoped_tx`, relit l'événement `FOR KEY SHARE`, insère la ligne
+  `event_attachments` et écrit l'objet, sans `require_role`. L'appartenance
+  n'est vérifiée que dans la première transaction (`:69-70`), avant la lecture
+  du corps (jusqu'à 20 Mio). Un membre retiré du groupe pendant son envoi
+  attache donc encore son fichier à l'événement : la RLS ne l'en empêche pas
+  (`INSERT 0 1`, sondé en SQL à la vérification de cette revue). La fenêtre se
+  limite à la durée d'un envoi commencé avant le retrait. Piste : rappeler
+  `require_role` dans la seconde transaction.
 - **Piste** : que `scoped_tx` vérifie lui-même l'appartenance avant de poser
   `app.group_id` (la lecture passe par `group_members_self_read` sous
   `app.user_id`), avec des variantes nommées pour les trois exceptions (export
@@ -130,7 +141,7 @@ permission de l'agenda n'est pas appliquée aux rappels ni aux pièces jointes
 ### 3. Les rappels continuent d'être envoyés au créateur d'un événement après son départ — moyenne
 
 - **Où** : `apps/api/src/jobs/scheduled_notifications.rs:222-230` (requête des
-  rappels dus, sans filtre d'appartenance) et `reach` (`:362-420`), qui ne
+  rappels dus, sans filtre d'appartenance) et `reach` (`:361-424`), qui ne
   vérifie que l'état du compte (`deactivated_at`, `deleted_at`) ;
   `apps/api/src/agenda/reminders.rs:49-64` (`create_reminder` : la seule
   barre est l'appartenance).
