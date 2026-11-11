@@ -2107,6 +2107,23 @@ async fn attachment_count(db: &PgPool, group_id: &str, event_id: &str) -> i64 {
     count
 }
 
+/// #773: an attachment's thumbnail has its own object key, `thumbnail_key`.
+/// Nullable and without a default: NULL is "no thumbnail" (a PDF, a video,
+/// an attachment stored before thumbnails existed), never a made-up key.
+#[sqlx::test]
+async fn attachment_thumbnail_key_is_a_nullable_text_column_without_default(db: PgPool) {
+    let column: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT data_type::text, is_nullable::text, column_default::text
+         FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = 'event_attachments'
+           AND column_name = 'thumbnail_key'",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(column, [("text".into(), "YES".into(), None)]);
+}
+
 async fn create_event(router: &axum::Router, cookie: &str, group_id: &str) -> String {
     let starts_at = Utc::now() + Duration::days(1);
     let res = call(
