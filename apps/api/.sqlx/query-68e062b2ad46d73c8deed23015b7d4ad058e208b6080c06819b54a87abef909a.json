@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT k AS \"key!\" FROM event_attachments,\n                  LATERAL (VALUES (storage_key), (thumbnail_key)) AS keys(k)\n           WHERE event_id = ANY($1) AND k IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "68e062b2ad46d73c8deed23015b7d4ad058e208b6080c06819b54a87abef909a"
+}

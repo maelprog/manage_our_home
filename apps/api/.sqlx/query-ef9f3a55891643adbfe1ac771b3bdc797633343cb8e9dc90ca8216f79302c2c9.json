@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT storage_key, thumbnail_key AS \"thumbnail_key!\" FROM event_attachments\n           WHERE thumbnail_key IS NOT NULL ORDER BY filename",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "storage_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "thumbnail_key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "thumbnail_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "ef9f3a55891643adbfe1ac771b3bdc797633343cb8e9dc90ca8216f79302c2c9"
+}

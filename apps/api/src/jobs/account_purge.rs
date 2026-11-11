@@ -436,9 +436,12 @@ async fn delete_if_abandoned(
     if !abandoned {
         return Ok(Vec::new());
     }
+    // The thumbnails' keys with the files' (#774).
     let keys = sqlx::query_scalar!(
-        "SELECT storage_key FROM event_attachments
-         WHERE event_id IN (SELECT id FROM events WHERE group_id = $1)",
+        r#"SELECT k AS "key!" FROM event_attachments,
+                  LATERAL (VALUES (storage_key), (thumbnail_key)) AS keys(k)
+           WHERE event_id IN (SELECT id FROM events WHERE group_id = $1)
+             AND k IS NOT NULL"#,
         group_id,
     )
     .fetch_all(&mut **tx)

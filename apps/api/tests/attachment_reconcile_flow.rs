@@ -277,6 +277,83 @@ async fn an_object_younger_than_the_window_is_left_alone(db: PgPool) {
     );
 }
 
+/// #774: a thumbnail is an object of its own. One that no
+/// `thumbnail_key` names any more is collected; one its row still names is
+/// matched, like the files.
+#[sqlx::test]
+async fn an_orphaned_thumbnail_is_collected_and_an_attached_one_kept(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping an_orphaned_thumbnail_is_collected_and_an_attached_one_kept: \
+             no MinIO in the environment"
+        );
+        return;
+    };
+    use image::ImageEncoder;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[90; 32 * 32 * 3], 32, 32, image::ExtendedColorType::Rgb8)
+        .unwrap();
+
+    let storage = Storage::new(s3.clone(), bucket.clone());
+    let router = test_router_with_storage(db.clone(), storage.clone());
+    let cookie = register_verify_login(&router, &db, "reconcile-thumb@example.test").await;
+    let fixture = two_attachments(&router, &db, &cookie).await;
+    let event_id = sqlx::query_scalar!(
+        "SELECT event_id FROM event_attachments WHERE storage_key = $1",
+        fixture.keys[0]
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    for filename in ["photo-a.png", "photo-b.png"] {
+        let upload = call_upload(
+            &router,
+            &format!("/groups/{}/events/{event_id}/attachments", fixture.group_id),
+            &cookie,
+            filename,
+            &png,
+        )
+        .await;
+        assert_status(&upload, StatusCode::CREATED);
+    }
+    let thumbnails = sqlx::query!(
+        r#"SELECT storage_key, thumbnail_key AS "thumbnail_key!" FROM event_attachments
+           WHERE thumbnail_key IS NOT NULL ORDER BY filename"#
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(thumbnails.len(), 2);
+    let (orphan, kept) = (&thumbnails[0].thumbnail_key, &thumbnails[1].thumbnail_key);
+
+    // The row forgets its thumbnail; the object stays in the bucket.
+    sqlx::query!(
+        "UPDATE event_attachments SET thumbnail_key = NULL WHERE thumbnail_key = $1",
+        orphan
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let mut conn = db.acquire().await.unwrap();
+    let outcome = reconcile(
+        &storage,
+        &mut conn,
+        &options(&fixture.group_id, true, 0),
+        Utc::now() + Duration::minutes(5),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.deleted, vec![orphan.clone()]);
+    // The two PNG signatures, the two photos and the kept thumbnail.
+    assert_eq!(outcome.scan.matched, 5);
+    assert!(!exists(&s3, &bucket, orphan).await);
+    assert!(exists(&s3, &bucket, kept).await);
+    assert!(exists(&s3, &bucket, &thumbnails[0].storage_key).await);
+}
+
 /// Trap 1 of #58, and the one that empties the bucket if missed:
 /// `event_attachments` is `FORCE ROW LEVEL SECURITY`, so an unscoped
 /// `SELECT storage_key` on a connection without `BYPASSRLS` returns zero

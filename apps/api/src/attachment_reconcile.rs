@@ -253,13 +253,16 @@ pub async fn ensure_bypasses_rls(conn: &mut sqlx::PgConnection) -> anyhow::Resul
     Ok(())
 }
 
-/// Every storage key the database knows about: the attachments', and the
-/// profile photos' (`users.avatar_key`, #467), which share the bucket under
-/// `avatars/`. Leaving the second out would classify every photo older than
-/// the window as an orphan, and delete it.
+/// Every storage key the database knows about: the attachments', their
+/// thumbnails' (`thumbnail_key`, #774), and the profile photos'
+/// (`users.avatar_key`, #467), which share the bucket under `avatars/`.
+/// Leaving either of the last two out would classify every thumbnail or
+/// photo older than the window as an orphan, and delete it.
 pub async fn known_storage_keys(conn: &mut sqlx::PgConnection) -> anyhow::Result<HashSet<String>> {
     let keys = sqlx::query_scalar!(
         r#"SELECT storage_key AS "key!" FROM event_attachments
+           UNION ALL
+           SELECT thumbnail_key AS "key!" FROM event_attachments WHERE thumbnail_key IS NOT NULL
            UNION ALL
            SELECT avatar_key AS "key!" FROM users WHERE avatar_key IS NOT NULL"#
     )

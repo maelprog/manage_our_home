@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE event_attachments SET thumbnail_key = NULL WHERE thumbnail_key = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "96b0ae4fb3d4eebc07f704399ff917a7a2eec2fcdcd5a3e1409b858b1e116997"
+}

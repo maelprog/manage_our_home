@@ -2376,6 +2376,252 @@ async fn a_successful_upload_stores_the_object_and_commits_the_row(db: PgPool) {
     );
 }
 
+/// A real PNG of `width` × `height`, which the thumbnail decodes (#774);
+/// `PNG_BYTES` is a signature only, sniffed as a PNG but unreadable.
+fn real_png(width: u32, height: u32) -> Vec<u8> {
+    use image::ImageEncoder;
+    let picture =
+        image::RgbImage::from_fn(width, height, |x, y| image::Rgb([x as u8, y as u8, 120]));
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(
+            picture.as_raw(),
+            width,
+            height,
+            image::ExtendedColorType::Rgb8,
+        )
+        .unwrap();
+    out
+}
+
+/// The start of an MP4: an `ftyp` box, major brand `isom`.
+const MP4_BYTES: &[u8] = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2avc1mp41";
+
+/// The storage key and thumbnail key of the attachment `attachment_id`.
+async fn attachment_keys(
+    db: &PgPool,
+    group_id: &str,
+    attachment_id: &str,
+) -> (String, Option<String>) {
+    let mut tx = with_family_scope(db, group_id).await;
+    let keys =
+        sqlx::query_as("SELECT storage_key, thumbnail_key FROM event_attachments WHERE id = $1")
+            .bind(Uuid::parse_str(attachment_id).unwrap())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    keys
+}
+
+async fn object_exists(s3: &aws_sdk_s3::Client, bucket: &str, key: &str) -> bool {
+    s3.head_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .is_ok()
+}
+
+/// Uploads `bytes` as `filename` and answers the attachment's JSON.
+async fn upload(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    event_id: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> serde_json::Value {
+    let res = call_upload(
+        router,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        cookie,
+        filename,
+        bytes,
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await
+}
+
+/// #774: a picture gets a thumbnail, stored as a JPEG of its own, its long
+/// side at 400 px; a PDF, a video and an unreadable picture get none, and
+/// are stored all the same. The listing says which have one.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn a_picture_is_stored_with_a_thumbnail_a_pdf_or_a_video_without(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping a_picture_is_stored_with_a_thumbnail_a_pdf_or_a_video_without: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let storage = manage_our_home::storage::Storage::new(s3.clone(), bucket.clone());
+    let router = test_router_with_storage(db.clone(), storage.clone());
+    let cookie =
+        register_verify_login(&router, &db, "thumb-kinds@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let event_id = create_event(&router, &cookie, &group_id).await;
+
+    let png = upload(
+        &router,
+        &cookie,
+        &group_id,
+        &event_id,
+        "photo.png",
+        &real_png(800, 600),
+    )
+    .await;
+    assert_eq!(png["has_thumbnail"], true, "{png}");
+    let (_, thumbnail_key) = attachment_keys(&db, &group_id, png["id"].as_str().unwrap()).await;
+    let thumbnail = storage.get_object(&thumbnail_key.unwrap()).await.unwrap();
+    let decoded = image::load_from_memory_with_format(&thumbnail, image::ImageFormat::Jpeg)
+        .expect("the thumbnail is a JPEG");
+    assert_eq!((decoded.width(), decoded.height()), (400, 300));
+
+    for (filename, bytes) in [
+        ("ordonnance.pdf", &b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"[..]),
+        ("film.mp4", MP4_BYTES),
+        ("illisible.png", PNG_BYTES),
+    ] {
+        let stored = upload(&router, &cookie, &group_id, &event_id, filename, bytes).await;
+        assert_eq!(stored["has_thumbnail"], false, "{filename}: {stored}");
+        let (storage_key, thumbnail_key) =
+            attachment_keys(&db, &group_id, stored["id"].as_str().unwrap()).await;
+        assert_eq!(thumbnail_key, None, "{filename}");
+        assert!(
+            object_exists(&s3, &bucket, &storage_key).await,
+            "{filename}"
+        );
+    }
+    let mp4 = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/events/{event_id}/attachments"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    let listed = json_body(mp4).await;
+    let mut flags: Vec<(String, bool)> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["filename"].as_str().unwrap().to_string(),
+                a["has_thumbnail"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    flags.sort();
+    assert_eq!(
+        flags,
+        [
+            ("film.mp4".to_string(), false),
+            ("illisible.png".to_string(), false),
+            ("ordonnance.pdf".to_string(), false),
+            ("photo.png".to_string(), true),
+        ]
+    );
+}
+
+/// #774: the thumbnail follows its file out of the bucket, whichever
+/// delete takes it — the attachment's, the event's, the group's.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn every_delete_removes_the_thumbnail_with_its_file(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping every_delete_removes_the_thumbnail_with_its_file: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3.clone(), bucket.clone()),
+    );
+    let cookie =
+        register_verify_login(&router, &db, "thumb-delete@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let event_id = create_event(&router, &cookie, &group_id).await;
+    let other_event_id = create_event(&router, &cookie, &group_id).await;
+
+    let mut stored = Vec::new();
+    for event in [&event_id, &event_id, &other_event_id] {
+        let attachment = upload(
+            &router,
+            &cookie,
+            &group_id,
+            event,
+            "photo.png",
+            &real_png(64, 48),
+        )
+        .await;
+        let id = attachment["id"].as_str().unwrap().to_string();
+        let (storage_key, thumbnail_key) = attachment_keys(&db, &group_id, &id).await;
+        let thumbnail_key = thumbnail_key.expect("a readable PNG gets a thumbnail");
+        assert!(object_exists(&s3, &bucket, &storage_key).await);
+        assert!(object_exists(&s3, &bucket, &thumbnail_key).await);
+        stored.push((id, storage_key, thumbnail_key));
+    }
+    let gone = |keys: [&String; 2]| {
+        let (s3, bucket) = (s3.clone(), bucket.clone());
+        let keys = keys.map(String::clone);
+        async move {
+            for key in keys {
+                assert!(
+                    !object_exists(&s3, &bucket, &key).await,
+                    "{key} still stored"
+                );
+            }
+        }
+    };
+
+    // The attachment's own delete.
+    let (id, file, thumbnail) = &stored[0];
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/events/{event_id}/attachments/{id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    gone([file, thumbnail]).await;
+    assert!(object_exists(&s3, &bucket, &stored[1].2).await);
+
+    // The event's.
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    gone([&stored[1].1, &stored[1].2]).await;
+    assert!(object_exists(&s3, &bucket, &stored[2].2).await);
+
+    // The group's, through `group_attachment_storage_keys()` (0054).
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    gone([&stored[2].1, &stored[2].2]).await;
+}
+
 /// One file per upload (#326). Each `file` field was read into its own
 /// buffer of the declared body, and the previous one stayed alive until
 /// the next was read whole: two fields held two bodies, so what an upload

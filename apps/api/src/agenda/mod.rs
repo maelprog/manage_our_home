@@ -4,6 +4,7 @@ pub mod national_days;
 pub mod recurrence;
 pub mod reminders;
 pub mod school_holidays;
+pub mod thumbnail;
 
 use uuid::Uuid;
 
