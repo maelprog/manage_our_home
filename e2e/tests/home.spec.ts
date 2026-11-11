@@ -157,6 +157,20 @@ async function sendMessage(page: Page, content: string): Promise<void> {
   await expect(page).toHaveURL(/\/messagerie\?notice=message_sent$/);
 }
 
+/**
+ * Opens the live thread and waits for the read marker to move. Since #781
+ * the `GET` writes nothing: the page's live script posts
+ * `POST /messagerie/read` once loaded, and navigating away before it
+ * answers would race it.
+ */
+async function openLiveThread(page: Page, url = "/messagerie"): Promise<void> {
+  const marked = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/messagerie/read" && r.request().method() === "POST",
+  );
+  await page.goto(url);
+  expect((await marked).status()).toBe(204);
+}
+
 /** The `<section class="card">` whose `<h2>` is `heading`. */
 function card(page: Page, heading: string) {
   return page.locator("section.card").filter({ has: page.getByRole("heading", { name: heading }) });
@@ -313,7 +327,7 @@ test.describe("Accueil — les messages non lus", () => {
     // Opening the live thread is what marks it read. (Scoped to the row:
     // an owner may edit anyone's message, so the text also lives inside a
     // hidden "Modifier le message" textarea.)
-    await page.goto("/messagerie");
+    await openLiveThread(page);
     await expect(
       page.locator("li[data-message-id]", { hasText: "Il reste du pain ?" }),
     ).toHaveCount(1);
@@ -321,6 +335,43 @@ test.describe("Accueil — les messages non lus", () => {
     await page.goto("/");
     await expect(card(page, "Messages non lus").getByText("Tout est lu.")).toBeVisible();
 
+    await member.context().close();
+  });
+
+  // #781: the GET of /messagerie writes nothing — a third site can trigger a
+  // GET with the session cookie (`SameSite=Lax`). Without JavaScript, the
+  // thread is marked read by its own form, « Tout marquer comme lu ».
+  test("sans JavaScript, ouvrir le fil ne marque rien ; « Tout marquer comme lu » le fait", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-homenojsread", "NoJs Owner");
+    await createGroup(page, FAMILY);
+    const href = await createInvitationLink(page, FAMILY);
+    const member = await joinAsMember(browser, href, "e2e-homenojsreadmem", "NoJs Member");
+
+    await sendMessage(member, "Lu sans script ?");
+
+    const noJs = await browser.newContext({
+      javaScriptEnabled: false,
+      storageState: await page.context().storageState(),
+    });
+    const thread = await noJs.newPage();
+    await thread.goto("/messagerie");
+    await expect(
+      thread.locator("li[data-message-id]", { hasText: "Lu sans script ?" }),
+    ).toHaveCount(1);
+
+    await page.goto("/");
+    await expect(card(page, "Messages non lus").getByText("Lu sans script ?")).toBeVisible();
+
+    await thread.getByRole("button", { name: "Tout marquer comme lu" }).click();
+    await expect(thread).toHaveURL(/\/messagerie$/);
+
+    await page.goto("/");
+    await expect(card(page, "Messages non lus").getByText("Tout est lu.")).toBeVisible();
+
+    await noJs.close();
     await member.context().close();
   });
 
@@ -358,7 +409,7 @@ test.describe("Accueil — les messages non lus", () => {
     // The owner reads the live thread one message at a time, which leaves a
     // "Charger les messages plus anciens" link — the app's own affordance,
     // and the one the verification used to reproduce the blocker.
-    await page.goto("/messagerie?limit=1");
+    await openLiveThread(page, "/messagerie?limit=1");
     const olderHref = await page
       .getByRole("link", { name: "Charger les messages plus anciens" })
       .getAttribute("href");

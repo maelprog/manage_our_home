@@ -306,7 +306,9 @@ fn message_row(
 /// optional part of the page: it opens the push socket, re-renders `#thread`
 /// on any frame (coalesced), and
 /// turns a mid-session auth/membership loss into a visible banner rather than a
-/// silent hang. Bails out immediately if `WebSocket` is unavailable. Rendered
+/// silent hang. It also posts the read marker (#781, [`mark_read_form`]), on
+/// load and after each refresh — first, so a browser without `WebSocket`,
+/// where it bails out next, still marks what it shows. Rendered
 /// only on the live view (`data-live="true"`); a history window renders none.
 ///
 /// The re-render never destroys an inline edit in progress (issue #48): while a
@@ -323,6 +325,25 @@ fn message_row(
 /// infra/Caddyfile's CSP runs no inline script.
 pub(crate) const LIVE_SCRIPT: &str = r#"
 (function() {
+  // The read marker (#781): the GET that rendered the page wrote nothing.
+  // Its form (mark_read_form) is posted here, then hidden — its button is
+  // for a browser without JavaScript. Each refresh posts the fresh
+  // render's instant; an empty one (an empty thread) moves nothing.
+  var markForm = document.querySelector("form[data-mark-read]");
+  function markRead(upTo) {
+    if (!markForm) return;
+    if (upTo !== null) markForm.elements.up_to.value = upTo;
+    if (!markForm.elements.up_to.value) return;
+    fetch(markForm.action, {
+      method: "POST",
+      body: new URLSearchParams(new FormData(markForm)),
+      headers: { "X-Requested-With": "fetch" },
+      credentials: "same-origin",
+      keepalive: true
+    }).catch(function() {}); // best-effort: the unread count stays stale
+  }
+  if (markForm) { markForm.hidden = true; markRead(null); }
+
   if (!("WebSocket" in window)) return;
   var thread = document.getElementById("thread");
   if (!thread || thread.getAttribute("data-live") !== "true") return;
@@ -435,6 +456,8 @@ pub(crate) const LIVE_SCRIPT: &str = r#"
             accessLost(); return;
           }
           applyFresh(fresh);
+          var freshMark = doc.querySelector("form[data-mark-read]");
+          if (freshMark) markRead(freshMark.elements.up_to.value);
           if (then) then();
         });
       })
@@ -578,6 +601,19 @@ fn page(
 
     let script = if live { live_script() } else { String::new() };
 
+    // #781: the live view's read marker, posted by the live script (or the
+    // form's own button without JavaScript), never by the `GET`.
+    // `read_watermark` decides how far it may go (the newest message
+    // actually rendered, never `now()`) and, with no floor, marks read
+    // everything older — deliberately, see its doc comment. Outside
+    // `#thread`, so a live refresh never re-shows it: the script reads the
+    // fresh render's instant instead.
+    let mark_read = if live {
+        mark_read_form(read_watermark(list, live))
+    } else {
+        String::new()
+    };
+
     let body = format!(
         r#"{heading}
 {notice}
@@ -586,6 +622,7 @@ fn page(
 <div id="thread" data-group-id="{gid}" data-live="{live}" data-ws-url="{ws_url}">
 {list_html}
 </div>
+{mark_read}
 {composer}
 {script}"#,
         heading = heading(&fam.name),
@@ -651,37 +688,11 @@ pub async fn get(
 
     let members = fetch_members(&state, fam.gid, cookie.as_deref()).await;
 
-    // #73: opening the *live* thread is what advances the read watermark —
-    // the simplest trigger the issue asked for, no "mark as read" control
-    // of its own. `read_watermark` decides both whether to call at all (a
-    // history window must not) and how far the marker may go (the newest
-    // message actually rendered, never `now()`). Neither is a floor: the
-    // instant sent here marks read **everything older than it**, rendered
-    // or not — deliberately, see `read_watermark`'s doc comment before
-    // changing anything here.
-    // Best-effort and fire-and-forget, same call as the at-creation
-    // reminder in `agenda/new.rs`: a failure here means the dashboard's
-    // unread count stays one page stale, not that the thread fails to
-    // render.
-    if let Some(up_to) = read_watermark(&list, live) {
-        let _ = api_request_auth(
-            &state,
-            reqwest::Method::POST,
-            // Same raw-RFC3339-in-a-query-value shape the cursor uses
-            // just above (`older_page_query`): with `Z` and microseconds
-            // the string holds only unreserved characters plus `:` and
-            // `.`, none of which need escaping in a query value.
-            &format!(
-                "/groups/{}/messages/read?up_to={}",
-                fam.gid,
-                up_to.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-            ),
-            cookie.as_deref(),
-            None,
-        )
-        .await;
-    }
-
+    // #73: opening the *live* thread is what advances the read watermark.
+    // Since #781 this `GET` writes nothing — a third site can trigger it
+    // with the session cookie (`SameSite=Lax`) — and the watermark goes
+    // into the live page's `POST /messagerie/read` form (`page`,
+    // `mark_read_form`).
     Html(page(&fam, &list, &members, &query, live, "", None)).into_response()
 }
 
@@ -1112,6 +1123,88 @@ fn read_watermark(list: &MessageList, live: bool) -> Option<DateTime<Utc>> {
     list.messages.iter().map(|m| m.created_at).max()
 }
 
+/// The form of `POST /messagerie/read`: the instant the read marker may
+/// advance to. Absent or unparseable reads as `None`, which moves nothing —
+/// never "up to now", the API's own fallback when `up_to` is omitted.
+#[derive(serde::Deserialize)]
+pub struct MarkReadForm {
+    #[serde(default, deserialize_with = "lenient")]
+    up_to: Option<DateTime<Utc>>,
+}
+
+/// The live view's "I have seen this" (#781). Opening the thread used to
+/// move the read marker from the `GET` itself; it now travels in this form,
+/// which the live script posts on load and after each refresh, then hides.
+/// Without JavaScript its button is how the member marks the thread read.
+/// `None` (an empty window, see [`read_watermark`]) renders it hidden and
+/// empty: the live script still finds it, to fill from a later refresh.
+fn mark_read_form(up_to: Option<DateTime<Utc>>) -> String {
+    let (value, hidden) = match up_to {
+        Some(at) => (at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true), ""),
+        None => (String::new(), " hidden"),
+    };
+    format!(
+        r#"<form method="post" action="/messagerie/read" class="actions" data-mark-read{hidden}><input type="hidden" name="up_to" value="{value}"><button type="submit" class="secondary">Tout marquer comme lu</button></form>"#
+    )
+}
+
+/// apps/api's `POST /groups/{id}/messages/read`. Raw RFC 3339 in a query
+/// value, as the history cursor (`older_page_query`): with `Z` and
+/// microseconds the string holds only unreserved characters plus `:` and
+/// `.`, none of which need escaping there.
+fn mark_read_path(gid: Uuid, up_to: DateTime<Utc>) -> String {
+    format!(
+        "/groups/{gid}/messages/read?up_to={}",
+        up_to.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+    )
+}
+
+/// The live script's requests carry `X-Requested-With: fetch`; a form
+/// submitted by the browser does not.
+fn is_fetch(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-requested-with")
+        .is_some_and(|v| v.as_bytes() == b"fetch")
+}
+
+/// `POST /messagerie/read` — advances the caller's read marker to the
+/// posted instant (#781). Best-effort, as the call from the `GET` was: a
+/// failure leaves the unread count one page stale. A `fetch` gets 204 (502
+/// when apps/api did not move the marker), a form submission is sent back
+/// to the live thread.
+pub async fn mark_read(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<MarkReadForm>,
+) -> Response {
+    let Some(fam) = family_context(&state, &headers, &me, "/messagerie").await else {
+        return Redirect::to("/groups/new").into_response();
+    };
+    let moved = match form.up_to {
+        None => true,
+        Some(up_to) => matches!(
+            api_request_auth(
+                &state,
+                reqwest::Method::POST,
+                &mark_read_path(fam.gid, up_to),
+                messagerie_cookie(&headers).as_deref(),
+                None,
+            )
+            .await,
+            Ok(resp) if resp.status == reqwest::StatusCode::NO_CONTENT
+        ),
+    };
+    if !is_fetch(&headers) {
+        return Redirect::to("/messagerie").into_response();
+    }
+    if moved {
+        axum::http::StatusCode::NO_CONTENT.into_response()
+    } else {
+        axum::http::StatusCode::BAD_GATEWAY.into_response()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1250,6 +1343,108 @@ mod tests {
     fn an_empty_live_window_advances_nothing() {
         assert_eq!(read_watermark(&list_of(&[]), true), None);
         assert_eq!(read_watermark(&list_of(&[]), false), None);
+    }
+
+    // -- #781: the read marker moves by a POST, never by the GET ----------
+
+    /// The live window's watermark travels in a form the page posts itself
+    /// (`POST /messagerie/read`): the hidden instant, in the shape the API
+    /// reads, and a submit button for a browser without JavaScript.
+    #[test]
+    fn the_mark_read_form_carries_the_watermark() {
+        let at = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 11, 0, 0).unwrap();
+        let html = mark_read_form(Some(at));
+        assert!(
+            html.contains(r#"<form method="post" action="/messagerie/read""#),
+            "{html}"
+        );
+        assert!(html.contains("data-mark-read"), "{html}");
+        assert!(
+            html.contains(r#"name="up_to" value="2026-09-03T11:00:00.000000Z""#),
+            "{html}"
+        );
+        // « Tout » : the marker has no floor, everything older than the
+        // instant becomes read (#100, `read_watermark`).
+        assert!(html.contains(">Tout marquer comme lu</button>"), "{html}");
+        assert!(!html.contains(" hidden"), "{html}");
+    }
+
+    /// With nothing rendered there is nothing to mark: the form is still
+    /// there for the live script to fill on a later refresh, but hidden and
+    /// empty, so neither a click nor the script can move the marker.
+    #[test]
+    fn an_empty_live_window_renders_an_empty_hidden_form() {
+        let html = mark_read_form(None);
+        assert!(html.contains("data-mark-read"), "{html}");
+        assert!(html.contains(" hidden"), "{html}");
+        assert!(html.contains(r#"name="up_to" value="""#), "{html}");
+    }
+
+    /// The API reads the same raw-RFC3339 query value the GET used to send.
+    #[test]
+    fn the_mark_read_request_names_the_family_and_the_instant() {
+        let at = chrono::Utc.with_ymd_and_hms(2026, 9, 3, 11, 0, 0).unwrap();
+        assert_eq!(
+            mark_read_path(Uuid::from_u128(7), at),
+            "/groups/00000000-0000-0000-0000-000000000007/messages/read\
+             ?up_to=2026-09-03T11:00:00.000000Z"
+        );
+    }
+
+    /// A form posted without an instant, or with one that does not parse,
+    /// moves nothing: the API would read an absent `up_to` as `now()`.
+    #[test]
+    fn a_mark_read_form_without_a_valid_instant_reads_as_none() {
+        let form = |raw: &str| serde_urlencoded::from_str::<MarkReadForm>(raw).unwrap();
+        assert_eq!(form("").up_to, None);
+        assert_eq!(form("up_to=").up_to, None);
+        assert_eq!(form("up_to=hier").up_to, None);
+        assert_eq!(
+            form("up_to=2026-09-03T11%3A00%3A00.000000Z").up_to,
+            Some(chrono::Utc.with_ymd_and_hms(2026, 9, 3, 11, 0, 0).unwrap())
+        );
+    }
+
+    /// The live script posts the form itself, flagged as a `fetch` so the
+    /// handler answers 204 rather than a redirect — and before it gives up
+    /// on a browser without `WebSocket`, which has read the page all the same.
+    #[test]
+    fn live_script_posts_the_mark_read_form_before_any_bail_out() {
+        let js = LIVE_SCRIPT;
+        let post = js
+            .find("markRead(null)")
+            .expect("the live script posts the read marker on load");
+        let bail = js
+            .find(r#"if (!("WebSocket" in window)) return;"#)
+            .expect("the WebSocket bail-out");
+        assert!(post < bail, "the marker must not depend on WebSocket");
+        assert!(js.contains("form[data-mark-read]"));
+        assert!(js.contains(r#"method: "POST""#));
+        assert!(js.contains(r#""X-Requested-With": "fetch""#));
+    }
+
+    /// Each live refresh renders new rows: the marker follows the fresh
+    /// render's watermark, as each re-fetch of the GET used to move it.
+    #[test]
+    fn live_script_marks_read_after_each_refresh() {
+        let js = LIVE_SCRIPT;
+        let at = js
+            .find("applyFresh(fresh);")
+            .expect("refresh applies the render");
+        let rest = &js[at..];
+        assert!(
+            rest.contains(r#"doc.querySelector("form[data-mark-read]")"#)
+                && rest.contains("markRead("),
+            "{rest}"
+        );
+    }
+
+    #[test]
+    fn a_fetch_is_told_apart_from_a_form_submission() {
+        let mut headers = HeaderMap::new();
+        assert!(!is_fetch(&headers));
+        headers.insert("x-requested-with", "fetch".parse().unwrap());
+        assert!(is_fetch(&headers));
     }
 
     /// The live reconcile matches rows across renders by `data-message-id`;
