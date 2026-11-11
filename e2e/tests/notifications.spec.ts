@@ -130,8 +130,8 @@ test.describe("Reminder notifications", () => {
   // What the worker asks on each push (#536), naming its device by its
   // subscription's endpoint: the kind of the push that device got. None
   // without a device named, nor for a device the account does not have.
-  // A POST (#783): the answer takes the push off the device's count, so a
-  // GET, which a third site can trigger, is not routed.
+  // A POST (#783): the answer takes the push off the device's count, and a
+  // GET writes nothing (#414), so a GET is not routed.
   test("the service worker's question answers for the member's session", async ({ page }) => {
     await registerAndLogin(page, "notif-last-push");
     const res = await page.request.post("/account/notifications/last-push");

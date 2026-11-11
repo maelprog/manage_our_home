@@ -337,7 +337,9 @@ const PUSH_ENDPOINT_HEADER: &str = "x-push-endpoint";
 /// are on their way to it, when none is, without a device named, or on any
 /// failure. The worker shows a neutral text then. A `POST`, never a `GET`
 /// (#783): the answer takes the push off the device's count, and a `GET`
-/// that writes is one a third site can trigger.
+/// of apps/web writes nothing (#414). The rule, not a hole: the write
+/// needed [`PUSH_ENDPOINT_HEADER`], which a cross-site navigation does not
+/// send.
 pub async fn last_push(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
