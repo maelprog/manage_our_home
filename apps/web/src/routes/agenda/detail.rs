@@ -73,7 +73,9 @@ fn error_text(code: &str) -> Option<&'static str> {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "completed_only_valid_for_tasks" => Some("Seules les tâches peuvent être complétées."),
         "occurrence_required" => Some("Occurrence manquante pour cette tâche récurrente."),
-        "unsupported_file_type" => Some("Type de fichier non autorisé (png, jpg, webp, pdf)."),
+        "unsupported_file_type" => {
+            Some("Type de fichier non autorisé (png, jpg, webp, pdf, mp4, webm).")
+        }
         "file_too_large" => Some("Fichier trop volumineux (max 20 Mo)."),
         "upload_failed" => Some("L'envoi de la pièce jointe a échoué, merci de réessayer."),
         "reminder_not_found" => Some("Ce rappel n'existe plus."),
@@ -682,8 +684,8 @@ fn render_attachments(
     };
     let upload = format!(
         r#"<form method="post" action="{action}" enctype="multipart/form-data">
-<label>Ajouter une pièce jointe (png, jpg, webp, pdf — max 20 Mo)
-<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf" required/></label>
+<label>Ajouter une pièce jointe (png, jpg, webp, pdf, mp4, webm — max 20 Mo)
+<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf,video/mp4,video/webm" required/></label>
 <button type="submit">Envoyer</button>
 </form>"#,
         action = urls.to("/attachments"),
@@ -1169,6 +1171,7 @@ mod tests {
             filename: "ordonnance.pdf".to_string(),
             mime_type: "application/pdf".to_string(),
             size_bytes: 2048,
+            has_thumbnail: false,
         };
         page(
             "",
@@ -1223,6 +1226,26 @@ mod tests {
         assert_eq!(urls.len(), 8, "{urls:?}");
         assert!(urls.iter().all(|u| !u.contains("famille")), "{urls:?}");
         assert!(!html.contains("Famille :"), "{html}");
+    }
+
+    /// #774: the videos the API takes are announced and offered.
+    #[test]
+    fn the_upload_form_lists_every_accepted_format() {
+        let html = full_detail(None);
+        assert!(
+            html.contains("(png, jpg, webp, pdf, mp4, webm — max 20 Mo)"),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"accept="image/png,image/jpeg,image/webp,application/pdf,video/mp4,video/webm""#
+            ),
+            "{html}"
+        );
+        assert_eq!(
+            error_text("unsupported_file_type"),
+            Some("Type de fichier non autorisé (png, jpg, webp, pdf, mp4, webm).")
+        );
     }
 
     #[test]

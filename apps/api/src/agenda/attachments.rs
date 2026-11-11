@@ -5,6 +5,7 @@ use axum::{http::StatusCode, Json};
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::agenda::thumbnail::{make_thumbnail, thumbnail_key, THUMBNAIL_CONTENT_TYPE};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
@@ -20,7 +21,17 @@ pub struct AttachmentResponse {
     pub filename: String,
     pub mime_type: String,
     pub size_bytes: i64,
+    /// Whether a thumbnail was stored with the file (#774): a picture
+    /// decoded within the bounds of `agenda::thumbnail`. Never for a
+    /// video or a PDF; the `mime_type` tells those apart.
+    pub has_thumbnail: bool,
 }
+
+/// How long an upload waits for the decode permit it shares with the
+/// avatar (`avatar::DECODES`) before storing its picture without a
+/// thumbnail. A photo upload holds the permit while its body arrives, at
+/// the client's pace; an attachment's response does not wait on it longer.
+const THUMBNAIL_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Reads a single `file` field from the multipart body, sniffs its real
 /// MIME type (never trusting the client-supplied content type or
@@ -135,6 +146,13 @@ pub async fn upload_attachment(
 
     let storage_key = format!("{group_id}/{event_id}/{}", Uuid::new_v4());
 
+    // The thumbnail, before the second transaction: a decode holds no
+    // connection. Best effort — none for a video, a PDF, an unreadable
+    // picture or one past the bounds (`agenda::thumbnail`), and none when
+    // the decode permit stays busy; the file is stored all the same.
+    let (bytes, thumbnail) = generate_thumbnail(bytes, mime_type).await;
+    let thumbnail_key = thumbnail.as_ref().map(|_| thumbnail_key(&storage_key));
+
     // Second transaction, once the body is in hand. The event may have been
     // deleted since the first one checked it; left to the INSERT, that
     // surfaces as a failed foreign key (or, under the runtime role, a row
@@ -176,8 +194,8 @@ pub async fn upload_attachment(
     // answer. Same tradeoff as the batched delete in #59.
     let attachment = sqlx::query!(
         r#"
-        INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO event_attachments (event_id, uploaded_by, storage_key, filename, mime_type, size_bytes, thumbnail_key)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         "#,
         event_id,
@@ -186,6 +204,7 @@ pub async fn upload_attachment(
         filename,
         mime_type,
         bytes.len() as i64,
+        thumbnail_key,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -197,6 +216,15 @@ pub async fn upload_attachment(
         .put_object(&storage_key, bytes, mime_type)
         .await
         .map_err(AppError::Internal)?;
+    // Same transaction, same rule: a failure here drops the row, and the
+    // object above is left to the reconciliation pass.
+    if let (Some(key), Some(thumbnail)) = (&thumbnail_key, thumbnail) {
+        state
+            .storage
+            .put_object(key, bytes::Bytes::from(thumbnail), THUMBNAIL_CONTENT_TYPE)
+            .await
+            .map_err(AppError::Internal)?;
+    }
 
     // Still uncompensated, and not fixable at this layer: if this commit
     // fails, the object is written and the row never lands. Same for a
@@ -214,6 +242,7 @@ pub async fn upload_attachment(
             filename,
             mime_type: mime_type.to_string(),
             size_bytes,
+            has_thumbnail: thumbnail_key.is_some(),
         }),
     ))
 }
@@ -242,7 +271,9 @@ pub async fn list_attachments(
 
     let rows = sqlx::query_as!(
         AttachmentResponse,
-        r#"SELECT id, event_id, filename, mime_type, size_bytes FROM event_attachments WHERE event_id = $1"#,
+        r#"SELECT id, event_id, filename, mime_type, size_bytes,
+                  thumbnail_key IS NOT NULL AS "has_thumbnail!"
+           FROM event_attachments WHERE event_id = $1"#,
         event_id,
     )
     .fetch_all(&mut *tx)
@@ -319,8 +350,8 @@ pub async fn delete_attachment(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
-    let storage_key = sqlx::query_scalar!(
-        "SELECT storage_key FROM event_attachments WHERE id = $1 AND event_id = $2",
+    let attachment = sqlx::query!(
+        "SELECT storage_key, thumbnail_key FROM event_attachments WHERE id = $1 AND event_id = $2",
         attachment_id,
         event_id,
     )
@@ -328,7 +359,11 @@ pub async fn delete_attachment(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    delete_objects(&state.storage, std::slice::from_ref(&storage_key)).await?;
+    // The thumbnail goes with its file (#774).
+    let keys: Vec<String> = std::iter::once(attachment.storage_key)
+        .chain(attachment.thumbnail_key)
+        .collect();
+    delete_objects(&state.storage, &keys).await?;
 
     sqlx::query!("DELETE FROM event_attachments WHERE id = $1", attachment_id)
         .execute(&mut *tx)
@@ -338,7 +373,8 @@ pub async fn delete_attachment(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Storage keys of every attachment hanging off the given events.
+/// Storage keys of every attachment hanging off the given events, and of
+/// their thumbnails (#774).
 ///
 /// `event_attachments` cascades from `events`, so any delete that reaches
 /// an event takes its attachment rows with it — and with them the only
@@ -349,14 +385,17 @@ pub(crate) async fn storage_keys_for_events(
     event_ids: &[Uuid],
 ) -> AppResult<Vec<String>> {
     Ok(sqlx::query_scalar!(
-        "SELECT storage_key FROM event_attachments WHERE event_id = ANY($1)",
+        r#"SELECT k AS "key!" FROM event_attachments,
+                  LATERAL (VALUES (storage_key), (thumbnail_key)) AS keys(k)
+           WHERE event_id = ANY($1) AND k IS NOT NULL"#,
         event_ids,
     )
     .fetch_all(tx)
     .await?)
 }
 
-/// Storage keys of every attachment hanging off every event in a group.
+/// Storage keys of every attachment hanging off every event in a group,
+/// thumbnails included (#774, migration 0054).
 ///
 /// Group deletion never has the event ids in hand, and `events` cascades
 /// from `groups` just as `event_attachments` cascades from `events` — so
@@ -396,6 +435,34 @@ pub(crate) async fn delete_objects(storage: &Storage, keys: &[String]) -> AppRes
         .delete_objects(keys)
         .await
         .map_err(AppError::Internal)
+}
+
+/// The thumbnail of an upload (`agenda::thumbnail`), off the async workers
+/// and under the decode permit. Hands the buffer back: it is the one
+/// stored, not a copy (#249).
+async fn generate_thumbnail(
+    bytes: bytes::Bytes,
+    mime_type: &'static str,
+) -> (bytes::Bytes, Option<Vec<u8>>) {
+    if !mime_type.starts_with("image/") {
+        return (bytes, None);
+    }
+    let Ok(Ok(permit)) =
+        tokio::time::timeout(THUMBNAIL_PERMIT_WAIT, crate::avatar::DECODES.acquire()).await
+    else {
+        tracing::info!("attachment stored without a thumbnail: decode permit busy");
+        return (bytes, None);
+    };
+    // A second handle on the same buffer, not a copy of it.
+    let source = bytes.clone();
+    let thumbnail = tokio::task::spawn_blocking(move || make_thumbnail(&source, mime_type))
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "thumbnail generation failed");
+            None
+        });
+    drop(permit);
+    (bytes, thumbnail)
 }
 
 /// How much room to make for the file before reading it (#249).

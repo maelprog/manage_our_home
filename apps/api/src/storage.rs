@@ -248,7 +248,16 @@ fn delete_errors_report(errors: &[aws_sdk_s3::types::Error]) -> Option<String> {
 /// Restricted set of file types accepted for event attachments
 /// (architecture.md's "Uploads (MinIO)" section). Sniffed from the actual
 /// bytes via `infer`, never trusted from the client-supplied filename/MIME.
-const ALLOWED_MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "application/pdf"];
+/// The two videos (#774) are the containers browsers play natively; a
+/// QuickTime or Matroska file stays out.
+const ALLOWED_MIME_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "application/pdf",
+    "video/mp4",
+    "video/webm",
+];
 
 pub const MAX_ATTACHMENT_SIZE_BYTES: usize = 20 * 1024 * 1024;
 
@@ -345,6 +354,41 @@ mod tests {
         assert_eq!(
             config.timeout_config().and_then(|t| t.operation_timeout()),
             Some(S3_OPERATION_TIMEOUT),
+        );
+    }
+
+    /// The start of an MP4: an `ftyp` box, major brand `isom`.
+    const MP4_HEAD: &[u8] = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2avc1mp41";
+
+    /// The start of a WebM: an EBML header whose DocType is `webm`.
+    const WEBM_HEAD: &[u8] = b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\xf7\x81\x01\x42\xf2\x81\x04\x42\xf3\x81\x08\x42\x82\x84webm\x42\x87\x81\x04\x42\x85\x81\x02";
+
+    /// #774: the two video containers browsers play natively join the
+    /// list, recognised by their bytes like the rest.
+    #[test]
+    fn an_mp4_or_a_webm_is_accepted_by_its_bytes() {
+        assert_eq!(sniff_and_validate_mime(MP4_HEAD), Some("video/mp4"));
+        assert_eq!(sniff_and_validate_mime(WEBM_HEAD), Some("video/webm"));
+    }
+
+    /// The name is never read: an executable called `film.mp4` is still an
+    /// executable, and other video containers stay out.
+    #[test]
+    fn an_executable_named_like_a_video_is_refused() {
+        let mut elf = b"\x7fELF\x02\x01\x01\x00".to_vec();
+        elf.resize(64, 0);
+        assert_eq!(sniff_and_validate_mime(&elf), None);
+        let mut exe = b"MZ\x90\x00\x03\x00\x00\x00".to_vec();
+        exe.resize(64, 0);
+        assert_eq!(sniff_and_validate_mime(&exe), None);
+        // QuickTime and Matroska: video, but not on the list.
+        assert_eq!(
+            sniff_and_validate_mime(b"\x00\x00\x00\x14ftypqt  \x00\x00\x02\x00qt  "),
+            None
+        );
+        assert_eq!(
+            sniff_and_validate_mime(b"\x1a\x45\xdf\xa3\x93\x42\x82\x88matroska\x42\x87\x81\x04"),
+            None
         );
     }
 

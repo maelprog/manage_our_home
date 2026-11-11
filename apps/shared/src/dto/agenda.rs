@@ -210,6 +210,10 @@ pub struct AttachmentResponse {
     pub filename: String,
     pub mime_type: String,
     pub size_bytes: i64,
+    /// A thumbnail was stored with the file (#774): a picture only, never
+    /// a video or a PDF. Absent from an older API's answer: `false`.
+    #[serde(default)]
+    pub has_thumbnail: bool,
 }
 
 /// One element of `GET /groups/:id/national-days?from&to` (#562), built from

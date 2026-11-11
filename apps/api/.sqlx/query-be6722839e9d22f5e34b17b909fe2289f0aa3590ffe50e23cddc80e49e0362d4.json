@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, event_id, filename, mime_type, size_bytes FROM event_attachments WHERE event_id = $1",
+  "query": "SELECT id, event_id, filename, mime_type, size_bytes,\n                  thumbnail_key IS NOT NULL AS \"has_thumbnail!\"\n           FROM event_attachments WHERE event_id = $1",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,12 @@
             "name": "size_bytes"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "has_thumbnail!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -69,8 +75,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "57a4b65956cc39564e4064e3fb9b4b8c52de29bc217e809024397158d0a3ac4b"
+  "hash": "be6722839e9d22f5e34b17b909fe2289f0aa3590ffe50e23cddc80e49e0362d4"
 }

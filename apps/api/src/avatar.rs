@@ -129,7 +129,11 @@ const DECODE_PERMITS: usize = 1;
 /// (review of #467).
 pub const DECODE_PEAK_BYTES: usize = 50 * 1024 * 1024;
 
-static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
+/// Shared with the attachments' thumbnails (#774, `agenda::thumbnail`):
+/// one decode at a time in the process, a photo or a thumbnail, so the
+/// count above holds. A thumbnail's upload body is one of the gate's
+/// attachment bodies already counted.
+pub(crate) static DECODES: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(DECODE_PERMITS));
 
 /// Why an upload is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,7 +472,7 @@ impl std::io::Read for Pieces<'_> {
 }
 
 /// A decoded picture and the orientation its EXIF records.
-type Decoded = (DynamicImage, Option<Orientation>);
+pub(crate) type Decoded = (DynamicImage, Option<Orientation>);
 
 /// A JPEG decoded reduced (#588): `jpeg_decoder` scales it in the inverse
 /// DCT to the smallest frame whose short side still holds `AVATAR_SIDE`,
@@ -476,6 +480,16 @@ type Decoded = (DynamicImage, Option<Orientation>);
 /// exists at full size. Greyscale, colour and CMYK alike; the bounds of
 /// `check_jpeg_bounds` first, on the header.
 pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, AvatarError> {
+    decode_jpeg_reduced(bytes, jpeg_scale_request)
+}
+
+/// `decode_jpeg`, reduced to the size `request` asks of the frame's
+/// dimensions (see `Decoder::scale`): the attachments' thumbnails (#774)
+/// ask for their long side, the avatar for its short one.
+pub(crate) fn decode_jpeg_reduced(
+    bytes: &[u8],
+    request: fn(u16, u16) -> (u16, u16),
+) -> Result<Decoded, AvatarError> {
     let header = scan_jpeg_header(bytes)?;
     check_jpeg_bounds(&header.frame)?;
     let mut pieces = header.kept.into_iter();
@@ -484,7 +498,7 @@ pub(crate) fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, AvatarError> {
     decoder.read_info().map_err(|_| AvatarError::Unreadable)?;
     let info = decoder.info().ok_or(AvatarError::Unreadable)?;
 
-    let (request_width, request_height) = jpeg_scale_request(info.width, info.height);
+    let (request_width, request_height) = request(info.width, info.height);
     let (width, height) = decoder
         .scale(request_width, request_height)
         .map_err(|_| AvatarError::Unreadable)?;
@@ -551,7 +565,7 @@ fn check_png_metadata(bytes: &[u8]) -> Result<(), AvatarError> {
 
 /// A PNG, decoded whole by `image` under `MAX_DIMENSION`,
 /// `check_png_frame` and `MAX_METADATA_BYTES`.
-fn decode_png(bytes: &[u8]) -> Result<Decoded, AvatarError> {
+pub(crate) fn decode_png(bytes: &[u8]) -> Result<Decoded, AvatarError> {
     // A bound passed is `ImageError::Limits`; anything else is unreadable.
     let refusal = |e: ImageError| match e {
         ImageError::Limits(_) => AvatarError::ImageTooLarge,

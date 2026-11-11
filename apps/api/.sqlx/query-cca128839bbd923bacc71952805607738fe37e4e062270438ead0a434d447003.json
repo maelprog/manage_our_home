@@ -1,28 +1,28 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT storage_key FROM event_attachments WHERE event_id = ANY($1)",
+  "query": "SELECT event_id FROM event_attachments WHERE storage_key = $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "storage_key",
-        "type_info": "Text",
+        "name": "event_id",
+        "type_info": "Uuid",
         "origin": {
           "Table": {
             "table": "event_attachments",
-            "name": "storage_key"
+            "name": "event_id"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "UuidArray"
+        "Text"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "731928921e2d9aa19a5ec39c063b335eaa21dcb6d6a7bceebcfb90f0d96afc55"
+  "hash": "cca128839bbd923bacc71952805607738fe37e4e062270438ead0a434d447003"
 }

@@ -332,10 +332,11 @@ pub fn normalize_all_day(
 pub const MAX_ATTACHMENT_SIZE_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Extensions matching the backend's sniffed MIME allow-list
-/// (`image/png`, `image/jpeg`, `image/webp`, `application/pdf`). This is a
-/// cheap pre-check only — the backend still sniffs the real bytes and is
-/// the authority; a `.png`-renamed executable is caught there, not here.
-pub const ALLOWED_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "pdf"];
+/// (`image/png`, `image/jpeg`, `image/webp`, `application/pdf`,
+/// `video/mp4`, `video/webm`). This is a cheap pre-check only — the backend
+/// still sniffs the real bytes and is the authority; a `.png`-renamed
+/// executable is caught there, not here.
+pub const ALLOWED_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "webp", "pdf", "mp4", "webm"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachmentError {
@@ -579,7 +580,15 @@ mod tests {
 
     #[test]
     fn allowed_extensions_pass_case_insensitively() {
-        for name in ["photo.png", "scan.PDF", "img.JPeG", "a.webp", "b.jpg"] {
+        for name in [
+            "photo.png",
+            "scan.PDF",
+            "img.JPeG",
+            "a.webp",
+            "b.jpg",
+            "film.mp4",
+            "clip.WEBM",
+        ] {
             assert!(
                 validate_attachment(name, 1024).is_ok(),
                 "{name} should pass"
@@ -597,6 +606,14 @@ mod tests {
             validate_attachment("noextension", 10),
             Err(AttachmentError::UnsupportedType)
         );
+        // Video containers the backend does not take (#774).
+        for name in ["iphone.mov", "film.mkv", "old.avi"] {
+            assert_eq!(
+                validate_attachment(name, 10),
+                Err(AttachmentError::UnsupportedType),
+                "{name}"
+            );
+        }
     }
 
     #[test]

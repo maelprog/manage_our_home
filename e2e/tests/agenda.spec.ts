@@ -857,7 +857,7 @@ test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
     });
     await page.getByRole("button", { name: "Créer l'événement" }).click();
     await expect(page).toHaveURL("/agenda/new");
-    await expect(page.getByText("Type de fichier non autorisé (png, jpg, webp, pdf).")).toBeVisible();
+    await expect(page.getByText("Type de fichier non autorisé (png, jpg, webp, pdf, mp4, webm).")).toBeVisible();
 
     await page.goto(`/agenda?view=month&date=${date}`);
     await expect(page.getByRole("link", { name: /Événement au mauvais fichier/ })).toHaveCount(0);
