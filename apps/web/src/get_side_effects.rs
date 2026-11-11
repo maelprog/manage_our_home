@@ -38,7 +38,7 @@
 //! - a function called through a pointer stored in a value;
 //! - the extractors of a handler written inline, as a closure in `get(…)`
 //!   (what the closure's body does itself is read).
-//!
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
