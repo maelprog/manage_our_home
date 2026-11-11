@@ -31,6 +31,18 @@
 //! unqualified call with no definition in sight every function of that
 //! name. It reaches the extractors of a handler's arguments, but not the
 //! middleware around the routes, nor what a `view!` holds.
+//!
+//! What it does not see, for none of these forms is in the crate today:
+//! - a request sent through a client that is not a field named `http` — a
+//!   clone bound to a variable (`let c = state.http.clone(); c.post(…)`),
+//!   or another `reqwest` client;
+//! - a function called through a pointer stored in a value;
+//! - the extractors of a handler written inline, as a closure in `get(…)`
+//!   (what the closure's body does itself is read).
+//!
+//! A temporary exception admits every change its function asks for, not only
+//! the one beside it: a second `POST` written in that same function would
+//! pass unseen.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -46,7 +58,8 @@ const ADMIN_REAUTHENTICATION: &[&str] = &["routes", "admin", "reauthenticate"];
 /// The `GET` routes that still ask apps/api for a change, each through the
 /// one function named, until the issue beside it moves the change to a
 /// `POST` (arbitrage of 2026-11-11). What else the route reaches is still
-/// checked, and an exception the route no longer needs fails the test.
+/// checked, and an exception the route no longer needs fails the test; but
+/// within the function named, any request that changes something passes.
 const TEMPORARY: [(&str, &[&str]); 3] = [
     // Opening the live thread advances the read watermark (#73):
     // `POST /groups/{id}/messages/read`. TODO retirer avec #781.
@@ -104,12 +117,15 @@ struct Item {
     cookie: Option<String>,
 }
 
-/// A `GET` route: its path (or the function that builds it) and what its
-/// handler expression references.
+/// A `GET` route: its path (or the function that builds it), what its
+/// handler expression references, and what that expression does itself — a
+/// handler written inline, as a closure.
 struct Route {
     path: String,
     module: Vec<String>,
     refs: Vec<Ref>,
+    sink: Option<String>,
+    cookie: Option<String>,
 }
 
 /// A `use` of a module: names it brings in, and the modules it brings in
@@ -173,6 +189,23 @@ fn is_http_client(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Field(f) if matches!(&f.member, syn::Member::Named(n) if n == "http"))
 }
 
+/// Whether `expr` names the `Set-Cookie` header: `SET_COOKIE`, or the name
+/// written out, in any case.
+fn names_set_cookie(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Path(p) => last_ident(&p.path).as_deref() == Some("SET_COOKIE"),
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) => is_set_cookie(s),
+        _ => false,
+    }
+}
+
+fn is_set_cookie(s: &syn::LitStr) -> bool {
+    s.value().eq_ignore_ascii_case("set-cookie")
+}
+
 /// Whether `expr` names `Method::GET`.
 fn is_get_method(expr: &syn::Expr) -> bool {
     matches!(expr, syn::Expr::Path(p) if last_ident(&p.path).as_deref() == Some("GET"))
@@ -215,6 +248,12 @@ impl<'ast> Visit<'ast> for Body {
         self.refs.push(Ref::Path(segments(&p.path)));
     }
 
+    fn visit_lit_str(&mut self, s: &'ast syn::LitStr) {
+        if is_set_cookie(s) {
+            self.cookie = Some("Set-Cookie".into());
+        }
+    }
+
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         // `api_request_auth` sends the method it is given: the call site
         // tells whether it changes something, and it is not followed.
@@ -248,9 +287,7 @@ impl<'ast> Visit<'ast> for Body {
         if matches!(method.as_str(), "get" | "get_all") {
             self.visit_expr(&call.receiver);
             for arg in &call.args {
-                let names_set_cookie = matches!(arg, syn::Expr::Path(p)
-                    if last_ident(&p.path).as_deref() == Some("SET_COOKIE"));
-                if !names_set_cookie {
+                if !names_set_cookie(arg) {
                     self.visit_expr(arg);
                 }
             }
@@ -337,6 +374,8 @@ impl<'ast> Visit<'ast> for RouteFinder<'_> {
                 self.routes.push(Route {
                     path: path.clone(),
                     module: self.module.clone(),
+                    sink: body.sink.clone(),
+                    cookie: body.cookie.clone(),
                     refs: body.into_refs(),
                 });
             }
@@ -680,6 +719,10 @@ fn offending_routes(krate: &Crate) -> Vec<String> {
                 .filter(|(path, _)| *path == route.path)
                 .map(|(_, f)| krate.index_of(f))
                 .collect();
+            // A handler written inline is no function an exception names.
+            if let Some(sink) = &route.sink {
+                return Some(format!("GET {}: its inline handler ({sink})", route.path));
+            }
             krate
                 .path_to(route, &stop, &admitted, |i| i.sink.as_ref())
                 .map(|chain| format!("GET {}: {}", route.path, chain.join(" -> ")))
@@ -706,6 +749,9 @@ fn cookie_setting_routes(krate: &Crate) -> Vec<String> {
                 .filter(|(path, _)| *path == "*" || *path == route.path)
                 .map(|(_, f)| krate.index_of(f))
                 .collect();
+            if let Some(cookie) = &route.cookie {
+                return Some(format!("GET {}: its inline handler ({cookie})", route.path));
+            }
             krate
                 .path_to(route, &stop, &admitted, |i| i.cookie.as_ref())
                 .map(|chain| format!("GET {}: {}", route.path, chain.join(" -> ")))
@@ -820,6 +866,8 @@ fn the_parse_finds_the_admin_reauthentication_and_the_post_routes() {
         refs: vec![Ref::Path(
             ["routes", "home", "logout"].map(String::from).to_vec(),
         )],
+        sink: None,
+        cookie: None,
     };
     assert!(krate.path_to_sink(&logout, &[]).is_some());
 }
@@ -857,7 +905,40 @@ fn the_parse_tells_a_change_from_a_read() {
     };
     assert!(cookie("headers.insert(header::SET_COOKIE, v)").is_some());
     assert!(cookie("([(SET_COOKIE, value)], page)").is_some());
+    assert!(cookie("([(\"set-cookie\", value)], page)").is_some());
+    assert!(cookie("HeaderName::from_static(\"Set-Cookie\")").is_some());
     // Reading apps/api's answer.
     assert!(cookie("resp.headers().get(reqwest::header::SET_COOKIE)").is_none());
     assert!(cookie("resp.headers().get_all(header::SET_COOKIE)").is_none());
+    assert!(cookie("resp.headers().get(\"set-cookie\")").is_none());
+}
+
+/// A handler written inline, as a closure in `get(…)`, is read too.
+#[test]
+fn the_parse_reads_a_handler_written_inline() {
+    let mut krate = Crate::read(&src_dir());
+    let router: syn::Block = syn::parse_str(
+        r#"{
+            Router::new()
+                .route("/inline-post", get(|s: State<AppState>| async move { s.http.post(url) }))
+                .route("/inline-cookie", get(|| async { ([(SET_COOKIE, v)], page) }))
+        }"#,
+    )
+    .unwrap();
+    RouteFinder {
+        module: Vec::new(),
+        within: "test".into(),
+        routes: &mut krate.routes,
+    }
+    .visit_block(&router);
+    let offending = offending_routes(&krate);
+    assert!(
+        offending.iter().any(|o| o.starts_with("GET /inline-post:")),
+        "{offending:?}"
+    );
+    let cookies = cookie_setting_routes(&krate);
+    assert!(
+        cookies.iter().any(|o| o.starts_with("GET /inline-cookie:")),
+        "{cookies:?}"
+    );
 }
