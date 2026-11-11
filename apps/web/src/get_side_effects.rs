@@ -12,7 +12,7 @@
 //! - apps/web: `/verify-email` and `/auth/google/callback` relay apps/api's
 //!   `GET`s above; `/admin/*` ends a superadmin session apps/api asks to
 //!   reauthenticate ([`ADMIN_REAUTHENTICATION`]); the cookies of
-//!   [`ADMITTED_COOKIES`]; and, until their issues land, the three
+//!   [`ADMITTED_COOKIES`]; and, until their issues land, the two
 //!   [`TEMPORARY`] exceptions.
 //!
 //! Not counted, per the arbitrage: authentication refreshing a session's
@@ -60,10 +60,7 @@ const ADMIN_REAUTHENTICATION: &[&str] = &["routes", "admin", "reauthenticate"];
 /// `POST` (arbitrage of 2026-11-11). What else the route reaches is still
 /// checked, and an exception the route no longer needs fails the test; but
 /// within the function named, any request that changes something passes.
-const TEMPORARY: [(&str, &[&str]); 3] = [
-    // Opening the live thread advances the read watermark (#73):
-    // `POST /groups/{id}/messages/read`. TODO retirer avec #781.
-    ("/messagerie", &["routes", "messagerie", "thread", "get"]),
+const TEMPORARY: [(&str, &[&str]); 2] = [
     // A scanned code is looked up by `POST /groups/{id}/stock-items/scan`,
     // which fills the Open Food Facts cache and the throttle's counters.
     // TODO retirer avec #782.

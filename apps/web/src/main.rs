@@ -410,6 +410,10 @@ fn build_router(state: AppState) -> Router {
             get(routes::messagerie::thread::get).post(routes::messagerie::thread::post),
         )
         .route(
+            "/messagerie/read",
+            post(routes::messagerie::thread::mark_read),
+        )
+        .route(
             "/messagerie/{id}/edit",
             post(routes::messagerie::thread::edit),
         )

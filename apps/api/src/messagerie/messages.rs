@@ -434,8 +434,9 @@ pub async fn unread_count(
 }
 
 /// Advances the caller's read watermark for this family (issue #73). Called
-/// when the member opens the **live** `/messagerie`
-/// (`apps/web/src/routes/messagerie/thread.rs`, `read_watermark`).
+/// by apps/web's `POST /messagerie/read`, which the **live** `/messagerie`
+/// posts once rendered (`apps/web/src/routes/messagerie/thread.rs`,
+/// `mark_read`; the instant comes from `read_watermark`, #781).
 ///
 /// `?up_to=` carries the `created_at` of the newest message the caller was
 /// actually shown, and the watermark stops there. Advancing to `now()`
