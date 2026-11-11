@@ -12,6 +12,10 @@ mod csp;
 #[cfg(test)]
 mod design_journal;
 mod family;
+// The guard against a GET route that writes (#414). Test-only: it reads
+// this crate's own source.
+#[cfg(test)]
+mod get_side_effects;
 // The counting allocator of the memory tests (#250, #402). Test-only.
 #[cfg(test)]
 mod heap_count;
