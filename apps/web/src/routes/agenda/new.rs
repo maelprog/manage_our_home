@@ -686,7 +686,7 @@ pub(crate) fn error_message(code: &str) -> &'static str {
             "Cet événement n'est plus récurrent : choisissez « Toute la série »."
         }
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
-        "unsupported_file_type" => "Type de fichier non autorisé (png, jpg, webp, pdf).",
+        "unsupported_file_type" => "Type de fichier non autorisé (png, jpg, webp, pdf, mp4, webm).",
         "file_too_large" => "Fichier trop volumineux (max 20 Mo).",
         "upload_failed" => "L'envoi de la pièce jointe a échoué, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
@@ -750,8 +750,8 @@ fn page<'a>(
 {assignees}
 <p class="muted">Aucune sélection = assigné à vous.</p>
 {private}
-<label>Pièce jointe (png, jpg, webp, pdf — max 20 Mo)
-<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf"/></label>
+<label>Pièce jointe (png, jpg, webp, pdf, mp4, webm — max 20 Mo)
+<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf,video/mp4,video/webm"/></label>
 <label class="field inline">
 <input type="checkbox" name="is_task"{task}/> Il s'agit d'une tâche (à cocher une fois faite)</label>
 <label>Lieu <input type="text" name="location" value="{location}"/></label>
@@ -1977,7 +1977,7 @@ mod tests {
         );
         assert!(
             html.contains(
-                r#"<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf"/>"#
+                r#"<input type="file" name="file" accept="image/png,image/jpeg,image/webp,application/pdf,video/mp4,video/webm"/>"#
             ),
             "{html}"
         );
@@ -1987,7 +1987,7 @@ mod tests {
     fn a_refused_file_is_explained_on_the_form() {
         assert_eq!(
             error_message("unsupported_file_type"),
-            "Type de fichier non autorisé (png, jpg, webp, pdf)."
+            "Type de fichier non autorisé (png, jpg, webp, pdf, mp4, webm)."
         );
         assert_eq!(
             error_message("file_too_large"),
