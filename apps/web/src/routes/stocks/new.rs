@@ -6,20 +6,24 @@
 //! (`normalize_unit`, #458). Any member may create, so 403 isn't reachable
 //! via the UI. Success (201) → PRG `/stocks?notice=item_created`.
 //!
-//! Barcode (#402): `GET /stocks/new?scan=<raw>` asks apps/api what the code
-//! stands for (`POST /groups/:id/stock-items/scan`) and offers, in order:
+//! Barcode (#402): `POST /stocks/new/scan` (field `scan`) asks apps/api what
+//! the code stands for (`POST /groups/:id/stock-items/scan`, which fills the
+//! Open Food Facts cache and the throttle's counters, hence a `POST` here
+//! too, #782) and offers, in order:
 //! the "Déjà en stock" screen when an article of the family carries the code
-//! (its "+1" is the quantity adjustment any member may make, and a link
+//! (its "+1" is the quantity adjustment any member may make, and a button
 //! creates another article anyway, without the code); otherwise the form,
 //! pre-filled from Open Food Facts when the product is known, with the code
 //! in a hidden field; a weighing label, an unknown product or a nameless
 //! record get the same form, empty but for the code; a string that is no
 //! code gets the form and a message. The `scan` value comes from the
-//! "Code-barres" field — a GET form — or from the photo of the barcode
-//! (`POST /stocks/new/photo`, decoded in memory by `photo::decode_photo`),
-//! both without JavaScript. A photo that yields no code lands on
-//! `?photo=<error>`: take the photo again, or type the code, and the scan
-//! runs again — never straight to the manual form.
+//! "Code-barres" field — a POST form — or from the photo of the barcode
+//! (`POST /stocks/new/photo`, decoded in memory by `photo::decode_photo`,
+//! which answers with the same page), both without JavaScript. A photo that
+//! yields no code lands on `?photo=<error>`: take the photo again, or type
+//! the code, and the scan runs again — never straight to the manual form.
+//! `GET /stocks/new?scan=<raw>` looks nothing up: it only puts the code in
+//! the field, for the member to send.
 //!
 //! GS1 2D codes (#403): a DataMatrix or QR code may carry an expiry date,
 //! which apps/api reads and returns with the product. It pre-fills the
@@ -313,7 +317,8 @@ pub(crate) const OFF_ATTRIBUTION: &str = r#"<p class="muted">Données produits :
 /// JavaScript: the photo of the barcode (`capture="environment"` opens the
 /// rear camera on a phone; `data-submit-on-change` sends it as soon as it is
 /// taken where `enhance.js` runs, and the button sends it elsewhere), and
-/// the "Code-barres" field, for the digits typed by hand.
+/// the "Code-barres" field, for the digits typed by hand — a `POST`, since
+/// the lookup writes in apps/api (#782).
 fn scan_block(scan_value: &str) -> String {
     format!(
         r#"<div class="scan">
@@ -322,7 +327,7 @@ fn scan_block(scan_value: &str) -> String {
 <label>Photographier le code <input type="file" name="photo" accept="image/*" capture="environment" required data-submit-on-change/></label>
 <button type="submit" class="secondary">Scanner</button>
 </form>
-<form method="get" action="/stocks/new" class="card inline">
+<form method="post" action="/stocks/new/scan" class="card inline">
 <label>Code-barres <input type="text" name="scan" inputmode="numeric" autocomplete="off" value="{scan}"/></label>
 <button type="submit" class="secondary">Chercher le produit</button>
 </form>
@@ -439,8 +444,9 @@ fn page(
 /// with "+1" — the quantity adjustment any member may make, through the
 /// detail page's own route — and a way to create another article anyway,
 /// which scans `raw`, the string as it came, again (a GS1 code's date then
-/// reaches that form too). The date a GS1 code carried is proposed when it
-/// comes sooner (`date_to_propose`, #403).
+/// reaches that form too) — by a `POST`, as every scan (#782). The date a
+/// GS1 code carried is proposed when it comes sooner (`date_to_propose`,
+/// #403).
 fn already_in_stock_page(
     header: &str,
     item: &StockItemResponse,
@@ -488,30 +494,29 @@ fn already_in_stock_page(
 <input type="hidden" name="quantity" value="{next}"/>
 <button type="submit">+1</button>
 </form>{proposal_html}
+<form method="post" action="/stocks/new/scan" class="actions">
+<input type="hidden" name="scan" value="{raw}"/>
+<input type="hidden" name="other" value="1"/>
+<button type="submit" class="secondary">Créer quand même un autre article</button>
+</form>
 <div class="links">
 <a href="/stocks/{id}">Voir l'article</a>
-<a href="{other}">Créer quand même un autre article</a>
 <a href="/stocks">Retour aux stocks</a>
 </div>"#,
         name = html_escape(&item.name),
         qty = html_escape(&format_quantity(item.quantity, &item.unit)),
         next = html_escape(&fmt_num(item.quantity + 1.0)),
-        other = html_escape(&format!(
-            "/stocks/new?{}&other=1",
-            serde_urlencoded::to_string([("scan", raw)]).unwrap_or_default()
-        )),
+        raw = html_escape(raw),
     );
     shell_with_header(Width::Form, "Déjà en stock", header, &body)
 }
 
 #[derive(serde::Deserialize, Default)]
 pub struct NewQuery {
-    /// The scanned or typed code, as is.
+    /// A code to put in the "Code-barres" field, looked up only once the
+    /// member sends it (#782).
     #[serde(default)]
     scan: String,
-    /// Set by "Créer quand même un autre article": the form without the code.
-    #[serde(default)]
-    other: Option<String>,
     /// Set after a photo that gave no code (`PhotoError::code`, `busy`,
     /// `failed`): the retry page.
     #[serde(default)]
@@ -530,26 +535,56 @@ pub async fn get(
     if let Some(code) = query.photo.as_deref() {
         return Html(photo_retry_page(&fam.header, code)).into_response();
     }
-    if query.scan.trim().is_empty() {
-        // Default a fresh form to quantity 0.
-        let form = ItemForm {
-            quantity: "0".to_string(),
-            ..Default::default()
-        };
-        return Html(page(&fam, &form, None, "", &Intro::default())).into_response();
+    Html(empty_page(&fam, &query.scan)).into_response()
+}
+
+/// The article form, fresh (quantity 0), under the barcode block holding
+/// `scan_value`.
+fn empty_page(fam: &FamilyContext, scan_value: &str) -> String {
+    let form = ItemForm {
+        quantity: "0".to_string(),
+        ..Default::default()
+    };
+    page(fam, &form, None, scan_value, &Intro::default())
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct ScanForm {
+    /// The scanned or typed code, as is.
+    #[serde(default)]
+    scan: String,
+    /// Set by "Créer quand même un autre article": the form without the code.
+    #[serde(default)]
+    other: Option<String>,
+}
+
+/// `POST /stocks/new/scan` — the "Code-barres" field, and "Créer quand même
+/// un autre article". A `POST`: apps/api's lookup writes (#782).
+pub async fn scan(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<ScanForm>,
+) -> Response {
+    let Some(fam) = family_context(&state, &headers, &me, "/stocks/new").await else {
+        return Redirect::to("/groups/new").into_response();
+    };
+    if form.scan.trim().is_empty() {
+        return Html(empty_page(&fam, "")).into_response();
     }
     scanned(
         &state,
         &headers,
         &fam,
         me.user_id,
-        &query.scan,
-        query.other.is_some(),
+        &form.scan,
+        form.other.is_some(),
     )
     .await
 }
 
-/// `GET /stocks/new?scan=…`: what the code stands for, and the page for it.
+/// What the code stands for, and the page for it: the end of
+/// `POST /stocks/new/scan` and of a photo that gave a code.
 async fn scanned(
     state: &AppState,
     headers: &HeaderMap,
@@ -670,41 +705,32 @@ async fn fetch_item(
     serde_json::from_value(resp.body).ok()
 }
 
-/// Where a photo scan goes next: the code through `?scan=`, the same path as
-/// the "Code-barres" field, or the retry page.
-pub(crate) fn photo_redirect(outcome: Result<String, &str>) -> String {
-    match outcome {
-        Ok(code) => format!(
-            "/stocks/new?{}",
-            serde_urlencoded::to_string([("scan", code.as_str())]).unwrap_or_default()
-        ),
-        Err(error) => format!("/stocks/new?photo={error}"),
-    }
+/// Where a photo that gave no code goes: the retry page.
+pub(crate) fn photo_retry_url(error: &str) -> String {
+    format!("/stocks/new?photo={error}")
 }
 
 /// `POST /stocks/new/photo` — the photo of a barcode, decoded in memory
 /// (`photo::decode_photo`) and dropped with the request. Only the decoded
-/// code (digits, or a GS1 2D code's text) leaves this handler, in the
-/// redirect.
+/// code (digits, or a GS1 2D code's text) leaves this handler, looked up
+/// as the "Code-barres" field's (`scanned`) and answered with that page:
+/// a redirect would carry it to a `GET`, which looks nothing up (#782).
 pub async fn photo(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    if family_context(&state, &headers, &me, "/stocks/new")
-        .await
-        .is_none()
-    {
+    let Some(fam) = family_context(&state, &headers, &me, "/stocks/new").await else {
         return Redirect::to("/groups/new").into_response();
-    }
+    };
     // The photo is held in memory whole, like an attachment: same bound on
     // how many are held at once, per account and per process.
-    let _permit = match state.upload_gate.try_acquire(me.user_id) {
+    let permit = match state.upload_gate.try_acquire(me.user_id) {
         Ok(permit) => permit,
         Err(busy) => {
             tracing::info!(?busy, "photo turned away");
-            return Redirect::to(&photo_redirect(Err("busy"))).into_response();
+            return Redirect::to(&photo_retry_url("busy")).into_response();
         }
     };
 
@@ -720,27 +746,23 @@ pub async fn photo(
                     match field.chunk().await {
                         Ok(Some(chunk)) => {
                             if bytes.len() + chunk.len() > MAX_PHOTO_BYTES {
-                                return Redirect::to(&photo_redirect(Err(
-                                    PhotoError::TooLarge.code()
-                                )))
-                                .into_response();
+                                return Redirect::to(&photo_retry_url(PhotoError::TooLarge.code()))
+                                    .into_response();
                             }
                             bytes.extend_from_slice(&chunk);
                         }
                         Ok(None) => break,
-                        Err(_) => {
-                            return Redirect::to(&photo_redirect(Err("failed"))).into_response()
-                        }
+                        Err(_) => return Redirect::to(&photo_retry_url("failed")).into_response(),
                     }
                 }
                 photo = Some(bytes);
             }
             Ok(None) => break,
-            Err(_) => return Redirect::to(&photo_redirect(Err("failed"))).into_response(),
+            Err(_) => return Redirect::to(&photo_retry_url("failed")).into_response(),
         }
     }
     let Some(bytes) = photo else {
-        return Redirect::to(&photo_redirect(Err("failed"))).into_response();
+        return Redirect::to(&photo_retry_url("failed")).into_response();
     };
 
     // At most `DECODE_PERMITS` decodes at once in the process: the upload
@@ -762,11 +784,12 @@ pub async fn photo(
         Ok(outcome) => outcome,
         Err(_) => return service_unavailable_page().into_response(),
     };
-    let target = match &outcome {
-        Ok(code) => photo_redirect(Ok(code.clone())),
-        Err(error) => photo_redirect(Err(error.code())),
-    };
-    Redirect::to(&target).into_response()
+    // The photo is gone with the decode: the lookup need not hold its slot.
+    drop(permit);
+    match outcome {
+        Ok(code) => scanned(&state, &headers, &fam, me.user_id, &code, false).await,
+        Err(error) => Redirect::to(&photo_retry_url(error.code())).into_response(),
+    }
 }
 
 pub async fn post(
@@ -1153,7 +1176,8 @@ mod tests {
 
     #[test]
     fn another_article_anyway_scans_the_same_string_again() {
-        // The GS1 string as scanned, so that its date reaches the form.
+        // The GS1 string as scanned, so that its date reaches the form; sent
+        // by a POST, as every scan is (#782): a GET writes nothing.
         let html = already_in_stock_page(
             "",
             &item(None),
@@ -1162,14 +1186,28 @@ mod tests {
             true,
         );
         assert!(
+            html.contains(r#"<form method="post" action="/stocks/new/scan""#),
+            "{html}"
+        );
+        assert!(
             html.contains(
-                r#"href="/stocks/new?scan=010301762042200310LOT%1D17270131&amp;other=1""#
+                "<input type=\"hidden\" name=\"scan\" value=\"010301762042200310LOT\u{1d}17270131\"/>"
             ),
             "{html}"
         );
-        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
         assert!(
-            html.contains(r#"href="/stocks/new?scan=3017620422003&amp;other=1""#),
+            html.contains(r#"<input type="hidden" name="other" value="1"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<button type="submit" class="secondary">Créer quand même un autre article</button>"#),
+            "{html}"
+        );
+        assert!(!html.contains("?scan="), "{html}");
+        // Escaped like any value put back in the page.
+        let html = already_in_stock_page("", &item(None), r#""><b>"#, None, true);
+        assert!(
+            html.contains(r#"name="scan" value="&quot;&gt;&lt;b&gt;""#),
             "{html}"
         );
     }
@@ -1228,11 +1266,13 @@ mod tests {
             ),
             "{html}"
         );
-        // The digits: a GET form whose field is named `scan`.
+        // The digits: a POST form whose field is named `scan` — the lookup
+        // writes in apps/api, so no GET runs it (#782).
         assert!(
-            html.contains(r#"<form method="get" action="/stocks/new""#),
+            html.contains(r#"<form method="post" action="/stocks/new/scan""#),
             "{html}"
         );
+        assert!(!html.contains(r#"method="get""#), "{html}");
         assert!(html.contains(r#"name="scan""#), "{html}");
         assert!(html.contains(r#"value="3017620422003""#), "{html}");
         // No script of its own.
@@ -1250,24 +1290,12 @@ mod tests {
     }
 
     #[test]
-    fn a_decoded_photo_goes_through_the_scan_parameter() {
+    fn a_photo_without_a_code_goes_to_the_retry_page() {
         assert_eq!(
-            photo_redirect(Ok("3017620422003".into())),
-            "/stocks/new?scan=3017620422003"
-        );
-        assert_eq!(
-            photo_redirect(Ok("a b&c".into())),
-            "/stocks/new?scan=a+b%26c"
-        );
-        assert_eq!(
-            photo_redirect(Err("unreadable")),
+            photo_retry_url("unreadable"),
             "/stocks/new?photo=unreadable"
         );
-        // A GS1 code's separator (ASCII 29) survives the redirect (#403).
-        assert_eq!(
-            photo_redirect(Ok("010301762042200310LOT\u{1d}17270131".into())),
-            "/stocks/new?scan=010301762042200310LOT%1D17270131"
-        );
+        assert_eq!(photo_retry_url("busy"), "/stocks/new?photo=busy");
     }
 
     #[test]

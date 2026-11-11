@@ -304,6 +304,8 @@ fn build_router(state: AppState) -> Router {
             "/stocks/new",
             get(routes::stocks::new::get).post(routes::stocks::new::post),
         )
+        // The barcode lookup: a POST, since apps/api's writes (#782).
+        .route("/stocks/new/scan", post(routes::stocks::new::scan))
         .route(
             "/stocks/new/photo",
             // The photo is read whole: axum's 2 MiB default would refuse
