@@ -195,10 +195,11 @@ fn build_router(state: AppState) -> Router {
             "/account/notifications/upcoming",
             get(routes::account::notifications::upcoming),
         )
-        // What the service worker asks on each push (#536).
+        // What the service worker asks on each push (#536). A `POST`: the
+        // answer takes the push off the device's count (#783).
         .route(
             "/account/notifications/last-push",
-            get(routes::account::notifications::last_push),
+            post(routes::account::notifications::last_push),
         )
         // The member's live sessions (#225).
         .route("/account/sessions", get(routes::account::sessions::get))

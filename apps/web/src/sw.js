@@ -4,9 +4,10 @@
 // apps/web/src/routes/account/notifications.rs, out of the binary.
 //
 // A push carries no payload (apps/api/src/notifications/push.rs). The
-// worker asks the site which kind of push this device got
-// (/account/notifications/last-push, the member's session going along, the
-// device named by its subscription's endpoint) and shows that kind's fixed
+// worker asks the site which kind of push this device got (a POST to
+// /account/notifications/last-push, since the answer takes the push off
+// the device's count (#783); the member's session going along, the device
+// named by its subscription's endpoint) and shows that kind's fixed
 // text, like the subject of the reminder emails (#146): never an event's
 // title, a category or an amount on the lock screen. The member reads them
 // in the application, once the click has opened it. When the site cannot
@@ -45,6 +46,7 @@ function lastPushedKind() {
         return null;
       }
       return fetch("/account/notifications/last-push", {
+        method: "POST",
         credentials: "same-origin",
         headers: {
           Accept: "application/json",
