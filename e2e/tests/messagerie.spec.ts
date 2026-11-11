@@ -518,9 +518,15 @@ test.describe("Messagerie — unread badge in the navigation (#463)", () => {
     await expect(tab.locator(".badge")).toBeInViewport({ ratio: 1 });
     await page.setViewportSize({ width: 1280, height: 720 });
 
-    // Opening the thread reads them: no badge there, none afterwards.
+    // Opening the thread reads them: no badge there, none afterwards. Since
+    // #781 the GET writes nothing: the page's script posts the read marker,
+    // which /agenda below must not race.
+    const marked = page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/messagerie/read" && r.request().method() === "POST",
+    );
     await tab.click();
     await expect(page).toHaveURL("/messagerie");
+    expect((await marked).status()).toBe(204);
     await expect(tab.locator(".badge")).toHaveCount(0);
     await page.goto("/agenda");
     await expect(tab.locator(".badge")).toHaveCount(0);
