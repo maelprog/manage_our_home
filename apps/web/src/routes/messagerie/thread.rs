@@ -1169,9 +1169,9 @@ fn is_fetch(headers: &HeaderMap) -> bool {
 
 /// `POST /messagerie/read` — advances the caller's read marker to the
 /// posted instant (#781). Best-effort, as the call from the `GET` was: a
-/// failure leaves the unread count one page stale. A `fetch` gets 204 (502
-/// when apps/api did not move the marker), a form submission is sent back
-/// to the live thread.
+/// failure leaves the unread count one page stale. A `fetch` gets 204, or
+/// 502 when apps/api does not answer 204 (no `up_to`: 204 without calling
+/// it); a form submission is sent back to the live thread.
 pub async fn mark_read(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
