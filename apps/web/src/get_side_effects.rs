@@ -11,9 +11,8 @@
 //!   three `/admin/*` reads — `apps/api/tests/get_side_effects_flow.rs`;
 //! - apps/web: `/verify-email` and `/auth/google/callback` relay apps/api's
 //!   `GET`s above; `/admin/*` ends a superadmin session apps/api asks to
-//!   reauthenticate ([`ADMIN_REAUTHENTICATION`]); the cookies of
-//!   [`ADMITTED_COOKIES`]; and, until its issue lands, the one
-//!   [`TEMPORARY`] exception.
+//!   reauthenticate ([`ADMIN_REAUTHENTICATION`]); and the cookies of
+//!   [`ADMITTED_COOKIES`].
 //!
 //! Not counted, per the arbitrage: authentication refreshing a session's
 //! `last_seen_at` and `expires_at`, and closing a session found idle.
@@ -39,10 +38,6 @@
 //! - a function called through a pointer stored in a value;
 //! - the extractors of a handler written inline, as a closure in `get(…)`
 //!   (what the closure's body does itself is read).
-//!
-//! A temporary exception admits every change its function asks for, not only
-//! the one beside it: a second `POST` written in that same function would
-//! pass unseen.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -54,20 +49,6 @@ use syn::visit::Visit;
 /// apps/api asks to reauthenticate: the effect the arbitrage of 2026-10-26
 /// admits on those routes, and on no other. Not followed from them.
 const ADMIN_REAUTHENTICATION: &[&str] = &["routes", "admin", "reauthenticate"];
-
-/// The `GET` routes that still ask apps/api for a change, each through the
-/// one function named, until the issue beside it moves the change to a
-/// `POST` (arbitrage of 2026-11-11). What else the route reaches is still
-/// checked, and an exception the route no longer needs fails the test; but
-/// within the function named, any request that changes something passes.
-const TEMPORARY: [(&str, &[&str]); 1] = [
-    // The service worker's question takes the push off the device's count:
-    // `POST /account/push-subscriptions/received`. TODO retirer avec #783.
-    (
-        "/account/notifications/last-push",
-        &["routes", "account", "notifications", "last_push"],
-    ),
-];
 
 /// The cookies the arbitrage admits a `GET` setting (2026-10-26 and
 /// 2026-11-11), by route and the function that sets them; `*` for every
@@ -707,17 +688,11 @@ fn offending_routes(krate: &Crate) -> Vec<String> {
             } else {
                 vec![]
             };
-            let admitted: Vec<usize> = TEMPORARY
-                .iter()
-                .filter(|(path, _)| *path == route.path)
-                .map(|(_, f)| krate.index_of(f))
-                .collect();
-            // A handler written inline is no function an exception names.
             if let Some(sink) = &route.sink {
                 return Some(format!("GET {}: its inline handler ({sink})", route.path));
             }
             krate
-                .path_to(route, &stop, &admitted, |i| i.sink.as_ref())
+                .path_to_sink(route, &stop)
                 .map(|chain| format!("GET {}: {}", route.path, chain.join(" -> ")))
         })
         .collect()
@@ -768,22 +743,6 @@ fn no_get_route_outside_the_admitted_list_asks_apps_api_for_a_change() {
     );
     let offending = offending_routes(&krate);
     assert!(offending.is_empty(), "{}", offending.join("\n"));
-}
-
-/// Each temporary exception is still needed: once its issue moves the
-/// change to a `POST`, the route reaches nothing, and the entry must go.
-#[test]
-fn every_temporary_exception_is_still_needed() {
-    let krate = Crate::read(&src_dir());
-    for (path, function) in TEMPORARY {
-        let chain = krate
-            .path_to_sink(krate.route(path), &[])
-            .unwrap_or_else(|| panic!("GET {path} no longer needs its exception: remove it"));
-        assert!(
-            chain[chain.len() - 1].starts_with(&format!("{} (", function.join("::"))),
-            "GET {path}: {chain:?}"
-        );
-    }
 }
 
 #[test]

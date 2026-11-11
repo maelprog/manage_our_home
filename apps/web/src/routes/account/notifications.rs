@@ -329,13 +329,17 @@ pub(crate) fn pushed_kind(answer: &serde_json::Value) -> Option<&'static str> {
 /// push subscription, which the API knows it by.
 const PUSH_ENDPOINT_HEADER: &str = "x-push-endpoint";
 
-/// `GET /account/notifications/last-push`, `{"kind": …}`: what the service
+/// `POST /account/notifications/last-push`, `{"kind": …}`: what the service
 /// worker asks on each push, which carries no payload, to choose its text.
 /// It names its device ([`PUSH_ENDPOINT_HEADER`]); the API answers the
 /// kind of the push this device got (`POST
 /// /account/push-subscriptions/received`): `null` when pushes of two kinds
 /// are on their way to it, when none is, without a device named, or on any
-/// failure. The worker shows a neutral text then.
+/// failure. The worker shows a neutral text then. A `POST`, never a `GET`
+/// (#783): the answer takes the push off the device's count, and a `GET`
+/// of apps/web writes nothing (#414). The rule, not a hole: the write
+/// needed [`PUSH_ENDPOINT_HEADER`], which a cross-site navigation does not
+/// send.
 pub async fn last_push(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
@@ -1080,6 +1084,9 @@ mod tests {
     #[test]
     fn the_service_worker_shows_a_fixed_text_per_kind() {
         assert!(SERVICE_WORKER.contains(r#"fetch("/account/notifications/last-push""#));
+        // Taking the push off the device's count is a change: a `POST`, never
+        // a `GET` (#783).
+        assert!(SERVICE_WORKER.contains(r#"method: "POST""#));
         assert!(SERVICE_WORKER.contains("pushManager.getSubscription()"));
         assert!(SERVICE_WORKER.contains(r#""X-Push-Endpoint": subscription.endpoint"#));
         for kind in PUSHED_KINDS {
