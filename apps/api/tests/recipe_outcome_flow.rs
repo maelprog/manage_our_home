@@ -411,9 +411,10 @@ async fn more_than_the_stock_is_refused(db: PgPool) {
     )
     .await;
     assert_status(&res, StatusCode::OK);
+    // Emptied, without a reorder threshold: removed (#801).
     assert_eq!(
-        stock_quantity(&router, &cookie, &group_id, &farine).await,
-        0.0
+        stock_status(&router, &cookie, &group_id, &farine).await,
+        StatusCode::NOT_FOUND
     );
 }
 
@@ -1111,7 +1112,11 @@ async fn a_removal_the_recipe_does_not_call_for_is_refused(db: PgPool) {
     )
     .await;
     assert_status(&res, StatusCode::OK);
-    assert_eq!(stock_quantity(&router, &cookie, &group_id, &jam).await, 0.0);
+    // Emptied, without a reorder threshold: removed (#801).
+    assert_eq!(
+        stock_status(&router, &cookie, &group_id, &jam).await,
+        StatusCode::NOT_FOUND
+    );
 }
 
 /// `add_to_recipe` from a member who may not change the recipe is 403 only
@@ -1309,9 +1314,11 @@ async fn what_is_left_carries_no_binary_noise(db: PgPool) {
     )
     .await;
     assert_status(&res, StatusCode::OK);
+    // Exactly 0, not 1e-17: emptied without a reorder threshold, the line
+    // is removed (#801).
     assert_eq!(
-        stock_quantity(&router, &cookie, &group_id, &lait).await,
-        0.0
+        stock_status(&router, &cookie, &group_id, &lait).await,
+        StatusCode::NOT_FOUND
     );
 }
 
@@ -1398,7 +1405,8 @@ async fn an_ingredient_is_taken_from_several_lots(db: PgPool) {
     assert_eq!(meals(&router, &cookie, &group_id).await, 0);
     assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 
-    // Restored: both lots are taken from, the undated one untouched.
+    // Restored: both lots are taken from, the undated one untouched. The
+    // sooner one, emptied without a reorder threshold, is removed (#801).
     let patch = call(
         &router,
         Method::PATCH,
@@ -1418,8 +1426,8 @@ async fn an_ingredient_is_taken_from_several_lots(db: PgPool) {
         2
     );
     assert_eq!(
-        stock_quantity(&router, &cookie, &group_id, &sooner).await,
-        0.0
+        stock_status(&router, &cookie, &group_id, &sooner).await,
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
         stock_quantity(&router, &cookie, &group_id, &later).await,
@@ -1598,9 +1606,10 @@ async fn done_with_recipe_updates_sets_a_quantity_and_removes_an_ingredient(db: 
     .await;
     assert_status(&res, StatusCode::OK);
     assert_eq!(json_body(res).await["selection"]["status"], "done");
+    // Emptied, without a reorder threshold: removed (#801).
     assert_eq!(
-        stock_quantity(&router, &cookie, &group_id, &farine).await,
-        0.0
+        stock_status(&router, &cookie, &group_id, &farine).await,
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
         stock_quantity(&router, &cookie, &group_id, &beurre).await,
@@ -1663,9 +1672,10 @@ async fn done_with_make_optional_keeps_the_quantity_and_without_updates_changes_
         "{after:?}"
     );
     assert_eq!(after.len(), before.len());
+    // Emptied, without a reorder threshold: removed (#801).
     assert_eq!(
-        stock_quantity(&router, &cookie, &group_id, &farine).await,
-        0.0
+        stock_status(&router, &cookie, &group_id, &farine).await,
+        StatusCode::NOT_FOUND
     );
 }
 
@@ -2014,4 +2024,142 @@ async fn another_groups_planned_recipe_does_not_show(db: PgPool) {
         detail_usage(&router, &cookie, &group_id, &farine).await,
         json!([])
     );
+}
+
+/// The status of `GET` on a stock line.
+async fn stock_status(router: &axum::Router, cookie: &str, group_id: &str, id: &str) -> StatusCode {
+    get(
+        router,
+        cookie,
+        &format!("/groups/{group_id}/stock-items/{id}"),
+    )
+    .await
+    .status()
+}
+
+/// AC (#801): a line a « recette faite » empties follows the rule of #800,
+/// from the recipe's removals as from other products (#540), for any
+/// member: without a reorder threshold it is removed (`removed: true` in
+/// the response, then 404); with one, even 0, it stays at 0. A line not
+/// emptied, or already at 0 and not taken from, stays.
+#[sqlx::test]
+async fn done_removes_a_line_it_empties_without_a_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(&router, &db, "done-empty-o@example.test").await;
+    let member = register_verify_login(&router, &db, "done-empty-m@example.test").await;
+    let group_id = create_group(&router, &owner).await;
+    join(&router, &owner, &member, &group_id).await;
+    let farine = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Farine", "quantity": 400.0, "unit": "g"}),
+    )
+    .await;
+    let beurre = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Beurre", "quantity": 100.0, "unit": "g", "reorder_threshold": 50.0}),
+    )
+    .await;
+    let lait = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Lait", "quantity": 1.0, "unit": "L", "reorder_threshold": 0.0}),
+    )
+    .await;
+    let sucre = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Sucre", "quantity": 0.0, "unit": "g"}),
+    )
+    .await;
+    let oeufs = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Oeufs", "quantity": 6.0, "unit": "unité"}),
+    )
+    .await;
+    let creme = stock(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Crème", "quantity": 20.0, "unit": "cL"}),
+    )
+    .await;
+    let recipe = planned_recipe(
+        &router,
+        &owner,
+        &group_id,
+        json!({"name": "Gâteau", "ingredients": [
+            {"name": "Farine", "quantity": 400.0, "unit": "g"},
+            {"name": "Beurre", "quantity": 100.0, "unit": "g"},
+            {"name": "Lait", "quantity": 1.0, "unit": "L"},
+            {"name": "Sucre", "quantity": 100.0, "unit": "g"},
+            {"name": "Oeufs", "quantity": 4.0, "unit": "unité"}
+        ]}),
+        json!({}),
+    )
+    .await;
+
+    // Applied by a member who created neither the recipe nor the lines.
+    let res = post(
+        &router,
+        &member,
+        &done_path(&group_id, &recipe),
+        json!({
+            "removals": [
+                {"stock_item_id": farine, "quantity": 400.0},
+                {"stock_item_id": beurre, "quantity": 100.0},
+                {"stock_item_id": lait, "quantity": 1.0},
+                {"stock_item_id": sucre, "quantity": 0.0},
+                {"stock_item_id": oeufs, "quantity": 4.0}
+            ],
+            "others": [{"stock_item_id": creme, "quantity": 20.0}]
+        }),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let items = body["stock_items"].as_array().unwrap();
+    assert_eq!(items.len(), 5, "{items:?}");
+    let item = |id: &str| {
+        items
+            .iter()
+            .find(|i| i["id"] == id)
+            .unwrap_or_else(|| panic!("{id} in {items:?}"))
+            .clone()
+    };
+    // Removed: its last state, at 0, with `removed`.
+    for id in [&farine, &creme] {
+        assert_eq!(item(id)["quantity"], 0.0);
+        assert_eq!(item(id)["removed"], true);
+        assert_eq!(
+            stock_status(&router, &owner, &group_id, id).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // Kept: no `removed`.
+    for id in [&beurre, &lait, &oeufs] {
+        assert_eq!(item(id).get("removed"), None, "{:?}", item(id));
+    }
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &beurre).await,
+        0.0
+    );
+    assert_eq!(stock_quantity(&router, &owner, &group_id, &lait).await, 0.0);
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &oeufs).await,
+        2.0
+    );
+    // Not taken from: already at 0, it stays.
+    assert_eq!(
+        stock_quantity(&router, &owner, &group_id, &sucre).await,
+        0.0
+    );
+    assert_eq!(meals(&router, &owner, &group_id).await, 1);
 }
