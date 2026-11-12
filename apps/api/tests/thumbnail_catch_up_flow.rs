@@ -301,8 +301,10 @@ async fn an_unreadable_file_is_tried_a_bounded_number_of_times(db: PgPool) {
         .unwrap();
     assert!(!exists(&s3, &bucket, &storage_key).await);
 
+    // One row a batch: the failed row ends a full batch, and the next one
+    // must start past it, not read it again within the same pass.
     for pass in 1..=MAX_ATTEMPTS {
-        let outcome = catch_up(&db, &storage, BATCH_SIZE).await.unwrap();
+        let outcome = catch_up(&db, &storage, 1).await.unwrap();
         assert_eq!(
             outcome,
             CatchUpOutcome {

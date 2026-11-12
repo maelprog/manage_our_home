@@ -46,7 +46,8 @@ pub const THUMBNAILABLE_MIME_TYPES: [&str; 3] = ["image/jpeg", "image/png", "ima
 pub const BATCH_SIZE: i64 = 20;
 
 /// Failed attempts after which an attachment is left without a thumbnail.
-/// A storage that did not answer gets a few passes, a day apart.
+/// A storage that did not answer gets a few passes: one at each start of
+/// the API, then one a day.
 pub const MAX_ATTEMPTS: i16 = 3;
 
 /// Why an attempt made no thumbnail.
@@ -314,13 +315,44 @@ mod tests {
     /// is exactly the selected list.
     #[test]
     fn the_selected_types_are_the_ones_make_thumbnail_decodes() {
-        for mime_type in ["image/jpeg", "image/png", "image/webp"] {
-            assert!(THUMBNAILABLE_MIME_TYPES.contains(&mime_type));
+        use image::codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder};
+        use image::{ExtendedColorType, ImageEncoder, RgbaImage};
+
+        let picture = RgbaImage::from_pixel(32, 24, image::Rgba([10, 120, 200, 255]));
+        let rgb = image::DynamicImage::ImageRgba8(picture.clone()).to_rgb8();
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(picture.as_raw(), 32, 24, ExtendedColorType::Rgba8)
+            .unwrap();
+        let mut jpeg = Vec::new();
+        JpegEncoder::new(&mut jpeg)
+            .write_image(rgb.as_raw(), 32, 24, ExtendedColorType::Rgb8)
+            .unwrap();
+        let mut webp = Vec::new();
+        WebPEncoder::new_lossless(&mut webp)
+            .write_image(picture.as_raw(), 32, 24, ExtendedColorType::Rgba8)
+            .unwrap();
+
+        // One valid sample of every type the upload accepts
+        // (`storage::ALLOWED_MIME_TYPES`).
+        let samples: [(&str, &[u8]); 6] = [
+            ("image/png", &png),
+            ("image/jpeg", &jpeg),
+            ("image/webp", &webp),
+            ("application/pdf", b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"),
+            (
+                "video/mp4",
+                b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",
+            ),
+            ("video/webm", b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01webm"),
+        ];
+        for (mime_type, bytes) in samples {
+            assert_eq!(
+                crate::agenda::thumbnail::make_thumbnail(bytes, mime_type).is_some(),
+                THUMBNAILABLE_MIME_TYPES.contains(&mime_type),
+                "{mime_type}"
+            );
         }
-        assert_eq!(THUMBNAILABLE_MIME_TYPES.len(), 3);
-        assert!(THUMBNAILABLE_MIME_TYPES
-            .iter()
-            .all(|m| m.starts_with("image/")));
     }
 
     /// A batch reads a handful of rows: each one may be a 20 MiB object
