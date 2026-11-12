@@ -514,6 +514,16 @@ test('the photo of a barcode opens the camera, and a refused camera says so (#80
   assert.ok(start !== -1, 'a CameraChromeClient');
   const client = activity.slice(start);
   assert.match(client, /public boolean onShowFileChooser\(/);
+  // Wrapped only for a field Capacitor asks the camera for (capture and
+  // image/*, as in BridgeWebChromeClient), and only while it is not granted.
+  assert.match(
+    client,
+    /if \(!asksForPhoto\((\w+)\) \|\| cameraGranted\(\)\) \{\s*return super\.onShowFileChooser\(\w+, \w+, \1\);/,
+  );
+  assert.match(
+    client,
+    /boolean asksForPhoto\(FileChooserParams (\w+)\) \{\s*return \1\.isCaptureEnabled\(\) && Arrays\.asList\(\1\.getAcceptTypes\(\)\)\.contains\("image\/\*"\);\s*\}/,
+  );
   assert.match(client, /Manifest\.permission\.CAMERA/);
   // Told only when nothing came back and the camera is still refused: a
   // photo cancelled with the camera granted says nothing.
