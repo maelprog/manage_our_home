@@ -119,7 +119,12 @@ du site.
 - **Les liens vers un autre site** s'ouvrent dans le navigateur du
   téléphone, pas dans l'application.
 - **La photo du code-barres** (Stocks → ajouter) ouvre l'appareil photo ;
-  l'application demande la permission la première fois.
+  l'application demande la permission la première fois. Refusée, un
+  message le dit (`MainActivity.java`, `CameraChromeClient`) au lieu de
+  laisser la page sans réaction. Capacitor n'ouvre l'appareil photo que
+  s'il trouve une application qui répond à `IMAGE_CAPTURE`, et ouvre
+  sinon la galerie ; depuis Android 11 il n'en voit aucune si le manifeste
+  ne déclare pas cet intent dans `<queries>` (#802).
 - **Les rappels d'événements, programmés sur le téléphone** (#668). Le site
   sert aux seules pages de l'application un script,
   `apps/web/src/local-reminders.js`, qui lit les prochains rappels du
@@ -340,8 +345,30 @@ des applications. À l'ouverture :
    l'une après l'autre, puis ferme l'application.
 5. **Lien externe** : un lien vers un autre site s'ouvre dans Chrome, et
    l'application reste sur sa page.
-6. **Photo** : Stocks → ajouter → « Photographier le code » ouvre
-   l'appareil photo (Android demande la permission la première fois).
+6. **Photo** (#802). Dans un terminal, suivre ce que fait le sélecteur de
+   fichiers :
+
+   ```sh
+   adb logcat -c
+   adb logcat -s Capacitor/FileChooser ActivityTaskManager | grep -E 'FileChooser|IMAGE_CAPTURE|GET_CONTENT'
+   ```
+
+   Stocks → ajouter → « Photographier le code » : Android demande la
+   permission la première fois ; l'accepter. **L'appareil photo** s'ouvre,
+   pas la galerie, et le logcat montre
+   `START … act=android.media.action.IMAGE_CAPTURE`. Une ligne
+   « Media capture intent could not be launched. Falling back to default
+   file picker. » suivie d'un `act=android.intent.action.GET_CONTENT`
+   serait le défaut de #802 : la galerie. Prendre la photo d'un code :
+   le formulaire se remplit.
+   Puis refuser : `adb shell pm revoke fr.watallo.mhome.staging android.permission.CAMERA`
+   (l'application redémarre), toucher de nouveau le champ, et refuser
+   dans l'invite d'Android : un message en bas de l'écran dit que
+   l'appareil photo n'est pas autorisé, et le logcat montre « Camera
+   permission not granted ». Après un second refus, Android ne demande
+   plus : toucher le champ affiche le même message directement. Pour
+   revenir en arrière : Réglages › Applications › MHome › Autorisations ›
+   Appareil photo.
 7. **Le pont Capacitor sous la CSP du site.** Le téléphone branché en USB,
    ouvrir `chrome://inspect` dans Chrome sur l'ordinateur : la page du
    staging apparaît sous « WebView in fr.watallo.mhome.staging » (APK de

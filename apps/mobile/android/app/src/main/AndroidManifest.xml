@@ -54,10 +54,23 @@
       The photo of a barcode (apps/web/src/routes/stocks/new.rs, an input
       with accept="image/*" and capture="environment"): Capacitor's file
       chooser opens the camera when this permission is declared, and asks
-      for it the first time. The camera is not required to install the app.
+      for it the first time (refused: MainActivity.CameraChromeClient says
+      so). The camera is not required to install the app.
+
+      It opens the camera only if
+      `new Intent(MediaStore.ACTION_IMAGE_CAPTURE).resolveActivity()` finds
+      a camera app, and the file picker (the gallery) otherwise. From
+      Android 11 on (targetSdk 30 and up), that lookup sees no other app
+      unless the intent is declared in <queries> (#802): without it, the
+      field opened the gallery.
     -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
     <!--
       The event reminders scheduled on the phone (#668, the Local
       Notifications plugin, whose own manifest declares them too): showing

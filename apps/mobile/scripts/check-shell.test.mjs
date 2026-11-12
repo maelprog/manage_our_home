@@ -489,3 +489,45 @@ test('the launch screen stays until a page shows, the offline page included, and
     /public void onReceivedError\(WebView \w+, WebResourceRequest (\w+), WebResourceError \w+\) \{\s*if \(\1\.isForMainFrame\(\)[^{]*\{\s*[^;]*failedPage = \1\.getUrl\(\)\.toString\(\);/,
   );
 });
+
+test('the photo of a barcode opens the camera, and a refused camera says so (#802)', () => {
+  // Capacitor's BridgeWebChromeClient opens the camera for an input with
+  // accept="image/*" and capture (apps/web/src/routes/stocks/new.rs) only
+  // when `new Intent(MediaStore.ACTION_IMAGE_CAPTURE).resolveActivity()`
+  // finds a camera app; it falls back to the file picker otherwise. From
+  // Android 11 on (targetSdk 30 and up), that lookup sees no other app
+  // unless the manifest declares the intent in <queries>.
+  const manifest = uncommented(read('android/app/src/main/AndroidManifest.xml'));
+  const queries = [...manifest.matchAll(/<queries>([\s\S]*?)<\/queries>/g)].map(([, body]) => body);
+  assert.equal(queries.length, 1, 'one <queries> block');
+  const intents = [...queries[0].matchAll(/<intent>([\s\S]*?)<\/intent>/g)].map(([, body]) => elements(body, 'action'));
+  assert.ok(
+    intents.some((actions) => actions.some((a) => a['android:name'] === 'android.media.action.IMAGE_CAPTURE')),
+    'the camera intent is visible to the app',
+  );
+  // The camera refused, Capacitor hands the page no file and only logs a
+  // warning: the activity puts in its place a client that tells the member.
+  const activity = read('android/app/src/main/java/fr/watallo/mhome/MainActivity.java');
+  const load = activity.slice(activity.indexOf('protected void load('));
+  assert.match(load, /bridge\.getWebView\(\)\.setWebChromeClient\(new CameraChromeClient\(bridge\)\);/);
+  const start = activity.indexOf('static final class CameraChromeClient extends BridgeWebChromeClient');
+  assert.ok(start !== -1, 'a CameraChromeClient');
+  const client = activity.slice(start);
+  assert.match(client, /public boolean onShowFileChooser\(/);
+  // Wrapped only for a field Capacitor asks the camera for (capture and
+  // image/*, as in BridgeWebChromeClient), and only while it is not granted.
+  assert.match(
+    client,
+    /if \(!asksForPhoto\((\w+)\) \|\| cameraGranted\(\)\) \{\s*return super\.onShowFileChooser\(\w+, \w+, \1\);/,
+  );
+  assert.match(
+    client,
+    /boolean asksForPhoto\(FileChooserParams (\w+)\) \{\s*return \1\.isCaptureEnabled\(\) && Arrays\.asList\(\1\.getAcceptTypes\(\)\)\.contains\("image\/\*"\);\s*\}/,
+  );
+  assert.match(client, /Manifest\.permission\.CAMERA/);
+  // Told only when nothing came back and the camera is still refused: a
+  // photo cancelled with the camera granted says nothing.
+  assert.match(client, /if \(\w+ == null && !cameraGranted\(\)\) \{\s*Toast\.makeText\([^;]*R\.string\.camera_refused/);
+  const strings = elements(read(`${res}/values/strings.xml`), 'string').map((s) => s.name);
+  assert.ok(strings.includes('camera_refused'), 'the message is a string resource');
+});
