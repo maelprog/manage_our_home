@@ -456,23 +456,34 @@ test("the name on the launch screen is the logo lockup's word, in the theme's in
 
 test('the launch screen stays until a page shows, the offline page included, and 5 s at most', () => {
   const activity = read('android/app/src/main/java/fr/watallo/mhome/MainActivity.java');
-  const onCreate = activity.slice(activity.indexOf('protected void onCreate('));
+  const onCreate = activity.slice(activity.indexOf('protected void onCreate('), activity.indexOf('private void endLaunchScreen('));
   const install = onCreate.indexOf('SplashScreen.installSplashScreen(this)');
   assert.ok(install !== -1 && install < onCreate.indexOf('super.onCreate('), 'installed before super.onCreate');
-  assert.match(onCreate.slice(0, onCreate.indexOf('super.onCreate(')), /\.setKeepOnScreenCondition\(/);
   const max = activity.match(/static final long LAUNCH_SCREEN_MAX_MS = ([\d_]+);/);
   assert.ok(max, 'a LAUNCH_SCREEN_MAX_MS');
   const ms = Number(max[1].replace(/_/g, ''));
   assert.ok(ms > 0 && ms <= 5000, `${ms} ms`);
-  assert.match(activity, /postDelayed\(\w+, LAUNCH_SCREEN_MAX_MS\)/);
+  // On a fresh start only, the screen is held by `launching` alone, and the
+  // time limit is set, not cancelled before it runs.
+  assert.match(
+    onCreate.slice(0, onCreate.indexOf('super.onCreate(')),
+    /if \(savedInstanceState == null\) \{\s*launching = true;\s*\w+\.setKeepOnScreenCondition\(\(\) -> launching\);\s*\w+\.postDelayed\(endLaunchScreen, LAUNCH_SCREEN_MAX_MS\);\s*\}/,
+  );
+  assert.doesNotMatch(onCreate, /removeCallbacks\(|endLaunchScreen\(\)/, 'nothing ends the wait in onCreate');
+  assert.match(activity, /Runnable endLaunchScreen = this::endLaunchScreen;/);
+  assert.match(activity, /private void endLaunchScreen\(\) \{\s*launching = false;/);
   // A page shows: the site's, the choice page, or the offline page that
   // BridgeWebViewClient loads when the main frame gets no answer. Not the
   // WebView's own error page, which commits first at the address that
   // failed ("Webpage not available", seen on the emulator).
-  assert.match(
-    activity,
-    /public void onPageCommitVisible\(WebView \w+, String (\w+)\) \{\s*if \(!\1\.equals\(failedPage\)\) \{\s*endLaunchScreen\(\);/,
+  const notFailed = String.raw`(?:!(\w+)\.equals\(failedPage\)|!Objects\.equals\((\w+), failedPage\)|!Objects\.equals\(failedPage, (\w+)\))`;
+  const listener = activity.match(
+    new RegExp(
+      String.raw`bridge\.addWebViewListener\(\s*new WebViewListener\(\) \{\s*@Override\s*public void onPageCommitVisible\(WebView \w+, String (\w+)\) \{\s*if \(${notFailed}\) \{\s*endLaunchScreen\(\);`,
+    ),
   );
+  assert.ok(listener, 'a listener on the bridge ends the wait at the first page but the failed one');
+  assert.equal(listener[2] ?? listener[3] ?? listener[4], listener[1], 'compares the committed page');
   assert.match(
     activity,
     /public void onReceivedError\(WebView \w+, WebResourceRequest (\w+), WebResourceError \w+\) \{\s*if \(\1\.isForMainFrame\(\)[^{]*\{\s*[^;]*failedPage = \1\.getUrl\(\)\.toString\(\);/,
