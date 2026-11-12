@@ -1597,24 +1597,21 @@ mod tests {
 
     // -- an event of another family (#622) ----------------------------------
 
-    /// A one-off task with an attachment and a just-created reminder: every
-    /// form and link the page can hold.
+    /// A one-off task with a PDF, a picture with its thumbnail and a video,
+    /// and a just-created reminder: every form and link the page can hold.
     fn full_detail(other_family: Option<(Uuid, &str)>) -> String {
         let mut task = event(false);
         task.is_task = true;
-        let attachment = AttachmentResponse {
-            id: uid(5),
-            event_id: uid(7),
-            filename: "ordonnance.pdf".to_string(),
-            mime_type: "application/pdf".to_string(),
-            size_bytes: 2048,
-            has_thumbnail: false,
-        };
+        let attachments = [
+            attachment(5, "ordonnance.pdf", "application/pdf", false),
+            attachment(6, "photo.png", "image/png", true),
+            attachment(8, "film.mp4", "video/mp4", false),
+        ];
         page(
             "",
             &task,
             Some(&[]),
-            Some(&[attachment]),
+            Some(&attachments),
             &[member(uid(1), "Alice")],
             true,
             None,
@@ -1638,10 +1635,12 @@ mod tests {
         let html = full_detail(Some((uid(2), "Les Martin")));
         let urls = event_urls(&html);
         // Edit, delete, completion, reminder add and delete, attachment
-        // upload; for the PDF (#776), its tile, its viewer's « Ouvrir le
-        // PDF », « Télécharger » and « Ouvrir dans un onglet », and its
-        // deletion in the viewer and in the list without JavaScript.
-        assert_eq!(urls.len(), 12, "{urls:?}");
+        // upload: 6. Then, for each of the three files (#776), its tile, its
+        // viewer's media (« Ouvrir le PDF », the picture's and the video's
+        // `data-src`), « Télécharger » and « Ouvrir dans un onglet », and its
+        // deletion in the viewer and in the list without JavaScript: 6 × 3.
+        // And the picture's thumbnail in its tile: 1.
+        assert_eq!(urls.len(), 25, "{urls:?}");
         let family = format!("famille={}", uid(2));
         for url in &urls {
             assert!(url.ends_with(&family), "{url}");
@@ -1662,7 +1661,7 @@ mod tests {
     fn the_active_familys_event_carries_no_family() {
         let html = full_detail(None);
         let urls = event_urls(&html);
-        assert_eq!(urls.len(), 12, "{urls:?}");
+        assert_eq!(urls.len(), 25, "{urls:?}");
         assert!(urls.iter().all(|u| !u.contains("famille")), "{urls:?}");
         assert!(!html.contains("Famille :"), "{html}");
     }
