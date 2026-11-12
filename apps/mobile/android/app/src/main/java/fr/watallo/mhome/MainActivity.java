@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -12,9 +14,11 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.pm.ShortcutInfoCompat;
 import androidx.core.content.pm.ShortcutManagerCompat;
 import androidx.core.graphics.drawable.IconCompat;
+import androidx.core.splashscreen.SplashScreen;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
 import com.getcapacitor.CapConfig;
+import com.getcapacitor.WebViewListener;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -31,7 +35,7 @@ import org.json.JSONObject;
 /**
  * The app's one screen: Capacitor's WebView on the site's origin.
  *
- * <p>What it changes in Capacitor's behaviour, five times.
+ * <p>What it changes in Capacitor's behaviour, six times.
  *
  * <p>At the first launch (#737), while no choice is stored, it opens no
  * site but the APK's own {@code www/choix-du-site.html}, served by
@@ -80,6 +84,14 @@ import org.json.JSONObject;
  * request that gets no answer at all ({@code onReceivedError}: no network, a
  * name that does not resolve, a server that does not answer) still leads
  * there.
+ *
+ * <p>The launch screen (#779, res/values/styles.xml) stays up until the
+ * first page shows ({@code onPageCommitVisible}: the site's, the choice
+ * page, or the offline page when the site does not answer), and
+ * {@link #LAUNCH_SCREEN_MAX_MS} at most: past that, the WebView shows
+ * whatever it has, and the offline page still comes if the site never
+ * answers. Only when the activity starts afresh: a restart on another
+ * site ({@link #changeSite}, {@link #openSite}) keeps nothing up.
  */
 public class MainActivity extends BridgeActivity {
 
@@ -106,8 +118,26 @@ public class MainActivity extends BridgeActivity {
 
     private static final String TAG = "MHome";
 
+    /** The longest the launch screen waits for the first page, in ms. */
+    static final long LAUNCH_SCREEN_MAX_MS = 5_000;
+
+    /** True while the launch screen waits for the first page. */
+    private boolean launching;
+
+    private final Handler launchTimeout = new Handler(Looper.getMainLooper());
+    private final Runnable endLaunchScreen = this::endLaunchScreen;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Before super.onCreate, as androidx.core.splashscreen requires;
+        // it then puts on the theme the launch theme names
+        // (postSplashScreenTheme).
+        SplashScreen launchScreen = SplashScreen.installSplashScreen(this);
+        if (savedInstanceState == null) {
+            launching = true;
+            launchScreen.setKeepOnScreenCondition(() -> launching);
+            launchTimeout.postDelayed(endLaunchScreen, LAUNCH_SCREEN_MAX_MS);
+        }
         SharedPreferences site = getSharedPreferences(SITE_PREFERENCES, MODE_PRIVATE);
         boolean changing = ACTION_CHANGE_SITE.equals(getIntent().getAction());
         if (changing || (!site.contains(SITE_ORIGIN) && !site.getBoolean(SITE_STANDARD, false))) {
@@ -121,6 +151,18 @@ public class MainActivity extends BridgeActivity {
         }
         super.onCreate(savedInstanceState);
         addChangeSiteShortcut();
+    }
+
+    /** Lets the launch screen go, at the first page or at the time limit. */
+    private void endLaunchScreen() {
+        launching = false;
+        launchTimeout.removeCallbacks(endLaunchScreen);
+    }
+
+    @Override
+    public void onDestroy() {
+        launchTimeout.removeCallbacks(endLaunchScreen);
+        super.onDestroy();
     }
 
     @Override
@@ -173,6 +215,14 @@ public class MainActivity extends BridgeActivity {
         config = choice != null ? choice : storedSiteConfig();
         super.load();
         bridge.setWebViewClient(new SiteWebViewClient(bridge));
+        bridge.addWebViewListener(
+            new WebViewListener() {
+                @Override
+                public void onPageCommitVisible(WebView view, String url) {
+                    endLaunchScreen();
+                }
+            }
+        );
         getOnBackPressedDispatcher()
             .addCallback(
                 this,

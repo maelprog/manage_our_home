@@ -98,6 +98,16 @@ du site.
   `apps/web/src/brand.rs` (`NAME`), les couleurs aussi (`THEME_COLOR`,
   `BACKGROUND_COLOR`), et les icônes sont copiées depuis `apps/web/src/brand/`
   à chaque build (tâche Gradle `copyBrandIcons`).
+- **L'écran de lancement** (#779) : l'icône de l'application sur le fond
+  des pages, clair ou sombre selon le thème du téléphone, et le nom
+  « MHome » dessous à partir d'Android 12 (le mot du logo,
+  `apps/web/src/brand/logo-mono.svg`). Il reste affiché jusqu'à ce qu'une
+  première page s'affiche (le site, l'écran de choix ou la page hors
+  ligne), 5 secondes au plus ; au-delà, la WebView s'affiche telle
+  qu'elle est, et la page hors ligne vient quand même si le site ne
+  répond pas. Quand l'application repart d'elle-même sur l'écran de choix
+  ou sur un site (choix fait, « Changer de site »), il n'attend pas la
+  page.
 - **Hors ligne** : si le site ne répond pas (pas de réseau, nom qui ne se
   résout pas, serveur muet), l'application affiche `www/hors-ligne.html`,
   servie depuis l'APK. Son bouton « Réessayer » recharge le site, « Changer

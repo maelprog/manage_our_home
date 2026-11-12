@@ -15,8 +15,16 @@
         <item name="android:background">@null</item>
     </style>
 
-
+    <!--
+      The launch screen (#779), shown by androidx.core:core-splashscreen
+      (MainActivity installs it) until the first page shows: the launcher
+      icon on the page background of the phone's theme (values-night for
+      the dark one). From Android 12 the name sits under it:
+      values-v31/styles.xml, the same style with the name added.
+    -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
     </style>
 </resources>

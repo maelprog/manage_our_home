@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launch screen of the light theme (#779): the page background and the
+  page text of DESIGN.md, those of www/hors-ligne.html. The background is
+  the web manifest's background_color (apps/web/src/brand.rs,
+  BACKGROUND_COLOR, turned into @color/brand_background by app/build.gradle).
+  values-night/colors.xml holds the dark theme's; scripts/check-shell.test.mjs
+  holds both to the offline page.
+-->
+<resources>
+    <color name="splash_background">@color/brand_background</color>
+    <color name="splash_name">#1C1A17</color>
+</resources>
