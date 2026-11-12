@@ -293,8 +293,12 @@ fn build_router(state: AppState) -> Router {
             )),
         )
         .route(
-            "/agenda/{id}/attachments/{aid}/download",
-            get(routes::agenda::attachments::download),
+            "/agenda/{id}/attachments/{aid}/file",
+            get(routes::agenda::attachments::file),
+        )
+        .route(
+            "/agenda/{id}/attachments/{aid}/thumb",
+            get(routes::agenda::attachments::thumb),
         )
         .route(
             "/agenda/{id}/attachments/{aid}/delete",

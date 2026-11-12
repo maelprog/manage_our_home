@@ -3,13 +3,16 @@
 //! multipart body, **pre-validates size + extension** client-side
 //! (`validate_attachment`, `architecture.md` § Uploads) before relaying the
 //! file to apps/api, which stays the authority (sniffs the real MIME bytes).
-//! Download resolves the short-lived presigned MinIO URL and 302-redirects
-//! the browser onto it — never a public bucket link.
+//! The file and its thumbnail are relayed from apps/api and served from
+//! this origin (`file`, `thumb`, #775): the browser never sees the storage.
 
-use axum::extract::{Multipart, Path, State};
-use axum::http::HeaderMap;
+use axum::body::Body;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
+use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::validation::agenda::{validate_attachment, AttachmentError};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::layout::CurrentUser;
@@ -208,42 +211,137 @@ pub(crate) fn file_buffer_capacity(headers: &HeaderMap) -> usize {
         })
 }
 
-pub async fn download(
+/// `?download=1` on `file`.
+#[derive(Deserialize)]
+pub struct FileQuery {
+    download: Option<String>,
+}
+
+/// `GET /agenda/:id/attachments/:aid/file` — the file, shown in the page;
+/// with `?download=1`, as a download.
+pub async fn file(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((event_id, attachment_id)): Path<(Uuid, Uuid)>,
+    EventFamily(requested): EventFamily,
+    Query(query): Query<FileQuery>,
+) -> Response {
+    let what = if query.download.as_deref() == Some("1") {
+        "content?download=1"
+    } else {
+        "content"
+    };
+    serve(
+        &state,
+        &headers,
+        &me,
+        event_id,
+        attachment_id,
+        requested,
+        what,
+    )
+    .await
+}
+
+/// `GET /agenda/:id/attachments/:aid/thumb` — the file's thumbnail; 404
+/// when it has none.
+pub async fn thumb(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((event_id, attachment_id)): Path<(Uuid, Uuid)>,
     EventFamily(requested): EventFamily,
 ) -> Response {
+    serve(
+        &state,
+        &headers,
+        &me,
+        event_id,
+        attachment_id,
+        requested,
+        "thumbnail",
+    )
+    .await
+}
+
+/// The headers of apps/api's answer that reach the browser, and no other:
+/// what describes the bytes and how to show them. A `Location` or a
+/// `Set-Cookie` of apps/api's would not.
+const RELAYED_HEADERS: [header::HeaderName; 7] = [
+    header::CONTENT_TYPE,
+    header::CONTENT_LENGTH,
+    header::CONTENT_RANGE,
+    header::ACCEPT_RANGES,
+    header::CONTENT_DISPOSITION,
+    header::CACHE_CONTROL,
+    header::CONTENT_SECURITY_POLICY,
+];
+
+/// An attachment's bytes, or its thumbnail's, relayed from apps/api and
+/// served from this origin (#775): the CSP's `default-src 'self'` takes no
+/// image, video or frame from elsewhere, and neither the storage nor
+/// apps/api is reachable by the browser under its internal name.
+///
+/// Streamed both ways, never held: the browser's `Range` goes to apps/api,
+/// which asks the storage for those bytes only, and its 206 or 416 comes
+/// back as it is — a video plays and seeks without the 20 MiB passing
+/// through this process at once. The type and the disposition are
+/// apps/api's (the type sniffed at upload); `nosniff` is set here whatever
+/// apps/api said.
+async fn serve(
+    state: &AppState,
+    headers: &HeaderMap,
+    me: &MeResponse,
+    event_id: Uuid,
+    attachment_id: Uuid,
+    requested: Option<Uuid>,
+    what: &str,
+) -> Response {
     let detail = format!("/agenda/{event_id}");
-    let Some(fam) = family_context_for(&state, &headers, &me, &detail, requested).await else {
+    let Some(fam) = family_context_for(state, headers, me, &detail, requested).await else {
         return Redirect::to("/groups/new").into_response();
     };
-    let cookie = agenda_cookie(&headers);
-    let result = api_request_auth(
-        &state,
-        reqwest::Method::GET,
-        &format!(
-            "/groups/{}/events/{}/attachments/{}/download",
-            fam.gid, event_id, attachment_id
-        ),
-        cookie.as_deref(),
-        None,
-    )
-    .await;
-
-    match result {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            match resp.body.get("url").and_then(|v| v.as_str()) {
-                Some(url) => Redirect::to(url).into_response(),
-                None => event_not_found_page().into_response(),
-            }
-        }
-        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            event_not_found_page().into_response()
-        }
-        _ => Redirect::to(&fam.url(&format!("{detail}?error=unavailable"))).into_response(),
+    let mut req = state.http.get(format!(
+        "{}/groups/{}/events/{}/attachments/{}/{what}",
+        state.api_internal_base_url, fam.gid, event_id, attachment_id
+    ));
+    if let Some(cookie) = agenda_cookie(headers) {
+        req = req.header(header::COOKIE, cookie);
     }
+    if let Some(range) = headers.get(header::RANGE) {
+        req = req.header(header::RANGE, range.clone());
+    }
+    let resp = match req.send().await {
+        Ok(resp) => resp,
+        Err(_) => {
+            return manage_our_home_http_guard::service_unavailable(
+                service_unavailable_page().into_response(),
+            )
+        }
+    };
+    match resp.status() {
+        StatusCode::OK | StatusCode::PARTIAL_CONTENT | StatusCode::RANGE_NOT_SATISFIABLE => {}
+        // Not a member, no such event or attachment, no thumbnail: one
+        // answer for all, which says nothing of which.
+        StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
+            return (StatusCode::NOT_FOUND, event_not_found_page()).into_response()
+        }
+        _ => {
+            return manage_our_home_http_guard::service_unavailable(
+                service_unavailable_page().into_response(),
+            )
+        }
+    }
+    let mut out = Response::builder().status(resp.status());
+    for name in RELAYED_HEADERS {
+        if let Some(value) = resp.headers().get(&name) {
+            out = out.header(name, value.clone());
+        }
+    }
+    out.header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Body::new(reqwest::Body::from(resp)))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 pub async fn delete(
@@ -724,6 +822,256 @@ mod tests {
         assert_redirected_to(&resp, "error=upload_failed");
         assert_eq!(web.api_received.load(Ordering::SeqCst), 0);
         assert_eq!(web.gate.in_flight(), 0, "the permit must be back");
+    }
+
+    // -- serving the file (#775) ---------------------------------------------
+
+    const ATTACHMENT: &str = "00000000-0000-0000-0000-0000000000a1";
+    const VIDEO: &[u8] = b"0123456789abcdefghij";
+
+    /// What the stand-in for apps/api saw of a relayed read.
+    #[derive(Default)]
+    struct Asked {
+        path: std::sync::Mutex<Option<String>>,
+        range: std::sync::Mutex<Option<String>>,
+        cookie: std::sync::Mutex<Option<String>>,
+    }
+
+    /// apps/api serving one attachment: the whole of `VIDEO`, or the range
+    /// asked, with the headers apps/api sets — and a `Location` and a
+    /// `Set-Cookie` that must not reach the browser. `status` overrides
+    /// the answer when not 200.
+    async fn serving_api(status: u16, asked: Arc<Asked>) -> String {
+        let serve = move |uri: axum::http::Uri, headers: HeaderMap| async move {
+            *asked.path.lock().unwrap() = Some(uri.to_string());
+            *asked.range.lock().unwrap() = headers
+                .get(header::RANGE)
+                .map(|v| v.to_str().unwrap().to_string());
+            *asked.cookie.lock().unwrap() = headers
+                .get(header::COOKIE)
+                .map(|v| v.to_str().unwrap().to_string());
+            if status != 200 {
+                let mut resp = Json(serde_json::json!({"error": "not_found"})).into_response();
+                *resp.status_mut() = StatusCode::from_u16(status).unwrap();
+                return resp;
+            }
+            let disposition = if uri.query() == Some("download=1") {
+                r#"attachment; filename="film.mp4"; filename*=UTF-8''film.mp4"#
+            } else {
+                r#"inline; filename="film.mp4"; filename*=UTF-8''film.mp4"#
+            };
+            let mut resp = Response::builder()
+                .header(header::CONTENT_TYPE, "video/mp4")
+                .header(header::CONTENT_DISPOSITION, disposition)
+                .header(header::CACHE_CONTROL, "private")
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(
+                    header::LOCATION,
+                    "http://minio:9000/bucket/key?X-Amz-Signature=x",
+                )
+                .header(header::SET_COOKIE, "leak=1");
+            let body = match headers.get(header::RANGE).map(|v| v.to_str().unwrap()) {
+                Some("bytes=5-9") => {
+                    resp = resp
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, format!("bytes 5-9/{}", VIDEO.len()));
+                    &VIDEO[5..=9]
+                }
+                Some(_) => {
+                    resp = resp
+                        .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                        .header(header::CONTENT_RANGE, format!("bytes */{}", VIDEO.len()));
+                    &b""[..]
+                }
+                None => VIDEO,
+            };
+            resp.header(header::CONTENT_LENGTH, body.len())
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let app = Router::new()
+            .route("/auth/me", get(me))
+            .route(
+                "/groups",
+                get(|| async {
+                    Json(serde_json::json!([{
+                        "group_id": Uuid::nil(),
+                        "name": "Foyer",
+                        "role": "owner",
+                    }]))
+                }),
+            )
+            .route(
+                "/groups/{gid}/events/{eid}/attachments/{aid}/content",
+                get(serve.clone()),
+            )
+            .route(
+                "/groups/{gid}/events/{eid}/attachments/{aid}/thumbnail",
+                get(serve),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    async fn serving_web(status: u16) -> (Router, Arc<Asked>) {
+        let asked = Arc::new(Asked::default());
+        let api = serving_api(status, asked.clone()).await;
+        let router = crate::build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: api,
+            api_public_base_url: "/api".into(),
+            body_read_limits: BodyReadLimits::PRODUCTION,
+            upload_gate: UploadGate::new(8, 2),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        });
+        (router, asked)
+    }
+
+    fn read(uri: &str, cookie: &str, range: Option<&str>) -> Request<Body> {
+        let mut request = Request::builder().uri(uri).header(header::COOKIE, cookie);
+        if let Some(range) = range {
+            request = request.header(header::RANGE, range);
+        }
+        request.body(Body::empty()).unwrap()
+    }
+
+    async fn served(router: &Router, request: Request<Body>) -> Response<Body> {
+        tokio::time::timeout(Duration::from_secs(10), router.clone().oneshot(request))
+            .await
+            .expect("no answer within 10 s")
+            .unwrap()
+    }
+
+    /// The file comes from this origin, with apps/api's type, disposition
+    /// and cache rule, `nosniff` — and nothing that would send the browser
+    /// to the storage, nor a cookie of apps/api's.
+    #[tokio::test]
+    async fn the_file_is_relayed_from_this_origin_with_its_headers() {
+        let (router, asked) = serving_web(200).await;
+        let cookie = session();
+        let uri = format!("/agenda/{EVENT}/attachments/{ATTACHMENT}/file");
+        let resp = served(&router, read(&uri, &cookie, None)).await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::CONTENT_TYPE], "video/mp4");
+        assert_eq!(resp.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(resp.headers()[header::CACHE_CONTROL], "private");
+        assert_eq!(resp.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(
+            resp.headers()[header::CONTENT_LENGTH],
+            VIDEO.len().to_string()
+        );
+        assert!(resp.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .starts_with("inline;"));
+        assert!(resp.headers().get(header::LOCATION).is_none());
+        assert!(resp.headers().get(header::SET_COOKIE).is_none());
+        assert_eq!(&body_bytes(resp).await[..], VIDEO);
+        assert_eq!(
+            asked.path.lock().unwrap().as_deref(),
+            Some(
+                format!(
+                    "/groups/{}/events/{EVENT}/attachments/{ATTACHMENT}/content",
+                    Uuid::nil()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            asked.cookie.lock().unwrap().as_deref(),
+            Some(cookie.as_str())
+        );
+    }
+
+    /// `?download=1` asks apps/api for the download disposition; the
+    /// event page's link carries it.
+    #[tokio::test]
+    async fn the_download_link_asks_for_an_attachment_disposition() {
+        let (router, asked) = serving_web(200).await;
+        let uri = format!("/agenda/{EVENT}/attachments/{ATTACHMENT}/file?download=1");
+        let resp = served(&router, read(&uri, &session(), None)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()[header::CONTENT_DISPOSITION],
+            r#"attachment; filename="film.mp4"; filename*=UTF-8''film.mp4"#
+        );
+        assert!(asked
+            .path
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .ends_with("/content?download=1"));
+    }
+
+    /// The browser's `Range` reaches apps/api, and its 206 or 416 comes
+    /// back with `Content-Range`, so a video seeks.
+    #[tokio::test]
+    async fn a_range_is_relayed_both_ways() {
+        let (router, asked) = serving_web(200).await;
+        let uri = format!("/agenda/{EVENT}/attachments/{ATTACHMENT}/file");
+
+        let resp = served(&router, read(&uri, &session(), Some("bytes=5-9"))).await;
+        assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(resp.headers()[header::CONTENT_RANGE], "bytes 5-9/20");
+        assert_eq!(resp.headers()[header::CONTENT_LENGTH], "5");
+        assert_eq!(&body_bytes(resp).await[..], b"56789");
+        assert_eq!(asked.range.lock().unwrap().as_deref(), Some("bytes=5-9"));
+
+        let resp = served(&router, read(&uri, &session(), Some("bytes=50-"))).await;
+        assert_eq!(resp.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(resp.headers()[header::CONTENT_RANGE], "bytes */20");
+
+        served(&router, read(&uri, &session(), None)).await;
+        assert_eq!(*asked.range.lock().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn the_thumbnail_is_relayed_from_its_own_endpoint() {
+        let (router, asked) = serving_web(200).await;
+        let uri = format!("/agenda/{EVENT}/attachments/{ATTACHMENT}/thumb");
+        let resp = served(&router, read(&uri, &session(), None)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert!(asked
+            .path
+            .lock()
+            .unwrap()
+            .as_deref()
+            .unwrap()
+            .ends_with(&format!("/attachments/{ATTACHMENT}/thumbnail")));
+    }
+
+    /// Refused by apps/api — not a member, no such attachment, no
+    /// thumbnail — is a 404 page, whichever it was; nothing else of
+    /// apps/api's answer passes.
+    #[tokio::test]
+    async fn a_refusal_is_a_404_page() {
+        for status in [403, 404] {
+            let (router, _) = serving_web(status).await;
+            for what in ["file", "thumb"] {
+                let uri = format!("/agenda/{EVENT}/attachments/{ATTACHMENT}/{what}");
+                let resp = served(&router, read(&uri, &session(), None)).await;
+                assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{status} {what}");
+                assert!(resp.headers().get(header::LOCATION).is_none());
+                let page = body_text(resp).await;
+                assert!(page.contains("Événement introuvable"), "{page}");
+            }
+        }
+        let (router, _) = serving_web(500).await;
+        let uri = format!("/agenda/{EVENT}/attachments/{ATTACHMENT}/file");
+        let resp = served(&router, read(&uri, &session(), None)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    async fn body_bytes(resp: Response<Body>) -> Bytes {
+        http_body_util::BodyExt::collect(resp.into_body())
+            .await
+            .unwrap()
+            .to_bytes()
     }
 
     /// A stand-in apps/api that reads no body until `holders` uploads have
