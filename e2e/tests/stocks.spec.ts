@@ -102,6 +102,7 @@ test.describe("Stocks — list & create", () => {
     await createGroup(page, "Famille Placard");
     await createItem(page, { name: "Pâtes complètes", quantity: "2", unit: "paquet", category: "Placard" });
     await createItem(page, { name: "Crème", quantity: "1", unit: "pot", category: "Frigo" });
+    await createItem(page, { name: "Beurre", quantity: "2", unit: "plaquette", category: "Frigo" });
 
     const qty = (name: string) => page.locator("li", { hasText: name }).locator(".stepper > span");
     await page.goto("/stocks");
@@ -130,11 +131,12 @@ test.describe("Stocks — list & create", () => {
 
     // The search, which keeps the place it was typed in.
     await filters.getByRole("link", { name: "Tout", exact: true }).click();
+    await expect(qty("Beurre")).toHaveText("2 plaquettes");
     await page.getByRole("searchbox", { name: "Chercher un produit" }).fill("pâtes");
     await page.getByRole("searchbox", { name: "Chercher un produit" }).press("Enter");
     await expect(page).toHaveURL(/\/stocks\?q=p%C3%A2tes$/);
     await expect(qty("Pâtes complètes")).toHaveText("1 paquet");
-    await expect(page.locator("li", { hasText: "Crème" })).toHaveCount(0);
+    await expect(page.locator("li", { hasText: "Beurre" })).toHaveCount(0);
   });
 
   test("create an item; low-stock badge shows when quantity is at/below threshold", async ({
