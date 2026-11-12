@@ -97,6 +97,65 @@
     dialog.showModal();
   });
 
+  // `data-viewer="<id>"` on a tile of an event's attachments
+  // (`agenda::detail::attachment_tile`, #776): opens the viewer `<dialog>`
+  // of that id as a modal instead of following the link to the file. The
+  // viewer's media wait in `data-src` until it opens. « Pièce précédente »
+  // and « Pièce suivante » (`data-viewer-step`), and the ← and → keys, go
+  // to the viewer its `data-viewer-prev` / `data-viewer-next` names. The
+  // browser closes it on Escape; the focus then goes back to the tile of
+  // the file last shown. Without JavaScript the tile leads to the file.
+  function showViewer(dialog) {
+    Array.prototype.forEach.call(dialog.querySelectorAll("[data-src]"), function (media) {
+      if (!media.hasAttribute("src")) media.setAttribute("src", media.getAttribute("data-src"));
+    });
+    dialog.showModal();
+  }
+
+  function stepViewer(dialog, step) {
+    var other = dialog && document.getElementById(dialog.getAttribute("data-viewer-" + step) || "");
+    if (!other) return;
+    dialog.close();
+    showViewer(other);
+  }
+
+  document.addEventListener("click", function (event) {
+    var tile = closest(event.target, "[data-viewer]");
+    if (tile) {
+      var dialog = document.getElementById(tile.getAttribute("data-viewer"));
+      if (!dialog || typeof dialog.showModal !== "function") return;
+      event.preventDefault();
+      showViewer(dialog);
+      return;
+    }
+    var button = closest(event.target, "[data-viewer-step]");
+    if (button) stepViewer(closest(button, "dialog"), button.getAttribute("data-viewer-step"));
+  });
+
+  // Not on a video, whose own controls take the arrows to seek.
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    var dialog = closest(event.target, "dialog.viewer[open]");
+    if (!dialog || closest(event.target, "video")) return;
+    event.preventDefault();
+    stepViewer(dialog, event.key === "ArrowLeft" ? "prev" : "next");
+  });
+
+  // A closed viewer stops its video. Its tile gets the focus back unless
+  // another viewer has opened in its place (a step).
+  function viewers() {
+    Array.prototype.forEach.call(document.querySelectorAll("dialog.viewer"), function (dialog) {
+      dialog.addEventListener("close", function () {
+        Array.prototype.forEach.call(dialog.querySelectorAll("video"), function (video) {
+          video.pause();
+        });
+        if (document.querySelector("dialog.viewer[open]")) return;
+        var tile = document.querySelector('[data-viewer="' + dialog.id + '"]');
+        if (tile) tile.focus();
+      });
+    });
+  }
+
   // `data-confirm="…"` on a form: asks before it is submitted, and stops
   // the submission on a refusal.
   document.addEventListener("submit", function (event) {
@@ -193,12 +252,14 @@
     dialog.showModal();
   }
 
-  // `data-hidden-with-js` on a button: the fallback of a form that sends
-  // itself without it (the profile's families, #751). Rendered, then
-  // hidden here, so that a page whose script failed to load keeps it.
+  // `data-hidden-with-js`: the fallback of a form that sends itself
+  // without it (a button: the profile's families, #751), or of what a
+  // script offers otherwise (the attachments' list and its « Supprimer »,
+  // which the viewers carry, #776). Rendered, then hidden here, so that a
+  // page whose script failed to load keeps it.
   function familySelectors() {
     var buttons = document.querySelectorAll(
-      'form[data-families] button[type="submit"], button[data-hidden-with-js]'
+      'form[data-families] button[type="submit"], [data-hidden-with-js]'
     );
     Array.prototype.forEach.call(buttons, function (button) {
       button.hidden = true;
@@ -410,6 +471,7 @@
     bounds();
     recurringBoxes();
     familySelectors();
+    viewers();
     try {
       revealCurrentTab();
     } catch (e) {}

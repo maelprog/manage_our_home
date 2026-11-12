@@ -513,6 +513,25 @@ a.list-row .icon { flex: none; }
    so `:modal` says it again — and outweighs that rule. */
 dialog { padding: var(--s4); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); color: var(--fg); max-width: min(var(--w-form), 100% - 2 * var(--s4)); }
 dialog:modal { margin: auto; }
+/* An event's attachments (#776): a grid of square tiles, three to a row on
+   a phone, four on a PC. A picture shows its thumbnail, cropped to the
+   square; anything else its icon in --accent, its kind and its name, on
+   --hover. Each tile is a link to the file, which enhance.js turns into
+   the opening of its viewer. */
+.gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s2x); padding: 0; margin: var(--s4) 0; list-style: none; }
+@media (min-width: 861px) { .gallery { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.thumb { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s1); aspect-ratio: 1; padding: var(--s2x); overflow: hidden; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--hover); color: var(--fg); font-size: var(--t-xs); text-align: center; text-decoration: none; }
+.thumb:has(img) { padding: 0; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb .icon { width: var(--s8); height: var(--s8); color: var(--accent); }
+.thumb .kind { color: var(--muted); font-weight: 600; }
+.thumb span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The viewer of an attachment (#776): the dialog's card, as wide as the
+   reading column allows, the file whole and never taller than leaves its
+   actions in view. A long name breaks rather than widening the card. */
+dialog.viewer { width: 100%; max-width: min(var(--w-read), 100% - 2 * var(--s4)); }
+.viewer h2 { overflow-wrap: anywhere; }
+.viewer img, .viewer video { display: block; width: 100%; max-height: 60vh; object-fit: contain; border-radius: var(--r-sm); }
 /* A card, notice or dialog opens with its heading, whose own top margin
    would push it off the padding. */
 .card > :first-child, .notice > :first-child, dialog > :first-child { margin-top: 0; }
@@ -985,6 +1004,7 @@ button.secondary:hover, .btn.secondary:hover { background: var(--hover); }
 button.danger:hover, .btn.danger:hover { background: var(--error-hover); border-color: var(--error-hover); }
 button.secondary.danger:hover, .btn.secondary.danger:hover { background: var(--error-soft); }
 .list-row:hover, .navlink:hover { background: var(--hover); }
+.thumb:hover { border-color: var(--accent); }
 /* No native tap flash (#674): Chrome Android and Safari iOS painted their
    blue highlight over whatever was touched. The answer to a touch is the
    system's own — hover, focus ring, `aria-current`. Inherited, so once. */
