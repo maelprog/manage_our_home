@@ -10,7 +10,10 @@
 //! the adjust form renders for everyone; the full-record edit and delete stay
 //! behind `can_modify` (creator or group admin/owner), so the edit link and
 //! delete button render only for those users. The backend stays the authority
-//! (a forged full-edit/delete is still 403'd, mapped defensively here).
+//! (a forged full-edit/delete is still 403'd, mapped defensively here). An
+//! adjustment to 0 of an article without a reorder threshold removes it
+//! (#800) — the consequence of the adjustment, open to every member — and
+//! lands on the list with `?notice=item_depleted`, never on its gone page.
 //!
 //! Expiry date (#401): one date per article, the nearest. Its status is
 //! derived by the backend (`StockItemResponse::expiry_status`, today in

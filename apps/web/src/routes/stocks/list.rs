@@ -19,6 +19,8 @@
 //! detail page's adjust route — the quantity-only PATCH any member may make
 //! (#39) — with the list's own address in `back`, so the member lands back
 //! here, on the same filters. PRG banners after create/update/adjust/delete.
+//! A − that brings an article without a reorder threshold to 0 removes it
+//! (#800): the banner then reads « Article épuisé, retiré du stock ».
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -207,6 +209,7 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "item_updated" => Some("Article mis à jour."),
         "quantity_adjusted" => Some("Quantité mise à jour."),
         "item_deleted" => Some("Article supprimé."),
+        "item_depleted" => Some("Article épuisé, retiré du stock."),
         _ => None,
     }
 }
@@ -691,6 +694,20 @@ mod tests {
         assert!(html.contains("Aucun article ne correspond."), "{html}");
         let html = body(&ListState::default(), &[], d(2026, 10, 29), None, "");
         assert!(html.contains("Aucun article pour le moment."), "{html}");
+    }
+
+    /// #800: an article the adjustment emptied is told apart from a plain
+    /// adjustment.
+    #[test]
+    fn an_emptied_article_has_its_own_notice() {
+        assert_eq!(
+            notice_text("item_depleted"),
+            Some("Article épuisé, retiré du stock.")
+        );
+        assert_eq!(
+            notice_text("quantity_adjusted"),
+            Some("Quantité mise à jour.")
+        );
     }
 
     #[test]
