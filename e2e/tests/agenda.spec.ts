@@ -1,6 +1,8 @@
 import { expect, Page, test } from "@playwright/test";
+import { crc32, deflateSync } from "node:zlib";
 import { fetchEventBounds, fetchVerificationToken } from "../lib/db";
 import { parisDay, parisDayOfMonth } from "../lib/dates";
+import { chooseTheme, resolvedTheme } from "../lib/theme";
 
 // Front epic #3 — Agenda (issue #18): every user journey the epic
 // introduces, happy paths plus the documented error states from
@@ -314,10 +316,12 @@ test.describe("Agenda — attachments", () => {
     await expect(link).toBeVisible();
 
     // The file comes from this origin (#775), never from a redirect onto
-    // the storage: its bytes, its sniffed type, as a download.
-    const href = await link.getAttribute("href");
-    if (!href) throw new Error("no download link");
-    expect(href).toContain("/file?download=1");
+    // the storage: its bytes, its sniffed type, as a download. Its tile
+    // leads to it (#776), the viewer's « Télécharger » adds `?download=1`.
+    const tileHref = await link.getAttribute("href");
+    if (!tileHref) throw new Error("no file link");
+    expect(tileHref).toMatch(/\/file$/);
+    const href = `${tileHref}?download=1`;
     const resp = await page.request.get(href, { maxRedirects: 0 });
     expect(resp.status()).toBe(200);
     expect(resp.headers()["location"]).toBeUndefined();
@@ -332,12 +336,11 @@ test.describe("Agenda — attachments", () => {
     expect(ranged.headers()["content-range"]).toBe(`bytes 0-7/${PNG_1X1.length}`);
     expect(Buffer.compare(await ranged.body(), PNG_1X1.subarray(0, 8))).toBe(0);
 
-    // Delete it (scope to the attachment row — the event's own "Supprimer"
-    // button is also on this page).
-    await page
-      .locator("li", { hasText: "photo.png" })
-      .getByRole("button", { name: "Supprimer" })
-      .click();
+    // Delete it from its viewer (#776), once confirmed — the event's own
+    // "Supprimer" button is also on this page.
+    await link.click();
+    page.once("dialog", (d) => d.accept());
+    await page.getByRole("dialog", { name: "photo.png" }).getByRole("button", { name: "Supprimer" }).click();
     await expect(page.getByText("Pièce jointe supprimée.")).toBeVisible();
     await expect(page.getByRole("link", { name: "photo.png" })).toHaveCount(0);
   });
@@ -367,6 +370,199 @@ test.describe("Agenda — attachments", () => {
     await page.getByRole("button", { name: "Envoyer" }).click();
     await expect(page.getByText("Pièce jointe ajoutée.")).toBeVisible();
     await expect(page.getByRole("link", { name: "gros.png" })).toBeVisible();
+  });
+});
+
+/** One PNG chunk: length, type, data, CRC of type and data. */
+function pngChunk(type: string, data: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const typed = Buffer.concat([Buffer.from(type, "latin1"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(typed));
+  return Buffer.concat([length, typed, crc]);
+}
+
+/** An RGB PNG of `width` × `height`, every pixel `rgb`: one apps/api decodes into a thumbnail. */
+function png(width: number, height: number, rgb: [number, number, number]): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8; // bit depth
+  header[9] = 2; // RGB
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x++) row.set(rgb, 1 + x * 3);
+  const rows = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(rows)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/** A PDF as apps/api sniffs one: its signature. */
+const PDF = Buffer.from("%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n", "latin1");
+
+/** `#rrggbb` as the `rgb(r, g, b)` a computed colour reads. */
+function rgbOf(hex: string): string {
+  const n = parseInt(hex.trim().slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+}
+
+async function attach(page: Page, name: string, mimeType: string, buffer: Buffer): Promise<void> {
+  await page.locator('input[name="file"]').setInputFiles({ name, mimeType, buffer });
+  await page.getByRole("button", { name: "Envoyer" }).click();
+  await expect(page.getByText("Pièce jointe ajoutée.")).toBeVisible();
+}
+
+/** A fresh user's event carrying two pictures and a PDF, its detail open; returns its path. */
+async function eventWithFiles(page: Page, prefix: string, family: string): Promise<string> {
+  await registerAndLogin(page, prefix, "Galerie Pièces");
+  await createGroup(page, family);
+  const date = dayThisMonth(22);
+  await createEvent(page, { title: "Sortie au musée", start: `${date}T09:00`, end: `${date}T10:00` });
+  await openEventDetail(page, "Sortie au musée");
+  await attach(page, "rouge.png", "image/png", png(40, 30, [200, 40, 40]));
+  await attach(page, "bleu.png", "image/png", png(30, 40, [40, 40, 200]));
+  await attach(page, "notice.pdf", "application/pdf", PDF);
+  return new URL(page.url()).pathname;
+}
+
+// #776: the attachments as a gallery of tiles, each opening a viewer.
+test.describe("Agenda — galerie des pièces jointes (#776)", () => {
+  test("a tile opens its viewer, which steps, downloads, closes on Escape and deletes", async ({ page }) => {
+    await eventWithFiles(page, "e2e-aggal", "Famille Galerie");
+    await expect(page.locator(".gallery a")).toHaveCount(3);
+    const red = page.getByRole("link", { name: "rouge.png" });
+    await expect(red.locator("img")).toHaveAttribute("src", /\/thumb$/);
+    await expect(red.locator("img")).toHaveAttribute("loading", "lazy");
+    await expect(page.getByRole("link", { name: "notice.pdf" })).toContainText("PDF");
+
+    await red.click();
+    const first = page.getByRole("dialog", { name: "rouge.png" });
+    await expect(first).toBeVisible();
+    await expect(first.getByText("1 sur 3")).toBeVisible();
+    // The whole file, loaded once the viewer opened.
+    const full = first.locator("img");
+    await expect(full).toHaveAttribute("src", /\/file$/);
+    await expect.poll(() => full.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(40);
+    await expect(first.getByRole("button", { name: "Pièce précédente" })).toBeDisabled();
+
+    // → and « Pièce suivante » step forward, ← back; the last has no next.
+    await page.keyboard.press("ArrowRight");
+    const second = page.getByRole("dialog", { name: "bleu.png" });
+    await expect(second.getByText("2 sur 3")).toBeVisible();
+    await expect(first).toBeHidden();
+    await second.getByRole("button", { name: "Pièce suivante" }).click();
+    const third = page.getByRole("dialog", { name: "notice.pdf" });
+    await expect(third.getByText("3 sur 3")).toBeVisible();
+    await expect(third.getByRole("link", { name: "Ouvrir le PDF" })).toHaveAttribute("target", "_blank");
+    await expect(third.getByRole("button", { name: "Pièce suivante" })).toBeDisabled();
+    await page.keyboard.press("ArrowLeft");
+    await expect(second).toBeVisible();
+
+    // « Télécharger » is a download, under the file's name.
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      second.getByRole("link", { name: "Télécharger" }).click(),
+    ]);
+    expect(download.suggestedFilename()).toBe("bleu.png");
+    await expect(second.getByRole("link", { name: "Ouvrir dans un onglet" })).toHaveAttribute("target", "_blank");
+
+    // Escape closes it; the focus goes back to the tile of the file shown.
+    await page.keyboard.press("Escape");
+    await expect(second).toBeHidden();
+    await expect(page.getByRole("link", { name: "bleu.png" })).toBeFocused();
+
+    // « Supprimer » asks first: refused, nothing goes; accepted, it goes.
+    await page.getByRole("link", { name: "bleu.png" }).click();
+    page.once("dialog", (d) => d.dismiss());
+    await second.getByRole("button", { name: "Supprimer" }).click();
+    await expect(second).toBeVisible();
+    let asked = "";
+    page.once("dialog", (d) => {
+      asked = d.message();
+      void d.accept();
+    });
+    await second.getByRole("button", { name: "Supprimer" }).click();
+    await expect(page.getByText("Pièce jointe supprimée.")).toBeVisible();
+    expect(asked).toBe("Supprimer « bleu.png » ?");
+    await expect(page.getByRole("link", { name: "bleu.png" })).toHaveCount(0);
+    await expect(page.locator(".gallery a")).toHaveCount(2);
+  });
+
+  test("the gallery and its viewer at 390 and 1440 px, light and dark", async ({ page }) => {
+    const detail = await eventWithFiles(page, "e2e-aggalvp", "Famille Galerie Écrans");
+    for (const [theme, dataTheme] of [
+      ["Clair", "light"],
+      ["Sombre", "dark"],
+    ] as const) {
+      await chooseTheme(page, theme);
+      for (const [width, height, columns] of [
+        [390, 844, 3],
+        [1440, 900, 4],
+      ] as const) {
+        const at = `${theme} ${width}px`;
+        await page.setViewportSize({ width, height });
+        await page.goto(detail);
+        expect((await resolvedTheme(page)).dataTheme, at).toBe(dataTheme);
+        const grid = await page
+          .locator(".gallery")
+          .evaluate((g) => getComputedStyle(g).gridTemplateColumns.split(" ").length);
+        expect(grid, at).toBe(columns);
+        const tile = await page.getByRole("link", { name: "rouge.png" }).boundingBox();
+        expect(tile!.height, at).toBeGreaterThanOrEqual(44);
+
+        await page.getByRole("link", { name: "rouge.png" }).click();
+        const viewer = page.getByRole("dialog", { name: "rouge.png" });
+        await expect(viewer).toBeVisible();
+        const box = await viewer.boundingBox();
+        expect(box!.x, at).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width, at).toBeLessThanOrEqual(width);
+        // Every control of the viewer is a 44 px target.
+        for (const control of await viewer.locator("button, a").all()) {
+          const b = await control.boundingBox();
+          expect(b!.height, `${at} ${await control.textContent()}`).toBeGreaterThanOrEqual(44);
+        }
+        // The window's card, on the theme's own tokens.
+        const [ground, text, surface, fg] = await viewer.evaluate((d) => {
+          const root = getComputedStyle(document.documentElement);
+          return [
+            getComputedStyle(d).backgroundColor,
+            getComputedStyle(d).color,
+            root.getPropertyValue("--surface"),
+            root.getPropertyValue("--fg"),
+          ];
+        });
+        expect(ground, at).toBe(rgbOf(surface));
+        expect(text, at).toBe(rgbOf(fg));
+        await page.keyboard.press("Escape");
+        await expect(viewer).toBeHidden();
+      }
+    }
+  });
+});
+
+test.describe("Agenda — galerie sans JavaScript (#776)", () => {
+  test.use({ javaScriptEnabled: false });
+
+  test("a tile leads to the file, and the list under the gallery deletes", async ({ page }) => {
+    await eventWithFiles(page, "e2e-aggalnojs", "Famille Galerie Sans Script");
+    const red = page.getByRole("link", { name: "rouge.png" });
+    const href = await red.getAttribute("href");
+    expect(href).toMatch(/\/file$/);
+    await red.click();
+    await expect(page).toHaveURL(/\/attachments\/[0-9a-f-]+\/file$/);
+    const shown = await page.request.get(href!);
+    expect(shown.status()).toBe(200);
+    expect(shown.headers()["content-type"]).toBe("image/png");
+
+    await page.goBack();
+    // No script, no confirmation: the form posts as it is.
+    await page.locator("li", { hasText: "notice.pdf" }).getByRole("button", { name: "Supprimer" }).click();
+    await expect(page.getByText("Pièce jointe supprimée.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "notice.pdf" })).toHaveCount(0);
   });
 });
 

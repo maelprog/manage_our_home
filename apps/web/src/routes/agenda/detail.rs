@@ -28,6 +28,7 @@ use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
 use crate::app::{html_escape, member_link, shell_with_header, Icon, Width};
+use crate::icons::{icon, Icon as Glyph};
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
@@ -643,44 +644,209 @@ fn render_occurrence_completions(
     )
 }
 
+/// What a tile of the gallery draws for an attachment (#776).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tile {
+    /// A picture whose thumbnail was stored with it.
+    Thumbnail,
+    /// A picture without one: an icon, never the whole file in the grid.
+    Picture,
+    Video,
+    Pdf,
+    /// A type the API does not take today.
+    File,
+}
+
+fn tile_of(attachment: &AttachmentResponse) -> Tile {
+    let mime = attachment.mime_type.as_str();
+    if mime.starts_with("image/") {
+        if attachment.has_thumbnail {
+            Tile::Thumbnail
+        } else {
+            Tile::Picture
+        }
+    } else if mime.starts_with("video/") {
+        Tile::Video
+    } else if mime == "application/pdf" {
+        Tile::Pdf
+    } else {
+        Tile::File
+    }
+}
+
+/// The icon and the word an icon tile draws; a thumbnail draws neither.
+fn tile_kind(tile: Tile) -> (Glyph, &'static str) {
+    match tile {
+        Tile::Thumbnail | Tile::Picture => (Glyph::Picture, "Image"),
+        Tile::Video => (Glyph::Play, "Vidéo"),
+        Tile::Pdf => (Glyph::Document, "PDF"),
+        Tile::File => (Glyph::Paperclip, "Fichier"),
+    }
+}
+
+fn size_label(attachment: &AttachmentResponse) -> String {
+    format!(
+        "{} Ko",
+        (attachment.size_bytes as f64 / 1024.0).round() as i64
+    )
+}
+
+/// The id of an attachment's viewer, which its tile names.
+fn viewer_id(attachment: &AttachmentResponse) -> String {
+    format!("att-{}", attachment.id)
+}
+
+/// The deletion of an attachment: the POST form #455 had in its row, asking
+/// first (`data-confirm`).
+fn attachment_delete_form(urls: EventUrls, attachment: &AttachmentResponse) -> String {
+    format!(
+        r#"<form method="post" action="{delete}" data-confirm="Supprimer « {name} » ?">
+<button type="submit" class="secondary danger">Supprimer</button></form>"#,
+        delete = urls.to(&format!("/attachments/{}/delete", attachment.id)),
+        name = html_escape(&attachment.filename),
+    )
+}
+
+/// A tile of the gallery (#776): a link to the file, which `enhance.js`
+/// turns into the opening of its viewer. Its name is the file's — the
+/// `alt` of a thumbnail, the text of an icon tile, whose kind is drawn.
+fn attachment_tile(urls: EventUrls, attachment: &AttachmentResponse) -> String {
+    let name = html_escape(&attachment.filename);
+    let tile = tile_of(attachment);
+    let inner = if tile == Tile::Thumbnail {
+        format!(
+            r#"<img src="{thumb}" alt="{name}" loading="lazy"/>"#,
+            thumb = urls.to(&format!("/attachments/{}/thumb", attachment.id)),
+        )
+    } else {
+        let (glyph, kind) = tile_kind(tile);
+        format!(
+            r#"{icon}<span class="kind" aria-hidden="true">{kind}</span><span>{name}</span>"#,
+            icon = icon(glyph),
+        )
+    };
+    format!(
+        r#"<li><a class="thumb" href="{file}" data-viewer="{id}">{inner}</a></li>"#,
+        file = urls.to(&format!("/attachments/{}/file", attachment.id)),
+        id = viewer_id(attachment),
+    )
+}
+
+/// The viewer of the `index`th attachment (#776): a modal `<dialog>`,
+/// opened by its tile. The file whole — loaded from `data-src` once the
+/// viewer opens, so a page of pictures does not fetch them all —, where it
+/// stands among the others, the previous and next viewers it leads to, and
+/// what can be done with the file.
+fn attachment_viewer(
+    urls: EventUrls,
+    attachments: &[AttachmentResponse],
+    index: usize,
+    can_edit: bool,
+) -> String {
+    let attachment = &attachments[index];
+    let id = viewer_id(attachment);
+    let name = html_escape(&attachment.filename);
+    let file = urls.to(&format!("/attachments/{}/file", attachment.id));
+    let prev = index.checked_sub(1).map(|i| &attachments[i]);
+    let next = attachments.get(index + 1);
+    let neighbour = |step: &str, other: Option<&AttachmentResponse>| {
+        other
+            .map(|o| format!(r#" data-viewer-{step}="{}""#, viewer_id(o)))
+            .unwrap_or_default()
+    };
+    let step_button = |step: &str,
+                       label: &str,
+                       glyph: Glyph,
+                       other: Option<&AttachmentResponse>| {
+        format!(
+            r#"<button type="button" class="secondary" data-viewer-step="{step}" aria-label="{label}"{disabled}>{icon}</button>"#,
+            disabled = if other.is_none() { " disabled" } else { "" },
+            icon = icon(glyph),
+        )
+    };
+    let media = match tile_of(attachment) {
+        Tile::Thumbnail | Tile::Picture => format!(r#"<img data-src="{file}" alt="{name}"/>"#),
+        Tile::Video => {
+            format!(r#"<video controls preload="metadata" data-src="{file}"></video>"#)
+        }
+        Tile::Pdf => format!(
+            r#"<p><a class="btn" href="{file}" target="_blank" rel="noopener">{icon} Ouvrir le PDF</a></p>"#,
+            icon = icon(Glyph::Document),
+        ),
+        // Nothing to show: the actions below open or download it.
+        Tile::File => String::new(),
+    };
+    let delete = if can_edit {
+        attachment_delete_form(urls, attachment)
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<dialog class="viewer" id="{id}" aria-labelledby="{id}-name"{prev_attr}{next_attr}>
+<div class="split"><h2 id="{id}-name">{name}</h2><form method="dialog"><button type="submit" class="secondary">Fermer</button></form></div>
+<p class="muted">{n} sur {total} · {size}</p>
+{media}
+<div class="actions">{prev_button}{next_button}
+<a class="btn secondary" href="{download}">Télécharger</a>
+<a class="btn secondary" href="{file}" target="_blank" rel="noopener">Ouvrir dans un onglet</a>
+{delete}</div>
+</dialog>"#,
+        prev_attr = neighbour("prev", prev),
+        next_attr = neighbour("next", next),
+        n = index + 1,
+        total = attachments.len(),
+        size = size_label(attachment),
+        prev_button = step_button("prev", "Pièce précédente", Glyph::Previous, prev),
+        next_button = step_button("next", "Pièce suivante", Glyph::Next, next),
+        download = urls.to(&format!("/attachments/{}/file?download=1", attachment.id)),
+    )
+}
+
 /// `attachments` is `None` when the API's answer could not be read: the
 /// list renders as an error, never as "no attachment", and the upload form
 /// stays (#455).
+///
+/// Since #776, a gallery of tiles, one viewer per file, and — for whoever
+/// can edit the event — the list of #455 with its « Supprimer », which
+/// `enhance.js` hides (`data-hidden-with-js`): without JavaScript the
+/// viewers never open, and deleting is still possible.
 fn render_attachments(
     urls: impl Into<EventUrls>,
     attachments: Option<&[AttachmentResponse]>,
     can_edit: bool,
 ) -> String {
     let urls = urls.into();
-    let rows: String = attachments
-        .unwrap_or_default()
-        .iter()
-        .map(|a| {
-            let size_kb = (a.size_bytes as f64 / 1024.0).round() as i64;
-            let delete = if can_edit {
-                format!(
-                    r#"<form method="post" action="{delete}">
-<button type="submit" class="secondary">Supprimer</button></form>"#,
-                    delete = urls.to(&format!("/attachments/{}/delete", a.id)),
-                )
-            } else {
-                String::new()
-            };
-            format!(
-                r#"<li class="list-row">
-<a href="{download}">{name}</a>
-<span class="muted">{size_kb} Ko</span>
-{delete}</li>"#,
-                download = urls.to(&format!("/attachments/{}/file?download=1", a.id)),
-                name = html_escape(&a.filename),
-            )
-        })
-        .collect();
     let list = match attachments {
         None => r#"<p class="notice error">Impossible de charger les pièces jointes pour le moment.</p>"#
             .to_string(),
         Some([]) => r#"<p class="muted">Aucune pièce jointe.</p>"#.to_string(),
-        Some(_) => format!(r#"<ul class="list">{rows}</ul>"#),
+        Some(all) => {
+            let tiles: String = all.iter().map(|a| attachment_tile(urls, a)).collect();
+            let viewers: String = (0..all.len())
+                .map(|i| attachment_viewer(urls, all, i, can_edit))
+                .collect();
+            let fallback = if can_edit {
+                let rows: String = all
+                    .iter()
+                    .map(|a| {
+                        format!(
+                            r#"<li class="list-row"><span>{name}</span><span class="muted">{size}</span>
+{delete}</li>"#,
+                            name = html_escape(&a.filename),
+                            size = size_label(a),
+                            delete = attachment_delete_form(urls, a),
+                        )
+                    })
+                    .collect();
+                format!(r#"<ul class="list" data-hidden-with-js>{rows}</ul>"#)
+            } else {
+                String::new()
+            };
+            format!(
+                r#"<ul class="gallery">{tiles}</ul>
+{viewers}{fallback}"#
+            )
+        }
     };
     let upload = format!(
         r#"<form method="post" action="{action}" enctype="multipart/form-data">
@@ -1034,6 +1200,277 @@ mod tests {
         assert!(!html.contains("notice error"), "{html}");
     }
 
+    // -- the gallery and its viewer (#776) -----------------------------------
+
+    fn attachment(
+        n: u128,
+        filename: &str,
+        mime_type: &str,
+        has_thumbnail: bool,
+    ) -> AttachmentResponse {
+        AttachmentResponse {
+            id: uid(n),
+            event_id: uid(9),
+            filename: filename.to_string(),
+            mime_type: mime_type.to_string(),
+            size_bytes: 2048,
+            has_thumbnail,
+        }
+    }
+
+    #[test]
+    fn a_picture_with_a_thumbnail_shows_it() {
+        let a = attachment(1, "photo.jpg", "image/jpeg", true);
+        assert_eq!(tile_of(&a), Tile::Thumbnail);
+    }
+
+    /// Too big or undecodable at upload, or uploaded before #774: the file
+    /// itself is never loaded into the grid.
+    #[test]
+    fn a_picture_without_a_thumbnail_gets_an_icon() {
+        for mime in ["image/png", "image/jpeg", "image/webp"] {
+            let a = attachment(1, "photo", mime, false);
+            assert_eq!(tile_of(&a), Tile::Picture, "{mime}");
+        }
+    }
+
+    #[test]
+    fn a_video_gets_the_play_tile_whatever_its_thumbnail_flag() {
+        for (mime, thumb) in [
+            ("video/mp4", false),
+            ("video/webm", false),
+            ("video/mp4", true),
+        ] {
+            let a = attachment(1, "film", mime, thumb);
+            assert_eq!(tile_of(&a), Tile::Video, "{mime} {thumb}");
+        }
+    }
+
+    #[test]
+    fn a_pdf_gets_the_pdf_tile_whatever_its_thumbnail_flag() {
+        for thumb in [false, true] {
+            let a = attachment(1, "scan.pdf", "application/pdf", thumb);
+            assert_eq!(tile_of(&a), Tile::Pdf, "{thumb}");
+        }
+    }
+
+    /// A type the API does not take today: a plain file tile, never a
+    /// picture the browser would fail to show.
+    #[test]
+    fn an_unknown_type_gets_a_plain_file_tile() {
+        let a = attachment(1, "notes.txt", "text/plain", true);
+        assert_eq!(tile_of(&a), Tile::File);
+    }
+
+    const HOSTILE: &str = r#""><script>x</script>&.png"#;
+    const HOSTILE_ESCAPED: &str = "&quot;&gt;&lt;script&gt;x&lt;/script&gt;&amp;.png";
+
+    /// The name lands in an `alt`, a tile's text, the viewer's heading and
+    /// alt, and the confirmation of its deletion: escaped everywhere.
+    #[test]
+    fn the_name_is_escaped_in_every_place_it_lands() {
+        for (mime, thumb) in [
+            ("image/png", true),
+            ("image/png", false),
+            ("application/pdf", false),
+        ] {
+            let html =
+                render_attachments(uid(9), Some(&[attachment(1, HOSTILE, mime, thumb)]), true);
+            assert!(!html.contains("<script>"), "{mime} {thumb}: {html}");
+            assert!(!html.contains(r#""">"#), "{mime} {thumb}: {html}");
+            assert!(html.contains(HOSTILE_ESCAPED), "{mime} {thumb}: {html}");
+            assert!(
+                html.contains(&format!(
+                    "data-confirm=\"Supprimer « {HOSTILE_ESCAPED} » ?\""
+                )),
+                "{mime} {thumb}: {html}"
+            );
+        }
+        let html = render_attachments(
+            uid(9),
+            Some(&[attachment(1, HOSTILE, "image/png", true)]),
+            true,
+        );
+        assert!(
+            html.contains(&format!(r#"alt="{HOSTILE_ESCAPED}""#)),
+            "{html}"
+        );
+    }
+
+    /// Without JavaScript the tile is a link to the file; with it, it names
+    /// the viewer it opens.
+    #[test]
+    fn a_tile_leads_to_the_file_and_names_its_viewer() {
+        let html = render_attachments(
+            uid(9),
+            Some(&[attachment(1, "photo.png", "image/png", true)]),
+            false,
+        );
+        let file = format!("/agenda/{}/attachments/{}/file", uid(9), uid(1));
+        let thumb = format!("/agenda/{}/attachments/{}/thumb", uid(9), uid(1));
+        assert!(
+            html.contains(&format!(
+                r#"<a class="thumb" href="{file}" data-viewer="att-{}">"#,
+                uid(1)
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<img src="{thumb}" alt="photo.png" loading="lazy"/>"#
+            )),
+            "{html}"
+        );
+        assert!(html.contains(r#"<ul class="gallery">"#), "{html}");
+    }
+
+    /// The tile of a video or a PDF is named by the file alone: the icon and
+    /// the kind are drawn, not said.
+    #[test]
+    fn an_icon_tile_draws_its_kind_and_is_named_by_the_file() {
+        for (mime, kind, glyph) in [
+            ("video/mp4", "Vidéo", Glyph::Play),
+            ("application/pdf", "PDF", Glyph::Document),
+            ("image/png", "Image", Glyph::Picture),
+        ] {
+            let html = render_attachments(uid(9), Some(&[attachment(1, "f", mime, false)]), false);
+            assert!(html.contains(icon(glyph)), "{mime}: {html}");
+            assert!(
+                html.contains(&format!(
+                    r#"<span class="kind" aria-hidden="true">{kind}</span><span>f</span></a>"#
+                )),
+                "{mime}: {html}"
+            );
+            assert!(!html.contains("<img src="), "{mime}: {html}");
+        }
+    }
+
+    fn three() -> Vec<AttachmentResponse> {
+        vec![
+            attachment(1, "a.png", "image/png", true),
+            attachment(2, "b.mp4", "video/mp4", false),
+            attachment(3, "c.pdf", "application/pdf", false),
+        ]
+    }
+
+    /// One viewer a file, which says where it stands and which viewers
+    /// come before and after it; the first has no previous one, the last no
+    /// next one, and their buttons are disabled.
+    #[test]
+    fn each_viewer_knows_its_place_and_its_neighbours() {
+        let html = render_attachments(uid(9), Some(&three()), false);
+        let (a, b, c) = (uid(1), uid(2), uid(3));
+        assert!(
+            html.contains(&format!(
+                r#"<dialog class="viewer" id="att-{a}" aria-labelledby="att-{a}-name" data-viewer-next="att-{b}">"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<dialog class="viewer" id="att-{b}" aria-labelledby="att-{b}-name" data-viewer-prev="att-{a}" data-viewer-next="att-{c}">"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<dialog class="viewer" id="att-{c}" aria-labelledby="att-{c}-name" data-viewer-prev="att-{b}">"#
+            )),
+            "{html}"
+        );
+        for (n, of) in ["1 sur 3 · 2 Ko", "2 sur 3 · 2 Ko", "3 sur 3 · 2 Ko"]
+            .iter()
+            .enumerate()
+        {
+            assert!(html.contains(of), "{n}: {html}");
+        }
+        assert_eq!(
+            html.matches(r#"data-viewer-step="prev" aria-label="Pièce précédente" disabled"#)
+                .count(),
+            1,
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(r#"data-viewer-step="next" aria-label="Pièce suivante" disabled"#)
+                .count(),
+            1,
+            "{html}"
+        );
+    }
+
+    /// The viewer shows the whole file, loaded only once it opens
+    /// (`data-src`); a PDF is opened in its own tab.
+    #[test]
+    fn each_viewer_shows_its_file_by_kind() {
+        let html = render_attachments(uid(9), Some(&three()), false);
+        let file = |n| format!("/agenda/{}/attachments/{}/file", uid(9), uid(n));
+        assert!(
+            html.contains(&format!(r#"<img data-src="{}" alt="a.png"/>"#, file(1))),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<video controls preload="metadata" data-src="{}"></video>"#,
+                file(2)
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<a class="btn" href="{}" target="_blank" rel="noopener">"#,
+                file(3)
+            )),
+            "{html}"
+        );
+        assert!(html.contains("Ouvrir le PDF</a>"), "{html}");
+        for n in 1..=3 {
+            assert!(
+                html.contains(&format!(
+                    r#"<a class="btn secondary" href="{}?download=1">Télécharger</a>"#,
+                    file(n)
+                )),
+                "{html}"
+            );
+            assert!(
+                html.contains(&format!(
+                    r#"<a class="btn secondary" href="{}" target="_blank" rel="noopener">Ouvrir dans un onglet</a>"#,
+                    file(n)
+                )),
+                "{html}"
+            );
+        }
+    }
+
+    /// Deleting is offered to whoever can edit the event only, in the viewer
+    /// and, for a page without JavaScript, in the list under the gallery
+    /// that the script hides.
+    #[test]
+    fn deleting_is_offered_only_to_an_editor_with_a_confirmation() {
+        let delete = format!(
+            r#"action="/agenda/{}/attachments/{}/delete""#,
+            uid(9),
+            uid(1)
+        );
+        let reader = render_attachments(uid(9), Some(&three()), false);
+        assert!(!reader.contains(&delete), "{reader}");
+        assert!(!reader.contains("Supprimer"), "{reader}");
+        assert!(!reader.contains("data-hidden-with-js"), "{reader}");
+
+        let editor = render_attachments(uid(9), Some(&three()), true);
+        assert_eq!(editor.matches(&delete).count(), 2, "{editor}");
+        assert_eq!(
+            editor
+                .matches("data-confirm=\"Supprimer « a.png » ?\"")
+                .count(),
+            2,
+            "{editor}"
+        );
+        assert!(
+            editor.contains(r#"<ul class="list" data-hidden-with-js>"#),
+            "{editor}"
+        );
+    }
+
     /// The attachments endpoint answers a bare array.
     #[test]
     fn an_attachment_list_is_read_from_a_200() {
@@ -1160,24 +1597,21 @@ mod tests {
 
     // -- an event of another family (#622) ----------------------------------
 
-    /// A one-off task with an attachment and a just-created reminder: every
-    /// form and link the page can hold.
+    /// A one-off task with a PDF, a picture with its thumbnail and a video,
+    /// and a just-created reminder: every form and link the page can hold.
     fn full_detail(other_family: Option<(Uuid, &str)>) -> String {
         let mut task = event(false);
         task.is_task = true;
-        let attachment = AttachmentResponse {
-            id: uid(5),
-            event_id: uid(7),
-            filename: "ordonnance.pdf".to_string(),
-            mime_type: "application/pdf".to_string(),
-            size_bytes: 2048,
-            has_thumbnail: false,
-        };
+        let attachments = [
+            attachment(5, "ordonnance.pdf", "application/pdf", false),
+            attachment(6, "photo.png", "image/png", true),
+            attachment(8, "film.mp4", "video/mp4", false),
+        ];
         page(
             "",
             &task,
             Some(&[]),
-            Some(&[attachment]),
+            Some(&attachments),
             &[member(uid(1), "Alice")],
             true,
             None,
@@ -1201,8 +1635,12 @@ mod tests {
         let html = full_detail(Some((uid(2), "Les Martin")));
         let urls = event_urls(&html);
         // Edit, delete, completion, reminder add and delete, attachment
-        // download, delete and upload.
-        assert_eq!(urls.len(), 8, "{urls:?}");
+        // upload: 6. Then, for each of the three files (#776), its tile, its
+        // viewer's media (« Ouvrir le PDF », the picture's and the video's
+        // `data-src`), « Télécharger » and « Ouvrir dans un onglet », and its
+        // deletion in the viewer and in the list without JavaScript: 6 × 3.
+        // And the picture's thumbnail in its tile: 1.
+        assert_eq!(urls.len(), 25, "{urls:?}");
         let family = format!("famille={}", uid(2));
         for url in &urls {
             assert!(url.ends_with(&family), "{url}");
@@ -1223,7 +1661,7 @@ mod tests {
     fn the_active_familys_event_carries_no_family() {
         let html = full_detail(None);
         let urls = event_urls(&html);
-        assert_eq!(urls.len(), 8, "{urls:?}");
+        assert_eq!(urls.len(), 25, "{urls:?}");
         assert!(urls.iter().all(|u| !u.contains("famille")), "{urls:?}");
         assert!(!html.contains("Famille :"), "{html}");
     }
