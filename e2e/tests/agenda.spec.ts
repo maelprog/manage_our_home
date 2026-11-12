@@ -280,7 +280,7 @@ const PNG_1X1 = Buffer.from(
 );
 
 test.describe("Agenda — attachments", () => {
-  test("upload a PNG, it lists and downloads via a presigned redirect; wrong type is rejected", async ({
+  test("upload a PNG, it lists and downloads from this origin; wrong type is rejected", async ({
     page,
   }) => {
     await registerAndLogin(page, "e2e-agatt", "Attachment User");
@@ -313,14 +313,24 @@ test.describe("Agenda — attachments", () => {
     const link = page.getByRole("link", { name: "photo.png" });
     await expect(link).toBeVisible();
 
-    // The download endpoint 302s onto a short-lived presigned MinIO URL.
+    // The file comes from this origin (#775), never from a redirect onto
+    // the storage: its bytes, its sniffed type, as a download.
     const href = await link.getAttribute("href");
     if (!href) throw new Error("no download link");
+    expect(href).toContain("/file?download=1");
     const resp = await page.request.get(href, { maxRedirects: 0 });
-    expect(resp.status()).toBeGreaterThanOrEqual(300);
-    expect(resp.status()).toBeLessThan(400);
-    const location = resp.headers()["location"] ?? "";
-    expect(location).toContain("X-Amz-"); // presigned query params
+    expect(resp.status()).toBe(200);
+    expect(resp.headers()["location"]).toBeUndefined();
+    expect(resp.headers()["content-type"]).toBe("image/png");
+    expect(resp.headers()["x-content-type-options"]).toBe("nosniff");
+    expect(resp.headers()["content-disposition"]).toContain('attachment; filename="photo.png"');
+    expect(Buffer.compare(await resp.body(), PNG_1X1)).toBe(0);
+
+    // A range of it, as a video player asks.
+    const ranged = await page.request.get(href, { headers: { Range: "bytes=0-7" } });
+    expect(ranged.status()).toBe(206);
+    expect(ranged.headers()["content-range"]).toBe(`bytes 0-7/${PNG_1X1.length}`);
+    expect(Buffer.compare(await ranged.body(), PNG_1X1.subarray(0, 8))).toBe(0);
 
     // Delete it (scope to the attachment row — the event's own "Supprimer"
     // button is also on this page).
@@ -834,9 +844,8 @@ test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
     const href = await link.getAttribute("href");
     if (!href) throw new Error("no download link");
     const resp = await page.request.get(href, { maxRedirects: 0 });
-    expect(resp.status()).toBeGreaterThanOrEqual(300);
-    expect(resp.status()).toBeLessThan(400);
-    expect(resp.headers()["location"] ?? "").toContain("X-Amz-");
+    expect(resp.status()).toBe(200);
+    expect(Buffer.compare(await resp.body(), PNG_1X1)).toBe(0);
   });
 
   // A refused file is caught before the event is written: the form comes

@@ -63,12 +63,16 @@ const UNDOCUMENTED: [&str; 5] = [
 /// The routes this household cannot get a 2xx from, and why. Called all the
 /// same: a refusal must not write either. Every other route must answer
 /// 2xx, so that the comparison is made on the path that reads the data.
-const NOT_REACHED: [(&str, &str); 6] = [
+const NOT_REACHED: [(&str, &str); 7] = [
     // An upgrade: a plain GET is refused before the socket opens.
     ("/groups/{id}/messages/ws", "no upgrade headers"),
     // The test storage is unreachable on purpose (`common::test_state`).
     (
-        "/groups/{id}/events/{event_id}/attachments/{attachment_id}/download",
+        "/groups/{id}/events/{event_id}/attachments/{attachment_id}/content",
+        "no attachment without storage",
+    ),
+    (
+        "/groups/{id}/events/{event_id}/attachments/{attachment_id}/thumbnail",
         "no attachment without storage",
     ),
     ("/groups/{id}/members/{user_id}/avatar", "no profile photo"),

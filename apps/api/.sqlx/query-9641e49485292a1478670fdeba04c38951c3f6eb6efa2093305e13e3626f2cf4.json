@@ -1,16 +1,16 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT storage_key FROM event_attachments WHERE id = $1 AND event_id = $2",
+  "query": "SELECT a.thumbnail_key\n           FROM event_attachments a JOIN events e ON e.id = a.event_id\n           WHERE a.id = $1 AND a.event_id = $2 AND e.group_id = $3",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "storage_key",
+        "name": "thumbnail_key",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "event_attachments",
-            "name": "storage_key"
+            "name": "thumbnail_key"
           }
         }
       }
@@ -18,12 +18,13 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Uuid",
         "Uuid"
       ]
     },
     "nullable": [
-      false
+      true
     ]
   },
-  "hash": "9426fee7ad81d92bf7eacb48edf9fcfa886f5b1e6c10f0e34a1e88906db38a48"
+  "hash": "9641e49485292a1478670fdeba04c38951c3f6eb6efa2093305e13e3626f2cf4"
 }

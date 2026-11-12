@@ -5055,3 +5055,325 @@ async fn a_scoped_delete_is_refused_where_it_has_no_meaning(db: PgPool) {
         (0..5).map(nine_paris).collect::<Vec<_>>()
     );
 }
+
+// -- serving an attachment (#775) ---------------------------------------------
+
+/// A GET with an optional `Range` header, which `call` does not send.
+async fn get_ranged(
+    router: &axum::Router,
+    uri: &str,
+    cookie: &str,
+    range: Option<&str>,
+) -> axum::http::Response<axum::body::Body> {
+    use tower::ServiceExt;
+    let mut request = axum::http::Request::get(uri).header(axum::http::header::COOKIE, cookie);
+    if let Some(range) = range {
+        request = request.header(axum::http::header::RANGE, range);
+    }
+    router
+        .clone()
+        .oneshot(request.body(axum::body::Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+async fn body_bytes(response: axum::http::Response<axum::body::Body>) -> Vec<u8> {
+    use http_body_util::BodyExt;
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
+}
+
+fn header_of<'a>(response: &'a axum::http::Response<axum::body::Body>, name: &str) -> &'a str {
+    response
+        .headers()
+        .get(name)
+        .unwrap_or_else(|| panic!("no {name} header"))
+        .to_str()
+        .unwrap()
+}
+
+/// A family with a picture (and its thumbnail), a PDF and a video on one
+/// event; a member besides its owner; and an outsider who owns a family of
+/// their own.
+struct Served {
+    router: axum::Router,
+    owner: String,
+    member: String,
+    outsider: String,
+    outsider_group: String,
+    group_id: String,
+    event_id: String,
+    picture: (String, Vec<u8>),
+    pdf: (String, Vec<u8>),
+    video: (String, Vec<u8>),
+}
+
+async fn served_family(db: &PgPool, s3: aws_sdk_s3::Client, bucket: String, tag: &str) -> Served {
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3, bucket),
+    );
+    let email = |who: &str| format!("serve-{who}-{tag}@example.test");
+    let owner = register_verify_login(&router, db, &email("owner"), "owner-password1").await;
+    let member = register_verify_login(&router, db, &email("member"), "member-password1").await;
+    let outsider =
+        register_verify_login(&router, db, &email("outsider"), "outsider-password1").await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let outsider_group = create_group(&router, &outsider, "Ailleurs").await;
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role)
+         SELECT $1::uuid, id, 'standard' FROM users WHERE email = $2",
+    )
+    .bind(&group_id)
+    .bind(email("member"))
+    .execute(db)
+    .await
+    .unwrap();
+    let event_id = create_event(&router, &owner, &group_id).await;
+
+    let mut video = MP4_BYTES.to_vec();
+    video.extend((0..1000u32).map(|i| (i % 251) as u8));
+    let mut stored = Vec::new();
+    for (filename, bytes) in [
+        ("photo de l'été.png", real_png(800, 600)),
+        (
+            "ordonnance.pdf",
+            b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n<script>alert(1)</script>".to_vec(),
+        ),
+        ("film.mp4", video),
+    ] {
+        let attachment = upload(&router, &owner, &group_id, &event_id, filename, &bytes).await;
+        stored.push((attachment["id"].as_str().unwrap().to_string(), bytes));
+    }
+    let mut stored = stored.into_iter();
+    Served {
+        router,
+        owner,
+        member,
+        outsider,
+        outsider_group,
+        group_id,
+        event_id,
+        picture: stored.next().unwrap(),
+        pdf: stored.next().unwrap(),
+        video: stored.next().unwrap(),
+    }
+}
+
+impl Served {
+    fn content(&self, id: &str) -> String {
+        format!(
+            "/groups/{}/events/{}/attachments/{id}/content",
+            self.group_id, self.event_id
+        )
+    }
+
+    fn thumbnail(&self, id: &str) -> String {
+        format!(
+            "/groups/{}/events/{}/attachments/{id}/thumbnail",
+            self.group_id, self.event_id
+        )
+    }
+}
+
+/// #775: a member of the family reads the file and its thumbnail from the
+/// API itself, of the type stored at upload, never guessed and never kept
+/// by a shared cache; no answer points the browser at the storage.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn a_member_reads_an_attachment_and_its_thumbnail(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping a_member_reads_an_attachment_and_its_thumbnail: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let f = served_family(&db, s3, bucket, "read").await;
+
+    for cookie in [&f.owner, &f.member] {
+        let (id, bytes) = &f.picture;
+        let res = get_ranged(&f.router, &f.content(id), cookie, None).await;
+        assert_status(&res, StatusCode::OK);
+        assert_eq!(header_of(&res, "content-type"), "image/png");
+        assert_eq!(header_of(&res, "x-content-type-options"), "nosniff");
+        assert_eq!(header_of(&res, "cache-control"), "private");
+        assert_eq!(header_of(&res, "accept-ranges"), "bytes");
+        assert_eq!(header_of(&res, "content-length"), bytes.len().to_string());
+        assert_eq!(
+            header_of(&res, "content-disposition"),
+            r#"inline; filename="photo de l'_t_.png"; filename*=UTF-8''photo%20de%20l%27%C3%A9t%C3%A9.png"#
+        );
+        assert!(res.headers().get("location").is_none());
+        assert!(res.headers().get("content-security-policy").is_none());
+        assert_eq!(&body_bytes(res).await, bytes);
+
+        let res = get_ranged(&f.router, &f.thumbnail(id), cookie, None).await;
+        assert_status(&res, StatusCode::OK);
+        assert_eq!(header_of(&res, "content-type"), "image/jpeg");
+        assert_eq!(header_of(&res, "x-content-type-options"), "nosniff");
+        assert_eq!(header_of(&res, "cache-control"), "private");
+        assert!(res.headers().get("location").is_none());
+        let thumbnail = body_bytes(res).await;
+        let decoded = image::load_from_memory_with_format(&thumbnail, image::ImageFormat::Jpeg)
+            .expect("the thumbnail is a JPEG");
+        assert_eq!((decoded.width(), decoded.height()), (400, 300));
+    }
+
+    // `?download=1`: the same bytes, as a download.
+    let (id, bytes) = &f.picture;
+    let uri = format!("{}?download=1", f.content(id));
+    let res = get_ranged(&f.router, &uri, &f.member, None).await;
+    assert_status(&res, StatusCode::OK);
+    assert!(
+        header_of(&res, "content-disposition").starts_with(r#"attachment; filename="photo"#),
+        "{:?}",
+        res.headers()
+    );
+    assert_eq!(&body_bytes(res).await, bytes);
+
+    // A PDF shown in the page is sandboxed; downloaded, it is not shown.
+    let (id, bytes) = &f.pdf;
+    let res = get_ranged(&f.router, &f.content(id), &f.member, None).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(header_of(&res, "content-type"), "application/pdf");
+    assert_eq!(header_of(&res, "content-security-policy"), "sandbox");
+    assert_eq!(&body_bytes(res).await, bytes);
+    let uri = format!("{}?download=1", f.content(id));
+    let res = get_ranged(&f.router, &uri, &f.member, None).await;
+    assert_status(&res, StatusCode::OK);
+    assert!(header_of(&res, "content-disposition").starts_with("attachment;"));
+    assert!(res.headers().get("content-security-policy").is_none());
+
+    // A video has no thumbnail: 404, not an empty picture.
+    let (id, _) = &f.video;
+    let res = get_ranged(&f.router, &f.thumbnail(id), &f.member, None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+}
+
+/// #775: a video is read in ranges, as a player seeks — 206 with the
+/// bytes asked and their `Content-Range`, 416 past the end or for several
+/// ranges at once.
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn an_attachment_is_served_in_ranges(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping an_attachment_is_served_in_ranges: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let f = served_family(&db, s3, bucket, "range").await;
+    let (id, bytes) = &f.video;
+    let size = bytes.len();
+    let uri = f.content(id);
+
+    for (range, start, end) in [
+        ("bytes=0-99", 0, 99),
+        ("bytes=500-", 500, size - 1),
+        ("bytes=-24", size - 24, size - 1),
+        ("bytes=1000-999999", 1000, size - 1),
+    ] {
+        let res = get_ranged(&f.router, &uri, &f.member, Some(range)).await;
+        assert_status(&res, StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            header_of(&res, "content-range"),
+            format!("bytes {start}-{end}/{size}"),
+            "{range}"
+        );
+        assert_eq!(
+            header_of(&res, "content-length"),
+            (end - start + 1).to_string()
+        );
+        assert_eq!(header_of(&res, "content-type"), "video/mp4");
+        assert_eq!(header_of(&res, "x-content-type-options"), "nosniff");
+        assert_eq!(&body_bytes(res).await[..], &bytes[start..=end], "{range}");
+    }
+
+    for range in [
+        format!("bytes={size}-"),
+        "bytes=0-1,5-9".to_string(),
+        "bytes=-0".to_string(),
+    ] {
+        let res = get_ranged(&f.router, &uri, &f.member, Some(&range)).await;
+        assert_status(&res, StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(header_of(&res, "content-range"), format!("bytes */{size}"));
+        assert!(body_bytes(res).await.is_empty(), "{range}");
+    }
+
+    // A range that does not parse is ignored: the whole file.
+    let res = get_ranged(&f.router, &uri, &f.member, Some("bytes=oops")).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(&body_bytes(res).await, bytes);
+}
+
+/// #775: someone outside the family reads nothing — neither through the
+/// family's own path (403, like every member route) nor by putting the
+/// attachment's ids under a family of their own (404: the attachment is
+/// not that family's, and the answer says nothing more).
+///
+/// Needs a real MinIO; skipped otherwise (see `real_minio_from_env`).
+#[sqlx::test]
+async fn an_attachment_is_not_served_outside_its_family(db: PgPool) {
+    let Some((s3, bucket)) = real_minio_from_env() else {
+        eprintln!(
+            "skipping an_attachment_is_not_served_outside_its_family: \
+             no MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET in the environment"
+        );
+        return;
+    };
+    let f = served_family(&db, s3, bucket, "outside").await;
+    let (id, _) = &f.picture;
+    // Someone in no family at all.
+    let loner = register_verify_login(
+        &f.router,
+        &db,
+        "serve-loner@example.test",
+        "loner-password1",
+    )
+    .await;
+
+    for cookie in [&f.outsider, &loner] {
+        for uri in [f.content(id), f.thumbnail(id)] {
+            let res = get_ranged(&f.router, &uri, cookie, None).await;
+            assert_status(&res, StatusCode::FORBIDDEN);
+            assert!(res.headers().get("location").is_none());
+            assert!(res.headers().get("content-disposition").is_none());
+        }
+    }
+
+    // The attachment's ids under the outsider's own family: its real
+    // event, and one of the outsider's.
+    let own_event = create_event(&f.router, &f.outsider, &f.outsider_group).await;
+    for kind in ["content", "thumbnail"] {
+        for event in [&f.event_id, &own_event] {
+            let uri = format!(
+                "/groups/{}/events/{event}/attachments/{id}/{kind}",
+                f.outsider_group
+            );
+            let res = get_ranged(&f.router, &uri, &f.outsider, None).await;
+            assert_status(&res, StatusCode::NOT_FOUND);
+            assert_eq!(
+                json_body(res).await,
+                serde_json::json!({"error": "not_found"})
+            );
+        }
+    }
+
+    // In the family, an attachment of another event is not this one's.
+    let other_event = create_event(&f.router, &f.owner, &f.group_id).await;
+    let uri = format!(
+        "/groups/{}/events/{other_event}/attachments/{id}/content",
+        f.group_id
+    );
+    let res = get_ranged(&f.router, &uri, &f.member, None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+}

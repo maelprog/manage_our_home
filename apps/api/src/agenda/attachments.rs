@@ -1,8 +1,9 @@
-use axum::extract::{Multipart, Path, State};
-use axum::http::HeaderMap;
-use axum::response::IntoResponse;
+use axum::body::Body;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{header, HeaderMap};
+use axum::response::{IntoResponse, Response};
 use axum::{http::StatusCode, Json};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agenda::thumbnail::{make_thumbnail, thumbnail_key, THUMBNAIL_CONTENT_TYPE};
@@ -283,9 +284,138 @@ pub async fn list_attachments(
     Ok(Json(rows))
 }
 
+/// `?download=1` on `attachment_content`: the file as a download rather
+/// than shown in the page.
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ContentQuery {
+    /// `1` (or `true`): `Content-Disposition: attachment`.
+    pub download: Option<String>,
+}
+
+/// The headers every answer of `attachment_content` and
+/// `attachment_thumbnail` carries: the type is the stored one and the
+/// browser must not guess another (an uploaded file read as HTML would run
+/// in this origin); a shared cache must not keep a file only the family
+/// may see.
+fn private_file_headers(builder: axum::http::response::Builder) -> axum::http::response::Builder {
+    builder
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .header(header::CACHE_CONTROL, "private")
+}
+
+/// An attachment's bytes, served by the API itself (#775): the pages' CSP
+/// (`default-src 'self'`, `infra/Caddyfile`) admits no `<img>`, `<video>`
+/// or `<iframe>` from the storage's host, which the browser cannot reach
+/// anyway. Same access as the listing: a member of the group, through its
+/// policies (`scoped_tx`).
+///
+/// Streamed from the storage, never held: a `Range` (`parse_range`) asks
+/// the storage for those bytes only, so a video player seeking in a
+/// 20 MiB file costs what it reads. The type is the one sniffed at upload
+/// (`mime_type`), never the client's; a PDF shown in the page is
+/// sandboxed (`Content-Security-Policy: sandbox`): no script of it runs
+/// with this origin's rights.
 #[utoipa::path(
     get,
-    path = "/groups/{id}/events/{event_id}/attachments/{attachment_id}/download",
+    path = "/groups/{id}/events/{event_id}/attachments/{attachment_id}/content",
+    tag = "agenda",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("event_id" = uuid::Uuid, Path, description = "Event id"),
+        ("attachment_id" = uuid::Uuid, Path, description = "Attachment id"),
+        ("Range" = Option<String>, Header, description = "One byte range, `bytes=start-end`, `bytes=start-` or `bytes=-length`"),
+        ContentQuery,
+    ),
+    responses(
+        (status = 200, description = "The file, of its stored type", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 206, description = "The range asked, with `Content-Range`", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 416, description = "A range past the file, or several ranges; `Content-Range: bytes */<size>`"),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn attachment_content(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, event_id, attachment_id)): Path<(Uuid, Uuid, Uuid)>,
+    Query(query): Query<ContentQuery>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+
+    // The group named, besides the policies: an id from another family
+    // finds nothing whatever role the connection has.
+    let file = sqlx::query!(
+        r#"SELECT a.storage_key, a.filename, a.mime_type, a.size_bytes
+           FROM event_attachments a JOIN events e ON e.id = a.event_id
+           WHERE a.id = $1 AND a.event_id = $2 AND e.group_id = $3"#,
+        attachment_id,
+        event_id,
+        group_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+
+    let size = u64::try_from(file.size_bytes).unwrap_or(0);
+    let range = parse_range(
+        headers.get(header::RANGE).and_then(|v| v.to_str().ok()),
+        size,
+    );
+    let builder = private_file_headers(Response::builder()).header(header::ACCEPT_RANGES, "bytes");
+    let span = match range {
+        ByteRange::Unsatisfiable => {
+            return builder
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{size}"))
+                .body(Body::empty())
+                .map_err(|e| AppError::Internal(e.into()));
+        }
+        ByteRange::Full => None,
+        ByteRange::Partial { start, end } => Some((start, end)),
+    };
+
+    let stream = state
+        .storage
+        .get_object_stream(&file.storage_key, span)
+        .await
+        .map_err(AppError::Internal)?;
+
+    let download = matches!(query.download.as_deref(), Some("1" | "true"));
+    let mut builder = builder
+        .header(header::CONTENT_TYPE, &file.mime_type)
+        .header(
+            header::CONTENT_DISPOSITION,
+            content_disposition(&file.filename, download),
+        );
+    builder = match span {
+        Some((start, end)) => builder
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"))
+            .header(header::CONTENT_LENGTH, end - start + 1),
+        None => builder
+            .status(StatusCode::OK)
+            .header(header::CONTENT_LENGTH, size),
+    };
+    if !download && file.mime_type == "application/pdf" {
+        builder = builder.header(header::CONTENT_SECURITY_POLICY, "sandbox");
+    }
+    let body = Body::from_stream(futures::stream::unfold(stream, |mut stream| async move {
+        stream.next().await.map(|chunk| (chunk, stream))
+    }));
+    builder.body(body).map_err(|e| AppError::Internal(e.into()))
+}
+
+/// An attachment's thumbnail (#774), a JPEG of a few tens of kilobytes:
+/// read whole, like the profile photo. 404 when the attachment has none —
+/// a video, a PDF, a picture stored before thumbnails or past their bounds.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/events/{event_id}/attachments/{attachment_id}/thumbnail",
     tag = "agenda",
     params(
         ("id" = uuid::Uuid, Path, description = "Group id"),
@@ -293,37 +423,43 @@ pub async fn list_attachments(
         ("attachment_id" = uuid::Uuid, Path, description = "Attachment id"),
     ),
     responses(
-        (status = 200, description = "A short-lived presigned URL to the file", body = crate::api_docs::schemas::AttachmentDownload),
-        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 200, description = "The thumbnail", body = Vec<u8>, content_type = "image/jpeg"),
+        (status = 404, description = "`not_found`: no such attachment, or none stored for it", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
     security(("session_cookie" = [])),
 )]
-pub async fn download_attachment(
+pub async fn attachment_thumbnail(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, event_id, attachment_id)): Path<(Uuid, Uuid, Uuid)>,
-) -> AppResult<impl IntoResponse> {
+) -> AppResult<Response> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
-    let storage_key = sqlx::query_scalar!(
-        "SELECT storage_key FROM event_attachments WHERE id = $1 AND event_id = $2",
+    let key = sqlx::query_scalar!(
+        r#"SELECT a.thumbnail_key
+           FROM event_attachments a JOIN events e ON e.id = a.event_id
+           WHERE a.id = $1 AND a.event_id = $2 AND e.group_id = $3"#,
         attachment_id,
         event_id,
+        group_id,
     )
     .fetch_optional(&mut *tx)
     .await?
+    .flatten()
     .ok_or(AppError::NotFound)?;
     tx.commit().await?;
 
-    let url = state
+    let bytes = state
         .storage
-        .presigned_get_url(&storage_key)
+        .get_object(&key)
         .await
         .map_err(AppError::Internal)?;
-
-    Ok(Json(serde_json::json!({ "url": url })))
+    private_file_headers(Response::builder())
+        .header(header::CONTENT_TYPE, THUMBNAIL_CONTENT_TYPE)
+        .body(Body::from(bytes))
+        .map_err(|e| AppError::Internal(e.into()))
 }
 
 #[utoipa::path(
@@ -484,11 +620,341 @@ fn file_buffer_capacity(headers: &HeaderMap) -> usize {
         })
 }
 
+/// What a `Range` request header asks of a file of `size` bytes
+/// (`parse_range`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ByteRange {
+    /// No range, or one this server ignores: the whole file, 200.
+    Full,
+    /// The bytes `start..=end`, both within the file: 206.
+    Partial { start: u64, end: u64 },
+    /// A range that cannot be served: 416.
+    Unsatisfiable,
+}
+
+/// The one byte range a `Range` header asks of a file of `size` bytes, as
+/// a video player sends it to seek (`bytes=N-`) or to read ahead.
+///
+/// RFC 9110 §14.2: a header that does not parse, or in a unit other than
+/// `bytes` (compared case-insensitively), is ignored — the whole file is
+/// served. Several ranges are
+/// refused (416) rather than answered as `multipart/byteranges`, which no
+/// player needs and which would serve the same bytes several times over.
+pub(crate) fn parse_range(header: Option<&str>, size: u64) -> ByteRange {
+    // The unit is case-insensitive (RFC 9110 §14.1).
+    let Some(set) = header.map(str::trim).and_then(|h| {
+        let (unit, set) = h.split_at_checked(6)?;
+        unit.eq_ignore_ascii_case("bytes=").then_some(set)
+    }) else {
+        return ByteRange::Full;
+    };
+    // A list may carry empty elements, which do not count (RFC 9110 §5.6.1).
+    let mut specs = set.split(',').map(str::trim).filter(|s| !s.is_empty());
+    let spec = match (specs.next(), specs.next()) {
+        (None, _) => return ByteRange::Full,
+        (Some(_), Some(_)) => return ByteRange::Unsatisfiable,
+        (Some(spec), None) => spec,
+    };
+    let Some((first, last)) = spec.split_once('-') else {
+        return ByteRange::Full;
+    };
+    // Digits only: `u64::from_str` would take a leading `+`.
+    let number = |s: &str| {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse::<u64>().ok())
+            .flatten()
+    };
+    // A last byte or a suffix length too large for a `u64` lies past the
+    // end of any file: clipped to it like any other.
+    let length = |s: &str| {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse::<u64>().unwrap_or(u64::MAX))
+    };
+    let (first, last) = (first.trim(), last.trim());
+    if first.is_empty() {
+        // `bytes=-N`: the last N bytes.
+        return match length(last) {
+            None => ByteRange::Full,
+            Some(0) => ByteRange::Unsatisfiable,
+            Some(_) if size == 0 => ByteRange::Unsatisfiable,
+            Some(n) => ByteRange::Partial {
+                start: size - n.min(size),
+                end: size - 1,
+            },
+        };
+    }
+    let Some(start) = number(first) else {
+        return ByteRange::Full;
+    };
+    let end = if last.is_empty() {
+        None
+    } else {
+        match length(last) {
+            Some(end) if end >= start => Some(end),
+            _ => return ByteRange::Full,
+        }
+    };
+    if start >= size {
+        return ByteRange::Unsatisfiable;
+    }
+    ByteRange::Partial {
+        start,
+        end: end.map_or(size - 1, |end| end.min(size - 1)),
+    }
+}
+
+/// The `Content-Disposition` of a stored file: `attachment` to download
+/// it, `inline` to show it, under the name it was uploaded with.
+///
+/// The name is the uploader's, so it is never written into the header as
+/// is: control characters (a line break would start another header) are
+/// dropped; `filename` gets an ASCII stand-in in which a quote, a
+/// backslash or anything outside printable ASCII is `_`; `filename*`
+/// (RFC 6266, RFC 8187) carries the real name, percent-encoded in UTF-8.
+/// The result is printable ASCII throughout: always a valid header value.
+pub(crate) fn content_disposition(filename: &str, download: bool) -> String {
+    let name: String = filename.chars().filter(|c| !c.is_control()).collect();
+    let fallback: String = name
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' => '_',
+            ' '..='~' => c,
+            _ => '_',
+        })
+        .collect();
+    let mut encoded = String::with_capacity(name.len());
+    for byte in name.bytes() {
+        // RFC 8187 `attr-char`.
+        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    let kind = if download { "attachment" } else { "inline" };
+    format!(r#"{kind}; filename="{fallback}"; filename*=UTF-8''{encoded}"#)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::{header, HeaderMap};
 
+    use super::{content_disposition, parse_range, ByteRange};
     use crate::storage::MAX_UPLOAD_BODY_BYTES;
+
+    // -- Range (#775) -------------------------------------------------------
+
+    #[test]
+    fn no_range_is_the_whole_file() {
+        assert_eq!(parse_range(None, 100), ByteRange::Full);
+    }
+
+    #[test]
+    fn a_closed_range_is_served_as_asked() {
+        assert_eq!(
+            parse_range(Some("bytes=0-9"), 100),
+            ByteRange::Partial { start: 0, end: 9 }
+        );
+        assert_eq!(
+            parse_range(Some("bytes=10-10"), 100),
+            ByteRange::Partial { start: 10, end: 10 }
+        );
+    }
+
+    /// The end is clipped to the file: a player asking past it gets what
+    /// there is.
+    #[test]
+    fn a_range_ending_past_the_file_stops_at_its_last_byte() {
+        assert_eq!(
+            parse_range(Some("bytes=90-500"), 100),
+            ByteRange::Partial { start: 90, end: 99 }
+        );
+    }
+
+    /// `bytes=N-`: what a video player sends to seek.
+    #[test]
+    fn an_open_range_runs_to_the_end() {
+        assert_eq!(
+            parse_range(Some("bytes=0-"), 100),
+            ByteRange::Partial { start: 0, end: 99 }
+        );
+        assert_eq!(
+            parse_range(Some("bytes=42-"), 100),
+            ByteRange::Partial { start: 42, end: 99 }
+        );
+    }
+
+    #[test]
+    fn a_suffix_range_is_the_last_bytes() {
+        assert_eq!(
+            parse_range(Some("bytes=-10"), 100),
+            ByteRange::Partial { start: 90, end: 99 }
+        );
+        assert_eq!(
+            parse_range(Some("bytes=-500"), 100),
+            ByteRange::Partial { start: 0, end: 99 }
+        );
+    }
+
+    #[test]
+    fn a_range_starting_past_the_file_is_unsatisfiable() {
+        assert_eq!(
+            parse_range(Some("bytes=100-"), 100),
+            ByteRange::Unsatisfiable
+        );
+        assert_eq!(
+            parse_range(Some("bytes=100-200"), 100),
+            ByteRange::Unsatisfiable
+        );
+        assert_eq!(parse_range(Some("bytes=-0"), 100), ByteRange::Unsatisfiable);
+        assert_eq!(parse_range(Some("bytes=0-"), 0), ByteRange::Unsatisfiable);
+    }
+
+    /// Several ranges would be a `multipart/byteranges` body: refused
+    /// rather than served whole or in part.
+    #[test]
+    fn several_ranges_are_refused() {
+        assert_eq!(
+            parse_range(Some("bytes=0-9,20-29"), 100),
+            ByteRange::Unsatisfiable
+        );
+        assert_eq!(
+            parse_range(Some("bytes=0-9, 20-"), 100),
+            ByteRange::Unsatisfiable
+        );
+    }
+
+    /// RFC 9110 §14.2: a range that does not parse, or in another unit, is
+    /// ignored and the whole file served.
+    #[test]
+    fn a_malformed_range_or_another_unit_is_ignored() {
+        for header in [
+            "bytes=9-0",
+            "bytes=abc",
+            "bytes=-",
+            "bytes=",
+            "bytes=1-2-3",
+            "bytes=+1-2",
+            "bytes=18446744073709551616-",
+            "items=0-9",
+            "0-9",
+        ] {
+            assert_eq!(parse_range(Some(header), 100), ByteRange::Full, "{header}");
+        }
+    }
+
+    /// RFC 9110 §14.1: range units are compared case-insensitively.
+    #[test]
+    fn the_unit_is_case_insensitive() {
+        for header in ["Bytes=0-9", "BYTES=0-9", "bYtEs=0-9"] {
+            assert_eq!(
+                parse_range(Some(header), 100),
+                ByteRange::Partial { start: 0, end: 9 },
+                "{header}"
+            );
+        }
+    }
+
+    /// RFC 9110 §5.6.1: a list may carry empty elements, which do not
+    /// count — `bytes=0-9,` is one range, not two.
+    #[test]
+    fn an_empty_list_element_is_not_another_range() {
+        for header in ["bytes=0-9,", "bytes=,0-9", "bytes= , 0-9 , "] {
+            assert_eq!(
+                parse_range(Some(header), 100),
+                ByteRange::Partial { start: 0, end: 9 },
+                "{header}"
+            );
+        }
+        assert_eq!(parse_range(Some("bytes=,"), 100), ByteRange::Full);
+        assert_eq!(
+            parse_range(Some("bytes=0-9,,20-29"), 100),
+            ByteRange::Unsatisfiable
+        );
+    }
+
+    /// A last byte, or a suffix length, too large for a `u64` still lies
+    /// past the end of the file: clipped to it like any other.
+    #[test]
+    fn a_number_past_u64_is_clipped_to_the_file() {
+        assert_eq!(
+            parse_range(Some("bytes=0-18446744073709551616"), 100),
+            ByteRange::Partial { start: 0, end: 99 }
+        );
+        assert_eq!(
+            parse_range(Some("bytes=-18446744073709551616"), 100),
+            ByteRange::Partial { start: 0, end: 99 }
+        );
+    }
+
+    /// An empty file has no last bytes to give: without its own case the
+    /// suffix arithmetic would ask for byte `0 - 1`.
+    #[test]
+    fn a_suffix_range_of_an_empty_file_is_unsatisfiable() {
+        assert_eq!(parse_range(Some("bytes=-5"), 0), ByteRange::Unsatisfiable);
+    }
+
+    // -- Content-Disposition (#775) -----------------------------------------
+
+    #[test]
+    fn a_plain_name_is_given_as_is() {
+        assert_eq!(
+            content_disposition("scan.pdf", true),
+            r#"attachment; filename="scan.pdf"; filename*=UTF-8''scan.pdf"#
+        );
+        assert_eq!(
+            content_disposition("scan.pdf", false),
+            r#"inline; filename="scan.pdf"; filename*=UTF-8''scan.pdf"#
+        );
+    }
+
+    /// A quote or a backslash would end or escape the quoted string.
+    #[test]
+    fn quotes_and_backslashes_cannot_break_out_of_the_name() {
+        assert_eq!(
+            content_disposition(r#"a"b\c.pdf"#, true),
+            r#"attachment; filename="a_b_c.pdf"; filename*=UTF-8''a%22b%5Cc.pdf"#
+        );
+    }
+
+    /// A line break would start another header: none survives, in either
+    /// form of the name.
+    #[test]
+    fn line_breaks_and_control_characters_are_dropped() {
+        let value = content_disposition("a\r\nSet-Cookie: x=1\t.pdf", true);
+        assert_eq!(
+            value,
+            r#"attachment; filename="aSet-Cookie: x=1.pdf"; filename*=UTF-8''aSet-Cookie%3A%20x%3D1.pdf"#
+        );
+        assert!(axum::http::HeaderValue::from_str(&value).is_ok());
+    }
+
+    /// The accented name travels percent-encoded in `filename*`, which
+    /// every current browser reads; `filename` keeps an ASCII stand-in.
+    #[test]
+    fn accents_travel_in_the_extended_form() {
+        assert_eq!(
+            content_disposition("été.jpg", true),
+            r#"attachment; filename="_t_.jpg"; filename*=UTF-8''%C3%A9t%C3%A9.jpg"#
+        );
+    }
+
+    #[test]
+    fn every_name_makes_a_valid_header() {
+        for name in ["", "\u{7f}", "日本.png", "a;b=c.pdf", "%41.pdf", "\0"] {
+            let value = content_disposition(name, false);
+            assert!(
+                axum::http::HeaderValue::from_str(&value).is_ok(),
+                "{name:?}: {value}"
+            );
+        }
+        assert_eq!(
+            content_disposition("%41.pdf", false),
+            r#"inline; filename="%41.pdf"; filename*=UTF-8''%2541.pdf"#
+        );
+    }
+
+    // -- the upload buffer --------------------------------------------------
 
     fn with_content_length(value: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();

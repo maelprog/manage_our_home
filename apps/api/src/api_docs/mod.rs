@@ -57,7 +57,8 @@ pub const SESSION_SCHEME: &str = "session_cookie";
     ),
     paths(
         crate::agenda::attachments::delete_attachment,
-        crate::agenda::attachments::download_attachment,
+        crate::agenda::attachments::attachment_content,
+        crate::agenda::attachments::attachment_thumbnail,
         crate::agenda::attachments::list_attachments,
         crate::agenda::attachments::upload_attachment,
         crate::agenda::events::create_event,

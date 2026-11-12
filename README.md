@@ -37,7 +37,7 @@ flowchart TB
     api -->|"app scoping, then SET LOCAL"| rls
     api -->|"background worker polls"| jobs
     api --> crypto
-    api -->|"presigned URLs"| minio
+    api -->|"files read and written by the api · presigned URL for the GDPR export only"| minio
     api --> google
     api --> smtp
     api -.->|"not called in v1"| ollama

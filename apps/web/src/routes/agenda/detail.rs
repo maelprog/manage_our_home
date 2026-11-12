@@ -671,7 +671,7 @@ fn render_attachments(
 <a href="{download}">{name}</a>
 <span class="muted">{size_kb} Ko</span>
 {delete}</li>"#,
-                download = urls.to(&format!("/attachments/{}/download", a.id)),
+                download = urls.to(&format!("/attachments/{}/file?download=1", a.id)),
                 name = html_escape(&a.filename),
             )
         })

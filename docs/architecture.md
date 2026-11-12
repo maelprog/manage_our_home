@@ -206,7 +206,10 @@ remplacement) de l'isolation applicative ci-dessous.
 **Uploads (MinIO)**
 - Validation du type MIME réel (pas de l'extension) et de la taille avant
   stockage.
-- URLs présignées à durée courte, pas de bucket public.
+- Pas de bucket public. Les pièces jointes, leurs miniatures et les photos
+  de profil sont servies par l'application depuis sa propre origine (la CSP
+  `default-src 'self'` refuse l'hôte de stockage, #775) ; l'export RGPD
+  donne des URLs présignées à durée courte.
 - Restriction des types de fichiers acceptés (photos frigo, pièces jointes
   events).
 

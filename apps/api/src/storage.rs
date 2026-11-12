@@ -120,6 +120,26 @@ impl Storage {
         Ok(object.body.collect().await?.into_bytes())
     }
 
+    /// The bytes stored at `key` — or only `start..=end` of them — as a
+    /// stream, never held whole: an attachment may weigh 20 MiB, and a
+    /// video player reads it in ranges (`agenda::attachments`, #775).
+    /// The range is the caller's, checked against the size it stored.
+    pub async fn get_object_stream(
+        &self,
+        key: &str,
+        range: Option<(u64, u64)>,
+    ) -> anyhow::Result<ByteStream> {
+        let object = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .set_range(range.map(|(start, end)| format!("bytes={start}-{end}")))
+            .send()
+            .await?;
+        Ok(object.body)
+    }
+
     /// Every object in the bucket, or under `prefix` when given, walked
     /// through `ListObjectsV2`'s continuation tokens.
     ///
