@@ -327,6 +327,12 @@ async fn main() -> anyhow::Result<()> {
         state.admin_db.clone(),
         state.storage.clone(),
     ));
+    // Same pool, same reason: the thumbnails of the pictures stored
+    // without one, before #774 or with the decode permit busy (#777).
+    tokio::spawn(jobs::thumbnail_catch_up::run(
+        state.admin_db.clone(),
+        state.storage.clone(),
+    ));
     // On the admin pool: five of the tables the purge deletes from are
     // under forced RLS policies, and the pass refuses to run without
     // BYPASSRLS (#139). It also warns the holders of deactivated accounts

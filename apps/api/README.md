@@ -194,7 +194,7 @@ reaches this pool — see the `SuperAdminUser` extractor, which requires a
 valid session *and* `users.is_superadmin = true`, else 403 — so `BYPASSRLS`
 here is a controlled, audited exception rather than a general bypass.
 
-Six other things run on this pool, and none is a request handler:
+Seven other things run on this pool, and none is a request handler:
 
 - the **daily attachment reconcile** pass (#215, see the Ops section below),
   which needs the unscoped `event_attachments` read and deletes nothing in
@@ -286,7 +286,16 @@ Six other things run on this pool, and none is a request handler:
   day of the pass in the same transaction; then pushes the devices of
   those members whose channel includes notifications. Same
   `ensure_bypasses_rls` guard: on a role that does not bypass RLS it logs
-  `stock expiry recap failed` at ERROR and writes nothing.
+  `stock expiry recap failed` at ERROR and writes nothing;
+- the **daily thumbnail catch-up** (#777, `src/jobs/thumbnail_catch_up.rs`),
+  which reads, 20 rows at a time, the `event_attachments` of every family
+  that are JPEG, PNG or WebP pictures without a `thumbnail_key`, makes
+  each one's thumbnail as an upload would (#774), stores it in MinIO and
+  `UPDATE`s `thumbnail_key`; a picture that does not decode, or whose file or
+  thumbnail failed in storage on three passes, is counted in `thumbnail_attempts`
+  and left alone. Same `ensure_bypasses_rls` guard: on a role that does
+  not bypass RLS it logs `thumbnail catch-up job failed` at ERROR and
+  writes nothing.
 
 Every api process starts these jobs, and each pass runs in one process at a
 time (#426, `src/jobs/single_runner.rs`): before a pass, the process opens
