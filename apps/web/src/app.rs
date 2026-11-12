@@ -3860,6 +3860,26 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_icon_button_keeps_its_box_the_wheel_laid_over_it() {
+        // #778: a button named by its `aria-label` gets no « Envoi en
+        // cours » (enhance.js); its icon stays in place, unseen, and the
+        // wheel is laid over its box, which keeps its size.
+        let css = css();
+        let (own, _) = block_after(&css, r#"button[aria-busy="true"][aria-label] {"#, 0);
+        assert!(own.contains("position: relative"), "{own}");
+        let (content, _) = block_after(&css, r#"button[aria-busy="true"][aria-label] > *"#, 0);
+        assert!(content.contains("visibility: hidden"), "{content}");
+        let (wheel, _) = block_after(&css, r#"button[aria-busy="true"][aria-label]::before"#, 0);
+        assert!(wheel.contains("position: absolute"), "{wheel}");
+        assert!(wheel.contains("inset: 0"), "{wheel}");
+        assert!(wheel.contains("margin: auto"), "{wheel}");
+        assert!(
+            ENHANCE_SCRIPT.contains(r#"button.hasAttribute("aria-label")"#),
+            "enhance.js gives an icon button a label"
+        );
+    }
+
+    #[test]
     fn the_enhancement_puts_a_sent_form_s_button_in_waiting() {
         // #778: the label from `data-busy-label` or the default, `aria-busy`,
         // and the reset of a page the back button restores from its cache.

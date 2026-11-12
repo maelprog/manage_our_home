@@ -185,7 +185,11 @@
   // `intent=search`). Not a `<form method="dialog">`, which only closes a
   // dialog, nor a form sent to another window. `form.submit()`
   // (`data-submit-on-change`) fires no `submit` event, so none of this.
-  // Without JavaScript the button stays as it is.
+  // Without JavaScript the button stays as it is. A button named by its
+  // `aria-label` (an icon, the list's tick box) gets no label: its box
+  // would not hold the text, and a visible label its name lacks fails
+  // WCAG 2.5.3. It keeps its content and its name; the sheet lays the
+  // wheel over it.
   var BUSY_LABEL = "Envoi en cours";
 
   function busy(form, submitter) {
@@ -201,6 +205,8 @@
     if (button.tagName === "INPUT") {
       button.idleLabel = button.value;
       button.value = label;
+    } else if (button.hasAttribute("aria-label")) {
+      button.idleLabel = button.innerHTML;
     } else {
       button.idleLabel = button.innerHTML;
       button.textContent = label;

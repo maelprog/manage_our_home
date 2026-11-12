@@ -1025,6 +1025,12 @@ button[aria-busy="true"]::before {
   animation: busy-spin 0.8s linear infinite;
 }
 @keyframes busy-spin { to { transform: rotate(1turn); } }
+/* A button named by its `aria-label` (an icon, the list's tick box) keeps
+   its content and its box: the icon stays in place, unseen, and the wheel
+   is laid over its middle, alone. */
+button[aria-busy="true"][aria-label] { position: relative; }
+button[aria-busy="true"][aria-label] > * { visibility: hidden; }
+button[aria-busy="true"][aria-label]::before { position: absolute; inset: 0; margin: auto; }
 /* No native tap flash (#674): Chrome Android and Safari iOS painted their
    blue highlight over whatever was touched. The answer to a touch is the
    system's own — hover, focus ring, `aria-current`. Inherited, so once. */

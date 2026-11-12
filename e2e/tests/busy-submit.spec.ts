@@ -279,3 +279,115 @@ test("an attachment: the button waits, the next page comes, the back button give
   await remove.click();
   await expect(page.getByRole("link", { name: "lent.png" })).toHaveCount(0);
 });
+
+interface IconSeen {
+  busy: string | null;
+  disabled: boolean;
+  name: string | null;
+  text: string;
+  idle: number[];
+  waiting: number[];
+  overflows: boolean;
+  icon: string | null;
+  wheel: string;
+}
+
+/**
+ * Sends the form of the button named `name`, its post held for a while;
+ * the page notes the button as it is sent, then 300 ms later.
+ */
+async function sendIconButton(page: Page, name: string, url: RegExp): Promise<IconSeen> {
+  const key = `busy-submit-icon-${name}`;
+  await page.addInitScript(
+    ([label, note]) => {
+      addEventListener("submit", (event) => {
+        const button = (event.target as HTMLFormElement).querySelector(
+          `button[aria-label="${label}"]`,
+        ) as HTMLButtonElement | null;
+        if (!button || sessionStorage.getItem(note)) return;
+        const box = () => {
+          const rect = button.getBoundingClientRect();
+          return [Math.round(rect.width), Math.round(rect.height)];
+        };
+        const idle = box();
+        setTimeout(() => {
+          const icon = button.querySelector("svg");
+          sessionStorage.setItem(
+            note,
+            JSON.stringify({
+              busy: button.getAttribute("aria-busy"),
+              disabled: button.disabled,
+              name: button.getAttribute("aria-label"),
+              text: button.textContent,
+              idle,
+              waiting: box(),
+              overflows: button.scrollWidth > button.clientWidth || button.scrollHeight > button.clientHeight,
+              icon: icon ? getComputedStyle(icon).visibility : null,
+              wheel: getComputedStyle(button, "::before").position,
+            }),
+          );
+        }, 300);
+      });
+    },
+    [name, key],
+  );
+  await page.reload();
+  const held = await holdPosts(page, url);
+  const click = page.getByRole("button", { name, exact: true }).click();
+  await expect.poll(() => held.posts()).toBe(1);
+  await page.waitForTimeout(1000);
+  await held.release();
+  await click;
+  await page.waitForLoadState();
+  expect(held.posts()).toBe(1);
+  return page.evaluate((note) => JSON.parse(sessionStorage.getItem(note) ?? "null"), key);
+}
+
+test("an icon button: it keeps its size and its name, the wheel alone in its box", async ({ page }) => {
+  const email = await register(page);
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+  await page.getByRole("button", { name: "Se connecter" }).click();
+  await expect(page).toHaveURL("/");
+  await page.goto("/groups/new");
+  await page.getByLabel("Nom du groupe").fill("Famille Coche");
+  await page.getByRole("button", { name: "Créer le groupe" }).click();
+  await expect(page).toHaveURL(/\/groups\?notice=group_created$/);
+
+  // The tick box of the list (`.tick`), empty until ticked, and the « + »
+  // of a stock, an icon: both named by their `aria-label` alone.
+  await page.goto("/grocery-list");
+  await page.getByRole("textbox", { name: "Article" }).fill("Pain");
+  await page.getByRole("button", { name: "Ajouter", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Cocher Pain" })).toBeVisible();
+  const tick = await sendIconButton(page, "Cocher Pain", /\/grocery-list\/[0-9a-f-]+\/check$/);
+  await expect(page.getByRole("button", { name: "Décocher Pain" })).toBeVisible();
+
+  await page.goto("/stocks/new");
+  await page.getByLabel("Nom").fill("Riz");
+  await page.getByLabel("Quantité").fill("2");
+  await page.getByLabel("Unité").fill("kg");
+  await page.getByRole("button", { name: "Ajouter l'article" }).click();
+  await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+  const plus = await sendIconButton(page, "Ajouter 1 à Riz", /\/stocks\/[0-9a-f-]+\/adjust$/);
+
+  for (const [seen, name, icon] of [
+    [tick, "Cocher Pain", null],
+    [plus, "Ajouter 1 à Riz", "hidden"],
+  ] as const) {
+    expect(seen).not.toBeNull();
+    // Waiting, under the same name, and no text put in it: a visible
+    // label its name would not hold (WCAG 2.5.3).
+    expect(seen.busy).toBe("true");
+    expect(seen.disabled).toBe(true);
+    expect(seen.name).toBe(name);
+    expect(seen.text).toBe("");
+    // Its box unchanged, nothing overflowing it; the wheel laid over the
+    // box, the icon (if any) kept in place but unseen.
+    expect(seen.waiting).toEqual(seen.idle);
+    expect(seen.overflows).toBe(false);
+    expect(seen.wheel).toBe("absolute");
+    expect(seen.icon).toBe(icon);
+  }
+});
