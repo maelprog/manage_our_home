@@ -1215,4 +1215,17 @@ async fn an_adjustment_to_zero_removes_an_article_without_a_threshold(db: PgPool
     .await;
     assert!(res.get("removed").is_none(), "{res}");
     assert_eq!(item_status(r, g, &pates, &owner).await, StatusCode::OK);
+
+    // A PATCH that names no quantity adjusts nothing: an article already at
+    // 0 without a threshold stays.
+    let vide = create_item(
+        r,
+        g,
+        &owner,
+        serde_json::json!({"name": "Vide", "quantity": 0.0}),
+    )
+    .await;
+    let res = patch_item(r, g, &vide, &member, serde_json::json!({})).await;
+    assert!(res.get("removed").is_none(), "{res}");
+    assert_eq!(item_status(r, g, &vide, &owner).await, StatusCode::OK);
 }

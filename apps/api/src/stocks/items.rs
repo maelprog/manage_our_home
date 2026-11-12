@@ -98,6 +98,13 @@ impl UpdateStockItemRequest {
             || self.reorder_threshold.is_some()
             || self.expires_on.is_some()
     }
+
+    /// Whether this PATCH is a quantity adjustment: a quantity, and no
+    /// full-record field. Only such an adjustment may remove the article it
+    /// empties (#800); an empty body adjusts nothing.
+    fn adjusts_quantity_only(&self) -> bool {
+        self.quantity.is_some() && !self.touches_full_record()
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -477,6 +484,7 @@ pub async fn update_stock_item(
     // A quantity-only adjustment is allowed to any member (shared inventory);
     // touching any full-record field requires the creator/admin/owner bar.
     let full_edit = body.touches_full_record();
+    let quantity_adjustment = body.adjusts_quantity_only();
     if full_edit && !can_modify(&actor_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
@@ -539,8 +547,10 @@ pub async fn update_stock_item(
     // An adjustment that empties an article without a threshold removes it
     // (#800), in this transaction: the consequence of the quantity-only
     // PATCH any member may make, not a DELETE, so `can_modify` is not asked.
-    // A full edit keeps the article, whatever quantity it names.
-    let removed = !full_edit && should_remove_at_zero(item.quantity, item.reorder_threshold);
+    // A full edit keeps the article, whatever quantity it names, and so
+    // does a body that names no quantity.
+    let removed =
+        quantity_adjustment && should_remove_at_zero(item.quantity, item.reorder_threshold);
     if removed {
         sqlx::query!(
             "DELETE FROM stock_items WHERE id = $1 AND group_id = $2",
@@ -675,6 +685,24 @@ mod tests {
     #[test]
     fn a_no_op_patch_is_not_a_full_record_edit() {
         assert!(!empty_update().touches_full_record());
+    }
+
+    /// #800: only a PATCH that names a quantity, and nothing else, is the
+    /// adjustment that may remove an emptied article — not an empty body.
+    #[test]
+    fn only_a_quantity_alone_is_a_quantity_adjustment() {
+        assert!(!empty_update().adjusts_quantity_only());
+        let adjust = UpdateStockItemRequest {
+            quantity: Some(0.0),
+            ..empty_update()
+        };
+        assert!(adjust.adjusts_quantity_only());
+        let full = UpdateStockItemRequest {
+            quantity: Some(0.0),
+            name: Some("Riz".into()),
+            ..empty_update()
+        };
+        assert!(!full.adjusts_quantity_only());
     }
 
     #[test]
