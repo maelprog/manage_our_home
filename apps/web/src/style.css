@@ -1005,6 +1005,26 @@ button.danger:hover, .btn.danger:hover { background: var(--error-hover); border-
 button.secondary.danger:hover, .btn.secondary.danger:hover { background: var(--error-soft); }
 .list-row:hover, .navlink:hover { background: var(--hover); }
 .thumb:hover { border-color: var(--accent); }
+/* A form on its way (#778, `enhance.js`): its button waits, a wheel before
+   its « … en cours ». A waiting state, not an entry animation — it turns
+   only while a post is in flight, never on a page that loads. Drawn in
+   `currentColor`, it is the button's own text colour: a pair already
+   measured, in every variant and both themes. Frozen, not hidden, under
+   reduced motion (below). */
+button[aria-busy="true"] { cursor: progress; }
+button[aria-busy="true"]::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-inline-end: var(--s2x);
+  vertical-align: -0.125em;
+  border: var(--s2) solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: busy-spin 0.8s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(1turn); } }
 /* No native tap flash (#674): Chrome Android and Safari iOS painted their
    blue highlight over whatever was touched. The answer to a touch is the
    system's own — hover, focus ring, `aria-current`. Inherited, so once. */
@@ -1115,8 +1135,13 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
 @media (prefers-reduced-motion: no-preference) { @view-transition { navigation: auto; } }
 /* Reduced motion, in one declaration: every transition above is timed by
    `--dur`, so zeroing the token neutralises all of them — no sweep of
-   `* { transition: none !important }`, and nothing to keep in sync. */
-@media (prefers-reduced-motion: reduce) { :root { --dur: 0s; } }
+   `* { transition: none !important }`, and nothing to keep in sync. The
+   busy wheel (#778), the sheet's one animation, stands still: the label
+   still says the form is on its way. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur: 0s; }
+  button[aria-busy="true"]::before { animation: none; }
+}
 /* Forced colours drop `box-shadow`, and with it the school holiday's band
    (#565): a top border of the same width, which they repaint instead of
    dropping. After the phone's `.cal-cell` border, which it has to beat. */

@@ -913,6 +913,25 @@ ni `transition`, et `aria-current` n'apparaissait nulle part.
 - **Approche :** minimal-fonctionnel. Aucune animation d'entrée : l'application
   fait un rechargement complet à chaque navigation, une animation au chargement
   deviendrait pénible dès la troisième page.
+- **Un formulaire en cours d'envoi (#778) :** à la soumission, `enhance.js`
+  met son bouton en attente — `aria-busy="true"`, le libellé de son
+  `data-busy-label` (« Connexion en cours » sur `/login`) ou « Envoi en
+  cours », puis `disabled` — et arrête tout second envoi du même formulaire.
+  La feuille dessine devant le libellé une roue en `currentColor`
+  (`button[aria-busy="true"]::before`, `@keyframes busy-spin`) : la couleur
+  du texte du bouton, donc une paire déjà mesurée, dans chaque variante et
+  les deux thèmes. C'est la seule animation de la feuille, et ce n'est pas
+  une animation d'entrée : elle ne tourne que pendant qu'un envoi est en
+  route, jamais au chargement d'une page (journal, 2026-11-12). Sous
+  `prefers-reduced-motion: reduce`, la roue reste, figée ; le libellé dit
+  seul que l'envoi est parti. Une page que le retour arrière ressort du
+  cache du navigateur (`pageshow`) rend au bouton son libellé et au
+  formulaire son envoi. Pas un `<form method="dialog">`, ni un formulaire
+  envoyé vers une autre fenêtre ; `data-submit-on-change` (`form.submit()`)
+  ne déclenche aucun événement `submit`, donc aucune attente. Sans
+  JavaScript, rien ne change. Tenu par `e2e/tests/busy-submit.spec.ts`
+  (connexion, pièce jointe, retour arrière, roue dans les deux thèmes et
+  sous les deux préférences de mouvement).
 - **Transition de page (#523) :** `@view-transition { navigation: auto; }`,
   le fondu enchaîné que le navigateur fait lui-même d'une page à la
   suivante — ce n'est pas une animation d'entrée, elle ne se rejoue pas sur
@@ -1907,3 +1926,4 @@ quatre tours de vérification à #72.
 | 2026-11-07 | `[hidden] { display: none !important }` en tête de feuille (#670) | L'attribut `hidden` du navigateur perd contre toute règle d'auteur qui pose un `display` : `button, .btn` affichait le bouton Google natif de l'app avant que son script ait trouvé le plugin. Le seul `!important` de la feuille : un élément `hidden` doit rester caché quelle que soit sa classe, et aucune règle ne doit le défaire |
 | 2026-11-10 | Un lien de texte en gras plutôt que souligné (#752) | Demande du 2026-11-08 : « mettre les textes cliquables en gras plutôt que de les souligner, meilleure lecture ». La feuille n'avait aucune règle `a { … }` : un lien sans classe gardait le bleu et le soulignement du navigateur, `#0000EE` sur le fond sombre. Un lien sans classe, `.more` et `.replies` passent en `--accent`, 600, sans soulignement ; le soulignement revient au survol et au focus clavier, second indice après la graisse (WCAG 1.4.1). La règle est dans `:where()`, de spécificité nulle, pour qu'aucun lien à boîte ne change ; les moitiés du `.segment` en sont exclues, la non-courante y serait passée en 600. Le titre d'une carte de l'accueil reste souligné dans la couleur du titre, et sa règle se restreint à `.dash h2 > a`. `--accent` est désormais mesuré aussi sur `--hover`, `--warning-soft` et `--success-soft` (`TEXT_PAIRS`), pour les huit couleurs de famille et les deux thèmes. Feuille : de 22 551 à 22 814 o compressés (flate2 niveau 6), sous `SHEET_CEILING`. Détail : [Composants](#composants), ligne « lien de texte » |
 | 2026-11-12 | Une galerie et une visionneuse pour les pièces jointes d'un événement (#776) | Demande du 2026-11-10, maquette A1–A3 : la fiche d'un événement listait le nom, la taille et un lien de téléchargement, et n'affichait jamais une image. Une grille de tuiles (miniature d'une image, icône d'une vidéo, d'un PDF) dont chacune mène au fichier sans JavaScript et ouvre avec lui une visionneuse modale : le fichier entier, « n sur N », précédente et suivante, Télécharger, Ouvrir dans un onglet, Supprimer. **Écart avec la maquette, arbitré le 2026-11-12** : A1–A3 dessinent la visionneuse sur un fond quasi noir ; elle est ici la `.card` des fenêtres (`dialog`), sur les jetons existants, sans aucune couleur nouvelle — un fond sombre fixe aurait été une couleur hors des deux thèmes, à redéclarer et à mesurer à part. Aucune paire de contraste nouvelle : l'icône, le genre et le nom d'une tuile posent `--accent`, `--muted` et `--fg` sur `--hover`, trois paires que `TEXT_PAIRS` mesurait déjà et dont l'usage est désormais nommé. Pour qui peut supprimer, la liste de #455 reste sous la grille ; le script la cache (`data-hidden-with-js`, étendu à tout élément), et sans lui elle seule permet de supprimer. Trois icônes Lucide de plus (`image`, `play`, `file-text`). Feuille : de 22 814 à 23 282 o compressés (flate2 niveau 6), sous `SHEET_CEILING`. Détail : [Composants](#composants), lignes `.gallery` et `.viewer` |
+| 2026-11-12 | Le bouton d'un formulaire en cours d'envoi attend, une roue devant son libellé (#778) | Demande du 2026-11-10, maquette B2 ; la barre de progression de page et les squelettes sont écartés. Chaque navigation est un rechargement complet : un envoi lent (une connexion faible, une pièce jointe de 20 Mo) ne montrait rien jusqu'à la page suivante et laissait cliquer deux fois. **Exception à « aucune animation d'entrée » (Interaction et motion)** : la roue est une animation, mais un état d'attente, pas une animation de page — elle ne tourne que pendant qu'un envoi est en route et ne se rejoue sur aucun chargement. Figée, et non retirée, sous `prefers-reduced-motion: reduce`. Aucune couleur nouvelle : la roue est en `currentColor`, la couleur du texte du bouton, une paire déjà mesurée. Feuille : de 23 282 à 23 645 o compressés (flate2 niveau 6), sous `SHEET_CEILING`. Détail : [Interaction et motion](#interaction-et-motion) |

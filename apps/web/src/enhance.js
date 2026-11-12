@@ -157,12 +157,74 @@
   }
 
   // `data-confirm="…"` on a form: asks before it is submitted, and stops
-  // the submission on a refusal.
+  // the submission on a refusal. A form already on its way is not sent
+  // twice, and its button waits (`busy`).
   document.addEventListener("submit", function (event) {
     var form = event.target;
-    var question = form.getAttribute && form.getAttribute("data-confirm");
+    if (!form.getAttribute) return;
+    if (form.hasAttribute("data-busy")) {
+      event.preventDefault();
+      return;
+    }
+    var question = form.getAttribute("data-confirm");
     if (question && !window.confirm(question)) event.preventDefault();
-    else keepScroll(form);
+    else {
+      keepScroll(form);
+      busy(form, event.submitter);
+    }
+  });
+
+  // A form being sent (#778): every page is a full load, so a slow post —
+  // a 20 MB attachment, a poor connection — showed nothing until the next
+  // page came, and a second click sent it again. Its button now waits:
+  // `aria-busy`, a wheel drawn by the sheet, the label of its
+  // `data-busy-label` or « Envoi en cours », then disabled; any other
+  // sending of the form is stopped. Disabled a turn later, not here: the
+  // browser builds the form's data after this event, and a disabled
+  // submitter would drop its own `name=value` (the recipes' « Chercher »,
+  // `intent=search`). Not a `<form method="dialog">`, which only closes a
+  // dialog, nor a form sent to another window. `form.submit()`
+  // (`data-submit-on-change`) fires no `submit` event, so none of this.
+  // Without JavaScript the button stays as it is.
+  var BUSY_LABEL = "Envoi en cours";
+
+  function busy(form, submitter) {
+    var button =
+      submitter || form.querySelector('button:not([type]), button[type="submit"], input[type="submit"]');
+    var method = (button && button.getAttribute("formmethod")) || form.getAttribute("method") || "";
+    var target = (button && button.getAttribute("formtarget")) || form.getAttribute("target") || "";
+    if (method.toLowerCase() === "dialog" || (target && target !== "_self")) return;
+    form.setAttribute("data-busy", "");
+    if (!button) return;
+    var label = button.getAttribute("data-busy-label") || BUSY_LABEL;
+    button.setAttribute("aria-busy", "true");
+    if (button.tagName === "INPUT") {
+      button.idleLabel = button.value;
+      button.value = label;
+    } else {
+      button.idleLabel = button.innerHTML;
+      button.textContent = label;
+    }
+    setTimeout(function () {
+      if (form.hasAttribute("data-busy")) button.disabled = true;
+    }, 0);
+  }
+
+  // A page the back button brings out of the browser's cache comes back as
+  // it was left, its button waiting for a page that has already come: it is
+  // given back its label, and the form can be sent again.
+  window.addEventListener("pageshow", function () {
+    Array.prototype.forEach.call(document.querySelectorAll("form[data-busy]"), function (form) {
+      form.removeAttribute("data-busy");
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('[aria-busy="true"]'), function (button) {
+      if (button.idleLabel === undefined) return;
+      if (button.tagName === "INPUT") button.value = button.idleLabel;
+      else button.innerHTML = button.idleLabel;
+      delete button.idleLabel;
+      button.removeAttribute("aria-busy");
+      button.disabled = false;
+    });
   });
 
   document.addEventListener("change", function (event) {

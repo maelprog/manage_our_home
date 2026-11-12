@@ -86,3 +86,4 @@ f5d47c513427f8e2  2026-11-02  Une mini-grille de la période au-dessus de la lis
 70c98a36e5226da7  2026-11-07  `[hidden] { display: none !important }` en tête de feuille (
 c5abe44df8cb5236  2026-11-10  Un lien de texte en gras plutôt que souligné (#752)
 817ea86c5527fab9  2026-11-12  Une galerie et une visionneuse pour les pièces jointes d'un 
+fee4919203caa1e3  2026-11-12  Le bouton d'un formulaire en cours d'envoi attend, une roue 
