@@ -75,7 +75,8 @@ fn page(
                 <input type="email" name="email" required=true value=email.to_string() />
             </label>
             <div inner_html=pw></div>
-            <button type="submit">"Se connecter"</button>
+            // #778: what `enhance.js` writes on the button while it waits.
+            <button type="submit" data-busy-label="Connexion en cours">"Se connecter"</button>
         </form>
         // #419: stacked, so the Google button takes the width of the form's
         // own; the legal documents moved to the shell's footer.
@@ -278,6 +279,19 @@ mod tests {
         let html = page("", None, None, "http://api");
         assert!(
             html.contains(r#"<a href="/verify-email/resend">Email de vérification non reçu ?</a>"#),
+            "{html}"
+        );
+    }
+
+    /// #778: while the login is on its way, `enhance.js` puts the button in
+    /// waiting under this label rather than the generic « Envoi en cours ».
+    #[test]
+    fn the_login_button_names_its_wait() {
+        let html = page("", None, None, "http://api");
+        assert!(
+            html.contains(
+                r#"<button type="submit" data-busy-label="Connexion en cours">Se connecter</button>"#
+            ),
             "{html}"
         );
     }

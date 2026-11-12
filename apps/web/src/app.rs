@@ -3834,6 +3834,66 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_button_spins_in_its_own_colour_and_stands_still_under_reduced_motion() {
+        // #778: the one animation of the sheet is a waiting state, not an
+        // entry animation (DESIGN.md → Interaction et motion). Its wheel is
+        // drawn in `currentColor`, so it takes the measured pair of the
+        // button's own text in every variant and both themes; under
+        // `prefers-reduced-motion: reduce` it stays, frozen.
+        let css = css();
+        let (wheel, _) = block_after(&css, r#"button[aria-busy="true"]::before"#, 0);
+        assert!(wheel.contains("currentColor"), "{wheel}");
+        assert!(wheel.contains("animation: busy-spin"), "{wheel}");
+        assert_eq!(css.matches("@keyframes").count(), 1, "{css}");
+        assert!(css.contains("@keyframes busy-spin"), "{css}");
+        // The frozen wheel is the query's last rule: what follows it closes
+        // the query.
+        let media = css
+            .find("@media (prefers-reduced-motion: reduce)")
+            .expect("no reduced-motion query");
+        let (frozen, end) = block_after(&css, r#"button[aria-busy="true"]::before"#, media);
+        assert!(frozen.contains("animation: none"), "{frozen}");
+        assert!(
+            css[end..].trim_start().starts_with('}'),
+            "the frozen wheel is not inside the reduced-motion query"
+        );
+    }
+
+    #[test]
+    fn a_busy_icon_button_keeps_its_box_the_wheel_laid_over_it() {
+        // #778: a button named by its `aria-label` gets no « Envoi en
+        // cours » (enhance.js); its icon stays in place, unseen, and the
+        // wheel is laid over its box, which keeps its size.
+        let css = css();
+        let (own, _) = block_after(&css, r#"button[aria-busy="true"][aria-label] {"#, 0);
+        assert!(own.contains("position: relative"), "{own}");
+        let (content, _) = block_after(&css, r#"button[aria-busy="true"][aria-label] > *"#, 0);
+        assert!(content.contains("visibility: hidden"), "{content}");
+        let (wheel, _) = block_after(&css, r#"button[aria-busy="true"][aria-label]::before"#, 0);
+        assert!(wheel.contains("position: absolute"), "{wheel}");
+        assert!(wheel.contains("inset: 0"), "{wheel}");
+        assert!(wheel.contains("margin: auto"), "{wheel}");
+        assert!(
+            ENHANCE_SCRIPT.contains(r#"button.hasAttribute("aria-label")"#),
+            "enhance.js gives an icon button a label"
+        );
+    }
+
+    #[test]
+    fn the_enhancement_puts_a_sent_form_s_button_in_waiting() {
+        // #778: the label from `data-busy-label` or the default, `aria-busy`,
+        // and the reset of a page the back button restores from its cache.
+        for needle in [
+            "data-busy-label",
+            "\"Envoi en cours\"",
+            "aria-busy",
+            "pageshow",
+        ] {
+            assert!(ENHANCE_SCRIPT.contains(needle), "enhance.js lacks {needle}");
+        }
+    }
+
+    #[test]
     fn the_current_nav_link_is_told_apart_by_more_than_its_colour() {
         // WCAG 1.4.1: the active tab is the ground *and* the weight, so it
         // survives a colour-blind reading and a monochrome screenshot.
