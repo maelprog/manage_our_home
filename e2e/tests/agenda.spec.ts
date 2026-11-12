@@ -844,9 +844,8 @@ test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
     const href = await link.getAttribute("href");
     if (!href) throw new Error("no download link");
     const resp = await page.request.get(href, { maxRedirects: 0 });
-    expect(resp.status()).toBeGreaterThanOrEqual(300);
-    expect(resp.status()).toBeLessThan(400);
-    expect(resp.headers()["location"] ?? "").toContain("X-Amz-");
+    expect(resp.status()).toBe(200);
+    expect(Buffer.compare(await resp.body(), PNG_1X1)).toBe(0);
   });
 
   // A refused file is caught before the event is written: the form comes
