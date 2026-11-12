@@ -391,3 +391,101 @@ test("the shell's two pages share DESIGN.md's tokens, and their text meets AA in
     }
   }
 });
+
+// The launch screen (#779). A values file's <color>s, and a <style>'s
+// parent and <item>s, as name → value.
+const colours = (xml) =>
+  Object.fromEntries(
+    [...uncommented(xml).matchAll(/<color\s+name="([\w.]+)"\s*>([^<]*)<\/color>/g)].map(([, k, v]) => [k, v.trim()]),
+  );
+function style(xml, name) {
+  const found = uncommented(xml).match(
+    new RegExp(`<style\\s+name="${name.replace(/\./g, '\\.')}"([^>]*)>([\\s\\S]*?)</style>`),
+  );
+  assert.ok(found, `a style ${name}`);
+  return {
+    parent: (found[1].match(/parent="([^"]*)"/) ?? [])[1],
+    items: Object.fromEntries(
+      [...found[2].matchAll(/<item\s+name="([\w:]+)"\s*>([^<]*)<\/item>/g)].map(([, k, v]) => [k, v.trim()]),
+    ),
+  };
+}
+const brandColour = (name) =>
+  read('../web/src/brand.rs').match(new RegExp(`^pub const ${name}: &str = "(#[0-9A-Fa-f]{6})";$`, 'm'))[1];
+
+test('the launch screen follows the system theme, on the grounds and in the ink of the offline page', () => {
+  const tokens = pageTokens(read('www/hors-ligne.html'));
+  const light = colours(read(`${res}/values/colors.xml`));
+  const dark = colours(read(`${res}/values-night/colors.xml`));
+  // The light ground is the manifest's background_color, which
+  // app/build.gradle turns into @color/brand_background.
+  assert.equal(light.splash_background, '@color/brand_background');
+  assert.equal(brandColour('BACKGROUND_COLOR').toUpperCase(), tokens.light['--bg'].toUpperCase());
+  assert.equal(dark.splash_background?.toUpperCase(), tokens.dark['--bg'].toUpperCase());
+  assert.equal(light.splash_name?.toUpperCase(), tokens.light['--fg'].toUpperCase());
+  assert.equal(dark.splash_name?.toUpperCase(), tokens.dark['--fg'].toUpperCase());
+  for (const theme of ['light', 'dark']) {
+    const ratio = contrast(tokens[theme]['--fg'], tokens[theme]['--bg']);
+    assert.ok(ratio >= 4.5, `${theme}: the name is ${ratio.toFixed(2)}:1 on its ground`);
+  }
+  // One style for both themes and every API level, but for the name,
+  // which Android draws from 12 (API 31) only.
+  const launch = style(read(`${res}/values/styles.xml`), 'AppTheme.NoActionBarLaunch');
+  assert.equal(launch.parent, 'Theme.SplashScreen');
+  assert.deepEqual(launch.items, {
+    windowSplashScreenBackground: '@color/splash_background',
+    windowSplashScreenAnimatedIcon: '@mipmap/ic_launcher',
+    postSplashScreenTheme: '@style/AppTheme.NoActionBar',
+  });
+  const launch31 = style(read(`${res}/values-v31/styles.xml`), 'AppTheme.NoActionBarLaunch');
+  assert.equal(launch31.parent, launch.parent);
+  assert.deepEqual(launch31.items, {
+    ...launch.items,
+    'android:windowSplashScreenBrandingImage': '@drawable/splash_name',
+  });
+  const manifest = read('android/app/src/main/AndroidManifest.xml');
+  assert.equal(elements(manifest, 'activity')[0]['android:theme'], '@style/AppTheme.NoActionBarLaunch');
+});
+
+test("the name on the launch screen is the logo lockup's word, in the theme's ink", () => {
+  const word = [...read('../web/src/brand/logo-mono.svg').matchAll(/<path fill="currentColor" d="([^"]+)"/g)];
+  assert.equal(word.length, 1, 'one filled path in the lockup: the word');
+  const paths = elements(read(`${res}/drawable/splash_name.xml`), 'path');
+  assert.deepEqual(paths, [{ 'android:fillColor': '@color/splash_name', 'android:pathData': word[0][1] }]);
+});
+
+test('the launch screen stays until a page shows, the offline page included, and 5 s at most', () => {
+  const activity = read('android/app/src/main/java/fr/watallo/mhome/MainActivity.java');
+  const onCreate = activity.slice(activity.indexOf('protected void onCreate('), activity.indexOf('private void endLaunchScreen('));
+  const install = onCreate.indexOf('SplashScreen.installSplashScreen(this)');
+  assert.ok(install !== -1 && install < onCreate.indexOf('super.onCreate('), 'installed before super.onCreate');
+  const max = activity.match(/static final long LAUNCH_SCREEN_MAX_MS = ([\d_]+);/);
+  assert.ok(max, 'a LAUNCH_SCREEN_MAX_MS');
+  const ms = Number(max[1].replace(/_/g, ''));
+  assert.ok(ms > 0 && ms <= 5000, `${ms} ms`);
+  // On a fresh start only, the screen is held by `launching` alone, and the
+  // time limit is set, not cancelled before it runs.
+  assert.match(
+    onCreate.slice(0, onCreate.indexOf('super.onCreate(')),
+    /if \(savedInstanceState == null\) \{\s*launching = true;\s*\w+\.setKeepOnScreenCondition\(\(\) -> launching\);\s*\w+\.postDelayed\(endLaunchScreen, LAUNCH_SCREEN_MAX_MS\);\s*\}/,
+  );
+  assert.doesNotMatch(onCreate, /removeCallbacks\(|endLaunchScreen\(\)/, 'nothing ends the wait in onCreate');
+  assert.match(activity, /Runnable endLaunchScreen = this::endLaunchScreen;/);
+  assert.match(activity, /private void endLaunchScreen\(\) \{\s*launching = false;/);
+  // A page shows: the site's, the choice page, or the offline page that
+  // BridgeWebViewClient loads when the main frame gets no answer. Not the
+  // WebView's own error page, which commits first at the address that
+  // failed ("Webpage not available", seen on the emulator).
+  const notFailed = String.raw`(?:!(\w+)\.equals\(failedPage\)|!Objects\.equals\((\w+), failedPage\)|!Objects\.equals\(failedPage, (\w+)\))`;
+  const listener = activity.match(
+    new RegExp(
+      String.raw`bridge\.addWebViewListener\(\s*new WebViewListener\(\) \{\s*@Override\s*public void onPageCommitVisible\(WebView \w+, String (\w+)\) \{\s*if \(${notFailed}\) \{\s*endLaunchScreen\(\);`,
+    ),
+  );
+  assert.ok(listener, 'a listener on the bridge ends the wait at the first page but the failed one');
+  assert.equal(listener[2] ?? listener[3] ?? listener[4], listener[1], 'compares the committed page');
+  assert.match(
+    activity,
+    /public void onReceivedError\(WebView \w+, WebResourceRequest (\w+), WebResourceError \w+\) \{\s*if \(\1\.isForMainFrame\(\)[^{]*\{\s*[^;]*failedPage = \1\.getUrl\(\)\.toString\(\);/,
+  );
+});

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launch screen of the dark theme (#779), taken when the phone is in
+  dark mode: the page background and the page text of DESIGN.md's dark
+  theme, those of www/hors-ligne.html (scripts/check-shell.test.mjs).
+-->
+<resources>
+    <color name="splash_background">#1A1917</color>
+    <color name="splash_name">#EDEAE4</color>
+</resources>
