@@ -636,17 +636,26 @@ pub(crate) enum ByteRange {
 /// a video player sends it to seek (`bytes=N-`) or to read ahead.
 ///
 /// RFC 9110 §14.2: a header that does not parse, or in a unit other than
-/// `bytes`, is ignored — the whole file is served. Several ranges are
+/// `bytes` (compared case-insensitively), is ignored — the whole file is
+/// served. Several ranges are
 /// refused (416) rather than answered as `multipart/byteranges`, which no
 /// player needs and which would serve the same bytes several times over.
 pub(crate) fn parse_range(header: Option<&str>, size: u64) -> ByteRange {
-    let Some(spec) = header.and_then(|h| h.trim().strip_prefix("bytes=")) else {
+    // The unit is case-insensitive (RFC 9110 §14.1).
+    let Some(set) = header.map(str::trim).and_then(|h| {
+        let (unit, set) = h.split_at_checked(6)?;
+        unit.eq_ignore_ascii_case("bytes=").then_some(set)
+    }) else {
         return ByteRange::Full;
     };
-    if spec.contains(',') {
-        return ByteRange::Unsatisfiable;
-    }
-    let Some((first, last)) = spec.trim().split_once('-') else {
+    // A list may carry empty elements, which do not count (RFC 9110 §5.6.1).
+    let mut specs = set.split(',').map(str::trim).filter(|s| !s.is_empty());
+    let spec = match (specs.next(), specs.next()) {
+        (None, _) => return ByteRange::Full,
+        (Some(_), Some(_)) => return ByteRange::Unsatisfiable,
+        (Some(spec), None) => spec,
+    };
+    let Some((first, last)) = spec.split_once('-') else {
         return ByteRange::Full;
     };
     // Digits only: `u64::from_str` would take a leading `+`.
@@ -655,10 +664,16 @@ pub(crate) fn parse_range(header: Option<&str>, size: u64) -> ByteRange {
             .then(|| s.parse::<u64>().ok())
             .flatten()
     };
+    // A last byte or a suffix length too large for a `u64` lies past the
+    // end of any file: clipped to it like any other.
+    let length = |s: &str| {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| s.parse::<u64>().unwrap_or(u64::MAX))
+    };
     let (first, last) = (first.trim(), last.trim());
     if first.is_empty() {
         // `bytes=-N`: the last N bytes.
-        return match number(last) {
+        return match length(last) {
             None => ByteRange::Full,
             Some(0) => ByteRange::Unsatisfiable,
             Some(_) if size == 0 => ByteRange::Unsatisfiable,
@@ -674,7 +689,7 @@ pub(crate) fn parse_range(header: Option<&str>, size: u64) -> ByteRange {
     let end = if last.is_empty() {
         None
     } else {
-        match number(last) {
+        match length(last) {
             Some(end) if end >= start => Some(end),
             _ => return ByteRange::Full,
         }
@@ -826,6 +841,57 @@ mod tests {
         ] {
             assert_eq!(parse_range(Some(header), 100), ByteRange::Full, "{header}");
         }
+    }
+
+    /// RFC 9110 §14.1: range units are compared case-insensitively.
+    #[test]
+    fn the_unit_is_case_insensitive() {
+        for header in ["Bytes=0-9", "BYTES=0-9", "bYtEs=0-9"] {
+            assert_eq!(
+                parse_range(Some(header), 100),
+                ByteRange::Partial { start: 0, end: 9 },
+                "{header}"
+            );
+        }
+    }
+
+    /// RFC 9110 §5.6.1: a list may carry empty elements, which do not
+    /// count — `bytes=0-9,` is one range, not two.
+    #[test]
+    fn an_empty_list_element_is_not_another_range() {
+        for header in ["bytes=0-9,", "bytes=,0-9", "bytes= , 0-9 , "] {
+            assert_eq!(
+                parse_range(Some(header), 100),
+                ByteRange::Partial { start: 0, end: 9 },
+                "{header}"
+            );
+        }
+        assert_eq!(parse_range(Some("bytes=,"), 100), ByteRange::Full);
+        assert_eq!(
+            parse_range(Some("bytes=0-9,,20-29"), 100),
+            ByteRange::Unsatisfiable
+        );
+    }
+
+    /// A last byte, or a suffix length, too large for a `u64` still lies
+    /// past the end of the file: clipped to it like any other.
+    #[test]
+    fn a_number_past_u64_is_clipped_to_the_file() {
+        assert_eq!(
+            parse_range(Some("bytes=0-18446744073709551616"), 100),
+            ByteRange::Partial { start: 0, end: 99 }
+        );
+        assert_eq!(
+            parse_range(Some("bytes=-18446744073709551616"), 100),
+            ByteRange::Partial { start: 0, end: 99 }
+        );
+    }
+
+    /// An empty file has no last bytes to give: without its own case the
+    /// suffix arithmetic would ask for byte `0 - 1`.
+    #[test]
+    fn a_suffix_range_of_an_empty_file_is_unsatisfiable() {
+        assert_eq!(parse_range(Some("bytes=-5"), 0), ByteRange::Unsatisfiable);
     }
 
     // -- Content-Disposition (#775) -----------------------------------------
