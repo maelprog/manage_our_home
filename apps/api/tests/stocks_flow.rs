@@ -1045,3 +1045,187 @@ async fn non_member_cannot_read_the_expiring_count(db: PgPool) {
     .await;
     assert_status(&res, StatusCode::FORBIDDEN);
 }
+
+/// Creates an article as `cookie` and returns its id.
+async fn create_item(
+    router: &axum::Router,
+    group_id: &str,
+    cookie: &str,
+    body: serde_json::Value,
+) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// PATCHes an article as `cookie`, expects a 200 and returns its body.
+async fn patch_item(
+    router: &axum::Router,
+    group_id: &str,
+    item_id: &str,
+    cookie: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let res = call(
+        router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await
+}
+
+/// The status of `GET` on an article.
+async fn item_status(
+    router: &axum::Router,
+    group_id: &str,
+    item_id: &str,
+    cookie: &str,
+) -> StatusCode {
+    call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(cookie),
+        None,
+    )
+    .await
+    .status()
+}
+
+/// AC (#800): a quantity adjustment that brings an article without a
+/// reorder threshold to 0 removes it, for the creator and for any other
+/// member alike — the consequence of the adjustment, not a DELETE, so it
+/// does not ask the creator/admin/owner bar. An article with a threshold
+/// stays at 0, « à racheter ». A full-record edit to 0 keeps the article.
+#[sqlx::test]
+async fn an_adjustment_to_zero_removes_an_article_without_a_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "stock-zero-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        &router,
+        &db,
+        "stock-zero-member@example.test",
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    let invite = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    call(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member),
+        None,
+    )
+    .await;
+    let r = &router;
+    let g = group_id.as_str();
+    let zero = serde_json::json!({"quantity": 0.0});
+
+    // The creator empties an article without a threshold: 200, told it is
+    // removed, and it is gone.
+    let sel = create_item(
+        r,
+        g,
+        &owner,
+        serde_json::json!({"name": "Sel", "quantity": 1.0}),
+    )
+    .await;
+    let res = patch_item(r, g, &sel, &owner, zero.clone()).await;
+    assert_eq!(res["removed"], true, "{res}");
+    assert_eq!(res["quantity"], 0.0, "{res}");
+    assert_eq!(item_status(r, g, &sel, &owner).await, StatusCode::NOT_FOUND);
+
+    // Another member, who could not DELETE it, gets the same result.
+    let riz = create_item(
+        r,
+        g,
+        &owner,
+        serde_json::json!({"name": "Riz", "quantity": 2.0}),
+    )
+    .await;
+    let res = patch_item(r, g, &riz, &member, serde_json::json!({"quantity": 0})).await;
+    assert_eq!(res["removed"], true, "{res}");
+    assert_eq!(item_status(r, g, &riz, &owner).await, StatusCode::NOT_FOUND);
+
+    // With a threshold, the article stays at 0, low on stock — for the
+    // creator as for another member.
+    for cookie in [&owner, &member] {
+        let lait = create_item(
+            r,
+            g,
+            &owner,
+            serde_json::json!({"name": "Lait", "quantity": 2.0, "reorder_threshold": 1.0}),
+        )
+        .await;
+        let res = patch_item(r, g, &lait, cookie, zero.clone()).await;
+        assert!(res.get("removed").is_none(), "{res}");
+        assert_eq!(res["quantity"], 0.0, "{res}");
+        assert_eq!(res["low_stock"], true, "{res}");
+        assert_eq!(item_status(r, g, &lait, &owner).await, StatusCode::OK);
+    }
+
+    // An adjustment that leaves some stock says nothing of a removal.
+    let pates = create_item(
+        r,
+        g,
+        &owner,
+        serde_json::json!({"name": "Pâtes", "quantity": 2.0}),
+    )
+    .await;
+    let res = patch_item(r, g, &pates, &member, serde_json::json!({"quantity": 1.0})).await;
+    assert!(res.get("removed").is_none(), "{res}");
+
+    // A full-record edit to 0 is not an adjustment: the article stays.
+    let res = patch_item(
+        r,
+        g,
+        &pates,
+        &owner,
+        serde_json::json!({"name": "Pâtes complètes", "quantity": 0.0}),
+    )
+    .await;
+    assert!(res.get("removed").is_none(), "{res}");
+    assert_eq!(item_status(r, g, &pates, &owner).await, StatusCode::OK);
+
+    // A PATCH that names no quantity adjusts nothing: an article already at
+    // 0 without a threshold stays.
+    let vide = create_item(
+        r,
+        g,
+        &owner,
+        serde_json::json!({"name": "Vide", "quantity": 0.0}),
+    )
+    .await;
+    let res = patch_item(r, g, &vide, &member, serde_json::json!({})).await;
+    assert!(res.get("removed").is_none(), "{res}");
+    assert_eq!(item_status(r, g, &vide, &owner).await, StatusCode::OK);
+}

@@ -244,23 +244,35 @@ pub struct AdjustForm {
 /// Where an adjustment lands once saved: `back` with the notice, when it is
 /// the stocks list (`/stocks`, bare or with a query) — anything else is
 /// refused, so the field cannot send the member off the site — and the
-/// article's page otherwise.
-pub(crate) fn adjusted_target(back: &str, item_id: Uuid) -> String {
+/// article's page otherwise. An article the adjustment `removed` (#800) has
+/// no page left: it lands on the bare list instead, with its own notice.
+pub(crate) fn adjusted_target(back: &str, item_id: Uuid, removed: bool) -> String {
+    let notice = if removed {
+        "item_depleted"
+    } else {
+        "quantity_adjusted"
+    };
     // `/stocks` then nothing, or its query: no path can follow, so no
     // other page — let alone another site — is reachable through it. The
     // query is the one `list::list_href` writes, percent-encoded: visible
     // ASCII only, which also keeps the `Location` header valid.
     match back.strip_prefix("/stocks") {
-        Some("") => "/stocks?notice=quantity_adjusted".to_string(),
+        Some("") => format!("/stocks?notice={notice}"),
         Some(query)
             if query.starts_with('?')
                 && !query.contains('#')
                 && query.chars().all(|c| c.is_ascii_graphic()) =>
         {
-            format!("/stocks{query}&notice=quantity_adjusted")
+            format!("/stocks{query}&notice={notice}")
         }
-        _ => format!("/stocks/{item_id}?notice=quantity_adjusted"),
+        _ if removed => format!("/stocks?notice={notice}"),
+        _ => format!("/stocks/{item_id}?notice={notice}"),
     }
+}
+
+/// Whether the PATCH answer says the adjustment removed the article (#800).
+fn removed_by_adjust(body: &serde_json::Value) -> bool {
+    body.get("removed").and_then(serde_json::Value::as_bool) == Some(true)
 }
 
 /// The quantity the adjust form posts, or the `?error=` code it lands on.
@@ -309,7 +321,9 @@ pub async fn adjust(
     .await;
 
     let target = match result {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => adjusted_target(&form.back, item_id),
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            adjusted_target(&form.back, item_id, removed_by_adjust(&resp.body))
+        }
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             format!("{detail}?error=forbidden")
         }
@@ -511,11 +525,11 @@ mod tests {
     #[test]
     fn the_list_is_where_its_stepper_lands_filters_kept() {
         assert_eq!(
-            adjusted_target("/stocks", id()),
+            adjusted_target("/stocks", id(), false),
             "/stocks?notice=quantity_adjusted"
         );
         assert_eq!(
-            adjusted_target("/stocks?lieu=Frigo&q=lait", id()),
+            adjusted_target("/stocks?lieu=Frigo&q=lait", id(), false),
             "/stocks?lieu=Frigo&q=lait&notice=quantity_adjusted"
         );
     }
@@ -536,7 +550,37 @@ mod tests {
             "/stocks?lieu=Congélateur",
             "/budget",
         ] {
-            assert_eq!(adjusted_target(back, id()), detail, "{back}");
+            assert_eq!(adjusted_target(back, id(), false), detail, "{back}");
         }
+    }
+
+    /// #800: an article the adjustment emptied is gone, so the way back is
+    /// the list — its filters kept when the stepper came from it — with its
+    /// own notice, never the article's page, which would be a 404.
+    #[test]
+    fn an_emptied_article_lands_on_the_list_with_its_notice() {
+        assert_eq!(
+            adjusted_target("/stocks", id(), true),
+            "/stocks?notice=item_depleted"
+        );
+        assert_eq!(
+            adjusted_target("/stocks?lieu=Frigo&q=lait", id(), true),
+            "/stocks?lieu=Frigo&q=lait&notice=item_depleted"
+        );
+        for back in ["", "https://example.org/stocks", "/stocks/new", "/stocks#x"] {
+            assert_eq!(
+                adjusted_target(back, id(), true),
+                "/stocks?notice=item_depleted",
+                "{back}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_api_tells_whether_the_adjustment_removed_the_article() {
+        assert!(removed_by_adjust(&serde_json::json!({"removed": true})));
+        assert!(!removed_by_adjust(&serde_json::json!({"quantity": 0.0})));
+        assert!(!removed_by_adjust(&serde_json::json!({"removed": false})));
+        assert!(!removed_by_adjust(&serde_json::Value::Null));
     }
 }

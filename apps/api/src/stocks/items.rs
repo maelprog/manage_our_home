@@ -98,6 +98,13 @@ impl UpdateStockItemRequest {
             || self.reorder_threshold.is_some()
             || self.expires_on.is_some()
     }
+
+    /// Whether this PATCH is a quantity adjustment: a quantity, and no
+    /// full-record field. Only such an adjustment may remove the article it
+    /// empties (#800); an empty body adjusts nothing.
+    fn adjusts_quantity_only(&self) -> bool {
+        self.quantity.is_some() && !self.touches_full_record()
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -122,6 +129,19 @@ pub struct StockItemResponse {
     /// from the other responses, empty when no planned recipe uses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub planned_usage: Option<Vec<PlannedUsage>>,
+    /// `true` on the PATCH whose quantity-only adjustment brought an article
+    /// without a reorder threshold to 0 (#800): the article is deleted in
+    /// the same transaction, and this body is its last state. Absent
+    /// otherwise (`default` keeps it optional in the OpenAPI schema).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+}
+
+/// Whether an article left at `quantity` by a quantity-only adjustment is
+/// removed (#800): at 0 with no reorder threshold, it reminds nobody of
+/// anything. With a threshold — even 0 — it stays, « à racheter ».
+fn should_remove_at_zero(quantity: f64, reorder_threshold: Option<f64>) -> bool {
+    quantity == 0.0 && reorder_threshold.is_none()
 }
 
 #[derive(Clone)]
@@ -174,6 +194,7 @@ impl StockItemResponse {
             expiry_status: expiry_status(r.expires_on, today),
             barcode: r.barcode,
             planned_usage: None,
+            removed: false,
         }
     }
 
@@ -431,7 +452,7 @@ pub async fn expiring_count(
     ),
     request_body = UpdateStockItemRequest,
     responses(
-        (status = 200, description = "Stock item updated; a quantity-only change is open to every member", body = StockItemResponse),
+        (status = 200, description = "Stock item updated; a quantity-only change is open to every member. One that brings an article without a reorder threshold to 0 deletes it and answers its last state with `removed: true`", body = StockItemResponse),
         (status = 400, description = "`name_required`, `invalid_barcode` or another validation code", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
@@ -463,6 +484,7 @@ pub async fn update_stock_item(
     // A quantity-only adjustment is allowed to any member (shared inventory);
     // touching any full-record field requires the creator/admin/owner bar.
     let full_edit = body.touches_full_record();
+    let quantity_adjustment = body.adjusts_quantity_only();
     if full_edit && !can_modify(&actor_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
@@ -521,9 +543,29 @@ pub async fn update_stock_item(
     )
     .fetch_one(&mut *tx)
     .await?;
+
+    // An adjustment that empties an article without a threshold removes it
+    // (#800), in this transaction: the consequence of the quantity-only
+    // PATCH any member may make, not a DELETE, so `can_modify` is not asked.
+    // A full edit keeps the article, whatever quantity it names, and so
+    // does a body that names no quantity.
+    let removed =
+        quantity_adjustment && should_remove_at_zero(item.quantity, item.reorder_threshold);
+    if removed {
+        sqlx::query!(
+            "DELETE FROM stock_items WHERE id = $1 AND group_id = $2",
+            item_id,
+            group_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
-    Ok(Json(StockItemResponse::from_row(item, today())))
+    Ok(Json(StockItemResponse {
+        removed,
+        ..StockItemResponse::from_row(item, today())
+    }))
 }
 
 #[utoipa::path(
@@ -643,6 +685,24 @@ mod tests {
     #[test]
     fn a_no_op_patch_is_not_a_full_record_edit() {
         assert!(!empty_update().touches_full_record());
+    }
+
+    /// #800: only a PATCH that names a quantity, and nothing else, is the
+    /// adjustment that may remove an emptied article — not an empty body.
+    #[test]
+    fn only_a_quantity_alone_is_a_quantity_adjustment() {
+        assert!(!empty_update().adjusts_quantity_only());
+        let adjust = UpdateStockItemRequest {
+            quantity: Some(0.0),
+            ..empty_update()
+        };
+        assert!(adjust.adjusts_quantity_only());
+        let full = UpdateStockItemRequest {
+            quantity: Some(0.0),
+            name: Some("Riz".into()),
+            ..empty_update()
+        };
+        assert!(!full.adjusts_quantity_only());
     }
 
     #[test]
@@ -809,6 +869,28 @@ mod tests {
                 "{bad:?} must be refused"
             );
         }
+    }
+
+    // -- should_remove_at_zero (#800) --------------------------------------
+
+    #[test]
+    fn an_article_brought_to_zero_without_a_threshold_is_removed() {
+        assert!(should_remove_at_zero(0.0, None));
+    }
+
+    #[test]
+    fn an_article_at_zero_with_a_threshold_stays_as_a_reminder() {
+        assert!(!should_remove_at_zero(0.0, Some(2.0)));
+        // A threshold of 0 is still a threshold: the article reads « à
+        // racheter » at 0 (`low_stock` is `quantity <= threshold`).
+        assert!(!should_remove_at_zero(0.0, Some(0.0)));
+    }
+
+    #[test]
+    fn an_article_still_in_stock_stays() {
+        assert!(!should_remove_at_zero(0.5, None));
+        assert!(!should_remove_at_zero(1.0, None));
+        assert!(!should_remove_at_zero(3.0, Some(2.0)));
     }
 
     #[test]

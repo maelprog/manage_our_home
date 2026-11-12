@@ -143,7 +143,7 @@ pub(crate) fn incomplete_banner(count: usize) -> String {
 pub(crate) fn after_stock_change(notice: Option<&str>) -> bool {
     matches!(
         notice,
-        Some("quantity_adjusted" | "item_deleted" | "recipe_done")
+        Some("quantity_adjusted" | "item_deleted" | "item_depleted" | "recipe_done")
     )
 }
 
@@ -434,6 +434,7 @@ mod tests {
     fn only_a_change_of_the_stock_tells_the_incomplete_recipes() {
         assert!(after_stock_change(Some("quantity_adjusted")));
         assert!(after_stock_change(Some("item_deleted")));
+        assert!(after_stock_change(Some("item_depleted")));
         assert!(after_stock_change(Some("recipe_done")));
         assert!(!after_stock_change(Some("item_created")));
         assert!(!after_stock_change(Some("item_updated")));

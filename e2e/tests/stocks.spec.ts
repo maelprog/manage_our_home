@@ -102,6 +102,7 @@ test.describe("Stocks — list & create", () => {
     await createGroup(page, "Famille Placard");
     await createItem(page, { name: "Pâtes complètes", quantity: "2", unit: "paquet", category: "Placard" });
     await createItem(page, { name: "Crème", quantity: "1", unit: "pot", category: "Frigo" });
+    await createItem(page, { name: "Beurre", quantity: "2", unit: "plaquette", category: "Frigo" });
 
     const qty = (name: string) => page.locator("li", { hasText: name }).locator(".stepper > span");
     await page.goto("/stocks");
@@ -121,18 +122,21 @@ test.describe("Stocks — list & create", () => {
     await filters.getByRole("link", { name: "Frigo", exact: true }).click();
     await expect(page).toHaveURL(/\/stocks\?lieu=Frigo$/);
     await expect(page.locator("li", { hasText: "Pâtes complètes" })).toHaveCount(0);
+    // #800: the last pot of an article without a threshold empties it — it
+    // leaves the stock, and the list says so, on the same filter.
     await page.getByRole("button", { name: "Retirer 1 à Crème" }).click();
-    await expect(page).toHaveURL(/\/stocks\?lieu=Frigo&notice=quantity_adjusted$/);
-    await expect(qty("Crème")).toHaveText("0 pot");
-    await expect(page.getByRole("button", { name: "Retirer 1 à Crème" })).toBeDisabled();
+    await expect(page).toHaveURL(/\/stocks\?lieu=Frigo&notice=item_depleted$/);
+    await expect(page.getByText("Article épuisé, retiré du stock.")).toBeVisible();
+    await expect(page.locator("li", { hasText: "Crème" })).toHaveCount(0);
 
     // The search, which keeps the place it was typed in.
     await filters.getByRole("link", { name: "Tout", exact: true }).click();
+    await expect(qty("Beurre")).toHaveText("2 plaquettes");
     await page.getByRole("searchbox", { name: "Chercher un produit" }).fill("pâtes");
     await page.getByRole("searchbox", { name: "Chercher un produit" }).press("Enter");
     await expect(page).toHaveURL(/\/stocks\?q=p%C3%A2tes$/);
     await expect(qty("Pâtes complètes")).toHaveText("1 paquet");
-    await expect(page.locator("li", { hasText: "Crème" })).toHaveCount(0);
+    await expect(page.locator("li", { hasText: "Beurre" })).toHaveCount(0);
   });
 
   test("create an item; low-stock badge shows when quantity is at/below threshold", async ({
@@ -367,6 +371,43 @@ test.describe("Stocks — permission bar", () => {
     await member.getByRole("button", { name: "Mettre à jour la quantité" }).click();
     await expect(member.getByText("Quantité mise à jour.")).toBeVisible();
     await expect(member.getByText("5 plaquettes")).toBeVisible();
+    await context.close();
+  });
+
+  // #800: adjusting another member's article to 0 empties it when it has no
+  // threshold — the member lands on the list, never on a gone page — and
+  // leaves it « à racheter » when it has one.
+  test("a standard member who adjusts an article to 0 removes it unless it has a threshold", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-stzeroowner", "Zero Owner");
+    await createGroup(page, "Famille Épuisé");
+    const href = await createInvitationLink(page, "Famille Épuisé");
+    await createItem(page, { name: "Moutarde", quantity: "1", unit: "pot" });
+    await createItem(page, { name: "Café", quantity: "2", unit: "paquet", threshold: "1" });
+
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-stzeromember", "Zero Member");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+
+    await openItemDetail(member, "Moutarde");
+    await member.getByLabel("Ajuster la quantité").fill("0");
+    await member.getByRole("button", { name: "Mettre à jour la quantité" }).click();
+    await expect(member).toHaveURL(/\/stocks\?notice=item_depleted$/);
+    await expect(member.getByText("Article épuisé, retiré du stock.")).toBeVisible();
+    await expect(member.getByRole("link", { name: "Moutarde", exact: true })).toHaveCount(0);
+
+    await openItemDetail(member, "Café");
+    await member.getByLabel("Ajuster la quantité").fill("0");
+    await member.getByRole("button", { name: "Mettre à jour la quantité" }).click();
+    await expect(member).toHaveURL(/\/stocks\/[0-9a-f-]+\?notice=quantity_adjusted$/);
+    await expect(member.getByText("Quantité mise à jour.")).toBeVisible();
+    await member.goto("/stocks");
+    await expect(member.locator("li", { hasText: "Café" }).getByText("Stock bas")).toBeVisible();
+    await expect(member.getByRole("button", { name: "Retirer 1 à Café" })).toBeDisabled();
     await context.close();
   });
 });
