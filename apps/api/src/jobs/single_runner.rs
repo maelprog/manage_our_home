@@ -48,6 +48,8 @@ pub enum Job {
     SchoolHolidays,
     /// `jobs::stock_expiry_recap`'s daily recap (#566).
     StockExpiryRecap,
+    /// `jobs::thumbnail_catch_up`'s daily pass (#777).
+    ThumbnailCatchUp,
 }
 
 /// The high bytes of every key, `mom-job` in ASCII: the advisory lock
@@ -56,7 +58,7 @@ pub enum Job {
 pub const LOCK_NAMESPACE: i64 = i64::from_be_bytes(*b"mom-job\0");
 
 impl Job {
-    pub const ALL: [Job; 8] = [
+    pub const ALL: [Job; 9] = [
         Job::AttachmentReconcile,
         Job::AccountPurge,
         Job::RetentionPurge,
@@ -65,6 +67,7 @@ impl Job {
         Job::StockExpiry,
         Job::SchoolHolidays,
         Job::StockExpiryRecap,
+        Job::ThumbnailCatchUp,
     ];
 
     /// The advisory lock key of this job.
@@ -81,6 +84,7 @@ impl Job {
             Job::StockExpiry => 6,
             Job::SchoolHolidays => 7,
             Job::StockExpiryRecap => 8,
+            Job::ThumbnailCatchUp => 9,
         };
         LOCK_NAMESPACE | id
     }
@@ -192,6 +196,7 @@ mod tests {
                 0x6D6F_6D2D_6A6F_6206,
                 0x6D6F_6D2D_6A6F_6207,
                 0x6D6F_6D2D_6A6F_6208,
+                0x6D6F_6D2D_6A6F_6209,
             ]
         );
     }

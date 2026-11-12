@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT storage_key, thumbnail_key, thumbnail_attempts FROM event_attachments WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "storage_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "thumbnail_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "thumbnail_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "thumbnail_attempts",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "thumbnail_attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "ba998e9bdc28c6fa530f33c4c5aa5027b2bfa5d27fcec4054e037a392c93fb7c"
+}

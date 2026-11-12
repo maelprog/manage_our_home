@@ -6,3 +6,4 @@ pub mod school_holidays;
 pub mod single_runner;
 pub mod stock_expiry;
 pub mod stock_expiry_recap;
+pub mod thumbnail_catch_up;

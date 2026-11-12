@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, storage_key, mime_type, thumbnail_attempts\n        FROM event_attachments\n        WHERE thumbnail_key IS NULL\n          AND thumbnail_attempts < $1\n          AND mime_type = ANY($2)\n          AND id > $3\n        ORDER BY id\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "storage_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "mime_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "mime_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "thumbnail_attempts",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "thumbnail_attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int2",
+        "TextArray",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "440a5497d14206017910006c8b8f542dd4de31fed7d49e3832fa99d430a45c56"
+}

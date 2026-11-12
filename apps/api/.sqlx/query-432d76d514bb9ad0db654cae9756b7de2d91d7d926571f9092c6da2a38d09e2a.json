@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE event_attachments SET thumbnail_key = $2\n             WHERE id = $1 AND thumbnail_key IS NULL\n             RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "event_attachments",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "432d76d514bb9ad0db654cae9756b7de2d91d7d926571f9092c6da2a38d09e2a"
+}
