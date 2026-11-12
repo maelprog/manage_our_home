@@ -855,12 +855,19 @@ mod tests {
                 *resp.status_mut() = StatusCode::from_u16(status).unwrap();
                 return resp;
             }
-            let disposition = if uri.query() == Some("download=1") {
+            let download = uri.query() == Some("download=1");
+            let disposition = if download {
                 r#"attachment; filename="film.mp4"; filename*=UTF-8''film.mp4"#
             } else {
                 r#"inline; filename="film.mp4"; filename*=UTF-8''film.mp4"#
             };
-            let mut resp = Response::builder()
+            let mut resp = Response::builder();
+            if !download {
+                // apps/api sets it on a PDF shown inline; set here on every
+                // inline read, so that its relay is seen.
+                resp = resp.header(header::CONTENT_SECURITY_POLICY, "sandbox");
+            }
+            resp = resp
                 .header(header::CONTENT_TYPE, "video/mp4")
                 .header(header::CONTENT_DISPOSITION, disposition)
                 .header(header::CACHE_CONTROL, "private")
@@ -967,6 +974,7 @@ mod tests {
             .to_str()
             .unwrap()
             .starts_with("inline;"));
+        assert_eq!(resp.headers()[header::CONTENT_SECURITY_POLICY], "sandbox");
         assert!(resp.headers().get(header::LOCATION).is_none());
         assert!(resp.headers().get(header::SET_COOKIE).is_none());
         assert_eq!(&body_bytes(resp).await[..], VIDEO);
@@ -998,6 +1006,10 @@ mod tests {
             resp.headers()[header::CONTENT_DISPOSITION],
             r#"attachment; filename="film.mp4"; filename*=UTF-8''film.mp4"#
         );
+        assert!(resp
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .is_none());
         assert!(asked
             .path
             .lock()
