@@ -372,8 +372,12 @@ pub fn build_router(state: AppState) -> Router {
                 .get(agenda::attachments::list_attachments),
         )
         .route(
-            "/groups/{id}/events/{event_id}/attachments/{attachment_id}/download",
-            get(agenda::attachments::download_attachment),
+            "/groups/{id}/events/{event_id}/attachments/{attachment_id}/content",
+            get(agenda::attachments::attachment_content),
+        )
+        .route(
+            "/groups/{id}/events/{event_id}/attachments/{attachment_id}/thumbnail",
+            get(agenda::attachments::attachment_thumbnail),
         )
         .route(
             "/groups/{id}/events/{event_id}/attachments/{attachment_id}",

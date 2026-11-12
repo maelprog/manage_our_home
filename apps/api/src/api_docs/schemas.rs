@@ -44,12 +44,6 @@ pub struct FileUpload {
 #[schema(value_type = Object)]
 pub struct AccountExport(serde_json::Value);
 
-/// `agenda::attachments::download_attachment`: a presigned URL to the file.
-#[derive(Serialize, ToSchema)]
-pub struct AttachmentDownload {
-    pub url: String,
-}
-
 /// `agenda::events::list_events`.
 #[derive(Serialize, ToSchema)]
 pub struct OccurrenceList {
