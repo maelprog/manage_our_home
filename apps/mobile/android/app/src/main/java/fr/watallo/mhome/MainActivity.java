@@ -1,22 +1,29 @@
 package fr.watallo.mhome;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.webkit.ValueCallback;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
+import android.widget.Toast;
 import androidx.activity.OnBackPressedCallback;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.pm.ShortcutInfoCompat;
 import androidx.core.content.pm.ShortcutManagerCompat;
 import androidx.core.graphics.drawable.IconCompat;
 import androidx.core.splashscreen.SplashScreen;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.BridgeWebChromeClient;
 import com.getcapacitor.BridgeWebViewClient;
 import com.getcapacitor.CapConfig;
 import com.getcapacitor.WebViewListener;
@@ -29,6 +36,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Locale;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -36,7 +44,7 @@ import org.json.JSONObject;
 /**
  * The app's one screen: Capacitor's WebView on the site's origin.
  *
- * <p>What it changes in Capacitor's behaviour, six times.
+ * <p>What it changes in Capacitor's behaviour, seven times.
  *
  * <p>At the first launch (#737), while no choice is stored, it opens no
  * site but the APK's own {@code www/choix-du-site.html}, served by
@@ -94,6 +102,10 @@ import org.json.JSONObject;
  * whatever it has, and the offline page still comes if the site never
  * answers. Only when the activity starts afresh: a restart on another
  * site ({@link #changeSite}, {@link #openSite}) keeps nothing up.
+ *
+ * <p>A field that asks for a photo while the camera is refused says so
+ * ({@link CameraChromeClient}, #802), where Capacitor leaves the page as it
+ * was.
  */
 public class MainActivity extends BridgeActivity {
 
@@ -224,6 +236,7 @@ public class MainActivity extends BridgeActivity {
         config = choice != null ? choice : storedSiteConfig();
         super.load();
         bridge.setWebViewClient(new SiteWebViewClient(bridge));
+        bridge.getWebView().setWebChromeClient(new CameraChromeClient(bridge));
         bridge.addWebViewListener(
             new WebViewListener() {
                 @Override
@@ -439,6 +452,53 @@ public class MainActivity extends BridgeActivity {
         @Override
         public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
             // The page the server sent is already on its way to the WebView.
+        }
+    }
+
+    /**
+     * Capacitor's file chooser, which tells the member when the camera is
+     * refused (#802). For a field that asks for a photo (accept image/*,
+     * capture), {@link BridgeWebChromeClient} asks for the CAMERA
+     * permission when it is not granted, and, refused, hands the page no
+     * file and only logs a warning: the page stays as it was, without a
+     * word. Refused for good, Android does not even ask again. Here, when
+     * such a field gets nothing back and the camera is still refused, a
+     * toast says so; a photo cancelled with the camera granted says
+     * nothing.
+     */
+    static final class CameraChromeClient extends BridgeWebChromeClient {
+
+        private final com.getcapacitor.Bridge bridge;
+
+        CameraChromeClient(com.getcapacitor.Bridge bridge) {
+            super(bridge);
+            this.bridge = bridge;
+        }
+
+        @Override
+        public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams params) {
+            if (!asksForPhoto(params) || cameraGranted()) {
+                return super.onShowFileChooser(webView, filePathCallback, params);
+            }
+            ValueCallback<Uri[]> told = (files) -> {
+                if (files == null && !cameraGranted()) {
+                    Toast.makeText(bridge.getContext(), R.string.camera_refused, Toast.LENGTH_LONG).show();
+                }
+                filePathCallback.onReceiveValue(files);
+            };
+            return super.onShowFileChooser(webView, told, params);
+        }
+
+        /** The condition under which {@link BridgeWebChromeClient} asks for the camera. */
+        private static boolean asksForPhoto(FileChooserParams params) {
+            return params.isCaptureEnabled() && Arrays.asList(params.getAcceptTypes()).contains("image/*");
+        }
+
+        private boolean cameraGranted() {
+            return (
+                ContextCompat.checkSelfPermission(bridge.getContext(), Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+            );
         }
     }
 }

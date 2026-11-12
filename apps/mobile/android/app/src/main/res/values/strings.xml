@@ -10,4 +10,6 @@
     <!-- The launcher's shortcut to the choice of a site (#738, MainActivity). -->
     <string name="change_site_short">Autre site</string>
     <string name="change_site_long">Changer de site</string>
+    <!-- The camera refused to the photo of a barcode (#802, MainActivity.CameraChromeClient). -->
+    <string name="camera_refused">L\'appareil photo n\'est pas autorisé. Pour photographier le code, autorisez-le dans les réglages d\'Android, ou tapez les chiffres du code-barres.</string>
 </resources>
