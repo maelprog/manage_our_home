@@ -783,7 +783,10 @@ mod tests {
 
     #[test]
     fn a_range_starting_past_the_file_is_unsatisfiable() {
-        assert_eq!(parse_range(Some("bytes=100-"), 100), ByteRange::Unsatisfiable);
+        assert_eq!(
+            parse_range(Some("bytes=100-"), 100),
+            ByteRange::Unsatisfiable
+        );
         assert_eq!(
             parse_range(Some("bytes=100-200"), 100),
             ByteRange::Unsatisfiable
