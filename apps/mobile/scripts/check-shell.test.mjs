@@ -466,6 +466,15 @@ test('the launch screen stays until a page shows, the offline page included, and
   assert.ok(ms > 0 && ms <= 5000, `${ms} ms`);
   assert.match(activity, /postDelayed\(\w+, LAUNCH_SCREEN_MAX_MS\)/);
   // A page shows: the site's, the choice page, or the offline page that
-  // BridgeWebViewClient loads when the main frame gets no answer.
-  assert.match(activity, /public void onPageCommitVisible\(WebView \w+, String \w+\) \{\s*endLaunchScreen\(\);/);
+  // BridgeWebViewClient loads when the main frame gets no answer. Not the
+  // WebView's own error page, which commits first at the address that
+  // failed ("Webpage not available", seen on the emulator).
+  assert.match(
+    activity,
+    /public void onPageCommitVisible\(WebView \w+, String (\w+)\) \{\s*if \(!\1\.equals\(failedPage\)\) \{\s*endLaunchScreen\(\);/,
+  );
+  assert.match(
+    activity,
+    /public void onReceivedError\(WebView \w+, WebResourceRequest (\w+), WebResourceError \w+\) \{\s*if \(\1\.isForMainFrame\(\)[^{]*\{\s*[^;]*failedPage = \1\.getUrl\(\)\.toString\(\);/,
+  );
 });

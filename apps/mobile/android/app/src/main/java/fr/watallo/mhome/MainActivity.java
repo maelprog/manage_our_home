@@ -7,6 +7,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
@@ -87,7 +88,8 @@ import org.json.JSONObject;
  *
  * <p>The launch screen (#779, res/values/styles.xml) stays up until the
  * first page shows ({@code onPageCommitVisible}: the site's, the choice
- * page, or the offline page when the site does not answer), and
+ * page, or the offline page when the site does not answer, not the
+ * WebView's own error page that comes before it), and
  * {@link #LAUNCH_SCREEN_MAX_MS} at most: past that, the WebView shows
  * whatever it has, and the offline page still comes if the site never
  * answers. Only when the activity starts afresh: a restart on another
@@ -126,6 +128,13 @@ public class MainActivity extends BridgeActivity {
 
     private final Handler launchTimeout = new Handler(Looper.getMainLooper());
     private final Runnable endLaunchScreen = this::endLaunchScreen;
+
+    /**
+     * The last address whose main frame got no answer. The WebView commits
+     * its own error page ("Webpage not available") at that address before
+     * the offline page replaces it: that one does not end the launch screen.
+     */
+    private String failedPage;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -219,7 +228,9 @@ public class MainActivity extends BridgeActivity {
             new WebViewListener() {
                 @Override
                 public void onPageCommitVisible(WebView view, String url) {
-                    endLaunchScreen();
+                    if (!url.equals(failedPage)) {
+                        endLaunchScreen();
+                    }
                 }
             }
         );
@@ -408,6 +419,15 @@ public class MainActivity extends BridgeActivity {
                 return true;
             }
             return super.shouldOverrideUrlLoading(view, request);
+        }
+
+        /** Notes the address that failed, then lets Capacitor load the offline page. */
+        @Override
+        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+            if (request.isForMainFrame() && bridge.getActivity() instanceof MainActivity) {
+                ((MainActivity) bridge.getActivity()).failedPage = request.getUrl().toString();
+            }
+            super.onReceivedError(view, request, error);
         }
 
         /**
