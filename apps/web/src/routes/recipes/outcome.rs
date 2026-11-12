@@ -11,7 +11,12 @@
 //!   quantity editable and a « Retirer du stock » box checked: every
 //!   ingredient is proposed for removal, the member unchecks those not
 //!   used (user precision of 2026-10-21). 0 removes nothing either. The
-//!   meal date defaults to today in Paris. « Autre chose utilisé ? » (#540)
+//!   meal date defaults to today in Paris. A stock line the quantities
+//!   shown would empty, without a reorder threshold, is announced « sera
+//!   retiré du stock » (`emptied_lines`, #801): apps/api removes it, the
+//!   rule of #800. Without JavaScript, the announcement follows the
+//!   quantities proposed, or those of a form shown again, not those being
+//!   typed. « Autre chose utilisé ? » (#540)
 //!   searches the group's stock for products the recipe does not call for
 //!   — « Chercher » shows the form again with what it finds, unchecked —
 //!   and takes those checked, with their quantity. Once one the recipe
@@ -372,6 +377,59 @@ pub(crate) fn validate_done(
         eaten_on,
         recipe_updates: Vec::new(),
     })
+}
+
+/// The stock lines the `done` form would empty that apps/api then removes
+/// (#801): those without a reorder threshold, the rule of #800. What is
+/// taken is the preview's proposal, or the lines of a form shown again
+/// (`typed`) kept for removal, summed per stock line as `validate_done`
+/// sends them. A sum that does not read, or above what the line holds,
+/// empties nothing: the form is refused.
+pub(crate) fn emptied_lines(preview: &DonePreview, typed: Option<&[DoneLine]>) -> Vec<Uuid> {
+    let lots: Vec<_> = preview.ingredients.iter().flat_map(|i| &i.lots).collect();
+    // stock line → (what it holds, sum taken, a quantity did not read).
+    let mut taken: Vec<(&StockItemResponse, f64, bool)> = Vec::new();
+    for (n, lot) in lots.iter().enumerate() {
+        let quantity = match typed {
+            Some(lines) => match lines.get(n) {
+                Some(line) if line.remove => parse_quantity(&line.quantity),
+                _ => Some(0.0),
+            },
+            None => Some(lot.quantity),
+        };
+        let stock = &lot.stock_item;
+        let entry = match taken.iter().position(|t| t.0.id == stock.id) {
+            Some(i) => &mut taken[i],
+            None => {
+                taken.push((stock, 0.0, false));
+                taken.last_mut().expect("just pushed")
+            }
+        };
+        match quantity {
+            Some(q) => entry.1 = without_noise(entry.1 + q),
+            None => entry.2 = true,
+        }
+    }
+    taken
+        .into_iter()
+        .filter(|(stock, sum, unread)| !unread && empties(stock, *sum))
+        .map(|(stock, _, _)| stock.id)
+        .collect()
+}
+
+/// Whether an other product of the form, as typed, would be emptied and
+/// removed (#801).
+pub(crate) fn other_emptied(line: &OtherShown) -> bool {
+    line.used && parse_quantity(&line.quantity).is_some_and(|q| empties(&line.stock, q))
+}
+
+/// Whether taking `taken` (above 0) leaves nothing of `stock`, as apps/api
+/// computes what a line keeps (`remaining_after`, both without their
+/// binary noise), and the line has no reorder threshold.
+fn empties(stock: &StockItemResponse, taken: f64) -> bool {
+    stock.reorder_threshold.is_none()
+        && taken > 0.0
+        && without_noise(without_noise(stock.quantity) - taken) == 0.0
 }
 
 /// The most stock lines a search lists.
@@ -825,6 +883,14 @@ pub(crate) fn done_body(
         .map(|t| t.eaten_on.clone())
         .unwrap_or_else(|| today.to_string());
     let labels = ingredient_labels(&preview.ingredients);
+    // The stock lines this form empties and apps/api then removes (#801),
+    // said once, on the last line taking from each.
+    let emptied = emptied_lines(preview, typed_lines);
+    let lot_ids: Vec<Uuid> = preview
+        .ingredients
+        .iter()
+        .flat_map(|i| i.lots.iter().map(|l| l.stock_item.id))
+        .collect();
     // The ingredients taking from a stock line, in the recipe's order.
     let users = |stock_item_id: Uuid| -> Vec<&str> {
         preview
@@ -878,12 +944,17 @@ pub(crate) fn done_body(
             } else {
                 String::new()
             };
+            let leaves = if emptied.contains(&stock.id) && !lot_ids[i + 1..].contains(&stock.id) {
+                leaves_stock(&format!("{}{lot_label}", html_escape(stock.name.trim())))
+            } else {
+                String::new()
+            };
             lines.push_str(&format!(
                 r#"<input type="hidden" name="stock.{i}" value="{id}"/>
 {error}<label>Quantité de {name} à retirer, en {unit} (stock : {held})
 <input type="number" name="quantity.{i}" step="any" min="0" value="{quantity}"{aria}/></label>
 <label class="field inline"><input type="checkbox" name="remove.{i}"{checked}/> Retirer {name} du stock{lot_label}</label>
-"#,
+{leaves}"#,
                 id = stock.id,
                 unit = html_escape(&stock.unit),
                 held = html_escape(&held(stock)),
@@ -1088,6 +1159,14 @@ fn sent_form_fields(form: &DoneForm, back: &str) -> String {
     out
 }
 
+/// The line under a stock line the form empties (#801): `name` is already
+/// escaped.
+fn leaves_stock(name: &str) -> String {
+    format!(
+        "<p class=\"muted\">L'article {name} sera retiré du stock : il n'en restera rien et il n'a pas de seuil de réapprovisionnement.</p>\n"
+    )
+}
+
 /// « Autre chose utilisé ? » (#540): the other products listed, each with
 /// its quantity and a « Retirer … du stock » box, then the stock search.
 /// Without JavaScript, « Chercher » sends the form back to be shown again
@@ -1108,12 +1187,17 @@ fn others_fieldset(others: &Others) -> String {
                 e => line_error_text(e, &stock.unit, &[]),
             }),
         );
+        let leaves = if other_emptied(line) {
+            leaves_stock(&name)
+        } else {
+            String::new()
+        };
         lines.push_str(&format!(
             r#"<input type="hidden" name="other.{j}" value="{id}"/>
 {error}<label>Quantité de {name} à retirer, en {unit} (stock : {held})
 <input type="number" name="other_quantity.{j}" step="any" min="0" value="{quantity}"{aria}/></label>
 <label class="field inline"><input type="checkbox" name="other_used.{j}"{checked}/> Retirer {name} du stock</label>
-"#,
+{leaves}"#,
             id = stock.id,
             unit = html_escape(&stock.unit),
             held = html_escape(&held(stock)),
@@ -2543,6 +2627,180 @@ mod tests {
         assert!(html.contains(r#"href="/recipes""#), "{html}");
         // Not a `required` field: an unchecked line may be left empty.
         assert!(!html.contains("required"), "{html}");
+    }
+
+    // -- emptied_lines (#801) ------------------------------------------------
+
+    fn with_threshold(mut s: StockItemResponse, threshold: f64) -> StockItemResponse {
+        s.reorder_threshold = Some(threshold);
+        s
+    }
+
+    #[test]
+    fn a_line_the_proposal_empties_without_a_threshold_is_removed() {
+        // Farine: lot 10 proposed whole (100 of 100 g), lot 11 not (300 of
+        // 500 g); Lait 1 of 2 L.
+        assert_eq!(emptied_lines(&preview(), None), vec![id(10)]);
+    }
+
+    #[test]
+    fn a_line_with_a_threshold_stays_even_emptied() {
+        let mut p = preview();
+        p.ingredients[0].lots[0].stock_item =
+            with_threshold(p.ingredients[0].lots[0].stock_item.clone(), 50.0);
+        assert_eq!(emptied_lines(&p, None), Vec::<Uuid>::new());
+        // A threshold of 0 too, as #800 keeps it.
+        p.ingredients[0].lots[0].stock_item.reorder_threshold = Some(0.0);
+        assert_eq!(emptied_lines(&p, None), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn a_form_shown_again_is_read_as_typed() {
+        let typed = [
+            line(10, "40", true),
+            line(11, "500", true),
+            line(20, "2", false),
+        ];
+        assert_eq!(emptied_lines(&preview(), Some(&typed)), vec![id(11)]);
+        // A quantity that does not read, or more than the line holds,
+        // empties nothing: the form is refused.
+        let typed = [
+            line(10, "abc", true),
+            line(11, "600", true),
+            line(20, "2,0", true),
+        ];
+        assert_eq!(emptied_lines(&preview(), Some(&typed)), vec![id(20)]);
+    }
+
+    #[test]
+    fn a_line_already_at_zero_is_not_emptied_by_taking_nothing() {
+        let p = DonePreview {
+            recipe_servings: None,
+            can_edit_recipe: false,
+            selection: selection("Pâtes"),
+            ingredients: vec![ingredient(
+                1,
+                "Pâtes",
+                Some(200.0),
+                Some("g"),
+                vec![(stock(10, "Pâtes", 0.0, "g"), 0.0)],
+                Some(RemovalWarning::Capped),
+            )],
+        };
+        assert_eq!(emptied_lines(&p, None), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn a_line_shared_by_two_ingredients_is_emptied_by_their_sum() {
+        // 0.1 + 0.2 kg of a line holding 0.3 kg, without its binary noise.
+        let p = DonePreview {
+            recipe_servings: None,
+            can_edit_recipe: false,
+            selection: selection("Soupe"),
+            ingredients: vec![
+                ingredient(
+                    1,
+                    "Sel",
+                    Some(0.1),
+                    Some("kg"),
+                    vec![(stock(10, "Sel", 0.3, "kg"), 0.1)],
+                    None,
+                ),
+                ingredient(
+                    2,
+                    "sel",
+                    Some(0.2),
+                    Some("kg"),
+                    vec![(stock(10, "Sel", 0.3, "kg"), 0.2)],
+                    None,
+                ),
+            ],
+        };
+        assert_eq!(emptied_lines(&p, None), vec![id(10)]);
+        let typed = [line(10, "0.1", true), line(10, "0.2", false)];
+        assert_eq!(emptied_lines(&p, Some(&typed)), Vec::<Uuid>::new());
+    }
+
+    #[test]
+    fn an_other_product_taken_whole_without_a_threshold_is_removed() {
+        let shown = |stock: StockItemResponse, quantity: &str, used: bool| OtherShown {
+            stock,
+            quantity: quantity.into(),
+            used,
+            error: None,
+        };
+        assert!(other_emptied(&shown(
+            stock(30, "Crème", 20.0, "cL"),
+            "20",
+            true
+        )));
+        assert!(!other_emptied(&shown(
+            stock(30, "Crème", 20.0, "cL"),
+            "20",
+            false
+        )));
+        assert!(!other_emptied(&shown(
+            stock(30, "Crème", 20.0, "cL"),
+            "10",
+            true
+        )));
+        assert!(!other_emptied(&shown(
+            stock(30, "Crème", 20.0, "cL"),
+            "",
+            true
+        )));
+        assert!(!other_emptied(&shown(
+            with_threshold(stock(30, "Crème", 20.0, "cL"), 5.0),
+            "20",
+            true
+        )));
+    }
+
+    #[test]
+    fn the_done_page_says_which_lines_will_leave_the_stock() {
+        let html = done_body(
+            id(901),
+            &preview(),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &section(vec![
+                (stock(30, "Crème", 20.0, "cL"), "20", true),
+                (stock(40, "Sel", 1.0, "unité"), "", false),
+            ]),
+        );
+        assert!(
+            html.contains(
+                "L'article Farine (lot de 100 g) sera retiré du stock : il n'en restera rien et il n'a pas de seuil de réapprovisionnement."
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                "L'article Crème sera retiré du stock : il n'en restera rien et il n'a pas de seuil de réapprovisionnement."
+            ),
+            "{html}"
+        );
+        assert!(
+            !html.contains("Farine (lot de 500 g) sera retiré"),
+            "{html}"
+        );
+        assert!(!html.contains("L'article Lait"), "{html}");
+        assert!(!html.contains("L'article Sel"), "{html}");
+        // Said once for a line two ingredients share.
+        let html = done_body(
+            id(901),
+            &shared_preview(600.0),
+            None,
+            &Invalid::default(),
+            "",
+            "list",
+            today(),
+            &Others::default(),
+        );
+        assert_eq!(html.matches("sera retiré du stock").count(), 1, "{html}");
     }
 
     #[test]
