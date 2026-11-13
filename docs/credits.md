@@ -71,9 +71,13 @@ WebAssembly le décodeur [ZXing C++](https://github.com/zxing-cpp/zxing-cpp)
 deux fichiers depuis son binaire, sous une URL portant leur empreinte
 (`apps/web/src/assets.rs`, `Vendored`) : le script `dist/iife/reader/index.js`
 et le module `dist/reader/zxing_reader.wasm`, copiés sans modification. Le
-texte des deux licences les accompagne,
-`apps/web/vendor/zxing-wasm/LICENSE` et
-`apps/web/vendor/zxing-wasm/LICENSE-zxing-cpp`. Rien n'est demandé à un
+module a été compilé avec [Emscripten](https://emscripten.org) (licences MIT
+et University of Illinois/NCSA), dont il embarque le code d'exécution et la
+libc [musl](https://musl.libc.org) (licence MIT) ; le code d'amorçage du
+script est aussi généré par Emscripten. Le texte des quatre licences
+accompagne les fichiers, dans `apps/web/vendor/zxing-wasm/` : `LICENSE`
+(zxing-wasm), `LICENSE-zxing-cpp`, `LICENSE-emscripten` et `LICENSE-musl`.
+Rien n'est demandé à un
 CDN : la bibliothèque irait chercher son module sur jsDelivr par défaut, la
 page qui la charge la pointe vers la copie servie par `apps/web` (#807), et
 quoi qu'il arrive la CSP
