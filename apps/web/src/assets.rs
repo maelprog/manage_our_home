@@ -327,14 +327,17 @@ impl Vendored {
     }
 
     /// What the file holds.
+    ///
+    /// Out of `static`s, not `include_bytes!` written in the `match`: a
+    /// literal is a constant, which the compiler may copy into every
+    /// codegen unit that inlines this function — measured, a release
+    /// binary then held each file twice. A `static` has one address.
     pub fn bytes(self) -> &'static [u8] {
+        static SCRIPT: &[u8] = include_bytes!("../vendor/zxing-wasm/zxing-reader.js");
+        static WASM: &[u8] = include_bytes!("../vendor/zxing-wasm/zxing_reader.wasm");
         match self {
-            Vendored::BarcodeReaderScript => {
-                include_bytes!("../vendor/zxing-wasm/zxing-reader.js")
-            }
-            Vendored::BarcodeReaderWasm => {
-                include_bytes!("../vendor/zxing-wasm/zxing_reader.wasm")
-            }
+            Vendored::BarcodeReaderScript => SCRIPT,
+            Vendored::BarcodeReaderWasm => WASM,
         }
     }
 
