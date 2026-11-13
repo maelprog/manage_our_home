@@ -211,10 +211,17 @@ test.describe("Agenda — the day view of several families (#793)", () => {
     await createGroup(page, F1);
     await page.goto("/agenda/new");
     await submitSheet(page, "Dentiste Un", 15);
+    const date = parisDayOfMonth(15);
+    // A quarter of an hour: a short block, on one line.
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Pharmacie");
+    await page.getByLabel("Début").fill(`${date}T12:15`);
+    await page.getByLabel("Fin").fill(`${date}T12:30`);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
     await page.goto("/agenda");
     await show(page, [F1, F2]);
 
-    const date = parisDayOfMonth(15);
     await page.getByRole("navigation", { name: "Affichage" }).getByRole("link", { name: "Jour", exact: true }).click();
     await expect(page).toHaveURL(/view=day/);
     await expect(page).toHaveURL(/familles=/);
@@ -228,6 +235,16 @@ test.describe("Agenda — the day view of several families (#793)", () => {
     if (!a || !b) throw new Error("the blocks have no box");
     expect(Math.abs(a.y - b.y)).toBeLessThanOrEqual(1);
     expect(Math.abs(a.x - b.x)).toBeGreaterThanOrEqual(Math.min(a.width, b.width) - 1);
+    // The short block keeps its title whole, its family on the same line.
+    const pharmacy = page.locator("a.blk.short", { hasText: "Pharmacie" });
+    await expect(pharmacy).toContainText(F1);
+    const title = pharmacy.locator("strong");
+    const fam = pharmacy.locator(".fam");
+    expect(await title.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+    const [t, f] = [await title.boundingBox(), await fam.boundingBox()];
+    if (!t || !f) throw new Error("the short block's parts have no box");
+    expect(Math.abs(t.y + t.height / 2 - (f.y + f.height / 2))).toBeLessThanOrEqual(2);
+    expect(f.x).toBeGreaterThan(t.x + t.width);
 
     await page.getByRole("link", { name: "Jour suivant", exact: true }).click();
     await expect(page).toHaveURL(/view=day&date=.*familles=/);
