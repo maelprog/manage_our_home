@@ -988,6 +988,39 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
   });
 });
 
+// #792 — a day of a phone's list says its weekday, « jeudi 16 »; a PC's
+// grid, whose column headers already do, keeps the number alone, and its
+// screen reader does not hear the weekday twice.
+test.describe("Agenda — jour de la semaine dans la liste (#792)", () => {
+  test("a phone's list writes it out, a PC's grid neither draws nor reads it", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agweekday", "Agenda Semaine");
+    await createGroup(page, "Famille Semaine");
+    const date = dayThisMonth(16);
+    await createEvent(page, { title: "Cours de piano", start: `${date}T17:00`, end: `${date}T18:00` });
+    const [y, m, d] = date.split("-").map(Number);
+    const weekday = new Intl.DateTimeFormat("fr-FR", { weekday: "long", timeZone: "UTC" }).format(
+      new Date(Date.UTC(y, m - 1, d)),
+    );
+    const number = page.locator(`table.cal td#j${date} .cal-day`);
+
+    for (const [layout, viewport] of AGENDA_LAYOUTS) {
+      await page.setViewportSize(viewport);
+      for (const view of ["month", "week"]) {
+        await page.goto(`/agenda?view=${view}&date=${date}`);
+        await expect(number, `${layout} ${view}`).toBeVisible();
+        const snapshot = await number.ariaSnapshot();
+        if (layout === "téléphone") {
+          await expect(number, `${layout} ${view}`).toHaveText(`${weekday} ${d}`, { useInnerText: true });
+          expect(snapshot, `${layout} ${view}`).toContain(`${weekday} ${d}`);
+        } else {
+          await expect(number, `${layout} ${view}`).toHaveText(`${d}`, { useInnerText: true });
+          expect(snapshot, `${layout} ${view}`).not.toContain(weekday);
+        }
+      }
+    }
+  });
+});
+
 test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
   test.use({ javaScriptEnabled: false });
 

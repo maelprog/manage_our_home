@@ -26,9 +26,11 @@
 //! What the trade concedes, so that nobody has to rediscover it:
 //!
 //! * The phone list is a projection of grid cells, not rows built for a
-//!   phone. A day shows its number, not "lundi 15": the weekday lives in
-//!   the table header, which the list hides, and putting it back in every
-//!   cell is document bytes for a viewport half the visitors are not on.
+//!   phone. A day showed its number, not "lundi 15": the weekday lives in
+//!   the table header, which the list hides. #792 took that back: a day
+//!   the list shows carries its weekday in a `.phone` span before its
+//!   number (`cal_day_label`), which a PC neither draws nor reads out —
+//!   document bytes, a few dozen per such day, paid on a PC too.
 //! * There is no `view=day`. The "Mois" button DESIGN.md describes would
 //!   have nothing to switch back from, so it does not exist either; the
 //!   month/week toggle keeps doing that job on both viewports.
@@ -778,7 +780,7 @@ fn render_grid(
 <div class="cal-day{outside_class}">{num}</div>{marks_line}{chips}</td>"#,
                 today_class = today_class,
                 outside_class = outside_class,
-                num = day.day(),
+                num = cal_day_label(*day, listed),
                 chips = chips,
             ));
         }
@@ -1162,6 +1164,30 @@ async fn fetch_national_days(
             Vec::new()
         }
     }
+}
+
+/// "jeu.": a later day in the home page's "Ensuite" pill (#792), in French's
+/// own abbreviation — chrono's `%a` has no locale and would print `Thu`.
+pub(crate) fn short_weekday(day: NaiveDate) -> String {
+    let name = FR_WEEKDAYS[day.weekday().num_days_from_monday() as usize];
+    format!("{}.", name.to_lowercase())
+}
+
+/// A day's number in the grid, and on a phone its weekday before it (#792):
+/// "jeudi 15" in the list, "15" in the grid, whose column header names the
+/// day. One markup: `.phone` takes the weekday out of a PC's drawing and of
+/// its accessibility tree. Only a day the list shows (`listed`) pays for
+/// it — the others are not drawn on a phone either.
+fn cal_day_label(day: NaiveDate, listed: bool) -> String {
+    if !listed {
+        return day.day().to_string();
+    }
+    let name = FR_LONG_WEEKDAYS[day.weekday().num_days_from_monday() as usize];
+    format!(
+        r#"<span class="phone">{} </span>{}"#,
+        name.to_lowercase(),
+        day.day()
+    )
 }
 
 /// "Mardi 14 juillet": the day panel's heading.
@@ -2016,6 +2042,71 @@ mod tests {
         assert_eq!(html.matches(" id=").count(), 1, "{html}");
     }
 
+    // -- the weekday of a day (#792) --------------------------------------
+
+    #[test]
+    fn a_day_the_list_shows_says_its_weekday_on_a_phone_only() {
+        // 16 July 2026 is a Thursday.
+        assert_eq!(
+            cal_day_label(day(16), true),
+            r#"<span class="phone">jeudi </span>16"#
+        );
+    }
+
+    #[test]
+    fn a_day_the_list_does_not_show_keeps_its_number_alone() {
+        assert_eq!(cal_day_label(day(16), false), "16");
+    }
+
+    #[test]
+    fn every_weekday_of_the_list_is_written_out_in_lower_case() {
+        // 13 July 2026 is a Monday.
+        let names: Vec<String> = (13..=19).map(|n| cal_day_label(day(n), true)).collect();
+        assert_eq!(
+            names,
+            [
+                r#"<span class="phone">lundi </span>13"#,
+                r#"<span class="phone">mardi </span>14"#,
+                r#"<span class="phone">mercredi </span>15"#,
+                r#"<span class="phone">jeudi </span>16"#,
+                r#"<span class="phone">vendredi </span>17"#,
+                r#"<span class="phone">samedi </span>18"#,
+                r#"<span class="phone">dimanche </span>19"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_short_weekday_is_the_french_abbreviation() {
+        let names: Vec<String> = (13..=19).map(|n| short_weekday(day(n))).collect();
+        assert_eq!(
+            names,
+            ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
+        );
+    }
+
+    #[test]
+    fn the_grid_writes_the_weekday_of_the_days_the_list_shows_and_no_other() {
+        let occs = [occurrence(9, "Dentiste")];
+        let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
+            [(day(15), occs.iter().collect())].into_iter().collect();
+        let week: Vec<NaiveDate> = (13..=19).map(day).collect();
+        let html = render_grid(
+            &week,
+            &cells(&by_day, &[], &BTreeMap::new()),
+            None,
+            day(1),
+            None,
+            "Semaine du 13 juillet",
+        );
+        assert!(
+            html.contains(r#"<div class="cal-day"><span class="phone">mercredi </span>15</div>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches(r#"class="phone""#).count(), 1, "{html}");
+        assert!(html.contains(r#"<div class="cal-day">16</div>"#), "{html}");
+    }
+
     /// The `<td>…</td>` of the mini grid that holds day `n` of July 2026.
     fn mini_cell(html: &str, n: u32) -> String {
         let anchor = format!("j2026-07-{n:02}");
@@ -2757,7 +2848,7 @@ mod tests {
         // Under the number, before the chips; a paragraph, not an `<a>`.
         assert!(
             cell.contains(
-                r#"<div class="cal-day">25</div><p class="nat">Passage à l'heure d'hiver</p>"#
+                r#"<div class="cal-day"><span class="phone">dimanche </span>25</div><p class="nat">Passage à l'heure d'hiver</p>"#
             ),
             "{cell}"
         );
