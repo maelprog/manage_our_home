@@ -2464,3 +2464,56 @@ async fn a_replacement_follows_a_list_holding_the_recipe_under_another(db: PgPoo
         ]
     );
 }
+
+/// Issue #815: a line of the replaced recipe that only the new recipe needs
+/// is not kept as it was: it goes, and comes back from the new recipe,
+/// with the new recipe's quantity.
+#[sqlx::test]
+async fn a_line_only_the_new_recipe_needs_comes_back_from_it(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "replace-new-needs").await;
+    let gratin = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([{"name": "Oignon", "quantity": 1.0, "is_optional": false}]),
+    )
+    .await;
+    let soupe = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Soupe",
+        serde_json::json!([{"name": "Oignon", "quantity": 4.0, "is_optional": false}]),
+    )
+    .await;
+    assert_eq!(
+        generate_grocery_list(&router, &owner_cookie, &group_id).await,
+        1
+    );
+
+    let replace = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection/replacement"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"recipe_id": soupe})),
+    )
+    .await;
+    assert_status(&replace, StatusCode::OK);
+    let replaced = json_body(replace).await;
+    assert_eq!(
+        replaced["removed_grocery_items"].as_array().unwrap().len(),
+        1
+    );
+    let added = replaced["added_grocery_items"].as_array().unwrap();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["name"], "Oignon");
+    assert_eq!(added[0]["quantity"], 4.0);
+    assert_eq!(
+        grocery_lines(&router, &owner_cookie, &group_id).await,
+        [("Oignon".to_string(), Some(soupe.clone()))]
+    );
+}
