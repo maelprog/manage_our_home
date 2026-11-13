@@ -336,7 +336,8 @@ pub(crate) fn banner_html(
 
 /// A block of the hours: its title, its real hours, its people's initials,
 /// its family in a view of several. `minutes` is how tall it is: at
-/// `MIN_MINUTES` it is one line, « 12:15 Pharmacie ». Cut at an edge of the
+/// `MIN_MINUTES` it is one line, « 12:15 Pharmacie »; under an hour
+/// (`.mid`), two lines, its family beside its hours. Cut at an edge of the
 /// day, that edge is flat and dashed. `inset` places it (`inset`).
 fn block_html(
     occ: &OccurrenceResponse,
@@ -349,7 +350,11 @@ fn block_html(
     let e = &occ.event;
     let (marker, done) = task_marker(occ);
     let w = worn(occ, members, families);
-    let short = if minutes <= MIN_MINUTES { " short" } else { "" };
+    let short = match minutes {
+        m if m <= MIN_MINUTES => " short",
+        m if m < 60 => " mid",
+        _ => "",
+    };
     let cut_start = if clip.cut_start { " cut-s" } else { "" };
     let cut_end = if clip.cut_end { " cut-e" } else { "" };
     let done = if done { " done" } else { "" };
@@ -963,6 +968,29 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("Rien de prévu"), "{html}");
+    }
+
+    #[test]
+    fn a_block_under_an_hour_is_mid_and_no_other() {
+        let at = |title: &str, minutes: u32| {
+            let html = hours(
+                &[occ(
+                    title,
+                    false,
+                    paris(2026, 11, 12, 10, 0),
+                    paris(2026, 11, 12, 10, 0) + chrono::Duration::minutes(minutes.into()),
+                )],
+                None,
+            );
+            let start = html.find(r#"<a class="blk"#).expect("a block");
+            html[start..start + html[start..].find('>').unwrap()].to_string()
+        };
+        assert!(!at("Pharmacie", 30).contains(" mid"));
+        assert!(at("Piano", 31).contains(" mid"));
+        assert!(at("Piano", 45).contains(" mid"));
+        assert!(at("Piano", 59).contains(" mid"));
+        assert!(!at("Réunion", 60).contains(" mid"));
+        assert!(!at("Réunion", 90).contains(" mid"));
     }
 
     #[test]

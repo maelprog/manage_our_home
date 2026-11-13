@@ -258,6 +258,42 @@ test.describe("Agenda — the day view of several families (#793)", () => {
     await expect(page).toHaveURL(/famille=/);
     await expect(activeFamily(page)).toHaveText(F1);
   });
+
+  // A block of 45 minutes is two lines tall: its family, on a third line,
+  // was cut through by the block's edge, half its glyphs showing.
+  test("a block under an hour keeps its family whole, on a phone and on a PC", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agfammid", "Agenda Familles Mid");
+    await createGroup(page, F2);
+    await createGroup(page, F1);
+    const date = parisDayOfMonth(15);
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Cours de piano");
+    await page.getByLabel("Début").fill(`${date}T14:00`);
+    await page.getByLabel("Fin").fill(`${date}T14:45`);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 1280, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+      const block = page.locator("a.blk", { hasText: "Cours de piano" });
+      await expect(block).toContainText(F1);
+      const fit = await block.evaluate((blk) => {
+        const b = blk.getBoundingClientRect();
+        const s = getComputedStyle(blk);
+        const bottom = b.bottom - parseFloat(s.borderBottomWidth) - parseFloat(s.paddingBottom);
+        const fam = blk.querySelector(".fam")!;
+        const f = fam.getBoundingClientRect();
+        return { famBottom: f.bottom, bottom, famRight: f.right, right: b.right, famWidth: f.width };
+      });
+      expect(fit.famBottom, `${viewport.width}px`).toBeLessThanOrEqual(fit.bottom + 0.5);
+      expect(fit.famRight, `${viewport.width}px`).toBeLessThanOrEqual(fit.right + 0.5);
+      expect(fit.famWidth, `${viewport.width}px`).toBeGreaterThan(0);
+    }
+  });
 });
 
 // #750 — on a phone, the selector applies each box at once: no « Afficher »
