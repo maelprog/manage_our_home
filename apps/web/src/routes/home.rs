@@ -24,7 +24,7 @@ use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::icons::{icon, icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::account::terms::update_notice;
-use crate::routes::agenda::calendar::{render_chips, FR_WEEKDAYS, MONTH_CHIP_CAP};
+use crate::routes::agenda::calendar::{render_chips, short_weekday, FR_WEEKDAYS, MONTH_CHIP_CAP};
 use crate::routes::agenda::{
     fmt_paris, occurrences_from_response, paris_local_to_utc, read_or_log, today_paris, DISPLAY_TZ,
 };
@@ -251,15 +251,19 @@ fn paris_start_day(occ: &OccurrenceResponse) -> NaiveDate {
 }
 
 /// The pill at the head of an agenda row (#524): what the eye looks for
-/// first. Today's time, or "Journée"; for a later day its date — a weekday
-/// name would need chrono's `%a`, which has no locale and would print
-/// `Wed` in a French page; and "En cours" for an event begun on an earlier
-/// day and not over, whose start time would say something false about
-/// today.
+/// first. Today's time, or "Journée"; for a later day its weekday and date,
+/// "jeu. 12/11" (#792) — the weekday from `short_weekday`, since chrono's
+/// `%a` has no locale and would print `Thu` in a French page; and
+/// "En cours" for an event begun on an earlier day and not over, whose
+/// start time would say something false about today.
 fn when_label(occ: &OccurrenceResponse, today: NaiveDate) -> String {
     let day = paris_start_day(occ);
     if day > today {
-        fmt_paris(occ.occurrence_starts_at, "%d/%m")
+        format!(
+            "{} {}",
+            short_weekday(day),
+            fmt_paris(occ.occurrence_starts_at, "%d/%m")
+        )
     } else if occ.event.all_day {
         "Journée".to_string()
     } else if day < today {
@@ -289,8 +293,8 @@ fn split_today(
 /// with several assignees the names under the title (not just the ring) are
 /// what actually says who, matching WCAG 1.4.1 (colour is never the only
 /// carrier — see `agenda/calendar.rs`'s doc comment on the same
-/// constraint). A later day's pill holds its date, so its time moves to the
-/// names' line.
+/// constraint). A later day's pill holds its weekday and date, so its time
+/// moves to the names' line.
 ///
 /// The avatar is a flex item of the row, centred on it: the baseline gap
 /// that lifted a photo 6–7 px above an initial in the inline avatar this
@@ -1667,7 +1671,19 @@ mod pure_logic_tests {
     #[test]
     fn a_later_event_shows_its_paris_date() {
         let occ = timed_at(Utc.with_ymd_and_hms(2026, 9, 8, 16, 0, 0).unwrap(), "Judo");
-        assert_eq!(when_label(&occ, fixture_day()), "08/09");
+        // 8 September 2026 is a Tuesday (#792).
+        assert_eq!(when_label(&occ, fixture_day()), "mar. 08/09");
+    }
+
+    /// The weekday is the Paris day's, like the date beside it.
+    #[test]
+    fn a_later_event_is_named_by_its_paris_weekday() {
+        // 22:30 UTC on Thursday the 3rd is 00:30 on Friday the 4th in Paris.
+        let occ = timed_at(
+            Utc.with_ymd_and_hms(2026, 9, 3, 22, 30, 0).unwrap(),
+            "Demain",
+        );
+        assert_eq!(when_label(&occ, fixture_day()), "ven. 04/09");
     }
 
     /// Started on an earlier day and not over: it belongs to today, but its
@@ -1775,7 +1791,7 @@ mod pure_logic_tests {
         occ.occurrence_ends_at = starts + Duration::hours(1);
         let html = agenda_row(&occ, fixture_day(), &[member(camille, "Camille")]);
         assert!(
-            html.contains(r#"<span class="when">08/09</span>"#),
+            html.contains(r#"<span class="when">mar. 08/09</span>"#),
             "{html}"
         );
         assert!(

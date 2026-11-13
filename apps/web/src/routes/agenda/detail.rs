@@ -34,12 +34,13 @@ use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
+use super::calendar::short_weekday;
 use super::edit::{occ_param, occurrence_label, read_scope, scope_radios, ScopeChoice};
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context_for, fmt_paris, forbidden_page,
     json_from_response, occurrences_from_response, private_line, read_or_log,
-    service_unavailable_page, today_paris, with_family, EventFamily,
+    service_unavailable_page, today_paris, with_family, EventFamily, DISPLAY_TZ,
 };
 
 #[derive(serde::Deserialize)]
@@ -591,6 +592,18 @@ fn render_oneoff_completion(urls: EventUrls, event: &EventResponse) -> String {
     )
 }
 
+/// "jeu. 12/11/2026 18:00": an upcoming occurrence, in Paris time. The
+/// weekday from `short_weekday` (#792) — chrono's `%a` has no locale and
+/// printed `Thu` in a French page.
+fn occurrence_when(starts: DateTime<Utc>) -> String {
+    let day = starts.with_timezone(&DISPLAY_TZ).date_naive();
+    format!(
+        "{} {}",
+        short_weekday(day),
+        fmt_paris(starts, "%d/%m/%Y %H:%M")
+    )
+}
+
 /// `occurrences` is `None` when the API's answer could not be read: that
 /// renders as an error, never as "no upcoming occurrence" (#455).
 fn render_occurrence_completions(
@@ -633,7 +646,7 @@ fn render_occurrence_completions(
 <input type="hidden" name="occurrence_at" value="{occ_param}"/>
 <button type="submit" class="secondary">{label}</button>
 </form></li>"#,
-                when = html_escape(&fmt_paris(occ.occurrence_starts_at, "%a %d/%m/%Y %H:%M")),
+                when = html_escape(&occurrence_when(occ.occurrence_starts_at)),
             )
         })
         .collect();
@@ -1041,6 +1054,22 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_upcoming_occurrence_names_its_weekday_in_french() {
+        use chrono::TimeZone;
+        // 17:00 UTC on Thursday 12 November 2026 is 18:00 in Paris.
+        let starts = Utc.with_ymd_and_hms(2026, 11, 12, 17, 0, 0).unwrap();
+        assert_eq!(occurrence_when(starts), "jeu. 12/11/2026 18:00");
+    }
+
+    #[test]
+    fn an_upcoming_occurrence_takes_the_weekday_of_its_paris_day() {
+        use chrono::TimeZone;
+        // 23:30 UTC on Thursday the 12th is 00:30 on Friday the 13th in Paris.
+        let starts = Utc.with_ymd_and_hms(2026, 11, 12, 23, 30, 0).unwrap();
+        assert_eq!(occurrence_when(starts), "ven. 13/11/2026 00:30");
+    }
 
     /// Distinct, stable ids — the assertions are about names and order, so
     /// a fixed id per member reads better than a random one.
