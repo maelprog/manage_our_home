@@ -322,8 +322,9 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
   .cal-cell.current { border-color: var(--accent); }
   /* A day's number, a link to its day view (#793), 28px square at least as
      the mock-up draws it: today's pill takes that size too. It takes the
-     cell's top padding and its first chip's margin, so the number stays
-     where it was and a day of three chips still fits its 6.5rem. */
+     cell's top padding and its first chip's margin, so a day of three
+     chips still fits its 6.5rem; centred in its square, the number sits
+     a few pixels further right than it did, as on the mock-up. */
   .cal-day a { display: inline-block; min-width: calc(var(--s6) + var(--s1)); line-height: calc(var(--s6) + var(--s1)); text-align: center; }
   .cal .cal-cell { padding-top: 0; }
   .cal-day + .chip { margin-top: 0; }
