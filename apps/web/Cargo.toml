@@ -43,7 +43,9 @@ tower-http = { version = "0.7", features = ["fs"] }
 sha2 = "0.11"
 # The stocks' barcode photo (#402): the picture a member takes is decoded
 # here, in memory, and never leaves the process — no WebAssembly in the page
-# (DESIGN.md), no image sent to apps/api or a third party. `image` reads
+# (DESIGN.md then; since #806 one same-origin module, the live scan's
+# reader, is the single exception), no image sent to apps/api or a third
+# party. `image` reads
 # what a phone camera hands a file input, JPEG, plus PNG, and nothing else:
 # the default features would add a dozen decoders (AVIF, EXR, TIFF…) and
 # rayon. WebP is left out too: its decoder allocates working buffers, up to

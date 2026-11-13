@@ -60,12 +60,14 @@ test.describe("Behind Caddy over HTTPS (#381)", () => {
     const directives = policy.split(";").map((d) => d.trim());
     for (const directive of [
       "default-src 'self'",
-      "script-src 'self'",
+      // #806: WebAssembly may compile, `eval` may not.
+      "script-src 'self' 'wasm-unsafe-eval'",
       "frame-ancestors 'none'",
       "report-to csp",
     ]) {
       expect(directives, directive).toContain(directive);
     }
+    expect(policy).not.toContain("'unsafe-eval'");
   });
 
   test("a CSP violation reaches /api/csp-report through Reporting-Endpoints", async ({

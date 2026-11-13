@@ -10,7 +10,9 @@
 //! is a file served under `/assets` by `crate::assets` (`assets::Script`),
 //! named by the digest of its content like the stylesheet, and the policy
 //! allows script files from the site's own origin and nothing inline at
-//! all — `script-src 'self'`.
+//! all — `script-src 'self'`. Since #806 it also says `'wasm-unsafe-eval'`,
+//! for the barcode reader's WebAssembly (`assets::Vendored`): compiling a
+//! module, never `eval`, and still nothing inline.
 //!
 //! That holds only as long as nobody writes an inline script again: behind
 //! Caddy it would silently not run, and nothing in the application's own
@@ -22,7 +24,8 @@
 //!   `javascript:` URL in the production code of `src/`;
 //! - the scripts: every `assets::Script` is still loaded by some page;
 //! - the Caddyfile: the policy, directive by directive, set by a `header`
-//!   that applies to every response, and the endpoint it reports to.
+//!   that applies to every response, and the endpoint it reports to; no
+//!   `'unsafe-eval'` and no other origin anywhere in it.
 
 use crate::assets::Script;
 
@@ -1104,7 +1107,58 @@ Script::LocalReminders.tag(); Script::GoogleSignIn.tag();
 #[test]
 fn the_caddyfile_allows_script_files_from_the_site_and_nothing_inline() {
     let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
-    assert_eq!(directive(&policy, "script-src"), Some(vec!["'self'"]));
+    assert_eq!(
+        directive(&policy, "script-src"),
+        Some(vec!["'self'", "'wasm-unsafe-eval'"])
+    );
+}
+
+/// The barcode reader (#806, `assets::Vendored`) is WebAssembly, which a
+/// `script-src` without `'wasm-unsafe-eval'` refuses to compile. That
+/// keyword allows compiling WebAssembly and nothing else; `'unsafe-eval'`
+/// would also let `eval` and `new Function` run strings as JavaScript, and
+/// must never be what is reached for instead — in any directive.
+#[test]
+fn the_caddyfile_allows_webassembly_but_never_eval() {
+    let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
+    assert!(
+        directive(&policy, "script-src").is_some_and(|s| s.contains(&"'wasm-unsafe-eval'")),
+        "{policy}"
+    );
+    let sources: Vec<&str> = policy
+        .split(';')
+        .flat_map(|d| d.split_whitespace().skip(1))
+        .collect();
+    assert!(!sources.contains(&"'unsafe-eval'"), "{policy}");
+    assert_eq!(
+        sources
+            .iter()
+            .filter(|s| **s == "'wasm-unsafe-eval'")
+            .count(),
+        1,
+        "in script-src only: {policy}"
+    );
+}
+
+/// Nothing the pages load comes from another origin — the fonts, the
+/// stylesheet, the scripts and the barcode reader's WebAssembly are all
+/// served by apps/web (#806: the library's default of fetching its `.wasm`
+/// from jsDelivr is refused here too). No source of the policy names a
+/// host, a scheme or a wildcard: keywords and the report path only.
+#[test]
+fn the_caddyfile_allows_no_other_origin() {
+    let policy = caddy_csp(CADDYFILE).expect("infra/Caddyfile sets a Content-Security-Policy");
+    for d in policy.split(';') {
+        let mut words = d.split_whitespace();
+        let Some(name) = words.next() else { continue };
+        for source in words {
+            let keyword = source.starts_with('\'') && source.ends_with('\'');
+            let allowed = keyword
+                || (name == "report-uri" && source.starts_with('/') && !source.starts_with("//"))
+                || (name == "report-to" && source == "csp");
+            assert!(allowed, "`{name}` allows `{source}`: {policy}");
+        }
+    }
 }
 
 /// The reminder notifications' service worker (#306) is a script file,

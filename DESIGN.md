@@ -23,8 +23,13 @@ L'état des lieux qui a motivé ce système est dans
 
 ### Contraintes non négociables
 
-1. **Rendu serveur pur, aucun JS de framework.** Pas d'hydratation, pas de WASM.
-   Toute solution est CSS-first.
+1. **Rendu serveur pur, aucun JS de framework.** Pas d'hydratation, pas de
+   bundle WASM. Toute solution est CSS-first. **Une exception, et une seule**
+   (arbitrage du 2026-11-13, #806) : le lecteur de codes-barres du scan des
+   stocks, un module WebAssembly servi par le binaire depuis la même origine
+   (`apps/web/src/assets.rs`, `Vendored`), jamais par un tiers. La CSP
+   l'admet par `'wasm-unsafe-eval'`, jamais `'unsafe-eval'` ; voir le
+   [journal](#journal-des-décisions).
 2. **Le CSS est servi sous une URL qui porte l'empreinte de son contenu**
    (`/assets/style-<empreinte>.css`, `apps/web/src/assets.rs`) — il était
    inliné dans chaque réponse jusqu'à #89, **et c'est le seul point de cette
@@ -1226,7 +1231,10 @@ l'inlining, c'est cette liste qu'il faudra réfuter.
    politique posée par Caddy est statique, donc sans nonce), sont servis
    depuis le binaire sous `/assets/<nom>-<empreinte>.js`
    (`apps/web/src/assets.rs`, `Script`), comme la feuille ; la CSP dit
-   `script-src 'self'` et n'admet plus rien d'inline. Les comportements
+   `script-src 'self'` et n'admet plus rien d'inline. Depuis #806 elle dit
+   `script-src 'self' 'wasm-unsafe-eval'` : le module WebAssembly du scan
+   (contrainte n°1) peut être compilé, `eval` reste refusé, et toujours
+   rien d'inline. Les comportements
    portés par des attributs (`onclick`, `onsubmit`, `onchange`) passent par
    des attributs `data-*` lus par un script commun chargé dans le `<head>`
    de chaque page. `apps/web/src/csp.rs` refuse tout script inline qui
@@ -1940,3 +1948,4 @@ quatre tours de vérification à #72.
 | 2026-11-12 | Une galerie et une visionneuse pour les pièces jointes d'un événement (#776) | Demande du 2026-11-10, maquette A1–A3 : la fiche d'un événement listait le nom, la taille et un lien de téléchargement, et n'affichait jamais une image. Une grille de tuiles (miniature d'une image, icône d'une vidéo, d'un PDF) dont chacune mène au fichier sans JavaScript et ouvre avec lui une visionneuse modale : le fichier entier, « n sur N », précédente et suivante, Télécharger, Ouvrir dans un onglet, Supprimer. **Écart avec la maquette, arbitré le 2026-11-12** : A1–A3 dessinent la visionneuse sur un fond quasi noir ; elle est ici la `.card` des fenêtres (`dialog`), sur les jetons existants, sans aucune couleur nouvelle — un fond sombre fixe aurait été une couleur hors des deux thèmes, à redéclarer et à mesurer à part. Aucune paire de contraste nouvelle : l'icône, le genre et le nom d'une tuile posent `--accent`, `--muted` et `--fg` sur `--hover`, trois paires que `TEXT_PAIRS` mesurait déjà et dont l'usage est désormais nommé. Pour qui peut supprimer, la liste de #455 reste sous la grille ; le script la cache (`data-hidden-with-js`, étendu à tout élément), et sans lui elle seule permet de supprimer. Trois icônes Lucide de plus (`image`, `play`, `file-text`). Feuille : de 22 814 à 23 282 o compressés (flate2 niveau 6), sous `SHEET_CEILING`. Détail : [Composants](#composants), lignes `.gallery` et `.viewer` |
 | 2026-11-12 | Le bouton d'un formulaire en cours d'envoi attend, une roue devant son libellé (#778) | Demande du 2026-11-10, maquette B2 ; la barre de progression de page et les squelettes sont écartés. Chaque navigation est un rechargement complet : un envoi lent (une connexion faible, une pièce jointe de 20 Mo) ne montrait rien jusqu'à la page suivante et laissait cliquer deux fois. **Exception à « aucune animation d'entrée » (Interaction et motion)** : la roue est une animation, mais un état d'attente, pas une animation de page — elle ne tourne que pendant qu'un envoi est en route et ne se rejoue sur aucun chargement. Figée, et non retirée, sous `prefers-reduced-motion: reduce`. Aucune couleur nouvelle : la roue est en `currentColor`, la couleur du texte du bouton, une paire déjà mesurée. Un bouton nommé par son `aria-label` (icône, case `.tick`) ne reçoit pas de libellé : il garde sa taille et son nom, la roue seule posée au milieu de sa boîte (WCAG 2.5.3). Feuille : de 23 282 à 23 764 o compressés (flate2 niveau 6), sous `SHEET_CEILING`. Détail : [Interaction et motion](#interaction-et-motion) |
 | 2026-11-12 | Le jour de la semaine dans la liste de l'agenda sur téléphone et dans la pastille « Ensuite » de l'accueil (#792) | Demande du 2026-11-11 : « ajouter le jour, jeudi par ex ». Reprend la première concession de #71 (Layout → « Ce que #71 a livré, et ce qu'il concède »). Sous 861 px, chaque jour de la liste de `/agenda`, vue mois comme vue semaine, se lit « jeudi 15 » ; au-dessus, la cellule de grille reste le numéro seul, le jour étant dans l'en-tête de colonne. Un seul rendu : le nom est un `<span class="phone">` devant le numéro, que `display: none` retire du dessin et de l'arbre d'accessibilité sur PC — le lecteur d'écran ne l'entend pas deux fois. Il n'est écrit que dans les cellules que la liste montre (un événement, ou un jour national écrit en toutes lettres) : les autres ne sont pas dessinées sur téléphone. Sur l'accueil, la pastille d'un jour suivant dit « jeu. 12/11 » au lieu de « 12/11 » ; « Journée », « En cours » et l'heure des événements du jour ne changent pas. **Coût mesuré** (`npm run seed` puis `npm run measure`, même base semée, binaire web de `main` dca65bd puis de cette branche) : `/agenda` passe de 22 008 à 22 972 o bruts, de 5 147 à 5 248 o gzip (+101, `node:zlib` niveau par défaut, l'encodeur du script) et de 5 232 à 5 340 o zstd, sous le budget de réponse de 14 336 o ; `/` de 10 871 à 10 896 o bruts et de 3 241 à 3 259 o gzip ; les autres routes ne bougent pas. Feuille inchangée — `.phone` existait — : 23 764 o compressés (flate2 niveau 6), sous `SHEET_CEILING`. |
+| 2026-11-13 | Un module WebAssembly same-origin, pour le scan de codes-barres seulement (#806) | Arbitrage de l'utilisateur du 2026-11-13 : « Autoriser et amender DESIGN.md ». Le scan en direct (#807) lit les codes dans le navigateur quand `BarcodeDetector` manque, avec zxing-wasm. La contrainte n°1 interdisait tout WASM ; elle visait un bundle de framework (hydratation), qui reste exclu. L'exception est bornée : ce seul module, servi depuis le binaire sous une URL à empreinte, aucun CDN ; la CSP gagne `'wasm-unsafe-eval'` et jamais `'unsafe-eval'`, ce que `apps/web/src/csp.rs` vérifie. |
