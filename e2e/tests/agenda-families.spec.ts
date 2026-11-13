@@ -296,52 +296,58 @@ test.describe("Agenda — the day view of several families (#793)", () => {
   });
 
   // Whatever its length, its title and its column, a block shows a part of
-  // itself whole or not at all: nothing cut by its edge, its title on one
-  // line, its initials round. Blocks of 30, 31–59 and 60–90 minutes, alone
-  // and two, three and four abreast, long titles among them, from both
-  // families.
+  // itself whole or not at all: nothing cut by its edge — its lock, its
+  // initials, its family's swatch —, its title on one line, its initials
+  // round. Blocks of 30, 31–59 and 60–90 minutes, alone and two, three and
+  // four abreast, long titles, private blocks and tasks among them, from
+  // both families.
   test("no part of a block is cut by its edge, one to four columns, on a phone and on a PC", async ({ page }) => {
     test.setTimeout(120_000);
     await registerAndLogin(page, "e2e-agfamcut", "Agenda Familles Bord");
     const date = parisDayOfMonth(15);
-    const post = async (title: string, from: string, to: string) => {
+    // `p` private, `t` a task.
+    const post = async (title: string, from: string, to: string, marks = "") => {
+      const form: Record<string, string> = { title, starts_at: `${date}T${from}`, ends_at: `${date}T${to}` };
+      if (marks.includes("p")) form.is_private = "on";
+      if (marks.includes("t")) form.is_task = "on";
       const r = await page.request.post("/agenda/new", {
-        form: { title, starts_at: `${date}T${from}`, ends_at: `${date}T${to}` },
+        form,
         maxRedirects: 0,
       });
       expect(r.status(), title).toBe(303);
     };
     await createGroup(page, F2);
-    for (const [t, a, b] of [
+    for (const [t, a, b, m] of [
       ["Réunion parents-professeurs du collège Jean Moulin", "09:00", "10:30"],
-      ["Cours de piano", "11:00", "11:40"],
+      ["Cours de piano", "11:00", "11:40", "p"],
       ["Kinésithérapie du genou après l'opération du ménisque", "13:00", "13:45"],
       ["Appel conseillère de la banque", "13:15", "14:15"],
       ["Goûter chez les voisins du dessus", "16:10", "16:55"],
     ]) {
-      await post(t, a, b);
+      await post(t, a, b, m);
     }
     await createGroup(page, F1);
-    for (const [t, a, b] of [
+    for (const [t, a, b, m] of [
       ["Cours de piano avec Madame Dubois-Lefebvre", "08:00", "08:45"],
+      ["Appel assurance", "10:45", "11:15", "p"],
       ["Rendez-vous notaire", "11:00", "12:00"],
       ["Dentiste Léa, contrôle et détartrage au cabinet de la place du marché", "13:00", "14:30"],
-      ["Pharmacie", "13:00", "13:30"],
+      ["Pharmacie", "13:00", "13:30", "pt"],
       ["Natation", "16:00", "17:00"],
-      ["Coiffeur des enfants", "16:20", "17:20"],
+      ["Coiffeur des enfants", "16:20", "17:20", "pt"],
     ]) {
-      await post(t, a, b);
+      await post(t, a, b, m);
     }
 
+    // Every phone width from 320 to 440 px, five by five: a column's width
+    // moves with it, and a part fits or not by a few pixels. Then a PC.
+    const widths = [...Array.from({ length: 25 }, (_, i) => 320 + 5 * i), 1280];
+    await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+    await expect(page.locator("a.blk")).toHaveCount(12);
     const faults: Record<number, string[]> = {};
-    for (const viewport of [
-      { width: 390, height: 844 },
-      { width: 1280, height: 800 },
-    ]) {
-      await page.setViewportSize(viewport);
-      await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
-      await expect(page.locator("a.blk")).toHaveCount(11);
-      faults[viewport.width] = await page.locator("a.blk").evaluateAll((blocks) =>
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: width < 1000 ? 844 : 800 });
+      faults[width] = await page.locator("a.blk").evaluateAll((blocks) =>
         blocks.flatMap((blk) => {
           // What an element's box shows of its content: inside its borders.
           const inner = (e: Element) => {
@@ -359,7 +365,8 @@ test.describe("Agenda — the day view of several families (#793)", () => {
           const out: string[] = [];
           for (const part of blk.querySelectorAll("*")) {
             const p = part.getBoundingClientRect();
-            if (p.width === 0 || p.height === 0) continue;
+            // Out of sight by design: the words for a screen reader.
+            if (p.width === 0 || p.height === 0 || part.closest(".sr-only")) continue;
             // What is left of it in sight, once each ancestor up to the
             // block that clips has clipped it.
             const seen = { top: p.top, bottom: p.bottom, left: p.left, right: p.right };
@@ -379,7 +386,7 @@ test.describe("Agenda — the day view of several families (#793)", () => {
               seen.bottom >= p.bottom - 0.5 &&
               seen.left <= p.left + 0.5 &&
               seen.right >= p.right - 0.5;
-            if (!hidden && !whole) out.push(`${title}: ${part.tagName}.${part.className} cut`);
+            if (!hidden && !whole) out.push(`${title}: ${part.tagName}.${part.getAttribute("class")} cut`);
             if (!hidden && part.classList.contains("avatar") && Math.abs(p.width - p.height) > 0.5)
               out.push(`${title}: avatar ${p.width}×${p.height}`);
           }
@@ -393,7 +400,7 @@ test.describe("Agenda — the day view of several families (#793)", () => {
         }),
       );
     }
-    expect(faults).toEqual({ 390: [], 1280: [] });
+    expect(faults).toEqual(Object.fromEntries(widths.map((w) => [w, []])));
   });
 });
 
