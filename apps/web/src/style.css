@@ -794,7 +794,7 @@ progress::-moz-progress-bar { background: currentColor; }
    as far below. Cut at an edge of the day, that edge is flat and dashed. */
 .blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
 .blk > *, .sub > * { overflow: hidden; text-overflow: ellipsis; }
-.blk > * { width: 100%; }
+.blk:not(.short) > * { width: 100%; }
 /* One line, as tall as an avatar or as its text, whichever is taller. */
 .sub { display: flex; flex-wrap: wrap; align-items: center; gap: 100% var(--s1); height: max(var(--s4), 1.2em); font-size: var(--t-xs); }
 .blk .t { min-width: 0; font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
@@ -805,7 +805,6 @@ progress::-moz-progress-bar { background: currentColor; }
 /* Beside the hours, the family takes what is left, 4em at least. */
 .sub .fam { flex: 1 1 0; min-width: 4em; }
 .blk.short { flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
-.blk.short > * { width: auto; }
 .blk.short strong { flex: 1 1 0; min-width: 0; max-width: max-content; }
 .blk.short .t { order: -1; }
 .cut-s { border-top: var(--s2) dashed; border-top-left-radius: 0; border-top-right-radius: 0; }

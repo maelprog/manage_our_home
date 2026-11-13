@@ -297,8 +297,9 @@ test.describe("Agenda — the day view of several families (#793)", () => {
 
   // Whatever its length, its title and its column, a block shows a part of
   // itself whole or not at all: nothing cut by its edge, its title on one
-  // line. Blocks of 30, 31–59 and 60–90 minutes, alone and two, three and
-  // four abreast, long titles among them, from both families.
+  // line, its initials round. Blocks of 30, 31–59 and 60–90 minutes, alone
+  // and two, three and four abreast, long titles among them, from both
+  // families.
   test("no part of a block is cut by its edge, one to four columns, on a phone and on a PC", async ({ page }) => {
     test.setTimeout(120_000);
     await registerAndLogin(page, "e2e-agfamcut", "Agenda Familles Bord");
@@ -379,6 +380,8 @@ test.describe("Agenda — the day view of several families (#793)", () => {
               seen.left <= p.left + 0.5 &&
               seen.right >= p.right - 0.5;
             if (!hidden && !whole) out.push(`${title}: ${part.tagName}.${part.className} cut`);
+            if (!hidden && part.classList.contains("avatar") && Math.abs(p.width - p.height) > 0.5)
+              out.push(`${title}: avatar ${p.width}×${p.height}`);
           }
           const strong = blk.querySelector("strong")!;
           const t = strong.getBoundingClientRect();
