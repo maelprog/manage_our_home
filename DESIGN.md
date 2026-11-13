@@ -530,9 +530,10 @@ rechargement (`routes/agenda/day.rs`) :
   puis les initiales et, dans une vue de plusieurs, la famille. Sous
   l'heure (`.mid`), deux lignes : le titre, puis les heures, les initiales
   et la famille, qui prend le reste de la ligne (4em au moins) ; à partir
-  d'une heure, la famille a sa ligne, la troisième, qu'un bloc d'une heure
-  tout juste n'a pas la hauteur de montrer. Le titre tient une ligne, coupé
-  par des points de suspension. Chaque ligne, et chaque élément d'une ligne —
+  d'une heure, la famille a sa ligne, la troisième. Sur PC (861 px et
+  plus), un bloc d'une heure la montre ; en deçà, où le texte est plus
+  grand, il faut 62 minutes, quelle que soit la largeur de la colonne. Le
+  titre tient une ligne, coupé par des points de suspension. Chaque ligne, et chaque élément d'une ligne —
   titre, cadenas, heures, initiales, pastille et nom de la famille —,
   s'affiche entier ou pas du tout : ce qui ne tient pas, dans un bloc trop
   bas ou dans une colonne trop étroite, est retiré plutôt que coupé par le
@@ -542,9 +543,8 @@ rechargement (`routes/agenda/day.rs`) :
   suspension (2,5em). Les heures restent, réduites au besoin à leur début
   (« 13:00–… »). Dans une colonne étroite (à 390 px, trois ou quatre blocs
   côte à côte), un bloc de moins d'une heure peut ne garder que son titre
-  et ses heures, voire que ses heures, quand un bloc assez haut pour trois
-  lignes (une heure et demie, pas une heure) garde sa famille sur la
-  troisième, abrégée au besoin. Le lien garde le tout dans son nom. Des
+  et ses heures, voire que ses heures, quand un bloc de 62 minutes ou plus
+  garde sa famille sur la troisième ligne, abrégée au besoin. Le lien garde le tout dans son nom. Des
   blocs qui se chevauchent se rangent côte à côte, chacun dans la première colonne libre
   puis étendu à droite sur les colonnes que rien ne lui dispute ; un bloc
   seul prend toute la largeur. Un événement commencé la veille ou fini le
