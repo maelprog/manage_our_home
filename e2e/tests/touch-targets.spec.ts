@@ -111,9 +111,11 @@ interface Box {
  * - a checkbox with no label whose form submits the same change through a
  *   button (see below);
  * - the skip link, which is off-screen until it takes focus;
- * - a block of the day view's hours (`.blk`, #793): as tall as its event
- *   lasts, a short one 28px — the mock-up's floor, a trade left to the
- *   issue's review.
+ * - the day view's targets kept at the mock-up's size (#793, arbitrage of
+ *   2026-11-13, DESIGN.md → « L'agenda sur téléphone : vue jour », followed
+ *   by an issue of its own): a block of the hours (`.blk`), as tall as its
+ *   event lasts, a short one 28px; a line of the « Journée » banner (`.ad`),
+ *   32px; a day's number in the grid (`.cal-day a`), about 28px.
  */
 async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
