@@ -737,11 +737,12 @@ progress::-moz-progress-bar { background: currentColor; }
 .mini td { height: var(--s12); }
 .mini .outside { color: var(--muted); }
 .mini .current { border-radius: var(--r-sm); background: var(--accent); color: var(--accent-fg); }
-.mini a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); height: var(--s12); color: inherit; font-weight: 600; text-decoration: none; }
+.mini a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); height: var(--s12); color: inherit; font-weight: 400; text-decoration: none; }
 /* Every day is a link to its day view (#793); the dot, kept in every link
    so that the numbers line up, is drawn under a day that carries something
-   — the one whose name says so. */
+   — the one whose name says so — and that day alone is bold, as before. */
 .mini a::after { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; }
+.mini a:has(.sr-only) { font-weight: 600; }
 .mini a:has(.sr-only)::after { background: currentColor; }
 /* A day's national days (#565, `calendar::marks_html`): a head line under
    its number, in --muted at the chip's size — a paragraph, not a link, so

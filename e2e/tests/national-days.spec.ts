@@ -101,6 +101,11 @@ test.describe("Agenda — jours nationaux (#565)", () => {
       .locator("table.mini")
       .getByRole("link", { name: "25 octobre, Passage à l'heure d'hiver" });
     await expect(link).toHaveAttribute("href", "/agenda?view=day&date=2026-10-25");
+    // In bold, where an empty day, a link too, is not.
+    const empty = page.locator('table.mini a[href="/agenda?view=day&date=2026-10-14"]');
+    const weight = (l: typeof link) => l.evaluate((e) => getComputedStyle(e).fontWeight);
+    expect(await weight(link)).toBe("600");
+    expect(await weight(empty)).toBe("400");
     // A list that shows a day is not empty: no « Rien de prévu » under it.
     await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
   });
