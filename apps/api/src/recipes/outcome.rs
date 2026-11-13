@@ -494,6 +494,8 @@ struct PlannedRow {
     recipe_name: String,
     status: String,
     servings: Option<i32>,
+    planned_on: Option<NaiveDate>,
+    meal_slot: Option<String>,
     created_by: Uuid,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -509,6 +511,8 @@ impl PlannedRow {
             recipe_name: self.recipe_name.clone(),
             status: self.status.clone(),
             servings: self.servings,
+            planned_on: self.planned_on,
+            meal_slot: self.meal_slot.clone(),
             created_by: self.created_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -529,6 +533,7 @@ async fn planned_selection(
             PlannedRow,
             r#"
             SELECT s.id, s.recipe_id, r.name AS recipe_name, s.status, s.servings,
+                   s.planned_on, s.meal_slot,
                    s.created_by, s.created_at, s.updated_at, r.servings AS recipe_servings,
                    r.created_by AS recipe_created_by
             FROM recipe_selections s
@@ -546,6 +551,7 @@ async fn planned_selection(
             PlannedRow,
             r#"
             SELECT s.id, s.recipe_id, r.name AS recipe_name, s.status, s.servings,
+                   s.planned_on, s.meal_slot,
                    s.created_by, s.created_at, s.updated_at, r.servings AS recipe_servings,
                    r.created_by AS recipe_created_by
             FROM recipe_selections s

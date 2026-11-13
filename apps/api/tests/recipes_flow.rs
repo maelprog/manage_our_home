@@ -1687,3 +1687,290 @@ async fn planned_selections_are_dated_and_ordered_by_what_expires(db: PgPool) {
     assert_eq!(listed[1]["days_left"], 2);
     assert_eq!(listed[1]["missing"], serde_json::json!([]));
 }
+
+/// The day and meal stored on the recipe's selection, read past the API.
+async fn stored_plan(db: &PgPool, recipe_id: &str) -> (Option<NaiveDate>, Option<String>) {
+    sqlx::query_as("SELECT planned_on, meal_slot FROM recipe_selections WHERE recipe_id = $1::uuid")
+        .bind(recipe_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// Issue #811: a selection made without a day nor a meal behaves exactly as
+/// before — created, listed, resized, reselected and deselected — with
+/// both fields `null` on the wire and in the table.
+#[sqlx::test]
+async fn a_selection_without_a_plan_behaves_as_before(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "plan-none").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Tajine").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+
+    let select = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 3})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    let select = json_body(select).await;
+    assert!(select["planned_on"].is_null());
+    assert!(select["meal_slot"].is_null());
+    assert_eq!(select["servings"], 3);
+
+    let resize = call(
+        &router,
+        Method::PATCH,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({"servings": 5})),
+    )
+    .await;
+    assert_status(&resize, StatusCode::OK);
+    let resize = json_body(resize).await;
+    assert_eq!(resize["servings"], 5);
+    assert!(resize["planned_on"].is_null());
+    assert!(resize["meal_slot"].is_null());
+
+    let again = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&again, StatusCode::OK);
+    assert_eq!(json_body(again).await["servings"], 5);
+
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0]["planned_on"].is_null());
+    assert!(listed[0]["meal_slot"].is_null());
+    assert_eq!(stored_plan(&db, &recipe_id).await, (None, None));
+
+    let deselect = call(&router, Method::DELETE, &path, Some(&member_cookie), None).await;
+    assert_status(&deselect, StatusCode::NO_CONTENT);
+}
+
+/// Issue #811: any member sets, changes and removes the day and the meal
+/// of a selection, whoever made it; `null` removes a field, an absent key
+/// leaves it. A meal without a day (`invalid_meal_slot`) and a day more
+/// than 366 days away (`invalid_planned_on`) are refused, and a refused
+/// request changes nothing.
+#[sqlx::test]
+async fn any_member_sets_changes_and_removes_the_plan(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "plan-edit").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Risotto").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+    let today = paris_day(Utc::now());
+    let later = |n: u64| today.checked_add_days(Days::new(n)).unwrap();
+    let earlier = |n: u64| today.checked_sub_days(Days::new(n)).unwrap();
+
+    let patch = |body: serde_json::Value| {
+        let router = router.clone();
+        let path = path.clone();
+        let cookie = member_cookie.clone();
+        async move { call(&router, Method::PATCH, &path, Some(&cookie), Some(body)).await }
+    };
+
+    // A meal without a day is refused on selection too, and creates nothing.
+    let res = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"meal_slot": "lunch"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "invalid_meal_slot");
+    assert!(planned_selections(&router, &owner_cookie, &group_id)
+        .await
+        .is_empty());
+
+    let select = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 2, "planned_on": later(3), "meal_slot": "dinner"})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    let select = json_body(select).await;
+    assert_eq!(select["planned_on"], later(3).to_string());
+    assert_eq!(select["meal_slot"], "dinner");
+    assert_eq!(select["servings"], 2);
+
+    // Selecting again without a plan leaves it.
+    let again = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&again, StatusCode::OK);
+    let again = json_body(again).await;
+    assert_eq!(again["planned_on"], later(3).to_string());
+    assert_eq!(again["meal_slot"], "dinner");
+
+    // Another member changes the day: the meal and the number of people
+    // stay.
+    let res = patch(serde_json::json!({"planned_on": later(5)})).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["planned_on"], later(5).to_string());
+    assert_eq!(body["meal_slot"], "dinner");
+    assert_eq!(body["servings"], 2);
+    assert_eq!(
+        stored_plan(&db, &recipe_id).await,
+        (Some(later(5)), Some("dinner".into()))
+    );
+
+    // The meal changes, then goes; the day and the number of people stay.
+    let res = patch(serde_json::json!({"meal_slot": "lunch"})).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["meal_slot"], "lunch");
+    assert_eq!(body["servings"], 2);
+    let res = patch(serde_json::json!({"meal_slot": null})).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert!(body["meal_slot"].is_null());
+    assert_eq!(body["planned_on"], later(5).to_string());
+    assert_eq!(body["servings"], 2);
+
+    // Refused: each leaves the row as it was.
+    let res = patch(serde_json::json!({"meal_slot": "dinner"})).await;
+    assert_status(&res, StatusCode::OK);
+    for (body, code) in [
+        (serde_json::json!({"planned_on": null}), "invalid_meal_slot"),
+        (
+            serde_json::json!({"planned_on": null, "meal_slot": "lunch"}),
+            "invalid_meal_slot",
+        ),
+        (
+            serde_json::json!({"meal_slot": "breakfast"}),
+            "invalid_meal_slot",
+        ),
+        (
+            serde_json::json!({"planned_on": later(367)}),
+            "invalid_planned_on",
+        ),
+        (
+            serde_json::json!({"planned_on": earlier(367)}),
+            "invalid_planned_on",
+        ),
+        (
+            serde_json::json!({"servings": 4, "planned_on": later(367)}),
+            "invalid_planned_on",
+        ),
+    ] {
+        let res = patch(body.clone()).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], code, "{body}");
+    }
+    assert_eq!(
+        stored_plan(&db, &recipe_id).await,
+        (Some(later(5)), Some("dinner".into()))
+    );
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    assert_eq!(listed[0]["servings"], 2);
+
+    // The bounds themselves are accepted, in the past too.
+    for on in [later(366), earlier(366)] {
+        let res = patch(serde_json::json!({"planned_on": on})).await;
+        assert_status(&res, StatusCode::OK);
+        assert_eq!(json_body(res).await["planned_on"], on.to_string());
+    }
+
+    // Selecting again with a day replaces the plan, meal included.
+    let res = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&member_cookie),
+        Some(serde_json::json!({"planned_on": later(1)})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert_eq!(body["planned_on"], later(1).to_string());
+    assert!(body["meal_slot"].is_null());
+
+    // The day goes, with its meal.
+    let res = patch(serde_json::json!({"meal_slot": "lunch"})).await;
+    assert_status(&res, StatusCode::OK);
+    let res = patch(serde_json::json!({"planned_on": null, "meal_slot": null})).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert!(body["planned_on"].is_null());
+    assert!(body["meal_slot"].is_null());
+    assert_eq!(stored_plan(&db, &recipe_id).await, (None, None));
+
+    // An empty PATCH changes nothing and still answers the selection.
+    let res = patch(serde_json::json!({})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["recipe_id"], recipe_id);
+}
+
+/// Issue #811: the list gives the dated selections first, by day then
+/// lunch, dinner and no meal, and the undated ones last, in the order
+/// they had (#559).
+#[sqlx::test]
+async fn planned_selections_are_ordered_by_day_then_meal(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "plan-order").await;
+    let today = paris_day(Utc::now());
+    let later = |n: u64| today.checked_add_days(Days::new(n)).unwrap();
+
+    // Selected in this order.
+    for (name, plan) in [
+        ("Soupe", serde_json::json!({})),
+        ("Quiche", serde_json::json!({"planned_on": later(2)})),
+        (
+            "Pizza",
+            serde_json::json!({"planned_on": later(2), "meal_slot": "dinner"}),
+        ),
+        ("Omelette", serde_json::json!({})),
+        (
+            "Salade",
+            serde_json::json!({"planned_on": later(2), "meal_slot": "lunch"}),
+        ),
+        (
+            "Crêpes",
+            serde_json::json!({"planned_on": later(1), "meal_slot": "dinner"}),
+        ),
+    ] {
+        let recipe_id = create_recipe(&router, &owner_cookie, &group_id, name).await;
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes/{recipe_id}/selection"),
+            Some(&owner_cookie),
+            Some(plan),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    let names: Vec<&str> = listed
+        .iter()
+        .map(|s| s["recipe_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["Crêpes", "Salade", "Pizza", "Quiche", "Soupe", "Omelette"]
+    );
+}
