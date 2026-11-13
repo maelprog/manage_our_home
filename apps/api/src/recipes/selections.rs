@@ -13,7 +13,8 @@
 //! `done` or `abandoned` is `recipes::outcome` (#473); generating the
 //! grocery list from the selections is #470. The list tells, for each
 //! selection, what the stock lacks and by when it should be cooked
-//! (`recipes::availability`, #559).
+//! (`recipes::availability`, #559). A selection may be replaced by another
+//! recipe, keeping its day, meal and number of people (#815).
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -21,12 +22,15 @@ use axum::{http::StatusCode, Json};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::grocery_list::items::add_missing_lines;
 use crate::groups::require_role;
 use crate::recipes::availability::{by_priority, planned_availability, MissingResponse};
+use crate::recipes::suggestions::{replacement_candidates, score_recipes};
 use crate::stocks::items::today;
 use crate::AppState;
 
@@ -440,6 +444,240 @@ pub async fn deselect_recipe(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The recipe's `planned` selection, locked when `lock`; 404 when there is
+/// none.
+async fn planned_row(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    recipe_id: Uuid,
+    lock: bool,
+) -> AppResult<PlannedRow> {
+    let row = if lock {
+        sqlx::query_as!(
+            PlannedRow,
+            r#"
+            SELECT id, servings, planned_on, meal_slot FROM recipe_selections
+            WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'
+            FOR UPDATE
+            "#,
+            recipe_id,
+            group_id,
+        )
+        .fetch_optional(&mut **tx)
+        .await?
+    } else {
+        sqlx::query_as!(
+            PlannedRow,
+            r#"
+            SELECT id, servings, planned_on, meal_slot FROM recipe_selections
+            WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'
+            "#,
+            recipe_id,
+            group_id,
+        )
+        .fetch_optional(&mut **tx)
+        .await?
+    };
+    row.ok_or(AppError::NotFound)
+}
+
+struct PlannedRow {
+    id: Uuid,
+    servings: Option<i32>,
+    planned_on: Option<NaiveDate>,
+    meal_slot: Option<String>,
+}
+
+/// `GET /groups/:id/recipes/:recipe_id/selection/replacements` (#815): the
+/// recipes offered in place of the recipe's `planned` selection, scored as
+/// the suggestions are (`recipes::suggestions`), neither that recipe nor
+/// one already planned, at most three, the best first
+/// (`suggestions::replacement_candidates`). Empty when no other recipe is
+/// left; 404 without a `planned` selection. Any member may.
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/{recipe_id}/selection/replacements",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe of the planned selection to replace"),
+    ),
+    responses(
+        (status = 200, description = "Up to three recipes to plan instead, the best first", body = crate::api_docs::schemas::ReplacementList),
+        (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn list_replacements(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+    planned_row(&mut tx, group_id, recipe_id, false).await?;
+
+    let planned: HashSet<Uuid> = sqlx::query_scalar!(
+        "SELECT recipe_id FROM recipe_selections WHERE group_id = $1 AND status = 'planned'",
+        group_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .collect();
+    let ranked = score_recipes(&mut tx, group_id).await?;
+    tx.commit().await?;
+
+    Ok(Json(json!({
+        "replacements": replacement_candidates(ranked, recipe_id, &planned),
+    })))
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct ReplaceSelectionRequest {
+    /// The recipe to plan instead; any recipe of the group not already
+    /// planned, offered or not.
+    pub recipe_id: Uuid,
+}
+
+/// `POST /groups/:id/recipes/:recipe_id/selection/replacement` (#815):
+/// plans `recipe_id` in place of the recipe's `planned` selection, with
+/// the same day, meal and number of people, and deletes the replaced
+/// selection, as deselecting does. The grocery list follows: the unchecked
+/// items generated for the replaced recipe are removed, except those a
+/// recipe still planned needs (`grocery_lines_to_drop`), and what the
+/// stock lacks of the new recipe is added, as
+/// `…/selection/missing` adds it. When no item of the list came from the
+/// replaced recipe, the list is left as it is. One transaction: on any
+/// error, the replaced selection and the list stay as they were. Any member
+/// may, whoever made the selection, and may remove items generated by
+/// another member this way, as abandoning a recipe does.
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/recipes/{recipe_id}/selection/replacement",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe of the planned selection to replace"),
+    ),
+    request_body = ReplaceSelectionRequest,
+    responses(
+        (status = 200, description = "Replaced: the new selection, and what changed on the grocery list", body = crate::api_docs::schemas::SelectionReplaced),
+        (status = 400, description = "`same_recipe`: the replacement is the replaced recipe", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 404, description = "`not_found`: no planned selection, or no such replacement recipe", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`already_planned`: the replacement recipe already has a planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn replace_selection(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<ReplaceSelectionRequest>,
+) -> AppResult<impl IntoResponse> {
+    let new_recipe = body.recipe_id;
+    if new_recipe == recipe_id {
+        return Err(AppError::BadRequest("same_recipe".into()));
+    }
+
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+    let old = planned_row(&mut tx, group_id, recipe_id, true).await?;
+    let recipe_name = recipe_name(&mut tx, group_id, new_recipe).await?;
+
+    // A planned selection of the new recipe, made meanwhile or before,
+    // holds the unique index: nothing is inserted, and the transaction is
+    // dropped with the replaced selection untouched.
+    let row = sqlx::query!(
+        r#"
+        INSERT INTO recipe_selections
+            (group_id, recipe_id, servings, planned_on, meal_slot, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (recipe_id) WHERE status = 'planned' DO NOTHING
+        RETURNING id, recipe_id, status, servings, planned_on, meal_slot,
+                  created_by, created_at, updated_at
+        "#,
+        group_id,
+        new_recipe,
+        old.servings,
+        old.planned_on,
+        old.meal_slot,
+        auth.user_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::Conflict("already_planned".into()))?;
+    sqlx::query!(
+        "DELETE FROM recipe_selections WHERE id = $1 AND group_id = $2",
+        old.id,
+        group_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let old_lines = sqlx::query!(
+        r#"
+        SELECT id, name FROM grocery_items
+        WHERE group_id = $1 AND source_recipe_id = $2 AND checked = false
+        ORDER BY id FOR UPDATE
+        "#,
+        group_id,
+        recipe_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let (removed, added) = if old_lines.is_empty() {
+        (vec![], vec![])
+    } else {
+        // The recipes still planned, the new one aside: its lines are
+        // added below with its own quantities.
+        let still_needed: Vec<String> = sqlx::query_scalar!(
+            r#"
+            SELECT ri.name FROM recipe_selections s
+            JOIN recipe_ingredients ri ON ri.recipe_id = s.recipe_id
+            WHERE s.group_id = $1 AND s.status = 'planned'
+              AND ri.is_optional = false AND s.recipe_id <> $2
+            "#,
+            group_id,
+            new_recipe,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        let lines: Vec<(Uuid, &str)> = old_lines.iter().map(|l| (l.id, l.name.as_str())).collect();
+        let needed: Vec<&str> = still_needed.iter().map(String::as_str).collect();
+        let removed = grocery_lines_to_drop(&lines, &needed);
+        sqlx::query!(
+            "DELETE FROM grocery_items WHERE group_id = $1 AND id = ANY($2)",
+            group_id,
+            &removed,
+        )
+        .execute(&mut *tx)
+        .await?;
+        let added = add_missing_lines(&mut tx, group_id, auth.user_id, new_recipe).await?;
+        (removed, added)
+    };
+    tx.commit().await?;
+
+    Ok(Json(json!({
+        "selection": SelectionResponse {
+            id: row.id,
+            recipe_id: row.recipe_id,
+            recipe_name,
+            status: row.status,
+            servings: row.servings,
+            planned_on: row.planned_on,
+            meal_slot: row.meal_slot,
+            created_by: row.created_by,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        },
+        "removed_grocery_items": removed,
+        "added_grocery_items": added,
+    })))
+}
+
 /// One `planned` selection of the list (#559): the selection, what the
 /// stock lacks of its recipe's required ingredients (`missing`, empty when
 /// the stock covers them), and the date by which it should be cooked to
@@ -529,9 +767,61 @@ pub async fn list_selections(
     Ok(Json(json!({ "selections": selections })))
 }
 
+/// The grocery lines a replacement removes (#815): of the unchecked lines
+/// generated for the replaced recipe, those no other planned recipe needs.
+/// A line is still needed when its name, trimmed and case-insensitive (as
+/// the generation matches names), is a required ingredient of a recipe
+/// that stays planned; the generation attributes a line several recipes
+/// share to the first one only, so removing it would leave the others
+/// without it.
+pub(crate) fn grocery_lines_to_drop(lines: &[(Uuid, &str)], still_needed: &[&str]) -> Vec<Uuid> {
+    let needed: HashSet<String> = still_needed
+        .iter()
+        .map(|name| name.trim().to_lowercase())
+        .collect();
+    lines
+        .iter()
+        .filter(|(_, name)| !needed.contains(&name.trim().to_lowercase()))
+        .map(|(id, _)| *id)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- grocery_lines_to_drop (#815) ---------------------------------------
+
+    #[test]
+    fn drops_every_line_no_other_recipe_needs() {
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert_eq!(
+            grocery_lines_to_drop(&[(a, "Crème"), (b, "Lardons")], &["oignon"]),
+            [a, b]
+        );
+        assert_eq!(
+            grocery_lines_to_drop(&[(a, "Crème"), (b, "Lardons")], &[]),
+            [a, b]
+        );
+    }
+
+    #[test]
+    fn keeps_a_line_another_planned_recipe_needs_whatever_its_case() {
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert_eq!(
+            grocery_lines_to_drop(&[(a, " Crème "), (b, "Lardons")], &["crème"]),
+            [b]
+        );
+        assert_eq!(
+            grocery_lines_to_drop(&[(a, "crème"), (b, "LARDONS")], &[" Lardons", "Crème"]),
+            Vec::<Uuid>::new()
+        );
+    }
+
+    #[test]
+    fn nothing_to_drop_without_a_line() {
+        assert!(grocery_lines_to_drop(&[], &["crème"]).is_empty());
+    }
 
     fn rejected(servings: i32) -> bool {
         matches!(

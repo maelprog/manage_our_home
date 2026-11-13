@@ -1974,3 +1974,432 @@ async fn planned_selections_are_ordered_by_day_then_meal(db: PgPool) {
         ["Crêpes", "Salade", "Pizza", "Quiche", "Soupe", "Omelette"]
     );
 }
+
+// -- Replacing a planned recipe (#815) ----------------------------------------
+
+/// A recipe with these ingredients, not planned.
+async fn recipe_with(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    name: &str,
+    ingredients: serde_json::Value,
+) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(cookie),
+        Some(serde_json::json!({"name": name, "ingredients": ingredients})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// The group's grocery items as `(name, source_recipe_id)`, by name.
+async fn grocery_lines(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+) -> Vec<(String, Option<String>)> {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/grocery-items"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let mut lines: Vec<(String, Option<String>)> = json_body(res).await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["name"].as_str().unwrap().to_string(),
+                i["source_recipe_id"].as_str().map(str::to_string),
+            )
+        })
+        .collect();
+    lines.sort();
+    lines
+}
+
+type StoredSelection = (String, Option<i32>, Option<NaiveDate>, Option<String>);
+
+/// The stored selection of a recipe: status, people, day and meal.
+async fn stored_selection(db: &PgPool, recipe_id: &str) -> Option<StoredSelection> {
+    sqlx::query_as(
+        "SELECT status, servings, planned_on, meal_slot FROM recipe_selections WHERE recipe_id = $1::uuid",
+    )
+    .bind(recipe_id)
+    .fetch_optional(db)
+    .await
+    .unwrap()
+}
+
+async fn generate_grocery_list(router: &axum::Router, cookie: &str, group_id: &str) -> usize {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items/generate"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["items"].as_array().unwrap().len()
+}
+
+/// Issue #815: a member replaces a dated selection another member made.
+/// The offer leaves out the replaced recipe and the planned ones, the best
+/// score first; the confirmation carries the day, the meal and the number
+/// of people over to the new selection and deletes the old one. The
+/// grocery list follows without being generated again: the replaced
+/// recipe's lines go, but the one another planned recipe still needs; what
+/// the new recipe lacks is added, once per name.
+#[sqlx::test]
+async fn replacing_a_dated_recipe_keeps_its_plan_and_follows_on_the_grocery_list(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) = group_with_member(&router, &db, "replace").await;
+    let day = paris_day(Utc::now())
+        .checked_add_days(Days::new(3))
+        .unwrap();
+
+    let gratin = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([
+            {"name": "Crème", "quantity": 20.0, "unit": "cl", "is_optional": false},
+            {"name": "Lardons", "quantity": 200.0, "unit": "g", "is_optional": false},
+            {"name": "Oignon", "quantity": 1.0, "is_optional": false}
+        ]),
+    )
+    .await;
+    let select = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 4, "planned_on": day, "meal_slot": "dinner"})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    let tarte = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Tarte",
+        serde_json::json!([{"name": "oignon", "quantity": 2.0, "is_optional": false}]),
+    )
+    .await;
+    let soupe = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Soupe",
+        serde_json::json!([
+            {"name": "Poireaux", "quantity": 3.0, "is_optional": false},
+            {"name": "Oignon", "quantity": 1.0, "is_optional": false},
+            {"name": "Bouillon", "quantity": 1.0, "unit": "l", "is_optional": false}
+        ]),
+    )
+    .await;
+    let riz = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Riz",
+        serde_json::json!([{"name": "Riz", "quantity": 300.0, "unit": "g", "is_optional": false}]),
+    )
+    .await;
+    // The stock covers part of the soup: it ranks above the rice.
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Bouillon", "quantity": 1.0, "unit": "l"}),
+    )
+    .await;
+
+    assert_eq!(
+        generate_grocery_list(&router, &owner_cookie, &group_id).await,
+        3
+    );
+    assert_eq!(
+        grocery_lines(&router, &owner_cookie, &group_id).await,
+        [
+            ("Crème".to_string(), Some(gratin.clone())),
+            ("Lardons".to_string(), Some(gratin.clone())),
+            ("Oignon".to_string(), Some(gratin.clone())),
+        ]
+    );
+
+    let offer = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection/replacements"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&offer, StatusCode::OK);
+    let offered: Vec<String> = json_body(offer).await["replacements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["recipe_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(offered, [soupe.clone(), riz.clone()]);
+
+    let replace = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection/replacement"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"recipe_id": soupe})),
+    )
+    .await;
+    assert_status(&replace, StatusCode::OK);
+    let replaced = json_body(replace).await;
+    let selection = &replaced["selection"];
+    assert_eq!(selection["recipe_id"], soupe.as_str());
+    assert_eq!(selection["recipe_name"], "Soupe");
+    assert_eq!(selection["status"], "planned");
+    assert_eq!(selection["servings"], 4);
+    assert_eq!(selection["planned_on"], day.to_string());
+    assert_eq!(selection["meal_slot"], "dinner");
+    assert_eq!(
+        replaced["removed_grocery_items"].as_array().unwrap().len(),
+        2
+    );
+    let added: Vec<&str> = replaced["added_grocery_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(added, ["Poireaux"]);
+
+    assert_eq!(stored_selection(&db, &gratin).await, None);
+    assert_eq!(
+        stored_selection(&db, &soupe).await,
+        Some((
+            "planned".to_string(),
+            Some(4),
+            Some(day),
+            Some("dinner".to_string())
+        ))
+    );
+    let listed: Vec<String> = planned_selections(&router, &owner_cookie, &group_id)
+        .await
+        .iter()
+        .map(|s| s["recipe_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(listed, [soupe.clone(), tarte.clone()]);
+    assert_eq!(
+        grocery_lines(&router, &owner_cookie, &group_id).await,
+        [
+            // Still needed by the tart.
+            ("Oignon".to_string(), Some(gratin.clone())),
+            ("Poireaux".to_string(), Some(soupe.clone())),
+        ]
+    );
+    // Generating again adds nothing the replacement has not.
+    assert_eq!(
+        generate_grocery_list(&router, &owner_cookie, &group_id).await,
+        0
+    );
+}
+
+/// Issue #815: when nothing on the grocery list came from the replaced
+/// recipe, the replacement leaves the list as it is; an unplanned day,
+/// meal and number of people stay unset.
+#[sqlx::test]
+async fn a_replacement_leaves_a_list_that_did_not_follow_the_recipe(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "replace-nolist").await;
+    let gratin = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([{"name": "Crème", "is_optional": false}]),
+    )
+    .await;
+    let soupe = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Soupe",
+        serde_json::json!([{"name": "Poireaux", "is_optional": false}]),
+    )
+    .await;
+    let replace = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection/replacement"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"recipe_id": soupe})),
+    )
+    .await;
+    assert_status(&replace, StatusCode::OK);
+    let replaced = json_body(replace).await;
+    assert!(replaced["selection"]["planned_on"].is_null());
+    assert!(replaced["selection"]["meal_slot"].is_null());
+    assert!(replaced["selection"]["servings"].is_null());
+    assert!(replaced["removed_grocery_items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(replaced["added_grocery_items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(grocery_lines(&router, &owner_cookie, &group_id)
+        .await
+        .is_empty());
+}
+
+/// Issue #815: a refused replacement changes nothing — the replacement
+/// already planned (409), the replaced recipe itself (400), a recipe of
+/// another group or none at all (404), an outsider (403) — and a recipe
+/// that is not planned is neither offered a replacement nor replaced (404).
+#[sqlx::test]
+async fn a_refused_replacement_leaves_the_selection_and_the_list_as_they_were(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "replace-refused").await;
+    let outsider_cookie = register_verify_login(
+        &router,
+        &db,
+        "replace-outsider@example.test",
+        "outsider-password1",
+    )
+    .await;
+    let outsider_group = create_group(&router, &outsider_cookie, "Autre foyer").await;
+    let foreign = create_recipe(&router, &outsider_cookie, &outsider_group, "Ailleurs").await;
+    let day = paris_day(Utc::now())
+        .checked_add_days(Days::new(1))
+        .unwrap();
+
+    let gratin = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([{"name": "Crème", "is_optional": false}]),
+    )
+    .await;
+    let select = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 2, "planned_on": day, "meal_slot": "lunch"})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+    let tarte = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Tarte",
+        serde_json::json!([{"name": "Pâte", "is_optional": false}]),
+    )
+    .await;
+    let free = create_recipe(&router, &owner_cookie, &group_id, "Libre").await;
+    assert_eq!(
+        generate_grocery_list(&router, &owner_cookie, &group_id).await,
+        2
+    );
+    let lines_before = grocery_lines(&router, &owner_cookie, &group_id).await;
+    let before = stored_selection(&db, &gratin).await;
+    assert_eq!(
+        before,
+        Some((
+            "planned".to_string(),
+            Some(2),
+            Some(day),
+            Some("lunch".to_string())
+        ))
+    );
+
+    let replace = format!("/groups/{group_id}/recipes/{gratin}/selection/replacement");
+    let missing = uuid::Uuid::new_v4().to_string();
+    for (cookie, target, status, code) in [
+        (
+            &member_cookie,
+            &tarte,
+            StatusCode::CONFLICT,
+            Some("already_planned"),
+        ),
+        (
+            &member_cookie,
+            &gratin,
+            StatusCode::BAD_REQUEST,
+            Some("same_recipe"),
+        ),
+        (&member_cookie, &foreign, StatusCode::NOT_FOUND, None),
+        (&member_cookie, &missing, StatusCode::NOT_FOUND, None),
+        (&outsider_cookie, &free, StatusCode::FORBIDDEN, None),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &replace,
+            Some(cookie),
+            Some(serde_json::json!({"recipe_id": target})),
+        )
+        .await;
+        assert_status(&res, status);
+        if let Some(code) = code {
+            assert_eq!(json_body(res).await["error"], code, "{target}");
+        }
+    }
+    let offer = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection/replacements"),
+        Some(&outsider_cookie),
+        None,
+    )
+    .await;
+    assert_status(&offer, StatusCode::FORBIDDEN);
+
+    let offer = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/{free}/selection/replacements"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&offer, StatusCode::NOT_FOUND);
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{free}/selection/replacement"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"recipe_id": gratin})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    assert_eq!(stored_selection(&db, &gratin).await, before);
+    assert_eq!(stored_selection(&db, &free).await, None);
+    assert_eq!(
+        grocery_lines(&router, &owner_cookie, &group_id).await,
+        lines_before
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM recipe_selections")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 2);
+}

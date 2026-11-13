@@ -615,7 +615,23 @@ pub async fn add_missing_grocery_items(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    let missing: Vec<_> = planned_availability(&mut tx, group_id, Some(recipe_id), today())
+    let created = add_missing_lines(&mut tx, group_id, auth.user_id, recipe_id).await?;
+    tx.commit().await?;
+
+    Ok((StatusCode::CREATED, Json(json!({ "items": created }))))
+}
+
+/// Adds to the grocery list what the stock lacks of the recipe's `planned`
+/// selection, a name already on the list unchecked excepted; the items
+/// created. Shared by `add_missing_grocery_items` and the replacement of a
+/// selection (#815).
+pub(crate) async fn add_missing_lines(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    user_id: Uuid,
+    recipe_id: Uuid,
+) -> AppResult<Vec<GroceryItemResponse>> {
+    let missing: Vec<_> = planned_availability(tx, group_id, Some(recipe_id), today())
         .await?
         .into_iter()
         .flat_map(|a| a.missing)
@@ -625,7 +641,7 @@ pub async fn add_missing_grocery_items(
         "SELECT name FROM grocery_items WHERE group_id = $1 AND checked = false",
         group_id,
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?
     .into_iter()
     .map(|n| n.trim().to_lowercase())
@@ -644,17 +660,15 @@ pub async fn add_missing_grocery_items(
             RETURNING id, group_id, created_by, name, quantity, unit, checked, source, source_recipe_id, created_at, updated_at
             "#,
             group_id,
-            auth.user_id,
+            user_id,
             line.name,
             line.quantity,
             line.unit,
             line.recipe_id,
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         created.push(GroceryItemResponse::from(item));
     }
-    tx.commit().await?;
-
-    Ok((StatusCode::CREATED, Json(json!({ "items": created }))))
+    Ok(created)
 }

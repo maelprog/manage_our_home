@@ -176,6 +176,21 @@ pub struct PlannedSelectionList {
     pub selections: Vec<PlannedSelectionResponse>,
 }
 
+/// `recipes::selections::list_replacements`.
+#[derive(Serialize, ToSchema)]
+pub struct ReplacementList {
+    pub replacements: Vec<RecipeSuggestion>,
+}
+
+/// `recipes::selections::replace_selection`: the new selection, the
+/// grocery items removed and those added.
+#[derive(Serialize, ToSchema)]
+pub struct SelectionReplaced {
+    pub selection: SelectionResponse,
+    pub removed_grocery_items: Vec<Uuid>,
+    pub added_grocery_items: Vec<GroceryItemResponse>,
+}
+
 /// `recipes::outcome::preview_done`.
 #[derive(Serialize, ToSchema)]
 pub struct DonePreview {
