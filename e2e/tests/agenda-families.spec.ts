@@ -294,6 +294,104 @@ test.describe("Agenda — the day view of several families (#793)", () => {
       expect(fit.famWidth, `${viewport.width}px`).toBeGreaterThan(0);
     }
   });
+
+  // Whatever its length, its title and its column, a block shows a part of
+  // itself whole or not at all: nothing cut by its edge, its title on one
+  // line. Blocks of 30, 31–59 and 60–90 minutes, alone and two, three and
+  // four abreast, long titles among them, from both families.
+  test("no part of a block is cut by its edge, one to four columns, on a phone and on a PC", async ({ page }) => {
+    test.setTimeout(120_000);
+    await registerAndLogin(page, "e2e-agfamcut", "Agenda Familles Bord");
+    const date = parisDayOfMonth(15);
+    const post = async (title: string, from: string, to: string) => {
+      const r = await page.request.post("/agenda/new", {
+        form: { title, starts_at: `${date}T${from}`, ends_at: `${date}T${to}` },
+        maxRedirects: 0,
+      });
+      expect(r.status(), title).toBe(303);
+    };
+    await createGroup(page, F2);
+    for (const [t, a, b] of [
+      ["Réunion parents-professeurs du collège Jean Moulin", "09:00", "10:30"],
+      ["Cours de piano", "11:00", "11:40"],
+      ["Kinésithérapie du genou après l'opération du ménisque", "13:00", "13:45"],
+      ["Appel conseillère de la banque", "13:15", "14:15"],
+      ["Goûter chez les voisins du dessus", "16:10", "16:55"],
+    ]) {
+      await post(t, a, b);
+    }
+    await createGroup(page, F1);
+    for (const [t, a, b] of [
+      ["Cours de piano avec Madame Dubois-Lefebvre", "08:00", "08:45"],
+      ["Rendez-vous notaire", "11:00", "12:00"],
+      ["Dentiste Léa, contrôle et détartrage au cabinet de la place du marché", "13:00", "14:30"],
+      ["Pharmacie", "13:00", "13:30"],
+      ["Natation", "16:00", "17:00"],
+      ["Coiffeur des enfants", "16:20", "17:20"],
+    ]) {
+      await post(t, a, b);
+    }
+
+    const faults: Record<number, string[]> = {};
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 1280, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+      await expect(page.locator("a.blk")).toHaveCount(11);
+      faults[viewport.width] = await page.locator("a.blk").evaluateAll((blocks) =>
+        blocks.flatMap((blk) => {
+          // What an element's box shows of its content: inside its borders.
+          const inner = (e: Element) => {
+            const r = e.getBoundingClientRect();
+            const s = getComputedStyle(e);
+            return {
+              top: r.top + parseFloat(s.borderTopWidth),
+              bottom: r.bottom - parseFloat(s.borderBottomWidth),
+              left: r.left + parseFloat(s.borderLeftWidth),
+              right: r.right - parseFloat(s.borderRightWidth),
+            };
+          };
+          const box = inner(blk);
+          const title = blk.querySelector("strong")!.textContent;
+          const out: string[] = [];
+          for (const part of blk.querySelectorAll("*")) {
+            const p = part.getBoundingClientRect();
+            if (p.width === 0 || p.height === 0) continue;
+            // What is left of it in sight, once each ancestor up to the
+            // block that clips has clipped it.
+            const seen = { top: p.top, bottom: p.bottom, left: p.left, right: p.right };
+            for (let a = part.parentElement; a; a = a.parentElement) {
+              if (getComputedStyle(a).overflowX !== "visible") {
+                const c = inner(a);
+                seen.top = Math.max(seen.top, c.top);
+                seen.bottom = Math.min(seen.bottom, c.bottom);
+                seen.left = Math.max(seen.left, c.left);
+                seen.right = Math.min(seen.right, c.right);
+              }
+              if (a === blk) break;
+            }
+            const hidden = seen.bottom - seen.top <= 0.5 || seen.right - seen.left <= 0.5;
+            const whole =
+              seen.top <= p.top + 0.5 &&
+              seen.bottom >= p.bottom - 0.5 &&
+              seen.left <= p.left + 0.5 &&
+              seen.right >= p.right - 0.5;
+            if (!hidden && !whole) out.push(`${title}: ${part.tagName}.${part.className} cut`);
+          }
+          const strong = blk.querySelector("strong")!;
+          const t = strong.getBoundingClientRect();
+          if (!blk.classList.contains("short")) {
+            if (t.bottom > box.bottom + 0.5 || t.right > box.right + 0.5) out.push(`${title}: title not shown`);
+            if (t.height > parseFloat(getComputedStyle(strong).lineHeight) + 1) out.push(`${title}: title on ${t.height}px`);
+          }
+          return out;
+        }),
+      );
+    }
+    expect(faults).toEqual({ 390: [], 1280: [] });
+  });
 });
 
 // #750 — on a phone, the selector applies each box at once: no « Afficher »

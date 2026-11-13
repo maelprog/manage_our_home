@@ -17,6 +17,10 @@ pub(crate) const SLOT_MINUTES: i64 = 15;
 /// « 12:15 Pharmacie » needs to be read.
 pub(crate) const MIN_MINUTES: usize = 30;
 
+/// The minutes under which a block is one line (`.short`), as the mock-up
+/// draws it: under three quarters of an hour, a second line would not fit.
+pub(crate) const ONE_LINE_UNDER: usize = 45;
+
 /// The UTC instants opening `day` and the day after it, in Paris: 23, 24
 /// or 25 hours apart.
 pub(crate) fn day_bounds(day: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
@@ -335,10 +339,11 @@ pub(crate) fn banner_html(
 }
 
 /// A block of the hours: its title, its real hours, its people's initials,
-/// its family in a view of several. `minutes` is how tall it is: at
-/// `MIN_MINUTES` it is one line, « 12:15 Pharmacie »; under an hour
-/// (`.mid`), two lines, its family beside its hours. Cut at an edge of the
-/// day, that edge is flat and dashed. `inset` places it (`inset`).
+/// its family in a view of several. `minutes` is how tall it is: under
+/// `ONE_LINE_UNDER` it is one line, « 12:15 Pharmacie » (`.short`); under
+/// an hour (`.mid`), two lines, its family beside its hours; from an hour,
+/// its family on a third. Cut at an edge of the day, that edge is flat and
+/// dashed. `inset` places it (`inset`).
 fn block_html(
     occ: &OccurrenceResponse,
     clip: Clip,
@@ -351,25 +356,34 @@ fn block_html(
     let (marker, done) = task_marker(occ);
     let w = worn(occ, members, families);
     let short = match minutes {
-        m if m <= MIN_MINUTES => " short",
+        m if m < ONE_LINE_UNDER => " short",
         m if m < 60 => " mid",
         _ => "",
     };
     let cut_start = if clip.cut_start { " cut-s" } else { "" };
     let cut_end = if clip.cut_end { " cut-e" } else { "" };
     let done = if done { " done" } else { "" };
+    let time = format!(
+        r#"<span class="t">{}</span>{}"#,
+        html_escape(&time_label(
+            occ.occurrence_starts_at,
+            occ.occurrence_ends_at
+        )),
+        w.initials
+    );
+    // Its lines: one at half an hour; the hours, initials and family on
+    // the second under an hour; the family on a third from an hour.
+    let lines = match short {
+        " short" => format!("{time}{}", w.family),
+        " mid" => format!(r#"<span class="sub">{time}{}</span>"#, w.family),
+        _ => format!(r#"<span class="sub">{time}</span>{}"#, w.family),
+    };
     format!(
-        r#"<a class="blk{tint}{short}{cut_start}{cut_end}{done}" style="{inset}" href="{href}"><strong>{private}{marker}{title}</strong> <span class="t">{time}</span>{initials}{family}</a>"#,
+        r#"<a class="blk{tint}{short}{cut_start}{cut_end}{done}" style="{inset}" href="{href}"><strong>{private}{marker}{title}</strong> {lines}</a>"#,
         tint = w.tint,
         href = w.href,
         private = private_mark(e.is_private),
         title = html_escape(&e.title),
-        time = html_escape(&time_label(
-            occ.occurrence_starts_at,
-            occ.occurrence_ends_at
-        )),
-        initials = w.initials,
-        family = w.family,
     )
 }
 
@@ -961,7 +975,7 @@ mod tests {
         let tint = member_tint(Uuid::from_u128(7));
         assert!(
             html.contains(&format!(
-                r#"<tr><th scope="row">10:00</th><td><a class="blk {tint}" {} href="/agenda/{}?occ=2026-11-12T09:00:00Z"><strong>Réunion école</strong> <span class="t">10:00–11:30</span><span class="avatar""#,
+                r#"<tr><th scope="row">10:00</th><td><a class="blk {tint}" {} href="/agenda/{}?occ=2026-11-12T09:00:00Z"><strong>Réunion école</strong> <span class="sub"><span class="t">10:00–11:30</span><span class="avatar""#,
                 styled("top:0%;bottom:-50%;left:0%;right:0%"),
                 Uuid::from_u128(1)
             )),
@@ -970,8 +984,60 @@ mod tests {
         assert!(!html.contains("Rien de prévu"), "{html}");
     }
 
+    /// A block of `minutes` from 10:00 in a view of several families, its
+    /// family worn.
+    fn worn_block(minutes: i64) -> String {
+        let o = occ(
+            "Piano",
+            false,
+            paris(2026, 11, 12, 10, 0),
+            paris(2026, 11, 12, 10, 0) + chrono::Duration::minutes(minutes),
+        );
+        let c = clip(o.occurrence_starts_at, o.occurrence_ends_at, nov(12)).unwrap();
+        let fam = FamilyTag {
+            gid: Uuid::nil(),
+            name: "Foyer",
+            accent: manage_our_home_shared::validation::groups::Accent::default(),
+            carried: None,
+            worn: true,
+        };
+        let html = hours_html(nov(12), &[(&o, c)], &[member()], &[fam], None, true);
+        let start = html.find(r#"<a class="blk"#).expect("a block");
+        html[start..start + html[start..].find("</a>").unwrap()].to_string()
+    }
+
     #[test]
-    fn a_block_under_an_hour_is_mid_and_no_other() {
+    fn a_blocks_lines_are_its_title_its_hours_and_its_family() {
+        let fam =
+            r#"<span class="fam" data-accent="sarcelle"><span class="swatch"></span>Foyer</span>"#;
+        // Half an hour: one line, as it was.
+        let short = worn_block(30);
+        assert!(
+            short.contains(
+                r#"<strong>Piano</strong> <span class="t">10:00–10:30</span><span class="avatar"#
+            ),
+            "{short}"
+        );
+        assert!(short.ends_with(&format!("</span>{fam}")), "{short}");
+        assert!(!short.contains(r#"class="sub""#), "{short}");
+        // Under an hour: the hours, the initials and the family on one line.
+        let mid = worn_block(45);
+        assert!(
+            mid.contains(r#"<strong>Piano</strong> <span class="sub"><span class="t">10:00–10:45</span><span class="avatar"#),
+            "{mid}"
+        );
+        assert!(mid.ends_with(&format!("</span>{fam}</span>")), "{mid}");
+        // An hour or more: the family on a line of its own.
+        let long = worn_block(90);
+        assert!(
+            long.contains(r#"<strong>Piano</strong> <span class="sub"><span class="t">10:00–11:30</span><span class="avatar"#),
+            "{long}"
+        );
+        assert!(long.ends_with(&format!("</span></span>{fam}")), "{long}");
+    }
+
+    #[test]
+    fn a_block_under_three_quarters_is_short_and_under_an_hour_mid() {
         let at = |title: &str, minutes: u32| {
             let html = hours(
                 &[occ(
@@ -986,8 +1052,13 @@ mod tests {
             html[start..start + html[start..].find('>').unwrap()].to_string()
         };
         assert!(!at("Pharmacie", 30).contains(" mid"));
-        assert!(at("Piano", 31).contains(" mid"));
+        assert!(at("Pharmacie", 30).contains(" short"));
+        // Under three quarters of an hour, one line, as the mock-up has it.
+        assert!(at("Piano", 31).contains(" short"));
+        assert!(at("Piano", 44).contains(" short"));
+        assert!(!at("Piano", 44).contains(" mid"));
         assert!(at("Piano", 45).contains(" mid"));
+        assert!(!at("Piano", 45).contains(" short"));
         assert!(at("Piano", 59).contains(" mid"));
         assert!(!at("Réunion", 60).contains(" mid"));
         assert!(!at("Réunion", 90).contains(" mid"));

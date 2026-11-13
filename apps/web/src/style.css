@@ -782,24 +782,31 @@ progress::-moz-progress-bar { background: currentColor; }
 .hours p { margin: var(--s4) 0; text-align: center; white-space: normal; }
 /* A block in the cell of the hour it starts in, placed to the minute by its
    `style` (`day::inset`: top, bottom, left, right in hundredths of the hour
-   and of the width), above the cells of the hours it runs over. Its title
-   on a line, its hours and initials under it, its family under them; half
-   an hour tall (`.short`), one line, the hours first and the family after
-   the title; under an hour (`.mid`), two lines. Cut at an edge of the day, that edge is flat and dashed. */
-.blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-wrap: wrap; align-content: flex-start; align-items: center; gap: 0 var(--s1); overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: normal; }
-.blk strong { flex-basis: 100%; }
-.blk .t { font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+   and of the width), above the cells of the hours it runs over. Its lines
+   (`day::block_html`): its title, cut by an ellipsis; its hours and
+   initials (`.sub`), and its family beside them under an hour (`.mid`);
+   its family on a third line from an hour. A line is shown whole or not at
+   all: one that does not fit under the others wraps into a next column,
+   a gap of the block's width away, out of sight — whatever the block's
+   height and its column's width. Half an hour tall (`.short`), one line,
+   the hours first: what does not fit beside the title wraps to a next line
+   as far below. Cut at an edge of the day, that edge is flat and dashed. */
+.blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
+.blk > *, .sub > * { overflow: hidden; text-overflow: ellipsis; }
+.blk > * { width: 100%; }
+/* One line, as tall as an avatar or as its text, whichever is taller. */
+.sub { display: flex; flex-wrap: wrap; align-items: center; gap: 100% var(--s1); height: max(var(--s4), 1.2em); font-size: var(--t-xs); }
+.blk .t { min-width: 0; font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
 :is(.blk, .ad) .avatar { width: var(--s4); height: var(--s4); }
 .fam { display: flex; flex-basis: 100%; align-items: center; gap: var(--s1); font-size: var(--t-xs); }
-.blk.short { flex-wrap: nowrap; white-space: nowrap; }
-.blk.short strong { flex-basis: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.blk .fam { display: block; flex-basis: auto; }
+.blk .swatch { margin-right: var(--s1); vertical-align: middle; }
+/* Beside the hours, the family takes what is left, 4em at least. */
+.sub .fam { flex: 1 1 0; min-width: 4em; }
+.blk.short { flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
+.blk.short > * { width: auto; }
+.blk.short strong { flex: 1 1 0; min-width: 0; max-width: max-content; }
 .blk.short .t { order: -1; }
-.blk.short .fam { flex-basis: auto; }
-/* Under an hour (`.mid`), a block has room for two lines: its family goes
-   beside its hours and initials, cut by an ellipsis, rather than on a third
-   line the block's edge would cut through. */
-.blk.mid .fam { display: block; flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.blk.mid .swatch { margin-right: var(--s1); }
 .cut-s { border-top: var(--s2) dashed; border-top-left-radius: 0; border-top-right-radius: 0; }
 .cut-e { border-bottom: var(--s2) dashed; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 /* The current time across its hour, to the quarter, drawn when the page
