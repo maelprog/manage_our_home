@@ -1800,13 +1800,14 @@ async fn any_member_sets_changes_and_removes_the_plan(db: PgPool) {
         Method::POST,
         &path,
         Some(&owner_cookie),
-        Some(serde_json::json!({"planned_on": later(3), "meal_slot": "dinner"})),
+        Some(serde_json::json!({"servings": 2, "planned_on": later(3), "meal_slot": "dinner"})),
     )
     .await;
     assert_status(&select, StatusCode::CREATED);
     let select = json_body(select).await;
     assert_eq!(select["planned_on"], later(3).to_string());
     assert_eq!(select["meal_slot"], "dinner");
+    assert_eq!(select["servings"], 2);
 
     // Selecting again without a plan leaves it.
     let again = call(
@@ -1822,26 +1823,31 @@ async fn any_member_sets_changes_and_removes_the_plan(db: PgPool) {
     assert_eq!(again["planned_on"], later(3).to_string());
     assert_eq!(again["meal_slot"], "dinner");
 
-    // Another member changes the day: the meal stays.
+    // Another member changes the day: the meal and the number of people
+    // stay.
     let res = patch(serde_json::json!({"planned_on": later(5)})).await;
     assert_status(&res, StatusCode::OK);
     let body = json_body(res).await;
     assert_eq!(body["planned_on"], later(5).to_string());
     assert_eq!(body["meal_slot"], "dinner");
+    assert_eq!(body["servings"], 2);
     assert_eq!(
         stored_plan(&db, &recipe_id).await,
         (Some(later(5)), Some("dinner".into()))
     );
 
-    // The meal changes, then goes; the day stays.
+    // The meal changes, then goes; the day and the number of people stay.
     let res = patch(serde_json::json!({"meal_slot": "lunch"})).await;
     assert_status(&res, StatusCode::OK);
-    assert_eq!(json_body(res).await["meal_slot"], "lunch");
+    let body = json_body(res).await;
+    assert_eq!(body["meal_slot"], "lunch");
+    assert_eq!(body["servings"], 2);
     let res = patch(serde_json::json!({"meal_slot": null})).await;
     assert_status(&res, StatusCode::OK);
     let body = json_body(res).await;
     assert!(body["meal_slot"].is_null());
     assert_eq!(body["planned_on"], later(5).to_string());
+    assert_eq!(body["servings"], 2);
 
     // Refused: each leaves the row as it was.
     let res = patch(serde_json::json!({"meal_slot": "dinner"})).await;
@@ -1878,7 +1884,7 @@ async fn any_member_sets_changes_and_removes_the_plan(db: PgPool) {
         (Some(later(5)), Some("dinner".into()))
     );
     let listed = planned_selections(&router, &owner_cookie, &group_id).await;
-    assert!(listed[0]["servings"].is_null());
+    assert_eq!(listed[0]["servings"], 2);
 
     // The bounds themselves are accepted, in the past too.
     for on in [later(366), earlier(366)] {
