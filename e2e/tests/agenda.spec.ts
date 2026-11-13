@@ -1067,6 +1067,7 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
       await createGroup(page, "Famille Journée");
       await postEvent(page, `title=R%C3%A9union+%C3%A9cole&starts_at=${DAY}T10:00&ends_at=${DAY}T11:30`);
       await postEvent(page, `title=Appel+plombier&starts_at=${DAY}T10:30&ends_at=${DAY}T11:00`);
+      await postEvent(page, `title=Caf%C3%A9&starts_at=${DAY}T09:05&ends_at=${DAY}T09:50`);
       await postEvent(page, `title=Soir%C3%A9e+tardive&starts_at=${DAY}T23:00&ends_at=${NEXT}T01:00`);
       await postEvent(page, `title=Voyage+scolaire&all_day=on&starts_at=2027-03-09&ends_at=${NEXT}`);
 
@@ -1105,6 +1106,15 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
       expect(b.x).toBeGreaterThanOrEqual(a.x + a.width - 1);
       // The longer is about three times the shorter: 1 h 30 against 30 min.
       expect(a.height / b.height).toBeGreaterThan(2.5);
+
+      // To the minute: 09:05–09:50 starts 5 min into its hour and is 45 min
+      // tall, its margin of 1 px at each edge aside.
+      const coffee = await page.locator("a.blk", { hasText: "Café" }).boundingBox();
+      const nine = await page.locator(".hours th", { hasText: "09:00" }).boundingBox();
+      if (!coffee || !nine) throw new Error("the 09:00 hour or its block has no box");
+      expect(nine.height).toBeCloseTo(56, 0);
+      expect(Math.abs(coffee.y - (nine.y + (5 * nine.height) / 60 + 1))).toBeLessThanOrEqual(1);
+      expect(Math.abs(coffee.height - ((45 * nine.height) / 60 - 2))).toBeLessThanOrEqual(1);
 
       // The evening event, cut at midnight, says its real hours.
       const evening = page.locator("a.blk", { hasText: "Soirée tardive" });

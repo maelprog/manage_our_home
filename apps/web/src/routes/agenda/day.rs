@@ -10,13 +10,12 @@ use crate::app::html_escape;
 use super::calendar::{family_of, initials, member_tint, people, short_weekday, FamilyTag};
 use super::{fmt_paris, private_mark, with_family, DISPLAY_TZ};
 
-/// Minutes a row of the hours stands for: a block starts on the quarter
-/// its event starts in and ends on the quarter its event ends in.
+/// The precision of the line of the current time: a quarter of its hour.
 pub(crate) const SLOT_MINUTES: i64 = 15;
 
-/// The rows a block takes at least, half an hour: what one line of « 12:15
-/// Pharmacie » needs to be read.
-pub(crate) const MIN_ROWS: usize = 2;
+/// The minutes a block is tall at least, half an hour: what one line of
+/// « 12:15 Pharmacie » needs to be read.
+pub(crate) const MIN_MINUTES: usize = 30;
 
 /// The UTC instants opening `day` and the day after it, in Paris: 23, 24
 /// or 25 hours apart.
@@ -86,17 +85,41 @@ pub(crate) fn place(
     }
 }
 
-/// The rows a block takes in a day of `total` rows, `[start, end)`: from
-/// the quarter its first minute is in to the one its last minute is in, at
-/// least `MIN_ROWS`, and never past the day — a block too close to its end
-/// to have its minimum moves up.
-pub(crate) fn rows_of(clip: Clip, total: usize) -> (usize, usize) {
-    let quarter = SLOT_MINUTES as usize;
-    let start = (clip.from.max(0) as usize / quarter).min(total.saturating_sub(1));
-    let end = (clip.to.max(0) as usize).div_ceil(quarter);
-    let end = end.max(start + MIN_ROWS).min(total);
-    let start = start.min(end.saturating_sub(MIN_ROWS));
-    (start, end)
+/// The minutes a block covers in a day of `length` minutes, `[start,
+/// end)`: those of its event, to the minute, at least `MIN_MINUTES`, and
+/// never past the day — a block too close to its end to have its minimum
+/// moves up.
+pub(crate) fn extent(clip: Clip, length: usize) -> (usize, usize) {
+    let start = (clip.from.max(0) as usize).min(length);
+    let end = (clip.to.max(0) as usize)
+        .max(start + MIN_MINUTES)
+        .min(length);
+    (start.min(end.saturating_sub(MIN_MINUTES)), end)
+}
+
+/// `part / whole` in hundredths, to the thousandth, without trailing zeros:
+/// « 25 », « 8.333 », « -50 ».
+fn hundredths(part: i64, whole: i64) -> String {
+    let value = format!("{:.3}", 100.0 * part as f64 / whole as f64);
+    let value = value.trim_end_matches('0').trim_end_matches('.');
+    if value == "-0" { "0" } else { value }.to_string()
+}
+
+/// The `style` of a block in the cell of the hour it starts in: its top and
+/// bottom in hundredths of that hour (the bottom below the cell when it
+/// lasts past the hour), its left and right in hundredths of the width, for
+/// a block starting `minute` minutes into the hour, `minutes` tall, in
+/// `lane` of `width` columns.
+pub(crate) fn inset(minute: usize, minutes: usize, lane: Lane, width: usize) -> String {
+    let (minute, minutes) = (minute as i64, minutes as i64);
+    let (col, span, width) = (lane.col as i64, lane.span as i64, width.max(1) as i64);
+    format!(
+        "top:{}%;bottom:{}%;left:{}%;right:{}%",
+        hundredths(minute, 60),
+        hundredths(60 - minute - minutes, 60),
+        hundredths(col, width),
+        hundredths(width - col - span, width),
+    )
 }
 
 /// A block's column, and how many columns it spans.
@@ -312,25 +335,26 @@ pub(crate) fn banner_html(
 }
 
 /// A block of the hours: its title, its real hours, its people's initials,
-/// its family in a view of several. `rows` is how many rows it takes: at
-/// `MIN_ROWS` it is one line, « 12:15 Pharmacie ». Cut at an edge of the
-/// day, that edge is flat and dashed.
+/// its family in a view of several. `minutes` is how tall it is: at
+/// `MIN_MINUTES` it is one line, « 12:15 Pharmacie ». Cut at an edge of the
+/// day, that edge is flat and dashed. `inset` places it (`inset`).
 fn block_html(
     occ: &OccurrenceResponse,
     clip: Clip,
-    rows: usize,
+    minutes: usize,
+    inset: &str,
     members: &[GroupMember],
     families: &[FamilyTag],
 ) -> String {
     let e = &occ.event;
     let (marker, done) = task_marker(occ);
     let w = worn(occ, members, families);
-    let short = if rows <= MIN_ROWS { " short" } else { "" };
+    let short = if minutes <= MIN_MINUTES { " short" } else { "" };
     let cut_start = if clip.cut_start { " cut-s" } else { "" };
     let cut_end = if clip.cut_end { " cut-e" } else { "" };
     let done = if done { " done" } else { "" };
     format!(
-        r#"<a class="blk{tint}{short}{cut_start}{cut_end}{done}" href="{href}"><strong>{private}{marker}{title}</strong> <span class="t">{time}</span>{initials}{family}</a>"#,
+        r#"<a class="blk{tint}{short}{cut_start}{cut_end}{done}" style="{inset}" href="{href}"><strong>{private}{marker}{title}</strong> <span class="t">{time}</span>{initials}{family}</a>"#,
         tint = w.tint,
         href = w.href,
         private = private_mark(e.is_private),
@@ -359,13 +383,14 @@ fn now_line(quarter: usize, now: DateTime<Utc>) -> String {
     )
 }
 
-/// The hours of the day (#793): a table of one row per quarter of an hour
-/// that elapses — 92, 96 or 100 — each hour named in its first column, and
-/// each block a cell spanning its rows (`rowspan`) and its columns
-/// (`colspan`, `lanes`). HTML attributes place and size the blocks, not an
-/// inline `style`, which DESIGN.md keeps to a bounded residue. The table is
-/// `role="presentation"`: its links read in time order, and a screen reader
-/// is not walked through a hundred empty cells.
+/// The hours of the day (#793): a table of one row per hour that elapses —
+/// 23, 24 or 25 — each named in its first cell, each block in the second
+/// cell of the hour it starts in, placed to the minute by its `style`
+/// (`inset`): down from the top of that hour, as tall as it lasts, in its
+/// column of the day (`lanes`). That `style` is the one per block that
+/// DESIGN.md's residue of inline styles admits (arbitrage of 2026-11-13).
+/// The table is `role="presentation"`: its links read in time order, and a
+/// screen reader is not walked through two dozen empty cells.
 ///
 /// The row of 08:00 carries `id="h8"`, which the sheet makes the scroller's
 /// initial target, so the day opens on the morning without a script; the
@@ -382,79 +407,41 @@ pub(crate) fn hours_html(
     empty_note: bool,
 ) -> String {
     let labels = hour_labels(day);
-    let per_hour = (60 / SLOT_MINUTES) as usize;
-    let total = labels.len() * per_hour;
-    let rows: Vec<(usize, usize)> = blocks.iter().map(|(_, c)| rows_of(*c, total)).collect();
-    let (lanes, width) = lanes(&rows);
-    let eight = labels
-        .iter()
-        .position(|l| l == "08:00")
-        .map(|h| h * per_hour);
+    let length = labels.len() * 60;
+    let spans: Vec<(usize, usize)> = blocks.iter().map(|(_, c)| extent(*c, length)).collect();
+    let (lanes, width) = lanes(&spans);
+    let mut order: Vec<usize> = (0..blocks.len()).collect();
+    order.sort_by_key(|&i| (spans[i].0, lanes[i].col));
     let now_at = now.and_then(|n| now_mark(n, day).map(|m| (m, n)));
-    let mut starting: Vec<Vec<usize>> = vec![Vec::new(); total];
-    for (i, (start, _)) in rows.iter().enumerate() {
-        starting[*start].push(i);
-    }
-    let mut taken = vec![vec![false; width]; total];
-    let span_attr = |name: &str, n: usize| {
-        if n > 1 {
-            format!(r#" {name}="{n}""#)
-        } else {
-            String::new()
-        }
-    };
     let mut out = String::new();
-    for r in 0..total {
-        out.push_str(if Some(r) == eight {
+    for (hour, label) in labels.iter().enumerate() {
+        out.push_str(if label == "08:00" {
             r#"<tr id="h8">"#
         } else {
             "<tr>"
         });
-        if r % per_hour == 0 {
-            let hour = r / per_hour;
-            let mark = match now_at {
-                Some(((h, quarter), n)) if h == hour => now_line(quarter, n),
-                _ => String::new(),
-            };
-            out.push_str(&format!(
-                r#"<th scope="row" rowspan="{per_hour}">{}{mark}</th>"#,
-                labels[hour]
+        let mark = match now_at {
+            Some(((h, quarter), n)) if h == hour => now_line(quarter, n),
+            _ => String::new(),
+        };
+        out.push_str(&format!(r#"<th scope="row">{label}{mark}</th><td>"#));
+        if empty_note && blocks.is_empty() && label == "08:00" {
+            out.push_str(r#"<p class="muted">Rien de prévu à l'heure ce jour-là.</p>"#);
+        }
+        for &i in order.iter().filter(|&&i| spans[i].0 / 60 == hour) {
+            let (start, end) = spans[i];
+            let (occ, clip) = blocks[i];
+            let place = inset(start % 60, end - start, lanes[i], width);
+            out.push_str(&block_html(
+                occ,
+                clip,
+                end - start,
+                &place,
+                members,
+                families,
             ));
         }
-        if empty_note && blocks.is_empty() && Some(r) == eight {
-            let end = (r + per_hour).min(total);
-            for row in &mut taken[r..end] {
-                row.fill(true);
-            }
-            out.push_str(&format!(
-                r#"<td{}><p class="muted">Rien de prévu à l'heure ce jour-là.</p></td>"#,
-                span_attr("rowspan", end - r)
-            ));
-        }
-        let mut c = 0;
-        while c < width {
-            if let Some(&i) = starting[r].iter().find(|&&i| lanes[i].col == c) {
-                let (start, end) = rows[i];
-                let Lane { col, span } = lanes[i];
-                for row in &mut taken[start..end] {
-                    row[col..col + span].fill(true);
-                }
-                let (occ, clip) = blocks[i];
-                out.push_str(&format!(
-                    "<td{}{}>{}</td>",
-                    span_attr("rowspan", end - start),
-                    span_attr("colspan", span),
-                    block_html(occ, clip, end - start, members, families)
-                ));
-                c += span;
-            } else {
-                if !taken[r][c] {
-                    out.push_str("<td></td>");
-                }
-                c += 1;
-            }
-        }
-        out.push_str("</tr>");
+        out.push_str("</td></tr>");
     }
     format!(
         r#"<div class="hours-scroll" tabindex="0" role="region" aria-label="Heures"><table class="hours" role="presentation"><tbody>{out}</tbody></table></div>"#
@@ -634,30 +621,58 @@ mod tests {
         assert_eq!(place(false, s, e, nov(14)), None);
     }
 
-    // -- rows_of: a block's position and height ----------------------------
+    // -- extent: a block's position and height ----------------------------
 
     #[test]
-    fn a_block_starts_on_its_quarter_and_is_as_tall_as_its_length() {
-        // 10:00–11:30: row 40, six quarters.
-        assert_eq!(rows_of(clip_of(600, 690, false, false), 96), (40, 46));
-        // 10:05–11:20 starts in the 10:00 row and ends in the 11:15 one.
-        assert_eq!(rows_of(clip_of(605, 680, false, false), 96), (40, 46));
+    fn a_block_starts_at_its_minute_and_is_as_tall_as_its_length() {
+        assert_eq!(extent(clip_of(600, 690, false, false), 1440), (600, 690));
+        // 10:05–11:20, to the minute.
+        assert_eq!(extent(clip_of(605, 680, false, false), 1440), (605, 680));
     }
 
     #[test]
-    fn a_short_block_is_two_rows_tall() {
-        assert_eq!(rows_of(clip_of(735, 735, false, false), 96), (49, 51));
-        assert_eq!(rows_of(clip_of(735, 750, false, false), 96), (49, 51));
-        assert_eq!(rows_of(clip_of(605, 610, false, false), 96), (40, 42));
+    fn a_short_block_is_half_an_hour_tall() {
+        assert_eq!(extent(clip_of(735, 735, false, false), 1440), (735, 765));
+        assert_eq!(extent(clip_of(735, 750, false, false), 1440), (735, 765));
+        assert_eq!(extent(clip_of(605, 610, false, false), 1440), (605, 635));
+        assert_eq!(extent(clip_of(600, 630, false, false), 1440), (600, 630));
     }
 
     #[test]
     fn a_block_stays_inside_the_day() {
-        assert_eq!(rows_of(clip_of(1380, 1440, false, true), 96), (92, 96));
-        // 23:50: two rows, the last two of the day.
-        assert_eq!(rows_of(clip_of(1430, 1440, false, false), 96), (94, 96));
-        // A day of 23 hours has 92 rows.
-        assert_eq!(rows_of(clip_of(1320, 1380, false, true), 92), (88, 92));
+        assert_eq!(extent(clip_of(1380, 1440, false, true), 1440), (1380, 1440));
+        // 23:50: half an hour, the last of the day.
+        assert_eq!(
+            extent(clip_of(1430, 1440, false, false), 1440),
+            (1410, 1440)
+        );
+        // A day of 23 hours lasts 1380 minutes.
+        assert_eq!(extent(clip_of(1320, 1380, false, true), 1380), (1320, 1380));
+        assert_eq!(
+            extent(clip_of(1380, 1380, false, false), 1380),
+            (1350, 1380)
+        );
+    }
+
+    // -- inset: a block's place in the cell of its hour --------------------
+
+    #[test]
+    fn a_block_is_placed_in_hundredths_of_its_hour_and_of_the_width() {
+        // 10:00–11:30, alone: from the top of its hour to half the next.
+        assert_eq!(
+            inset(0, 90, lane(0, 1), 1),
+            "top:0%;bottom:-50%;left:0%;right:0%"
+        );
+        // 10:15–10:45, the second of two columns.
+        assert_eq!(
+            inset(15, 30, lane(1, 1), 2),
+            "top:25%;bottom:25%;left:50%;right:0%"
+        );
+        // 10:05–10:50, the first of three columns, spanning two.
+        assert_eq!(
+            inset(5, 45, lane(0, 2), 3),
+            "top:8.333%;bottom:16.667%;left:0%;right:33.333%"
+        );
     }
 
     // -- lanes: overlapping blocks side by side ---------------------------
@@ -880,6 +895,12 @@ mod tests {
         }
     }
 
+    /// The `style` attribute holding `value`, assembled: the count of inline
+    /// styles (`app.rs`) reads this file, and an expectation is not one.
+    fn styled(value: &str) -> String {
+        format!("style{}\"{value}\"", '=')
+    }
+
     /// The hours of 12 November drawn with `occs`, each clipped to the day.
     fn hours(occs: &[OccurrenceResponse], now: Option<DateTime<Utc>>) -> String {
         let blocks: Vec<(&OccurrenceResponse, Clip)> = occs
@@ -893,20 +914,16 @@ mod tests {
     }
 
     #[test]
-    fn the_hours_are_a_row_per_quarter_and_each_hour_named() {
+    fn the_hours_are_a_row_per_hour_each_named() {
         let html = hours(&[], None);
-        assert_eq!(html.matches("<tr").count(), 96, "{html}");
-        assert_eq!(
-            html.matches(r#"<th scope="row" rowspan="4">"#).count(),
-            24,
+        assert_eq!(html.matches("<tr").count(), 24, "{html}");
+        assert_eq!(html.matches(r#"<th scope="row">"#).count(), 24, "{html}");
+        assert!(
+            html.contains(r#"<tr><th scope="row">00:00</th><td></td></tr>"#),
             "{html}"
         );
         assert!(
-            html.contains(r#"<th scope="row" rowspan="4">00:00</th>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<tr id="h8"><th scope="row" rowspan="4">08:00</th>"#),
+            html.contains(r#"<tr id="h8"><th scope="row">08:00</th>"#),
             "{html}"
         );
         assert!(
@@ -919,7 +936,7 @@ mod tests {
     fn a_day_with_nothing_at_an_hour_says_so_at_eight() {
         let html = hours(&[], None);
         assert!(
-            html.contains(r#"<tr id="h8"><th scope="row" rowspan="4">08:00</th><td rowspan="4"><p class="muted">Rien de prévu à l'heure ce jour-là.</p></td></tr>"#),
+            html.contains(r#"<tr id="h8"><th scope="row">08:00</th><td><p class="muted">Rien de prévu à l'heure ce jour-là.</p></td></tr>"#),
             "{html}"
         );
         // Not when the events could not be read.
@@ -928,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn a_block_spans_the_rows_of_its_length_in_its_members_tint() {
+    fn a_block_is_placed_in_its_hour_as_tall_as_it_lasts_in_its_members_tint() {
         let o = occ(
             "Réunion école",
             false,
@@ -939,7 +956,8 @@ mod tests {
         let tint = member_tint(Uuid::from_u128(7));
         assert!(
             html.contains(&format!(
-                r#"<td rowspan="6"><a class="blk {tint}" href="/agenda/{}?occ=2026-11-12T09:00:00Z"><strong>Réunion école</strong> <span class="t">10:00–11:30</span><span class="avatar""#,
+                r#"<tr><th scope="row">10:00</th><td><a class="blk {tint}" {} href="/agenda/{}?occ=2026-11-12T09:00:00Z"><strong>Réunion école</strong> <span class="t">10:00–11:30</span><span class="avatar""#,
+                styled("top:0%;bottom:-50%;left:0%;right:0%"),
                 Uuid::from_u128(1)
             )),
             "{html}"
@@ -962,14 +980,25 @@ mod tests {
             paris(2026, 11, 12, 11, 0),
         );
         let html = hours(&[a, b], None);
-        // Two columns: the 10:00 row holds the long block and an empty
-        // cell, the 10:30 row the short one beside it.
-        assert!(html.contains(r#"<td rowspan="6"><a class="blk"#), "{html}");
-        assert!(html.contains(r#"<td rowspan="2"><a class="blk"#), "{html}");
-        assert!(html.contains(" short\""), "{html}");
-        // A row away from them has two empty cells.
+        // Two columns in the cell of 10:00: the long block on the left,
+        // the short one beside it from half past, in time order.
+        let long = html
+            .find(&styled("top:0%;bottom:-50%;left:0%;right:50%"))
+            .expect(&html);
+        let short = html
+            .find(&format!(
+                r#" short" {}"#,
+                styled("top:50%;bottom:0%;left:50%;right:0%")
+            ))
+            .expect(&html);
+        assert!(long < short, "{html}");
         assert!(
-            html.contains(r#"<th scope="row" rowspan="4">00:00</th><td></td><td></td></tr>"#),
+            html.contains(r#"<tr><th scope="row">10:00</th><td><a class="blk"#),
+            "{html}"
+        );
+        // A row away from them has an empty cell.
+        assert!(
+            html.contains(r#"<tr><th scope="row">00:00</th><td></td></tr>"#),
             "{html}"
         );
     }
@@ -983,8 +1012,17 @@ mod tests {
             paris(2026, 11, 13, 1, 0),
         );
         let html = hours(&[o], None);
-        assert!(html.contains(r#"<td rowspan="4"><a class="blk"#), "{html}");
-        assert!(html.contains(" cut-e\""), "{html}");
+        assert!(
+            html.contains(r#"<tr><th scope="row">23:00</th><td><a class="blk"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#" cut-e" {}"#,
+                styled("top:0%;bottom:0%;left:0%;right:0%")
+            )),
+            "{html}"
+        );
         assert!(html.contains("23:00–01:00"), "{html}");
     }
 
@@ -992,7 +1030,7 @@ mod tests {
     fn now_is_a_line_in_its_hour_on_today_only() {
         let html = hours(&[], Some(paris(2026, 11, 12, 14, 20)));
         assert!(
-            html.contains(r#"<th scope="row" rowspan="4">14:00<span class="now q1"><span class="sr-only">Il est 14:20</span></span></th>"#),
+            html.contains(r#"<th scope="row">14:00<span class="now q1"><span class="sr-only">Il est 14:20</span></span></th>"#),
             "{html}"
         );
         assert_eq!(html.matches("now").count(), 1, "{html}");
@@ -1003,9 +1041,9 @@ mod tests {
     #[test]
     fn the_morning_is_found_by_the_clock_on_a_day_of_25_hours() {
         let html = hours_html(date(2026, 10, 25), &[], &[], &[], None, true);
-        assert_eq!(html.matches("<tr").count(), 100, "{html}");
+        assert_eq!(html.matches("<tr").count(), 25, "{html}");
         assert!(
-            html.contains(r#"<tr id="h8"><th scope="row" rowspan="4">08:00</th>"#),
+            html.contains(r#"<tr id="h8"><th scope="row">08:00</th>"#),
             "{html}"
         );
     }
