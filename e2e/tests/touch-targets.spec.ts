@@ -114,8 +114,9 @@ interface Box {
  * - the day view's targets kept at the mock-up's size (#793, arbitrage of
  *   2026-11-13, DESIGN.md → « L'agenda sur téléphone : vue jour », followed
  *   by an issue of its own): a block of the hours (`.blk`), as tall as its
- *   event lasts, a short one 28px; a line of the « Journée » banner (`.ad`),
- *   32px; a day's number in the grid (`.cal-day a`), about 28px.
+ *   event lasts, a short one 26px tall; a line of the « Journée » banner
+ *   (`.ad`), 32px; a day's number in the grid (`.cal-day a`), 28px square on
+ *   a PC and 25px tall in the phone's list.
  */
 async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
