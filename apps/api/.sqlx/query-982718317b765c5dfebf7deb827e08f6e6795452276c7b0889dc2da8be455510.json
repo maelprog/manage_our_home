@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO recipe_selections\n            (group_id, recipe_id, servings, planned_on, meal_slot, created_by)\n        VALUES ($1, $2, $3, $4, $5, $6)\n        ON CONFLICT (recipe_id) WHERE status = 'planned' DO UPDATE SET\n            servings = COALESCE(EXCLUDED.servings, recipe_selections.servings),\n            planned_on = COALESCE(EXCLUDED.planned_on, recipe_selections.planned_on),\n            meal_slot = CASE\n                WHEN EXCLUDED.planned_on IS NOT NULL THEN EXCLUDED.meal_slot\n                ELSE recipe_selections.meal_slot\n            END,\n            updated_at = CASE\n                WHEN (EXCLUDED.servings IS NOT NULL\n                      AND EXCLUDED.servings IS DISTINCT FROM recipe_selections.servings)\n                  OR (EXCLUDED.planned_on IS NOT NULL\n                      AND (EXCLUDED.planned_on, EXCLUDED.meal_slot) IS DISTINCT FROM\n                          (recipe_selections.planned_on, recipe_selections.meal_slot))\n                THEN now()\n                ELSE recipe_selections.updated_at\n            END\n        RETURNING id, recipe_id, status, servings, planned_on, meal_slot,\n                  created_by, created_at, updated_at,\n                  (xmax = 0) AS \"inserted!\"\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "recipe_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "servings"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "planned_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "planned_on"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "meal_slot",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "meal_slot"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "inserted!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int4",
+        "Date",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "982718317b765c5dfebf7deb827e08f6e6795452276c7b0889dc2da8be455510"
+}

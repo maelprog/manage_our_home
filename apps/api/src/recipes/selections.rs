@@ -6,7 +6,10 @@
 //! change the number of people it is cooked for, or deselect it, whoever
 //! selected it (controller's decision of 2026-10-24). Selecting a recipe
 //! already planned is idempotent: 200 with the existing selection, its
-//! `servings` updated when the request carries one. Moving a selection to
+//! `servings` updated when the request carries one. A selection may say
+//! when it is meant to be cooked, a day and a meal of that day (#811,
+//! `0056_recipe_selection_plan.sql`): both optional, changed by any member
+//! like `servings`. Moving a selection to
 //! `done` or `abandoned` is `recipes::outcome` (#473); generating the
 //! grocery list from the selections is #470. The list tells, for each
 //! selection, what the stock lacks and by when it should be cooked
@@ -15,7 +18,7 @@
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -31,6 +34,98 @@ use crate::AppState;
 /// `CHECK` of `recipe_selections.servings` (0033) holds the same bound.
 pub(crate) const SERVINGS_MAX: i32 = 50;
 
+/// How far from the day of the request a selection may be dated, before or
+/// after (#811).
+pub(crate) const PLAN_HORIZON_DAYS: i64 = 366;
+
+/// The meal of the day a selection is planned for (#811). The `CHECK` of
+/// `recipe_selections.meal_slot` (0056) holds the same two values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MealSlot {
+    Lunch,
+    Dinner,
+}
+
+impl MealSlot {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "lunch" => Some(Self::Lunch),
+            "dinner" => Some(Self::Dinner),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Lunch => "lunch",
+            Self::Dinner => "dinner",
+        }
+    }
+}
+
+/// When a selection is meant to be cooked: a day, and a meal of that day.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Plan {
+    pub planned_on: Option<NaiveDate>,
+    pub meal_slot: Option<MealSlot>,
+}
+
+/// The plan `current` becomes once a request's fields are applied (#811).
+/// Each field has three states: absent (`None`, left as it is), `null`
+/// (`Some(None)`, removed) and a value (set). A date given must lie within
+/// [`PLAN_HORIZON_DAYS`] of `today` (`invalid_planned_on`); a date kept
+/// from `current` is not judged again, so an old plan does not block a
+/// change of `servings`. A meal must be `lunch` or `dinner`, and the
+/// result may not have a meal without a day (`invalid_meal_slot`).
+pub(crate) fn merge_plan(
+    current: Plan,
+    planned_on: Option<Option<NaiveDate>>,
+    meal_slot: Option<Option<&str>>,
+    today: NaiveDate,
+) -> AppResult<Plan> {
+    let planned_on = match planned_on {
+        None => current.planned_on,
+        Some(None) => None,
+        Some(Some(day)) => {
+            if (day - today).num_days().abs() > PLAN_HORIZON_DAYS {
+                return Err(AppError::BadRequest("invalid_planned_on".into()));
+            }
+            Some(day)
+        }
+    };
+    let meal_slot = match meal_slot {
+        None => current.meal_slot,
+        Some(None) => None,
+        Some(Some(value)) => Some(
+            MealSlot::parse(value)
+                .ok_or_else(|| AppError::BadRequest("invalid_meal_slot".into()))?,
+        ),
+    };
+    if meal_slot.is_some() && planned_on.is_none() {
+        return Err(AppError::BadRequest("invalid_meal_slot".into()));
+    }
+    Ok(Plan {
+        planned_on,
+        meal_slot,
+    })
+}
+
+/// The order of the list by plan (#811): by day, then lunch, dinner and
+/// no meal; the selections without a day last. Sorted stably on it, the
+/// undated ones keep the order they came in.
+pub(crate) fn plan_key(
+    planned_on: Option<NaiveDate>,
+    meal_slot: Option<&str>,
+) -> (bool, Option<NaiveDate>, u8) {
+    let meal = match meal_slot.and_then(MealSlot::parse) {
+        Some(MealSlot::Lunch) => 0,
+        Some(MealSlot::Dinner) => 1,
+        None => 2,
+    };
+    // `false` sorts first.
+    (planned_on.is_none(), planned_on, meal)
+}
+
 /// A selection's number of people: from 1 to [`SERVINGS_MAX`].
 pub(crate) fn validate_servings(servings: i32) -> AppResult<i32> {
     if (1..=SERVINGS_MAX).contains(&servings) {
@@ -45,11 +140,37 @@ pub struct SelectRecipeRequest {
     /// Number of people; left as it is (or unset, on a new selection) when
     /// omitted.
     pub servings: Option<i32>,
+    /// Day the recipe is meant to be cooked, at most 366 days from today.
+    /// When given, it replaces the selection's day and meal (`meal_slot`,
+    /// unset when omitted); when omitted, both are left as they are.
+    pub planned_on: Option<NaiveDate>,
+    /// `lunch` or `dinner`; only with `planned_on`.
+    pub meal_slot: Option<String>,
 }
 
+/// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
+/// as a missing key, so a naive `Option<Option<T>>` field can never observe
+/// `Some(None)` (same pattern as `recipes::crud`).
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Each field is left as it is when omitted.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateSelectionRequest {
-    pub servings: i32,
+    pub servings: Option<i32>,
+    /// Day the recipe is meant to be cooked, at most 366 days from today;
+    /// `null` removes it, and must remove the meal with it.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub planned_on: Option<Option<NaiveDate>>,
+    /// `lunch` or `dinner`, on a selection that has a day; `null` removes
+    /// it.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub meal_slot: Option<Option<String>>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -59,6 +180,10 @@ pub struct SelectionResponse {
     pub recipe_name: String,
     pub status: String,
     pub servings: Option<i32>,
+    /// Day the recipe is meant to be cooked (#811), if said.
+    pub planned_on: Option<NaiveDate>,
+    /// `lunch` or `dinner` (#811), if said; never without `planned_on`.
+    pub meal_slot: Option<String>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -94,7 +219,7 @@ async fn recipe_name(
     responses(
         (status = 201, description = "Recipe planned", body = SelectionResponse),
         (status = 200, description = "Already planned: the selection as it is", body = SelectionResponse),
-        (status = 400, description = "`invalid_servings`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`invalid_servings`, `invalid_planned_on` (more than 366 days from today), `invalid_meal_slot` (not `lunch` nor `dinner`, or without `planned_on`)", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no such recipe", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
@@ -107,6 +232,14 @@ pub async fn select_recipe(
     Json(body): Json<SelectRecipeRequest>,
 ) -> AppResult<impl IntoResponse> {
     let servings = body.servings.map(validate_servings).transpose()?;
+    // Judged on its own: a day given replaces the plan, meal included, and
+    // a meal comes only with a day.
+    let plan = merge_plan(
+        Plan::default(),
+        body.planned_on.map(Some),
+        body.meal_slot.as_deref().map(Some),
+        today(),
+    )?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -118,22 +251,34 @@ pub async fn select_recipe(
     // one.
     let row = sqlx::query!(
         r#"
-        INSERT INTO recipe_selections (group_id, recipe_id, servings, created_by)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO recipe_selections
+            (group_id, recipe_id, servings, planned_on, meal_slot, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (recipe_id) WHERE status = 'planned' DO UPDATE SET
             servings = COALESCE(EXCLUDED.servings, recipe_selections.servings),
+            planned_on = COALESCE(EXCLUDED.planned_on, recipe_selections.planned_on),
+            meal_slot = CASE
+                WHEN EXCLUDED.planned_on IS NOT NULL THEN EXCLUDED.meal_slot
+                ELSE recipe_selections.meal_slot
+            END,
             updated_at = CASE
-                WHEN EXCLUDED.servings IS NOT NULL
-                     AND EXCLUDED.servings IS DISTINCT FROM recipe_selections.servings
+                WHEN (EXCLUDED.servings IS NOT NULL
+                      AND EXCLUDED.servings IS DISTINCT FROM recipe_selections.servings)
+                  OR (EXCLUDED.planned_on IS NOT NULL
+                      AND (EXCLUDED.planned_on, EXCLUDED.meal_slot) IS DISTINCT FROM
+                          (recipe_selections.planned_on, recipe_selections.meal_slot))
                 THEN now()
                 ELSE recipe_selections.updated_at
             END
-        RETURNING id, recipe_id, status, servings, created_by, created_at, updated_at,
+        RETURNING id, recipe_id, status, servings, planned_on, meal_slot,
+                  created_by, created_at, updated_at,
                   (xmax = 0) AS "inserted!"
         "#,
         group_id,
         recipe_id,
         servings,
+        plan.planned_on,
+        plan.meal_slot.map(MealSlot::as_str),
         auth.user_id,
     )
     .fetch_one(&mut *tx)
@@ -153,6 +298,8 @@ pub async fn select_recipe(
             recipe_name,
             status: row.status,
             servings: row.servings,
+            planned_on: row.planned_on,
+            meal_slot: row.meal_slot,
             created_by: row.created_by,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -161,7 +308,8 @@ pub async fn select_recipe(
 }
 
 /// `PATCH /groups/:id/recipes/:recipe_id/selection`: changes the number of
-/// people of the recipe's `planned` selection; 404 when there is none.
+/// people, the day or the meal of the recipe's `planned` selection; 404
+/// when there is none.
 #[utoipa::path(
     patch,
     path = "/groups/{id}/recipes/{recipe_id}/selection",
@@ -173,7 +321,7 @@ pub async fn select_recipe(
     request_body = UpdateSelectionRequest,
     responses(
         (status = 200, description = "Selection updated", body = SelectionResponse),
-        (status = 400, description = "`invalid_servings`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`invalid_servings`, `invalid_planned_on` (more than 366 days from today), `invalid_meal_slot` (not `lunch` nor `dinner`, or left without a day)", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
@@ -185,25 +333,55 @@ pub async fn update_selection(
     Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<UpdateSelectionRequest>,
 ) -> AppResult<impl IntoResponse> {
-    let servings = validate_servings(body.servings)?;
+    let servings = body.servings.map(validate_servings).transpose()?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
     let recipe_name = recipe_name(&mut tx, group_id, recipe_id).await?;
 
-    let row = sqlx::query!(
+    // The plan is judged once merged with the stored one (a meal may not
+    // outlive its day), so the row is read and locked first.
+    let current = sqlx::query!(
         r#"
-        UPDATE recipe_selections SET servings = $3, updated_at = now()
+        SELECT planned_on, meal_slot FROM recipe_selections
         WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'
-        RETURNING id, recipe_id, status, servings, created_by, created_at, updated_at
+        FOR UPDATE
         "#,
         recipe_id,
         group_id,
-        servings,
     )
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
+    let plan = merge_plan(
+        Plan {
+            planned_on: current.planned_on,
+            meal_slot: current.meal_slot.as_deref().and_then(MealSlot::parse),
+        },
+        body.planned_on,
+        body.meal_slot.as_ref().map(Option::as_deref),
+        today(),
+    )?;
+
+    let row = sqlx::query!(
+        r#"
+        UPDATE recipe_selections SET
+            servings = COALESCE($3, servings),
+            planned_on = $4,
+            meal_slot = $5,
+            updated_at = now()
+        WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'
+        RETURNING id, recipe_id, status, servings, planned_on, meal_slot,
+                  created_by, created_at, updated_at
+        "#,
+        recipe_id,
+        group_id,
+        servings,
+        plan.planned_on,
+        plan.meal_slot.map(MealSlot::as_str),
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     Ok(Json(SelectionResponse {
@@ -212,6 +390,8 @@ pub async fn update_selection(
         recipe_name,
         status: row.status,
         servings: row.servings,
+        planned_on: row.planned_on,
+        meal_slot: row.meal_slot,
         created_by: row.created_by,
         created_at: row.created_at,
         updated_at: row.updated_at,
@@ -276,8 +456,10 @@ pub struct PlannedSelectionResponse {
 }
 
 /// `GET /groups/:id/recipes/selections`: the group's `planned` selections,
-/// those with a `use_by` first, the nearest first, then the others oldest
-/// first.
+/// the dated ones first, by day then lunch, dinner and no meal (#811); the
+/// undated ones last, those with a `use_by` first, the nearest first, then
+/// the others oldest first. Dated selections of a same day and meal follow
+/// that same `use_by` order.
 #[utoipa::path(
     get,
     path = "/groups/{id}/recipes/selections",
@@ -303,7 +485,7 @@ pub async fn list_selections(
         SelectionResponse,
         r#"
         SELECT s.id, s.recipe_id, r.name AS recipe_name, s.status, s.servings,
-               s.created_by, s.created_at, s.updated_at
+               s.planned_on, s.meal_slot, s.created_by, s.created_at, s.updated_at
         FROM recipe_selections s
         JOIN recipes r ON r.id = s.recipe_id
         WHERE s.group_id = $1 AND s.status = 'planned'
@@ -339,8 +521,10 @@ pub async fn list_selections(
             (response, use_by)
         })
         .collect();
-    let selections: Vec<PlannedSelectionResponse> =
+    let mut selections: Vec<PlannedSelectionResponse> =
         by_priority(planned).into_iter().map(|(s, _)| s).collect();
+    // Stable: the undated selections keep the order of `by_priority`.
+    selections.sort_by_key(|s| plan_key(s.selection.planned_on, s.selection.meal_slot.as_deref()));
 
     Ok(Json(json!({ "selections": selections })))
 }
@@ -374,5 +558,201 @@ mod tests {
     fn rejects_above_the_maximum() {
         assert!(rejected(SERVINGS_MAX + 1));
         assert!(rejected(i32::MAX));
+    }
+
+    // -- merge_plan (#811) -------------------------------------------------
+
+    fn day(s: &str) -> NaiveDate {
+        s.parse().unwrap()
+    }
+
+    const TODAY: &str = "2026-11-13";
+
+    fn planned(on: &str, meal: Option<MealSlot>) -> Plan {
+        Plan {
+            planned_on: Some(day(on)),
+            meal_slot: meal,
+        }
+    }
+
+    fn merge(
+        current: Plan,
+        planned_on: Option<Option<&str>>,
+        meal_slot: Option<Option<&str>>,
+    ) -> AppResult<Plan> {
+        merge_plan(
+            current,
+            planned_on.map(|d| d.map(day)),
+            meal_slot,
+            day(TODAY),
+        )
+    }
+
+    fn refused(result: AppResult<Plan>, code: &str) -> bool {
+        matches!(result, Err(AppError::BadRequest(m)) if m == code)
+    }
+
+    #[test]
+    fn nothing_given_leaves_the_plan_as_it_is() {
+        assert_eq!(merge(Plan::default(), None, None).unwrap(), Plan::default());
+        let lunch = planned("2026-11-20", Some(MealSlot::Lunch));
+        assert_eq!(merge(lunch, None, None).unwrap(), lunch);
+    }
+
+    #[test]
+    fn sets_a_day_alone_or_with_a_meal() {
+        assert_eq!(
+            merge(Plan::default(), Some(Some("2026-11-20")), None).unwrap(),
+            planned("2026-11-20", None)
+        );
+        assert_eq!(
+            merge(
+                Plan::default(),
+                Some(Some("2026-11-20")),
+                Some(Some("lunch"))
+            )
+            .unwrap(),
+            planned("2026-11-20", Some(MealSlot::Lunch))
+        );
+        assert_eq!(
+            merge(
+                Plan::default(),
+                Some(Some("2026-11-20")),
+                Some(Some("dinner"))
+            )
+            .unwrap(),
+            planned("2026-11-20", Some(MealSlot::Dinner))
+        );
+    }
+
+    #[test]
+    fn changes_the_day_and_keeps_the_meal() {
+        let lunch = planned("2026-11-20", Some(MealSlot::Lunch));
+        assert_eq!(
+            merge(lunch, Some(Some("2026-11-21")), None).unwrap(),
+            planned("2026-11-21", Some(MealSlot::Lunch))
+        );
+    }
+
+    #[test]
+    fn sets_or_removes_the_meal_of_a_dated_plan() {
+        let bare = planned("2026-11-20", None);
+        assert_eq!(
+            merge(bare, None, Some(Some("dinner"))).unwrap(),
+            planned("2026-11-20", Some(MealSlot::Dinner))
+        );
+        let dinner = planned("2026-11-20", Some(MealSlot::Dinner));
+        assert_eq!(merge(dinner, None, Some(None)).unwrap(), bare);
+    }
+
+    #[test]
+    fn removes_the_day_with_its_meal() {
+        let lunch = planned("2026-11-20", Some(MealSlot::Lunch));
+        assert_eq!(
+            merge(lunch, Some(None), Some(None)).unwrap(),
+            Plan::default()
+        );
+        assert_eq!(
+            merge(planned("2026-11-20", None), Some(None), None).unwrap(),
+            Plan::default()
+        );
+    }
+
+    #[test]
+    fn refuses_a_meal_without_a_day() {
+        assert!(refused(
+            merge(Plan::default(), None, Some(Some("lunch"))),
+            "invalid_meal_slot"
+        ));
+        assert!(refused(
+            merge(Plan::default(), Some(None), Some(Some("dinner"))),
+            "invalid_meal_slot"
+        ));
+        // Removing the day of a plan that keeps its meal.
+        let lunch = planned("2026-11-20", Some(MealSlot::Lunch));
+        assert!(refused(merge(lunch, Some(None), None), "invalid_meal_slot"));
+    }
+
+    #[test]
+    fn refuses_an_unknown_meal() {
+        for meal in ["breakfast", "Lunch", "", " lunch"] {
+            assert!(
+                refused(
+                    merge(Plan::default(), Some(Some("2026-11-20")), Some(Some(meal))),
+                    "invalid_meal_slot"
+                ),
+                "{meal:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_a_day_up_to_the_horizon_either_way() {
+        for on in ["2025-11-12", "2026-11-13", "2027-11-14"] {
+            assert_eq!(
+                merge(Plan::default(), Some(Some(on)), None).unwrap(),
+                planned(on, None),
+                "{on}"
+            );
+        }
+        let today = day(TODAY);
+        assert_eq!(
+            (day("2027-11-14") - today).num_days(),
+            PLAN_HORIZON_DAYS,
+            "the fixture sits on the bound"
+        );
+        assert_eq!((today - day("2025-11-12")).num_days(), PLAN_HORIZON_DAYS);
+    }
+
+    #[test]
+    fn refuses_a_day_past_the_horizon_either_way() {
+        for on in ["2025-11-11", "2027-11-15", "1970-01-01", "9999-12-31"] {
+            assert!(
+                refused(
+                    merge(Plan::default(), Some(Some(on)), None),
+                    "invalid_planned_on"
+                ),
+                "{on}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kept_day_is_not_judged_again() {
+        let old = planned("2020-01-01", Some(MealSlot::Lunch));
+        assert_eq!(merge(old, None, None).unwrap(), old);
+        assert_eq!(
+            merge(old, None, Some(Some("dinner"))).unwrap(),
+            planned("2020-01-01", Some(MealSlot::Dinner))
+        );
+    }
+
+    // -- plan_key (#811) ---------------------------------------------------
+
+    #[test]
+    fn orders_by_day_then_meal_and_undated_last() {
+        let mut items = [
+            ("undated-a", None, None),
+            ("21-none", Some(day("2026-11-21")), None),
+            ("21-dinner", Some(day("2026-11-21")), Some("dinner")),
+            ("undated-b", None, None),
+            ("20-dinner", Some(day("2026-11-20")), Some("dinner")),
+            ("21-lunch", Some(day("2026-11-21")), Some("lunch")),
+            ("19-none", Some(day("2026-11-19")), None),
+        ];
+        items.sort_by_key(|(_, on, meal)| plan_key(*on, *meal));
+        let order: Vec<&str> = items.iter().map(|(name, _, _)| *name).collect();
+        assert_eq!(
+            order,
+            [
+                "19-none",
+                "20-dinner",
+                "21-lunch",
+                "21-dinner",
+                "21-none",
+                "undated-a",
+                "undated-b",
+            ]
+        );
     }
 }

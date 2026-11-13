@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT planned_on, meal_slot FROM recipe_selections\n        WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'\n        FOR UPDATE\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "planned_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "planned_on"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "meal_slot",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "meal_slot"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "a6c360ce8d3244f4e77d5e3675e94a6113fef8fcbff4c71d82b49936a3a801bd"
+}
