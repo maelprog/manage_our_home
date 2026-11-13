@@ -812,6 +812,7 @@ const AGENDA_LAYOUTS = [
 ] as const;
 
 const VIEW_ARROWS = [
+  ["day", "Jour précédent", "Jour suivant"],
   ["month", "Mois précédent", "Mois suivant"],
   ["week", "Semaine précédente", "Semaine suivante"],
 ] as const;
@@ -941,7 +942,7 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     await expect(page.getByText("Rien de prévu cette semaine.")).toBeVisible();
   });
 
-  test("a day with an event links to its entry in the list, and says so", async ({ page }) => {
+  test("a day with an event says so, and leads to its day view (#793)", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await registerAndLogin(page, "e2e-agminilink", "Agenda Lien");
     await createGroup(page, "Famille Ancre");
@@ -954,13 +955,16 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     const link = page
       .locator("table.mini")
       .getByRole("link", { name: /^15 \S+, (.+, )?1 événement$/ });
-    await expect(link).toHaveAttribute("href", `#j${date}`);
+    await expect(link).toHaveAttribute("href", `/agenda?view=day&date=${date}`);
     await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
     await link.click();
-    await expect(page).toHaveURL(new RegExp(`#j${date}$`));
-    const entry = page.locator(`#j${date}`);
-    await expect(entry).toBeVisible();
-    await expect(entry.getByRole("link", { name: /Réunion parents/ })).toBeVisible();
+    await expect(page).toHaveURL(`/agenda?view=day&date=${date}`);
+    await expect(page.locator("a.blk", { hasText: "Réunion parents" })).toBeVisible();
+    // A day with nothing leads there too.
+    await page.goto(`/agenda?view=month&date=${date}`);
+    const other = dayThisMonth(16);
+    await page.locator("table.mini").getByRole("link", { name: "16", exact: true }).click();
+    await expect(page).toHaveURL(`/agenda?view=day&date=${other}`);
   });
 
   test("no horizontal scroll at 360px", async ({ page }) => {
@@ -1001,7 +1005,10 @@ test.describe("Agenda — jour de la semaine dans la liste (#792)", () => {
     const weekday = new Intl.DateTimeFormat("fr-FR", { weekday: "long", timeZone: "UTC" }).format(
       new Date(Date.UTC(y, m - 1, d)),
     );
-    const number = page.locator(`table.cal td#j${date} .cal-day`);
+    // The cell is found by its number's link to its day view (#793).
+    const number = page
+      .locator("table.cal .cal-day")
+      .filter({ has: page.locator(`a[href="/agenda?view=day&date=${date}"]`) });
 
     for (const [layout, viewport] of AGENDA_LAYOUTS) {
       await page.setViewportSize(viewport);
@@ -1020,6 +1027,156 @@ test.describe("Agenda — jour de la semaine dans la liste (#792)", () => {
     }
   });
 });
+
+// #793 — one day hour by hour: the « Journée » banner, then the hours, a
+// block per event placed at its hour and as tall as it lasts. Read with
+// JavaScript off, at both layouts: the page and its opening on 08:00 owe
+// nothing to a script. A fixed day, far from today and from any national
+// day: 10 March 2027 is a Wednesday.
+const DAY = "2027-03-10";
+const NEXT = "2027-03-11";
+
+/** Posts the event form as a browser without JavaScript would. */
+async function postEvent(page: Page, body: string): Promise<void> {
+  const res = await page.request.post("/agenda/new", {
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    data: body,
+    maxRedirects: 0,
+  });
+  expect(res.status(), body).toBe(303);
+}
+
+/** « mercredi 10 mars 2027 »: the day view's heading for `date`. */
+function longDate(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Intl.DateTimeFormat("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+for (const [layout, viewport] of AGENDA_LAYOUTS) {
+  test.describe(`Agenda — vue jour, ${layout}, sans JavaScript (#793)`, () => {
+    test.use({ viewport, javaScriptEnabled: false });
+
+    test("the banner, the hours side by side, cut at midnight, open on 08:00", async ({ page }) => {
+      await registerAndLogin(page, "e2e-agday", "Agenda Jour");
+      await createGroup(page, "Famille Journée");
+      await postEvent(page, `title=R%C3%A9union+%C3%A9cole&starts_at=${DAY}T10:00&ends_at=${DAY}T11:30`);
+      await postEvent(page, `title=Appel+plombier&starts_at=${DAY}T10:30&ends_at=${DAY}T11:00`);
+      await postEvent(page, `title=Soir%C3%A9e+tardive&starts_at=${DAY}T23:00&ends_at=${NEXT}T01:00`);
+      await postEvent(page, `title=Voyage+scolaire&all_day=on&starts_at=2027-03-09&ends_at=${NEXT}`);
+
+      await page.goto(`/agenda?view=day&date=${DAY}`);
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText(longDate(DAY));
+
+      // The banner: the trip of three days, on its second.
+      const banner = page.locator(".allday");
+      await expect(banner.getByRole("heading", { name: "Journée" })).toBeVisible();
+      const trip = banner.getByRole("link", { name: /Voyage scolaire/ });
+      await expect(trip).toBeVisible();
+      await expect(trip).toContainText("jour 2 sur 3");
+
+      // 08:00 at the top of the hours, the night a scroll away.
+      const hours = page.locator(".hours-scroll");
+      const opening = await hours.evaluate((el) => {
+        const eight = el.querySelector("#h8") as HTMLElement;
+        return {
+          scrolled: el.scrollTop,
+          offset: eight.getBoundingClientRect().top - el.getBoundingClientRect().top,
+        };
+      });
+      expect(opening.scrolled).toBeGreaterThan(0);
+      expect(Math.abs(opening.offset)).toBeLessThanOrEqual(1);
+      await expect(hours.locator("#h8")).toBeInViewport();
+
+      // Two blocks that overlap sit side by side, neither hiding the other.
+      const meeting = page.locator("a.blk", { hasText: "Réunion école" });
+      const plumber = page.locator("a.blk", { hasText: "Appel plombier" });
+      await expect(meeting).toContainText("10:00–11:30");
+      await expect(plumber).toBeVisible();
+      const [a, b] = [await meeting.boundingBox(), await plumber.boundingBox()];
+      if (!a || !b) throw new Error("the blocks have no box");
+      expect(b.y).toBeGreaterThan(a.y);
+      expect(b.y).toBeLessThan(a.y + a.height);
+      expect(b.x).toBeGreaterThanOrEqual(a.x + a.width - 1);
+      // The longer is about three times the shorter: 1 h 30 against 30 min.
+      expect(a.height / b.height).toBeGreaterThan(2.5);
+
+      // The evening event, cut at midnight, says its real hours.
+      const evening = page.locator("a.blk", { hasText: "Soirée tardive" });
+      await expect(evening).toContainText("23:00–01:00");
+      await expect(evening).toHaveClass(/\bcut-e\b/);
+      await expect(page.getByText("Rien de prévu à l'heure ce jour-là.")).toHaveCount(0);
+
+      // The next day: the end of the evening, cut at its start; the trip's
+      // last day.
+      await page.getByRole("link", { name: "Jour suivant", exact: true }).click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${NEXT}`);
+      const after = page.locator("a.blk", { hasText: "Soirée tardive" });
+      await expect(after).toHaveClass(/\bcut-s\b/);
+      await expect(after).toContainText("23:00–01:00");
+      await expect(page.locator(".allday").getByRole("link", { name: /Voyage scolaire/ })).toContainText(
+        "jour 3 sur 3",
+      );
+
+      // The day after: nothing at all.
+      await page.goto("/agenda?view=day&date=2027-03-12");
+      await expect(page.locator(".allday")).toHaveCount(0);
+      await expect(page.getByText("Rien de prévu à l'heure ce jour-là.")).toBeVisible();
+
+      // No date, or one that cannot be read: today, as the other views do.
+      for (const path of ["/agenda?view=day", "/agenda?view=day&date=demain"]) {
+        await page.goto(path);
+        await expect(page.getByRole("heading", { level: 1 }), path).toHaveText(longDate(parisDay()));
+      }
+    });
+
+    test("a day's number, « +N autres » and the toggle lead to the day, which keeps its date", async ({
+      page,
+    }) => {
+      await registerAndLogin(page, "e2e-agdaynav", "Agenda Jour Nav");
+      await createGroup(page, "Famille Accès");
+      for (const hour of [8, 10, 12, 14]) {
+        const h = String(hour).padStart(2, "0");
+        await postEvent(page, `title=Rendez-vous+${hour}h&starts_at=${DAY}T${h}:00&ends_at=${DAY}T${h}:30`);
+      }
+
+      // The day's number, in the grid on a PC, in the mini grid on a phone.
+      // A month grid shows a 10 of two months: the grid's is found by its
+      // link.
+      await page.goto(`/agenda?view=month&date=${DAY}`);
+      const dayLink = page.locator(`table.cal .cal-day a[href="/agenda?view=day&date=${DAY}"]`);
+      const number =
+        layout === "PC" ? dayLink : page.locator("table.mini").getByRole("link", { name: /^10 mars, / });
+      await number.click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
+      for (const hour of [8, 10, 12, 14]) {
+        await expect(page.locator("a.blk", { hasText: `Rendez-vous ${hour}h` })).toHaveCount(1);
+      }
+
+      // The toggle keeps the day, and says which view is on screen.
+      const toggle = page.getByRole("navigation", { name: "Affichage" });
+      await expect(toggle.getByRole("link", { name: "Jour", exact: true })).toHaveAttribute("aria-current", "true");
+      await toggle.getByRole("link", { name: "Semaine", exact: true }).click();
+      await expect(page).toHaveURL(`/agenda?view=week&date=${DAY}`);
+      // In the week, the day's number leads to it too.
+      await expect(dayLink).toHaveText(layout === "PC" ? "10" : "mercredi 10", { useInnerText: true });
+      await dayLink.click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
+      await toggle.getByRole("link", { name: "Mois", exact: true }).click();
+      await expect(page).toHaveURL(`/agenda?view=month&date=${DAY}`);
+
+      // A crowded day of the month counts the rest into « +N autres »,
+      // which leads to the day view of that day.
+      await page.locator("table.cal").getByRole("link", { name: "+2 autres" }).click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
+    });
+  });
+}
 
 test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
   test.use({ javaScriptEnabled: false });

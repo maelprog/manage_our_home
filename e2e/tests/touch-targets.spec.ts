@@ -99,8 +99,8 @@ interface Box {
  * agenda's arrows and chips, a disclosure's summary, a `.links` column, a
  * member's name as a link to their profile (`.member`, #466 — the seeded
  * message's author on /messagerie, the member list, the event's assignee),
- * a day of the phone's mini grid that links to its entry in the list (#675 —
- * the seeded event's day, today).
+ * every day of the phone's mini grid, a link to its day view (#675, #793),
+ * and the day view's own head (#793).
  *
  * Left out, each for a stated reason:
  * - a bare text link (`<a>` with no class): inside a sentence it is WCAG
@@ -110,7 +110,10 @@ interface Box {
  *   a pointer layout (below the breakpoint they are 48px rows, checked);
  * - a checkbox with no label whose form submits the same change through a
  *   button (see below);
- * - the skip link, which is off-screen until it takes focus.
+ * - the skip link, which is off-screen until it takes focus;
+ * - a block of the day view's hours (`.blk`, #793): as tall as its event
+ *   lasts, a short one 28px — the mock-up's floor, a trade left to the
+ *   issue's review.
  */
 async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
@@ -164,6 +167,7 @@ const APP_PAGES = [
   "/",
   "/agenda",
   "/agenda?view=week",
+  "/agenda?view=day",
   "/agenda/new",
   "/grocery-list",
   "/messagerie",

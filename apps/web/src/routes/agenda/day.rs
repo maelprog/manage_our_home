@@ -1,0 +1,1055 @@
+//! `GET /agenda?view=day` (#793): one Paris day, hour by hour.
+
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
+use manage_our_home_shared::dto::agenda::OccurrenceResponse;
+use manage_our_home_shared::dto::groups::GroupMember;
+use manage_our_home_shared::validation::agenda::{normalize_all_day, paris_start_of_day};
+
+use crate::app::html_escape;
+
+use super::calendar::{family_of, initials, member_tint, people, short_weekday, FamilyTag};
+use super::{fmt_paris, private_mark, with_family, DISPLAY_TZ};
+
+/// Minutes a row of the hours stands for: a block starts on the quarter
+/// its event starts in and ends on the quarter its event ends in.
+pub(crate) const SLOT_MINUTES: i64 = 15;
+
+/// The rows a block takes at least, half an hour: what one line of « 12:15
+/// Pharmacie » needs to be read.
+pub(crate) const MIN_ROWS: usize = 2;
+
+/// The UTC instants opening `day` and the day after it, in Paris: 23, 24
+/// or 25 hours apart.
+pub(crate) fn day_bounds(day: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
+    let next = day.succ_opt().unwrap_or(day);
+    (paris_start_of_day(day), paris_start_of_day(next))
+}
+
+/// What of an occurrence falls on a day, in minutes elapsed since the day
+/// opened — not wall-clock minutes, so that a day of 23 or 25 hours keeps
+/// one row per quarter of an hour that really passed. `cut_start` and
+/// `cut_end` say that the occurrence began the day before, or ends the day
+/// after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Clip {
+    pub(crate) from: i64,
+    pub(crate) to: i64,
+    pub(crate) cut_start: bool,
+    pub(crate) cut_end: bool,
+}
+
+/// The part of `[starts, ends)` that falls on `day`, if any. An instant
+/// (`starts == ends`, a task with no length) falls on the day it is in; an
+/// occurrence ending at midnight does not reach the day midnight opens.
+pub(crate) fn clip(starts: DateTime<Utc>, ends: DateTime<Utc>, day: NaiveDate) -> Option<Clip> {
+    let (opens, closes) = day_bounds(day);
+    let touches = if ends > starts {
+        starts < closes && ends > opens
+    } else {
+        (opens..closes).contains(&starts)
+    };
+    if !touches {
+        return None;
+    }
+    let length = (closes - opens).num_minutes();
+    let minutes = |at: DateTime<Utc>| (at - opens).num_minutes().clamp(0, length);
+    Some(Clip {
+        from: minutes(starts),
+        to: minutes(ends.max(starts)),
+        cut_start: starts < opens,
+        cut_end: ends > closes,
+    })
+}
+
+/// Where an occurrence goes on a day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Place {
+    /// The « Journée » banner: an all-day event, or a timed one of a day
+    /// or more, as Google puts it there.
+    Banner,
+    /// A block of the hours, cut at the day's edges.
+    Hours(Clip),
+}
+
+/// Where an occurrence goes on `day`, `None` when it does not fall on it.
+pub(crate) fn place(
+    all_day: bool,
+    starts: DateTime<Utc>,
+    ends: DateTime<Utc>,
+    day: NaiveDate,
+) -> Option<Place> {
+    let clipped = clip(starts, ends, day)?;
+    if all_day || ends - starts >= chrono::Duration::hours(24) {
+        Some(Place::Banner)
+    } else {
+        Some(Place::Hours(clipped))
+    }
+}
+
+/// The rows a block takes in a day of `total` rows, `[start, end)`: from
+/// the quarter its first minute is in to the one its last minute is in, at
+/// least `MIN_ROWS`, and never past the day — a block too close to its end
+/// to have its minimum moves up.
+pub(crate) fn rows_of(clip: Clip, total: usize) -> (usize, usize) {
+    let quarter = SLOT_MINUTES as usize;
+    let start = (clip.from.max(0) as usize / quarter).min(total.saturating_sub(1));
+    let end = (clip.to.max(0) as usize).div_ceil(quarter);
+    let end = end.max(start + MIN_ROWS).min(total);
+    let start = start.min(end.saturating_sub(MIN_ROWS));
+    (start, end)
+}
+
+/// A block's column, and how many columns it spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Lane {
+    pub(crate) col: usize,
+    pub(crate) span: usize,
+}
+
+/// The columns of blocks taking `rows` (`[start, end)` each), and how
+/// many columns the day needs — one at least. Blocks are placed by start,
+/// the longer first among those starting together, each in the first
+/// column free when it starts; then each widens to its right over every
+/// column that no block overlapping it holds. So a block alone takes the
+/// whole width, and blocks that overlap sit side by side, none hiding
+/// another. The lanes come back in the order of `rows`.
+pub(crate) fn lanes(rows: &[(usize, usize)]) -> (Vec<Lane>, usize) {
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by_key(|&i| (rows[i].0, std::cmp::Reverse(rows[i].1)));
+    let mut col = vec![0; rows.len()];
+    // The row each column is free again from.
+    let mut free_from: Vec<usize> = Vec::new();
+    for &i in &order {
+        let (start, end) = rows[i];
+        let c = match free_from.iter().position(|&f| f <= start) {
+            Some(c) => c,
+            None => {
+                free_from.push(0);
+                free_from.len() - 1
+            }
+        };
+        free_from[c] = end;
+        col[i] = c;
+    }
+    let width = free_from.len().max(1);
+    let overlap = |a: (usize, usize), b: (usize, usize)| a.0 < b.1 && b.0 < a.1;
+    let lanes = (0..rows.len())
+        .map(|i| {
+            let mut span = 1;
+            while col[i] + span < width
+                && !(0..rows.len()).any(|j| col[j] == col[i] + span && overlap(rows[i], rows[j]))
+            {
+                span += 1;
+            }
+            Lane { col: col[i], span }
+        })
+        .collect();
+    (lanes, width)
+}
+
+/// The name of each hour of `day`, by the clock: « 02:00 » twice on the
+/// day the clocks go back, not at all on the day they go forward.
+pub(crate) fn hour_labels(day: NaiveDate) -> Vec<String> {
+    let (opens, closes) = day_bounds(day);
+    (0..(closes - opens).num_hours())
+        .map(|h| fmt_paris(opens + chrono::Duration::hours(h), "%H:%M"))
+        .collect()
+}
+
+/// Where `now` is on `day`: its hour, counted from midnight in elapsed
+/// hours as the rows are, and its quarter in that hour. `None` on any other
+/// day.
+pub(crate) fn now_mark(now: DateTime<Utc>, day: NaiveDate) -> Option<(usize, usize)> {
+    let (opens, closes) = day_bounds(day);
+    if !(opens..closes).contains(&now) {
+        return None;
+    }
+    let minutes = (now - opens).num_minutes() as usize;
+    Some((minutes / 60, minutes % 60 / SLOT_MINUTES as usize))
+}
+
+/// The hours a block says, its real ones even when it is cut at midnight:
+/// « 10:00–11:30 », « 23:00–01:00 », « 12:15 » for an instant.
+pub(crate) fn time_label(starts: DateTime<Utc>, ends: DateTime<Utc>) -> String {
+    let from = fmt_paris(starts, "%H:%M");
+    if ends <= starts {
+        return from;
+    }
+    format!("{from}–{}", fmt_paris(ends, "%H:%M"))
+}
+
+/// What a banner entry says under its title, and whether it lasts more
+/// than a day — then it wears the ocre of the generated days rather than
+/// its member's tint. An all-day event counts its days, « jour 2 sur 3 »,
+/// its end being the exclusive Paris midnight of #101; a timed one of a
+/// day or more says when it starts and ends.
+pub(crate) fn banner_sub(
+    all_day: bool,
+    starts: DateTime<Utc>,
+    ends: DateTime<Utc>,
+    day: NaiveDate,
+) -> (String, bool) {
+    if !all_day {
+        let at = |t: DateTime<Utc>| {
+            let date = t.with_timezone(&DISPLAY_TZ).date_naive();
+            format!(
+                "{} {} à {}",
+                short_weekday(date),
+                date.day(),
+                fmt_paris(t, "%H:%M")
+            )
+        };
+        return (format!("{} → {}", at(starts), at(ends)), true);
+    }
+    let (first, after) = normalize_all_day(starts, ends);
+    let first = first.with_timezone(&DISPLAY_TZ).date_naive();
+    let after = after.with_timezone(&DISPLAY_TZ).date_naive();
+    let days = (after - first).num_days().max(1);
+    if days == 1 {
+        return ("Journée entière".to_string(), false);
+    }
+    let nth = (day - first).num_days() + 1;
+    (format!("jour {nth} sur {days}"), true)
+}
+
+// -- the page's parts ------------------------------------------------------
+
+/// A task's box and whether it is done, as on a chip of the grid.
+fn task_marker(occ: &OccurrenceResponse) -> (&'static str, bool) {
+    match (occ.event.is_task, occ.event.completed_at.is_some()) {
+        (true, true) => ("☑ ", true),
+        (true, false) => ("☐ ", false),
+        _ => ("", false),
+    }
+}
+
+/// What an entry of the banner or a block wears of its people and its
+/// family: the tint class of its first member (none on a done task, as on
+/// a chip), their initials, its link — carrying its family when that is
+/// not the active one — and, in a view of several families, its family's
+/// swatch and name, written out.
+struct Worn {
+    tint: String,
+    initials: String,
+    family: String,
+    href: String,
+}
+
+fn worn(occ: &OccurrenceResponse, members: &[GroupMember], families: &[FamilyTag]) -> Worn {
+    let people = people(occ, members);
+    let (_, done) = task_marker(occ);
+    let tint = match people.first() {
+        Some(first) if !done => format!(" {}", member_tint(first.user_id)),
+        _ => String::new(),
+    };
+    let family = family_of(occ, families);
+    let family_html = match family {
+        Some(f) if f.worn => format!(
+            r#"<span class="fam" data-accent="{}"><span class="swatch"></span>{}</span>"#,
+            f.accent.as_str(),
+            html_escape(f.name)
+        ),
+        _ => String::new(),
+    };
+    let occ_param = occ.occurrence_starts_at.format("%Y-%m-%dT%H:%M:%SZ");
+    Worn {
+        tint,
+        initials: initials(&people),
+        family: family_html,
+        href: with_family(
+            &format!("/agenda/{}?occ={occ_param}", occ.event.id),
+            family.and_then(|f| f.carried),
+        ),
+    }
+}
+
+/// The « Journée » banner at the head of the day (#793): the national days
+/// and school holidays of the day, then its all-day events and those of a
+/// day or more, each a link to its page. Empty when there is none.
+pub(crate) fn banner_html(
+    day: NaiveDate,
+    occs: &[&OccurrenceResponse],
+    national: &[&str],
+    members: &[GroupMember],
+    families: &[FamilyTag],
+) -> String {
+    if occs.is_empty() && national.is_empty() {
+        return String::new();
+    }
+    let national: String = national
+        .iter()
+        .map(|label| format!(r#"<p class="ad gen">{}</p>"#, html_escape(label)))
+        .collect();
+    let events: String = occs
+        .iter()
+        .map(|occ| {
+            let e = &occ.event;
+            let (sub, multi) = banner_sub(
+                e.all_day,
+                occ.occurrence_starts_at,
+                occ.occurrence_ends_at,
+                day,
+            );
+            let (marker, done) = task_marker(occ);
+            let w = worn(occ, members, families);
+            let class = match (multi, done) {
+                (true, _) => " gen",
+                (false, true) => " done",
+                (false, false) => w.tint.as_str(),
+            };
+            format!(
+                r#"<a class="ad{class}" href="{href}">{initials}<strong>{private}{marker}{title}</strong> <span>{sub}</span>{family}</a>"#,
+                href = w.href,
+                initials = w.initials,
+                private = private_mark(e.is_private),
+                title = html_escape(&e.title),
+                sub = html_escape(&sub),
+                family = w.family,
+            )
+        })
+        .collect();
+    format!(r#"<div class="allday"><h2 class="eyebrow">Journée</h2>{national}{events}</div>"#)
+}
+
+/// A block of the hours: its title, its real hours, its people's initials,
+/// its family in a view of several. `rows` is how many rows it takes: at
+/// `MIN_ROWS` it is one line, « 12:15 Pharmacie ». Cut at an edge of the
+/// day, that edge is flat and dashed.
+fn block_html(
+    occ: &OccurrenceResponse,
+    clip: Clip,
+    rows: usize,
+    members: &[GroupMember],
+    families: &[FamilyTag],
+) -> String {
+    let e = &occ.event;
+    let (marker, done) = task_marker(occ);
+    let w = worn(occ, members, families);
+    let short = if rows <= MIN_ROWS { " short" } else { "" };
+    let cut_start = if clip.cut_start { " cut-s" } else { "" };
+    let cut_end = if clip.cut_end { " cut-e" } else { "" };
+    let done = if done { " done" } else { "" };
+    format!(
+        r#"<a class="blk{tint}{short}{cut_start}{cut_end}{done}" href="{href}"><strong>{private}{marker}{title}</strong> <span class="t">{time}</span>{initials}{family}</a>"#,
+        tint = w.tint,
+        href = w.href,
+        private = private_mark(e.is_private),
+        title = html_escape(&e.title),
+        time = html_escape(&time_label(
+            occ.occurrence_starts_at,
+            occ.occurrence_ends_at
+        )),
+        initials = w.initials,
+        family = w.family,
+    )
+}
+
+/// The line of the current time, in its hour's cell: a quarter's
+/// precision, set when the page is drawn — no script moves it.
+fn now_line(quarter: usize, now: DateTime<Utc>) -> String {
+    let at = match quarter {
+        1 => " q1",
+        2 => " q2",
+        3 => " q3",
+        _ => "",
+    };
+    format!(
+        r#"<span class="now{at}"><span class="sr-only">Il est {}</span></span>"#,
+        fmt_paris(now, "%H:%M")
+    )
+}
+
+/// The hours of the day (#793): a table of one row per quarter of an hour
+/// that elapses — 92, 96 or 100 — each hour named in its first column, and
+/// each block a cell spanning its rows (`rowspan`) and its columns
+/// (`colspan`, `lanes`). HTML attributes place and size the blocks, not an
+/// inline `style`, which DESIGN.md keeps to a bounded residue. The table is
+/// `role="presentation"`: its links read in time order, and a screen reader
+/// is not walked through a hundred empty cells.
+///
+/// The row of 08:00 carries `id="h8"`, which the sheet makes the scroller's
+/// initial target, so the day opens on the morning without a script; the
+/// rows before it are a scroll away. `now`, on the day it falls on, is
+/// drawn across its hour. `empty_note` says « Rien de prévu à l'heure » at
+/// 08:00 when no block is drawn — the caller leaves it out when the events
+/// could not be read.
+pub(crate) fn hours_html(
+    day: NaiveDate,
+    blocks: &[(&OccurrenceResponse, Clip)],
+    members: &[GroupMember],
+    families: &[FamilyTag],
+    now: Option<DateTime<Utc>>,
+    empty_note: bool,
+) -> String {
+    let labels = hour_labels(day);
+    let per_hour = (60 / SLOT_MINUTES) as usize;
+    let total = labels.len() * per_hour;
+    let rows: Vec<(usize, usize)> = blocks.iter().map(|(_, c)| rows_of(*c, total)).collect();
+    let (lanes, width) = lanes(&rows);
+    let eight = labels
+        .iter()
+        .position(|l| l == "08:00")
+        .map(|h| h * per_hour);
+    let now_at = now.and_then(|n| now_mark(n, day).map(|m| (m, n)));
+    let mut starting: Vec<Vec<usize>> = vec![Vec::new(); total];
+    for (i, (start, _)) in rows.iter().enumerate() {
+        starting[*start].push(i);
+    }
+    let mut taken = vec![vec![false; width]; total];
+    let span_attr = |name: &str, n: usize| {
+        if n > 1 {
+            format!(r#" {name}="{n}""#)
+        } else {
+            String::new()
+        }
+    };
+    let mut out = String::new();
+    for r in 0..total {
+        out.push_str(if Some(r) == eight {
+            r#"<tr id="h8">"#
+        } else {
+            "<tr>"
+        });
+        if r % per_hour == 0 {
+            let hour = r / per_hour;
+            let mark = match now_at {
+                Some(((h, quarter), n)) if h == hour => now_line(quarter, n),
+                _ => String::new(),
+            };
+            out.push_str(&format!(
+                r#"<th scope="row" rowspan="{per_hour}">{}{mark}</th>"#,
+                labels[hour]
+            ));
+        }
+        if empty_note && blocks.is_empty() && Some(r) == eight {
+            let end = (r + per_hour).min(total);
+            for row in &mut taken[r..end] {
+                row.fill(true);
+            }
+            out.push_str(&format!(
+                r#"<td{}><p class="muted">Rien de prévu à l'heure ce jour-là.</p></td>"#,
+                span_attr("rowspan", end - r)
+            ));
+        }
+        let mut c = 0;
+        while c < width {
+            if let Some(&i) = starting[r].iter().find(|&&i| lanes[i].col == c) {
+                let (start, end) = rows[i];
+                let Lane { col, span } = lanes[i];
+                for row in &mut taken[start..end] {
+                    row[col..col + span].fill(true);
+                }
+                let (occ, clip) = blocks[i];
+                out.push_str(&format!(
+                    "<td{}{}>{}</td>",
+                    span_attr("rowspan", end - start),
+                    span_attr("colspan", span),
+                    block_html(occ, clip, end - start, members, families)
+                ));
+                c += span;
+            } else {
+                if !taken[r][c] {
+                    out.push_str("<td></td>");
+                }
+                c += 1;
+            }
+        }
+        out.push_str("</tr>");
+    }
+    format!(
+        r#"<div class="hours-scroll" tabindex="0" role="region" aria-label="Heures"><table class="hours" role="presentation"><tbody>{out}</tbody></table></div>"#
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    /// A Paris wall-clock instant.
+    fn paris(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        chrono_tz::Europe::Paris
+            .with_ymd_and_hms(y, m, d, h, min, 0)
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    const NOV_12: (i32, u32, u32) = (2026, 11, 12);
+
+    fn nov(d: u32) -> NaiveDate {
+        date(NOV_12.0, NOV_12.1, d)
+    }
+
+    fn clip_of(from: i64, to: i64, cut_start: bool, cut_end: bool) -> Clip {
+        Clip {
+            from,
+            to,
+            cut_start,
+            cut_end,
+        }
+    }
+
+    // -- day_bounds ------------------------------------------------------
+
+    #[test]
+    fn a_paris_day_lasts_23_24_or_25_hours() {
+        let hours = |d: NaiveDate| {
+            let (a, b) = day_bounds(d);
+            (b - a).num_hours()
+        };
+        assert_eq!(hours(nov(12)), 24);
+        // The clocks go forward on 2026-03-29 and back on 2026-10-25.
+        assert_eq!(hours(date(2026, 3, 29)), 23);
+        assert_eq!(hours(date(2026, 10, 25)), 25);
+    }
+
+    #[test]
+    fn a_day_opens_at_paris_midnight() {
+        let (opens, closes) = day_bounds(nov(12));
+        assert_eq!(opens, Utc.with_ymd_and_hms(2026, 11, 11, 23, 0, 0).unwrap());
+        assert_eq!(
+            closes,
+            Utc.with_ymd_and_hms(2026, 11, 12, 23, 0, 0).unwrap()
+        );
+    }
+
+    // -- clip -----------------------------------------------------------
+
+    #[test]
+    fn an_event_inside_the_day_keeps_its_minutes() {
+        let c = clip(
+            paris(2026, 11, 12, 10, 0),
+            paris(2026, 11, 12, 11, 30),
+            nov(12),
+        );
+        assert_eq!(c, Some(clip_of(600, 690, false, false)));
+    }
+
+    #[test]
+    fn an_event_across_midnight_is_cut_on_both_days() {
+        let (s, e) = (paris(2026, 11, 12, 23, 0), paris(2026, 11, 13, 1, 0));
+        assert_eq!(clip(s, e, nov(12)), Some(clip_of(1380, 1440, false, true)));
+        assert_eq!(clip(s, e, nov(13)), Some(clip_of(0, 60, true, false)));
+        assert_eq!(clip(s, e, nov(11)), None);
+        assert_eq!(clip(s, e, nov(14)), None);
+    }
+
+    #[test]
+    fn an_event_ending_at_midnight_does_not_reach_the_next_day() {
+        let (s, e) = (paris(2026, 11, 11, 23, 0), paris(2026, 11, 12, 0, 0));
+        assert_eq!(clip(s, e, nov(11)), Some(clip_of(1380, 1440, false, false)));
+        assert_eq!(clip(s, e, nov(12)), None);
+    }
+
+    #[test]
+    fn an_instant_is_kept_on_its_day() {
+        let at = paris(2026, 11, 12, 12, 15);
+        assert_eq!(clip(at, at, nov(12)), Some(clip_of(735, 735, false, false)));
+        // Midnight opens a day, it does not close the one before.
+        let midnight = paris(2026, 11, 12, 0, 0);
+        assert_eq!(
+            clip(midnight, midnight, nov(12)),
+            Some(clip_of(0, 0, false, false))
+        );
+        assert_eq!(clip(midnight, midnight, nov(11)), None);
+    }
+
+    #[test]
+    fn minutes_are_elapsed_time_on_a_day_of_23_hours() {
+        // 2026-03-29: 01:30 is 90 minutes in; 03:30, an hour after 02:30
+        // that never was, is 150.
+        let c = clip(
+            paris(2026, 3, 29, 1, 30),
+            paris(2026, 3, 29, 3, 30),
+            date(2026, 3, 29),
+        );
+        assert_eq!(c, Some(clip_of(90, 150, false, false)));
+        // The day ends 1380 minutes in.
+        let late = clip(
+            paris(2026, 3, 29, 23, 0),
+            paris(2026, 3, 30, 1, 0),
+            date(2026, 3, 29),
+        );
+        assert_eq!(late, Some(clip_of(1320, 1380, false, true)));
+    }
+
+    #[test]
+    fn minutes_are_elapsed_time_on_a_day_of_25_hours() {
+        // 2026-10-25: 04:00 comes five hours after midnight.
+        let c = clip(
+            paris(2026, 10, 25, 1, 0),
+            paris(2026, 10, 25, 4, 0),
+            date(2026, 10, 25),
+        );
+        assert_eq!(c, Some(clip_of(60, 300, false, false)));
+        let late = clip(
+            paris(2026, 10, 25, 23, 0),
+            paris(2026, 10, 26, 1, 0),
+            date(2026, 10, 25),
+        );
+        assert_eq!(late, Some(clip_of(1440, 1500, false, true)));
+    }
+
+    // -- place ----------------------------------------------------------
+
+    #[test]
+    fn an_all_day_event_goes_to_the_banner_of_each_day_it_covers() {
+        // Three days, stored with the exclusive Paris midnight of #101.
+        let (s, e) = (paris(2026, 11, 11, 0, 0), paris(2026, 11, 14, 0, 0));
+        for d in [11, 12, 13] {
+            assert_eq!(place(true, s, e, nov(d)), Some(Place::Banner), "{d}");
+        }
+        assert_eq!(place(true, s, e, nov(10)), None);
+        assert_eq!(place(true, s, e, nov(14)), None);
+    }
+
+    #[test]
+    fn a_timed_event_of_a_day_or_more_goes_to_the_banner_like_google() {
+        let (s, e) = (paris(2026, 11, 11, 18, 0), paris(2026, 11, 13, 10, 0));
+        for d in [11, 12, 13] {
+            assert_eq!(place(false, s, e, nov(d)), Some(Place::Banner), "{d}");
+        }
+        assert_eq!(place(false, s, e, nov(14)), None);
+        // Exactly 24 hours is a day.
+        let (s, e) = (paris(2026, 11, 12, 9, 0), paris(2026, 11, 13, 9, 0));
+        assert_eq!(place(false, s, e, nov(12)), Some(Place::Banner));
+    }
+
+    #[test]
+    fn a_timed_event_under_a_day_goes_to_the_hours_cut_at_midnight() {
+        let (s, e) = (paris(2026, 11, 12, 23, 0), paris(2026, 11, 13, 1, 0));
+        assert_eq!(
+            place(false, s, e, nov(12)),
+            Some(Place::Hours(clip_of(1380, 1440, false, true)))
+        );
+        assert_eq!(
+            place(false, s, e, nov(13)),
+            Some(Place::Hours(clip_of(0, 60, true, false)))
+        );
+        assert_eq!(place(false, s, e, nov(14)), None);
+    }
+
+    // -- rows_of: a block's position and height ----------------------------
+
+    #[test]
+    fn a_block_starts_on_its_quarter_and_is_as_tall_as_its_length() {
+        // 10:00–11:30: row 40, six quarters.
+        assert_eq!(rows_of(clip_of(600, 690, false, false), 96), (40, 46));
+        // 10:05–11:20 starts in the 10:00 row and ends in the 11:15 one.
+        assert_eq!(rows_of(clip_of(605, 680, false, false), 96), (40, 46));
+    }
+
+    #[test]
+    fn a_short_block_is_two_rows_tall() {
+        assert_eq!(rows_of(clip_of(735, 735, false, false), 96), (49, 51));
+        assert_eq!(rows_of(clip_of(735, 750, false, false), 96), (49, 51));
+        assert_eq!(rows_of(clip_of(605, 610, false, false), 96), (40, 42));
+    }
+
+    #[test]
+    fn a_block_stays_inside_the_day() {
+        assert_eq!(rows_of(clip_of(1380, 1440, false, true), 96), (92, 96));
+        // 23:50: two rows, the last two of the day.
+        assert_eq!(rows_of(clip_of(1430, 1440, false, false), 96), (94, 96));
+        // A day of 23 hours has 92 rows.
+        assert_eq!(rows_of(clip_of(1320, 1380, false, true), 92), (88, 92));
+    }
+
+    // -- lanes: overlapping blocks side by side ---------------------------
+
+    fn lane(col: usize, span: usize) -> Lane {
+        Lane { col, span }
+    }
+
+    #[test]
+    fn a_block_alone_takes_the_whole_width() {
+        assert_eq!(lanes(&[(40, 46)]), (vec![lane(0, 1)], 1));
+        assert_eq!(lanes(&[]), (vec![], 1));
+    }
+
+    #[test]
+    fn blocks_that_follow_each_other_share_a_column() {
+        assert_eq!(
+            lanes(&[(40, 44), (44, 48)]),
+            (vec![lane(0, 1), lane(0, 1)], 1)
+        );
+    }
+
+    #[test]
+    fn overlapping_blocks_sit_side_by_side() {
+        assert_eq!(
+            lanes(&[(40, 46), (42, 44)]),
+            (vec![lane(0, 1), lane(1, 1)], 2)
+        );
+    }
+
+    #[test]
+    fn a_block_later_in_the_day_takes_back_the_whole_width() {
+        assert_eq!(
+            lanes(&[(40, 46), (42, 44), (60, 64)]),
+            (vec![lane(0, 1), lane(1, 1), lane(0, 2)], 2)
+        );
+    }
+
+    #[test]
+    fn a_freed_column_is_taken_again() {
+        // The third starts when the second ends: the second's column.
+        assert_eq!(
+            lanes(&[(40, 48), (42, 44), (44, 46)]),
+            (vec![lane(0, 1), lane(1, 1), lane(1, 1)], 2)
+        );
+    }
+
+    #[test]
+    fn a_block_widens_over_the_columns_free_all_along_it() {
+        // A, B, C start together; D starts when C ends and takes its
+        // column; E starts when B ends: B's column, D still beside it.
+        // F, after them all, spans the three.
+        let (l, k) = lanes(&[(40, 48), (40, 44), (40, 42), (42, 48), (44, 46), (50, 52)]);
+        assert_eq!(k, 3);
+        assert_eq!(
+            l,
+            vec![
+                lane(0, 1),
+                lane(1, 1),
+                lane(2, 1),
+                lane(2, 1),
+                lane(1, 1),
+                lane(0, 3)
+            ]
+        );
+        // G, beside A only, widens over the two columns no one else holds.
+        let (l, k) = lanes(&[(40, 48), (40, 42), (40, 42), (44, 46)]);
+        assert_eq!(k, 3);
+        assert_eq!(l[3], lane(1, 2));
+    }
+
+    #[test]
+    fn the_lanes_do_not_depend_on_the_order_given() {
+        // The longer of two blocks starting together goes first.
+        assert_eq!(
+            lanes(&[(42, 44), (40, 46)]),
+            (vec![lane(1, 1), lane(0, 1)], 2)
+        );
+        assert_eq!(
+            lanes(&[(40, 42), (40, 46)]),
+            (vec![lane(1, 1), lane(0, 1)], 2)
+        );
+    }
+
+    // -- hour_labels -------------------------------------------------------
+
+    #[test]
+    fn each_hour_is_named_by_the_clock() {
+        let labels = hour_labels(nov(12));
+        assert_eq!(labels.len(), 24);
+        assert_eq!(labels[0], "00:00");
+        assert_eq!(labels[8], "08:00");
+        assert_eq!(labels[23], "23:00");
+    }
+
+    #[test]
+    fn a_day_of_23_hours_skips_two_oclock_and_one_of_25_repeats_it() {
+        let spring = hour_labels(date(2026, 3, 29));
+        assert_eq!(spring.len(), 23);
+        assert_eq!(&spring[..4], ["00:00", "01:00", "03:00", "04:00"]);
+        let autumn = hour_labels(date(2026, 10, 25));
+        assert_eq!(autumn.len(), 25);
+        assert_eq!(&autumn[..5], ["00:00", "01:00", "02:00", "02:00", "03:00"]);
+        assert_eq!(autumn[24], "23:00");
+    }
+
+    // -- now_mark ----------------------------------------------------------
+
+    #[test]
+    fn now_is_marked_in_its_hour_and_quarter_on_its_day_only() {
+        let now = paris(2026, 11, 12, 14, 20);
+        assert_eq!(now_mark(now, nov(12)), Some((14, 1)));
+        assert_eq!(now_mark(now, nov(11)), None);
+        assert_eq!(now_mark(now, nov(13)), None);
+        assert_eq!(now_mark(paris(2026, 11, 12, 0, 0), nov(12)), Some((0, 0)));
+        assert_eq!(
+            now_mark(paris(2026, 11, 12, 23, 59), nov(12)),
+            Some((23, 3))
+        );
+    }
+
+    #[test]
+    fn now_counts_elapsed_hours_on_a_day_of_25() {
+        // 10:00 on 2026-10-25 is eleven hours after midnight.
+        assert_eq!(
+            now_mark(paris(2026, 10, 25, 10, 0), date(2026, 10, 25)),
+            Some((11, 0))
+        );
+    }
+
+    // -- time_label --------------------------------------------------------
+
+    #[test]
+    fn a_block_says_its_real_hours() {
+        assert_eq!(
+            time_label(paris(2026, 11, 12, 10, 0), paris(2026, 11, 12, 11, 30)),
+            "10:00–11:30"
+        );
+        // Cut at midnight, it still says when it ends.
+        assert_eq!(
+            time_label(paris(2026, 11, 12, 23, 0), paris(2026, 11, 13, 1, 0)),
+            "23:00–01:00"
+        );
+        let at = paris(2026, 11, 12, 12, 15);
+        assert_eq!(time_label(at, at), "12:15");
+    }
+
+    // -- banner_sub --------------------------------------------------------
+
+    #[test]
+    fn an_all_day_event_of_one_day_says_so() {
+        let (s, e) = (paris(2026, 11, 12, 0, 0), paris(2026, 11, 13, 0, 0));
+        assert_eq!(
+            banner_sub(true, s, e, nov(12)),
+            ("Journée entière".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn an_all_day_event_of_several_days_counts_them() {
+        let (s, e) = (paris(2026, 11, 11, 0, 0), paris(2026, 11, 14, 0, 0));
+        assert_eq!(
+            banner_sub(true, s, e, nov(11)),
+            ("jour 1 sur 3".to_string(), true)
+        );
+        assert_eq!(
+            banner_sub(true, s, e, nov(12)),
+            ("jour 2 sur 3".to_string(), true)
+        );
+        assert_eq!(
+            banner_sub(true, s, e, nov(13)),
+            ("jour 3 sur 3".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn a_timed_event_of_a_day_or_more_says_when_it_starts_and_ends() {
+        let (s, e) = (paris(2026, 11, 11, 18, 0), paris(2026, 11, 13, 10, 0));
+        assert_eq!(
+            banner_sub(false, s, e, nov(12)),
+            ("mer. 11 à 18:00 → ven. 13 à 10:00".to_string(), true)
+        );
+    }
+
+    // -- the page's parts ----------------------------------------------------
+
+    use manage_our_home_shared::dto::agenda::EventResponse;
+    use uuid::Uuid;
+
+    fn occ(title: &str, all_day: bool, s: DateTime<Utc>, e: DateTime<Utc>) -> OccurrenceResponse {
+        OccurrenceResponse {
+            event: EventResponse {
+                id: Uuid::from_u128(1),
+                group_id: Uuid::nil(),
+                created_by: Uuid::from_u128(7),
+                title: title.to_string(),
+                description: None,
+                location: None,
+                starts_at: s,
+                ends_at: e,
+                all_day,
+                is_task: false,
+                completed_at: None,
+                rrule: None,
+                assignee_ids: vec![Uuid::from_u128(7)],
+                is_private: false,
+            },
+            occurrence_starts_at: s,
+            occurrence_ends_at: e,
+        }
+    }
+
+    fn member() -> GroupMember {
+        GroupMember {
+            user_id: Uuid::from_u128(7),
+            display_name: "Chloé".to_string(),
+            email: "c@example.test".to_string(),
+            has_avatar: false,
+            role: "member".to_string(),
+        }
+    }
+
+    /// The hours of 12 November drawn with `occs`, each clipped to the day.
+    fn hours(occs: &[OccurrenceResponse], now: Option<DateTime<Utc>>) -> String {
+        let blocks: Vec<(&OccurrenceResponse, Clip)> = occs
+            .iter()
+            .map(|o| {
+                let c = clip(o.occurrence_starts_at, o.occurrence_ends_at, nov(12)).unwrap();
+                (o, c)
+            })
+            .collect();
+        hours_html(nov(12), &blocks, &[member()], &[], now, true)
+    }
+
+    #[test]
+    fn the_hours_are_a_row_per_quarter_and_each_hour_named() {
+        let html = hours(&[], None);
+        assert_eq!(html.matches("<tr").count(), 96, "{html}");
+        assert_eq!(
+            html.matches(r#"<th scope="row" rowspan="4">"#).count(),
+            24,
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<th scope="row" rowspan="4">00:00</th>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<tr id="h8"><th scope="row" rowspan="4">08:00</th>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<div class="hours-scroll" tabindex="0" role="region" aria-label="Heures"><table class="hours" role="presentation">"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_day_with_nothing_at_an_hour_says_so_at_eight() {
+        let html = hours(&[], None);
+        assert!(
+            html.contains(r#"<tr id="h8"><th scope="row" rowspan="4">08:00</th><td rowspan="4"><p class="muted">Rien de prévu à l'heure ce jour-là.</p></td></tr>"#),
+            "{html}"
+        );
+        // Not when the events could not be read.
+        let quiet = hours_html(nov(12), &[], &[], &[], None, false);
+        assert!(!quiet.contains("Rien de prévu"), "{quiet}");
+    }
+
+    #[test]
+    fn a_block_spans_the_rows_of_its_length_in_its_members_tint() {
+        let o = occ(
+            "Réunion école",
+            false,
+            paris(2026, 11, 12, 10, 0),
+            paris(2026, 11, 12, 11, 30),
+        );
+        let html = hours(&[o], None);
+        let tint = member_tint(Uuid::from_u128(7));
+        assert!(
+            html.contains(&format!(
+                r#"<td rowspan="6"><a class="blk {tint}" href="/agenda/{}?occ=2026-11-12T09:00:00Z"><strong>Réunion école</strong> <span class="t">10:00–11:30</span><span class="avatar""#,
+                Uuid::from_u128(1)
+            )),
+            "{html}"
+        );
+        assert!(!html.contains("Rien de prévu"), "{html}");
+    }
+
+    #[test]
+    fn overlapping_blocks_are_side_by_side_and_a_short_one_is_one_line() {
+        let a = occ(
+            "Réunion",
+            false,
+            paris(2026, 11, 12, 10, 0),
+            paris(2026, 11, 12, 11, 30),
+        );
+        let b = occ(
+            "Plombier",
+            false,
+            paris(2026, 11, 12, 10, 30),
+            paris(2026, 11, 12, 11, 0),
+        );
+        let html = hours(&[a, b], None);
+        // Two columns: the 10:00 row holds the long block and an empty
+        // cell, the 10:30 row the short one beside it.
+        assert!(html.contains(r#"<td rowspan="6"><a class="blk"#), "{html}");
+        assert!(html.contains(r#"<td rowspan="2"><a class="blk"#), "{html}");
+        assert!(html.contains(" short\""), "{html}");
+        // A row away from them has two empty cells.
+        assert!(
+            html.contains(r#"<th scope="row" rowspan="4">00:00</th><td></td><td></td></tr>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_block_cut_at_midnight_is_flat_there_and_says_its_real_hours() {
+        let o = occ(
+            "Soirée",
+            false,
+            paris(2026, 11, 12, 23, 0),
+            paris(2026, 11, 13, 1, 0),
+        );
+        let html = hours(&[o], None);
+        assert!(html.contains(r#"<td rowspan="4"><a class="blk"#), "{html}");
+        assert!(html.contains(" cut-e\""), "{html}");
+        assert!(html.contains("23:00–01:00"), "{html}");
+    }
+
+    #[test]
+    fn now_is_a_line_in_its_hour_on_today_only() {
+        let html = hours(&[], Some(paris(2026, 11, 12, 14, 20)));
+        assert!(
+            html.contains(r#"<th scope="row" rowspan="4">14:00<span class="now q1"><span class="sr-only">Il est 14:20</span></span></th>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches("now").count(), 1, "{html}");
+        let other = hours(&[], Some(paris(2026, 11, 13, 14, 20)));
+        assert!(!other.contains("now"), "{other}");
+    }
+
+    #[test]
+    fn the_morning_is_found_by_the_clock_on_a_day_of_25_hours() {
+        let html = hours_html(date(2026, 10, 25), &[], &[], &[], None, true);
+        assert_eq!(html.matches("<tr").count(), 100, "{html}");
+        assert!(
+            html.contains(r#"<tr id="h8"><th scope="row" rowspan="4">08:00</th>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_banner_lists_national_days_then_events() {
+        let one = occ(
+            "Anniversaire",
+            true,
+            paris(2026, 11, 12, 0, 0),
+            paris(2026, 11, 13, 0, 0),
+        );
+        let three = occ(
+            "Voyage",
+            true,
+            paris(2026, 11, 11, 0, 0),
+            paris(2026, 11, 14, 0, 0),
+        );
+        let html = banner_html(nov(12), &[&one, &three], &["Armistice"], &[member()], &[]);
+        assert!(
+            html.starts_with(r#"<div class="allday"><h2 class="eyebrow">Journée</h2><p class="ad gen">Armistice</p>"#),
+            "{html}"
+        );
+        let tint = member_tint(Uuid::from_u128(7));
+        // One day: its member's tint. Three: the ocre of generated days,
+        // the initials kept.
+        assert!(
+            html.contains(&format!(r#"<a class="ad {tint}" href="#)),
+            "{html}"
+        );
+        assert!(
+            html.contains("<strong>Anniversaire</strong> <span>Journée entière</span>"),
+            "{html}"
+        );
+        assert!(html.contains(r#"<a class="ad gen" href="#), "{html}");
+        assert!(
+            html.contains("<strong>Voyage</strong> <span>jour 2 sur 3</span>"),
+            "{html}"
+        );
+        assert_eq!(html.matches(r#"class="avatar""#).count(), 2, "{html}");
+    }
+
+    #[test]
+    fn no_banner_on_a_day_without_one() {
+        assert_eq!(banner_html(nov(12), &[], &[], &[], &[]), "");
+    }
+}

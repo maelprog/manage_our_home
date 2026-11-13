@@ -2612,6 +2612,7 @@ mod tests {
             "--warning-soft",
             ".notice.warning, .badge.soon",
         ),
+        ("--fg", "--warning-soft", ".ad.gen (#793)"),
     ];
 
     /// `color-mix(in srgb, …)` of equal parts, which is what
@@ -4406,6 +4407,8 @@ mod tests {
                 ("web/src/routes/admin/users.rs", 5),
                 // The grid's weekdays and the mini grid's initials (#675).
                 ("web/src/routes/agenda/calendar.rs", 2),
+                // The day view's hours, each heading its rows (#793).
+                ("web/src/routes/agenda/day.rs", 1),
                 ("web/src/routes/agenda/imports.rs", 4),
             ],
         );

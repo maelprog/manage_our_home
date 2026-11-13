@@ -198,6 +198,51 @@ test.describe("Agenda — several families (#622)", () => {
   });
 });
 
+// #793 — the day view of several families: each block names its family,
+// and the arrows keep the selection.
+test.describe("Agenda — the day view of several families (#793)", () => {
+  test("both families' events side by side, each named; › keeps the selection; the other's opens in it", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agfamday", "Agenda Familles Jour");
+    await createGroup(page, F2);
+    await page.goto("/agenda/new");
+    await submitSheet(page, "Piscine Deux", 15);
+    await createGroup(page, F1);
+    await page.goto("/agenda/new");
+    await submitSheet(page, "Dentiste Un", 15);
+    await page.goto("/agenda");
+    await show(page, [F1, F2]);
+
+    const date = parisDayOfMonth(15);
+    await page.getByRole("navigation", { name: "Affichage" }).getByRole("link", { name: "Jour", exact: true }).click();
+    await expect(page).toHaveURL(/view=day/);
+    await expect(page).toHaveURL(/familles=/);
+    await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+    const pool = page.locator("a.blk", { hasText: "Piscine Deux" });
+    const dentist = page.locator("a.blk", { hasText: "Dentiste Un" });
+    await expect(pool).toContainText(F2);
+    await expect(dentist).toContainText(F1);
+    // Both 10:00–11:00: side by side.
+    const [a, b] = [await dentist.boundingBox(), await pool.boundingBox()];
+    if (!a || !b) throw new Error("the blocks have no box");
+    expect(Math.abs(a.y - b.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(a.x - b.x)).toBeGreaterThanOrEqual(Math.min(a.width, b.width) - 1);
+
+    await page.getByRole("link", { name: "Jour suivant", exact: true }).click();
+    await expect(page).toHaveURL(/view=day&date=.*familles=/);
+    await expect(box(page, F1)).toBeChecked();
+    await expect(box(page, F2)).toBeChecked();
+
+    // F2's event, F1 being active, opens in F2.
+    await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+    await pool.click();
+    await expect(page.getByRole("heading", { level: 1, name: "Piscine Deux" })).toBeVisible();
+    await expect(page).toHaveURL(/famille=/);
+    await expect(activeFamily(page)).toHaveText(F1);
+  });
+});
+
 // #750 — on a phone, the selector applies each box at once: no « Afficher »
 // to press, « Toutes » ticking every family or leaving the active one, and
 // the last family kept ticked.

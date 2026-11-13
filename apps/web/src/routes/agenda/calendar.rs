@@ -3,7 +3,8 @@
 //! and tasks-as-events render together; recurring series are expanded by
 //! `GET /groups/:gid/events?from&to` so an occurrence appears in every
 //! day-cell it falls on within the visible window. `?view=week` switches to
-//! the 7-day view; `?date=YYYY-MM-DD` moves the focus.
+//! the 7-day view, `?view=day` to one day hour by hour (#793, `super::day`);
+//! `?date=YYYY-MM-DD` moves the focus.
 //!
 //! # One markup, two readings (#71)
 //!
@@ -31,9 +32,10 @@
 //!   the list shows carries its weekday in a `.phone` span before its
 //!   number (`cal_day_label`), which a PC neither draws nor reads out —
 //!   document bytes, a few dozen per such day, paid on a PC too.
-//! * There is no `view=day`. The "Mois" button DESIGN.md describes would
-//!   have nothing to switch back from, so it does not exist either; the
-//!   month/week toggle keeps doing that job on both viewports.
+//! * There was no `view=day`. #793 took that back, as a view of its own
+//!   rather than a reading of the grid: the phone keeps the month by
+//!   default, and each day's number — in the grid, the list and the mini
+//!   grid — leads to its day.
 //!
 //! The third concession of #71 — no member colour on an occurrence — was
 //! taken back by #525, at the price #71 named: a second API call (the
@@ -43,12 +45,13 @@
 //! carrying the information alone.
 //!
 //! The month view caps a crowded day at `MONTH_CHIP_CAP` and counts the
-//! rest into a "+N autres" link to the week view, which caps nothing.
+//! rest into a "+N autres" link to the day view of that day (#793; to the
+//! week view before), which lists everything.
 //!
 //! # The mock-up's head and day panel (#525)
 //!
 //! `‹` · « Aujourd'hui » · `›` step by the view on screen, and the
-//! Semaine / Mois toggle sits beside them, on a phone as on a PC. A PC adds
+//! Jour / Semaine / Mois toggle sits beside them, on a phone as on a PC. A PC adds
 //! the panel of the day in focus (`day_panel`, `.pc`): the day `?date=`
 //! names, today when it names none.
 //!
@@ -57,8 +60,9 @@
 //! The list of #71 shows only the days that carry something, so a month
 //! with nothing in it showed no date at all. A phone now gets, above the
 //! list, a mini grid of the same days (`render_mini`, `.phone`): their
-//! numbers under the weekdays' initials, a day that carries something as a
-//! link to its entry in the list, and an empty state when that list is
+//! numbers under the weekdays' initials, each a link to its day view (#793;
+//! a day that carries something led to its entry in the list before),
+//! and an empty state when that list is
 //! empty (`empty_state`). It is a second markup, the trade #71 refused, and
 //! it does not undo that refusal: what #71 would not pay was a list growing
 //! with what the family has stored. The mini grid holds 42 days at most and
@@ -123,6 +127,7 @@ use crate::routes::groups::header_with_groups;
 use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
+use super::day;
 use super::{
     agenda_cookie, fmt_paris, json_from_response, occurrences_from_response, paris_local_to_utc,
     private_mark, read_or_log, service_unavailable_page, today_paris, with_family, DISPLAY_TZ,
@@ -167,9 +172,9 @@ pub(crate) fn member_tint(user_id: uuid::Uuid) -> &'static str {
 ///
 /// The week view caps nothing — not because its cells are taller (since
 /// #71 they are the same cells) but because there is only one row of them,
-/// so a cell that grows past 6.5rem pushes nothing out of view. It is also
-/// where the month grid's "+N autres" sends the reader, so capping there
-/// would be a dead end.
+/// so a cell that grows past 6.5rem pushes nothing out of view. The month
+/// grid's "+N autres" sends the reader to the day view of that day (#793),
+/// which lists everything.
 pub(crate) const MONTH_CHIP_CAP: usize = 3;
 
 #[derive(serde::Deserialize)]
@@ -177,6 +182,45 @@ pub struct CalendarQuery {
     view: Option<String>,
     date: Option<String>,
     notice: Option<String>,
+}
+
+/// The period the agenda shows: `?view=day|week|month`, the month for
+/// anything else or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Period {
+    /// One day, hour by hour (#793, `super::day`).
+    Day,
+    Week,
+    Month,
+}
+
+impl Period {
+    fn of(view: Option<&str>) -> Self {
+        match view {
+            Some("day") => Period::Day,
+            Some("week") => Period::Week,
+            _ => Period::Month,
+        }
+    }
+
+    /// Its value of `?view=`.
+    fn param(self) -> &'static str {
+        match self {
+            Period::Day => "day",
+            Period::Week => "week",
+            Period::Month => "month",
+        }
+    }
+}
+
+/// How many days before its day the day view reads the events from (#793,
+/// `body`): enough for a series whose occurrence started the evening before,
+/// or a few days before, and still covers the day.
+const DAY_LOOKBACK: i64 = 7;
+
+/// The day view of `day`, where a day's number leads (#793).
+fn day_href(day: NaiveDate) -> String {
+    format!("/agenda?view=day&date={day}")
 }
 
 fn notice_text(code: &str) -> Option<&'static str> {
@@ -239,14 +283,14 @@ fn missing_families_html(names: &[&str]) -> String {
 /// to it. A family that is not the active one, even alone on screen, is
 /// also carried in its chips' links.
 pub(crate) struct FamilyTag<'a> {
-    gid: Uuid,
-    name: &'a str,
-    accent: Accent,
+    pub(crate) gid: Uuid,
+    pub(crate) name: &'a str,
+    pub(crate) accent: Accent,
     /// Its id when it is not the active family: its events' links carry
     /// it (`with_family`), so that their page works in that family.
-    carried: Option<Uuid>,
+    pub(crate) carried: Option<Uuid>,
     /// Whether its chips wear its colour and name: in a view of several.
-    worn: bool,
+    pub(crate) worn: bool,
 }
 
 /// The tags of the families shown. None for the active family alone: the
@@ -271,7 +315,7 @@ fn family_tags<'a>(shown: &[&'a GroupSummary], active: &GroupSummary) -> Vec<Fam
 }
 
 /// The family an occurrence belongs to, among `families`.
-fn family_of<'t, 'a>(
+pub(crate) fn family_of<'t, 'a>(
     occ: &OccurrenceResponse,
     families: &'t [FamilyTag<'a>],
 ) -> Option<&'t FamilyTag<'a>> {
@@ -294,7 +338,7 @@ fn family_selector(
     groups: &[GroupSummary],
     shown: &[&GroupSummary],
     active: Uuid,
-    is_week: bool,
+    period: Period,
     focus: NaiveDate,
 ) -> String {
     if groups.len() < 2 {
@@ -319,7 +363,7 @@ fn family_selector(
 {boxes}<label class="field inline pick"><input type="checkbox" name="{FAMILIES_PARAM}" value="{ALL_FAMILIES}"{all}/>Toutes</label>
 <button type="submit" class="secondary">Afficher</button>
 </form>"#,
-        view = if is_week { "week" } else { "month" },
+        view = period.param(),
         // `shown` is a part of `groups`: as long, it is all of them.
         all = checked(shown.len() == groups.len()),
     )
@@ -367,7 +411,7 @@ async fn fetch_family(
 
 /// What `body` needs to know of the request beyond the families.
 struct View<'q> {
-    is_week: bool,
+    period: Period,
     focus: NaiveDate,
     notice: Option<&'q str>,
 }
@@ -375,7 +419,7 @@ struct View<'q> {
 impl<'q> View<'q> {
     fn of(query: &'q CalendarQuery) -> Self {
         Self {
-            is_week: query.view.as_deref() == Some("week"),
+            period: Period::of(query.view.as_deref()),
             focus: query
                 .date
                 .as_deref()
@@ -438,20 +482,29 @@ async fn body(
 ) -> Option<(String, ShownFamilies)> {
     let shown = resolve_selection(groups, Some(active), requested);
     let carried = shown_families(requested, &shown, Some(active));
-    let (is_week, focus) = (view.is_week, view.focus);
+    let (period, focus) = (view.period, view.focus);
 
     // The civil dates the grid shows, and the [from, to] UTC window covering
     // them (Paris start-of-first-day .. Paris end-of-last-day).
-    let days: Vec<NaiveDate> = if is_week {
-        week_days(focus)
-    } else {
-        month_grid(focus.year(), focus.month())
+    let days: Vec<NaiveDate> = match period {
+        Period::Day => vec![focus],
+        Period::Week => week_days(focus),
+        Period::Month => month_grid(focus.year(), focus.month()),
     };
     let (Some(first), Some(last)) = (days.first(), days.last()) else {
         return None;
     };
+    // The day view reads from `DAY_LOOKBACK` days before its day (#793):
+    // apps/api lists a one-off event by its whole span, but a series'
+    // occurrence only when it *starts* in the window, and one that started
+    // the evening before still covers the morning. What does not fall on
+    // the day is dropped (`day::place`).
+    let read_from = match period {
+        Period::Day => *first - chrono::Duration::days(DAY_LOOKBACK),
+        Period::Week | Period::Month => *first,
+    };
     let (Some(from), Some(to)) = (
-        paris_local_to_utc(&format!("{first}T00:00")),
+        paris_local_to_utc(&format!("{read_from}T00:00")),
         paris_local_to_utc(&format!("{last}T23:59:59")),
     ) else {
         return None;
@@ -534,6 +587,64 @@ async fn body(
     let load_error = !failed.is_empty();
     let families = family_tags(&shown, active);
 
+    // The page's `<h1>` and the grid's `<caption>` (#145) say the same
+    // thing, so they are computed once.
+    let title = view_title(period, focus);
+    let nav_html = render_nav(period, focus, &title, &families_query(&carried))
+        + &family_selector(groups, &shown, active.group_id, period, focus);
+    // One family's events that could not be read: the generic notice of
+    // #455. Several families shown: the one that is missing, by name.
+    let notice_html = if shown.len() < 2 {
+        notices_html(view.notice, load_error)
+    } else {
+        notices_html(view.notice, false) + &missing_families_html(&failed)
+    };
+
+    if period == Period::Day {
+        // The day view (#793): the « Journée » banner, then the hours.
+        let mut banner = Vec::new();
+        let mut blocks = Vec::new();
+        for occ in &occurrences {
+            match day::place(
+                occ.event.all_day,
+                occ.occurrence_starts_at,
+                occ.occurrence_ends_at,
+                focus,
+            ) {
+                Some(day::Place::Banner) => banner.push(occ),
+                Some(day::Place::Hours(clip)) => blocks.push((occ, clip)),
+                None => {}
+            }
+        }
+        // Every national day and school holiday of the day, by name: the
+        // grid's rule of writing a holiday on its first day and Mondays
+        // only is about a band across days, which a day does not draw.
+        let national: Vec<&str> = marks
+            .get(&focus)
+            .map(|m| {
+                m.days
+                    .iter()
+                    .copied()
+                    .chain(m.holidays.iter().map(|(label, _)| *label))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let day_html = day::banner_html(focus, &banner, &national, &members, &families)
+            + &day::hours_html(
+                focus,
+                &blocks,
+                &members,
+                &families,
+                Some(chrono::Utc::now()),
+                !load_error,
+            );
+        let body = view! {
+            <div inner_html=nav_html></div>
+            <div inner_html=notice_html + &day_html></div>
+        };
+        return Some((body.to_html(), carried));
+    }
+
     // Bucket each occurrence into its Paris civil date, in time order.
     let mut by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> = BTreeMap::new();
     for occ in &occurrences {
@@ -554,16 +665,14 @@ async fn body(
     // One grid for both views: the month shows six weeks of it, the week
     // one. What differs is how many days it is handed, whether any of them
     // is muted as belonging to another month, and whether a crowded cell
-    // may stop listing and start counting — the week view is where the
-    // month's "+N autres" sends the reader, so it caps nothing.
+    // may stop listing and start counting — a row of seven cells has
+    // nothing under it to push out of view, so the week caps nothing.
+    let is_week = period == Period::Week;
     let (focus_month, cap) = if is_week {
         (None, None)
     } else {
         (Some(focus.month()), Some(MONTH_CHIP_CAP))
     };
-    // The page's `<h1>` and the grid's `<caption>` (#145) say the same
-    // thing, so they are computed once.
-    let title = view_title(is_week, focus);
     let grid_html = render_grid(&days, &cells, focus_month, today, cap, &title);
     let panel_html = day_panel(
         focus,
@@ -571,15 +680,6 @@ async fn body(
         &members,
         &families,
     );
-    let nav_html = render_nav(is_week, focus, &title, &families_query(&carried))
-        + &family_selector(groups, &shown, active.group_id, is_week, focus);
-    // One family's events that could not be read: the generic notice of
-    // #455. Several families shown: the one that is missing, by name.
-    let notice_html = if shown.len() < 2 {
-        notices_html(view.notice, load_error)
-    } else {
-        notices_html(view.notice, false) + &missing_families_html(&failed)
-    };
     // The head of a phone's list (#675): the period at a glance, then what
     // the list says when it is empty.
     let mini_html = render_mini(&days, &by_day, focus_month, today, &title, &marks)
@@ -594,44 +694,61 @@ async fn body(
 }
 
 /// What the view is called: "juillet 2026" for a month, "Semaine du 13
-/// juillet" for a week. Unescaped — each caller escapes it where it lands.
+/// juillet" for a week, "jeudi 12 novembre 2026" for a day (#793).
+/// Unescaped — each caller escapes it where it lands.
 ///
 /// A week is named by its Monday, whichever of its days is in focus: the
 /// arrows and « Aujourd'hui » keep the day they were given, and naming the
 /// week after a Wednesday said it started that day.
-fn view_title(is_week: bool, focus: NaiveDate) -> String {
-    if is_week {
-        let monday = week_days(focus)[0];
-        let month = FR_MONTHS[(monday.month() - 1) as usize];
-        format!("Semaine du {} {month}", monday.day())
-    } else {
-        let month = FR_MONTHS[(focus.month() - 1) as usize];
-        format!("{month} {}", focus.year())
+fn view_title(period: Period, focus: NaiveDate) -> String {
+    match period {
+        Period::Day => format!(
+            "{} {} {} {}",
+            FR_LONG_WEEKDAYS[focus.weekday().num_days_from_monday() as usize].to_lowercase(),
+            focus.day(),
+            FR_MONTHS[(focus.month() - 1) as usize],
+            focus.year()
+        ),
+        Period::Week => {
+            let monday = week_days(focus)[0];
+            let month = FR_MONTHS[(monday.month() - 1) as usize];
+            format!("Semaine du {} {month}", monday.day())
+        }
+        Period::Month => {
+            let month = FR_MONTHS[(focus.month() - 1) as usize];
+            format!("{month} {}", focus.year())
+        }
     }
 }
 
 /// The head of the page (#525): the view's name, `‹` · « Aujourd'hui » ·
-/// `›` stepping by that view, the Semaine / Mois toggle — on a phone as on
-/// a PC — then the imports, and a new event: the page's button on a PC, the
-/// floating "+" of the home page on a phone (`.fab`, #524).
+/// `›` stepping by that view, the Jour / Semaine / Mois toggle (Jour since
+/// #793) — on a phone as on a PC — then the imports, and a new event: the
+/// page's button on a PC, the floating "+" of the home page on a phone
+/// (`.fab`, #524).
 ///
-/// The toggle is a `<nav>` of two links, `.segment` like the kitchen's
+/// The toggle is a `<nav>` of three links, `.segment` like the kitchen's
 /// (#523); the view on screen carries `aria-current`, so its position is
 /// said in markup and not only drawn.
 ///
 /// `kept` is the selection of families shown (#622, `families_query`): the
 /// arrows, « Aujourd'hui » and the toggle keep it, empty for the default.
-fn render_nav(is_week: bool, focus: NaiveDate, title: &str, kept: &str) -> String {
+fn render_nav(period: Period, focus: NaiveDate, title: &str, kept: &str) -> String {
     let kept = if kept.is_empty() {
         String::new()
     } else {
         format!("&{kept}")
     };
-    let (prev, next) = if is_week {
+    let step = |days: i64| {
         (
-            focus - chrono::Duration::days(7),
-            focus + chrono::Duration::days(7),
+            focus - chrono::Duration::days(days),
+            focus + chrono::Duration::days(days),
         )
+    };
+    let (prev, next) = if period == Period::Day {
+        step(1)
+    } else if period == Period::Week {
+        step(7)
     } else {
         let (py, pm) = if focus.month() == 1 {
             (focus.year() - 1, 12)
@@ -648,13 +765,13 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str, kept: &str) -> Strin
             NaiveDate::from_ymd_opt(ny, nm, 1).unwrap(),
         )
     };
-    let view_q = if is_week { "week" } else { "month" };
+    let view_q = period.param();
     // The arrows are an icon alone: their accessible name is what they step
     // to, which is a week in the week view, not a month.
-    let (prev_label, next_label) = if is_week {
-        ("Semaine précédente", "Semaine suivante")
-    } else {
-        ("Mois précédent", "Mois suivant")
+    let (prev_label, next_label) = match period {
+        Period::Day => ("Jour précédent", "Jour suivant"),
+        Period::Week => ("Semaine précédente", "Semaine suivante"),
+        Period::Month => ("Mois précédent", "Mois suivant"),
     };
     let arrow = |date: NaiveDate, label: &str, icon: Icon| {
         icon_link(
@@ -680,13 +797,14 @@ fn render_nav(is_week: bool, focus: NaiveDate, title: &str, kept: &str) -> Strin
 <h1>{title}</h1>
 <span class="actions">
 <span class="actions">{prev_link}<a class="btn secondary" href="/agenda?view={view_q}&date={today}{kept}">Aujourd'hui</a>{next_link}</span>
-<nav class="segment views" aria-label="Affichage">{week}{month}</nav>
+<nav class="segment views" aria-label="Affichage">{day}{week}{month}</nav>
 <a class="btn secondary" href="/agenda/imports">Agendas Google</a>
 <a class="btn pc" href="/agenda/new">{plus} Nouvel événement</a>
 </span>
 </div>
 {fab}"#,
         title = html_escape(title),
+        day = view_link("day", "Jour"),
         week = view_link("week", "Semaine"),
         month = view_link("month", "Mois"),
         plus = icon(Icon::Plus),
@@ -765,21 +883,18 @@ fn render_grid(
                 _ => "",
             };
             let marks_line = day_marks.map(|m| marks_html(m, *day)).unwrap_or_default();
-            // The mini grid's target on a phone (#675): only a day the
-            // list shows is one — an event, or a national day written out.
+            // A day the phone's list shows (#71): an event, or a national
+            // day written out.
             let listed =
                 !occs.is_empty() || day_marks.is_some_and(|m| !shown_labels(m, *day).is_empty());
-            let id = if listed {
-                format!(r#" id="{}""#, day_anchor(*day))
-            } else {
-                String::new()
-            };
             let chips = render_chips(occs, cap, *day, members, families);
+            // The day's number leads to its day view (#793).
             rows.push_str(&format!(
-                r#"<td class="cal-cell{today_class}{hol_class}"{id}>
-<div class="cal-day{outside_class}">{num}</div>{marks_line}{chips}</td>"#,
+                r#"<td class="cal-cell{today_class}{hol_class}">
+<div class="cal-day{outside_class}"><a href="{href}">{num}</a></div>{marks_line}{chips}</td>"#,
                 today_class = today_class,
                 outside_class = outside_class,
+                href = day_href(*day),
                 num = cal_day_label(*day, listed),
                 chips = chips,
             ));
@@ -804,22 +919,15 @@ fn events_label(n: usize) -> String {
     }
 }
 
-/// The id of a day's entry in the phone's list, the mini grid's target.
-/// The whole date and not the day number: a month grid shows the 1st to
-/// the 9th of two months.
-fn day_anchor(day: NaiveDate) -> String {
-    format!("j{day}")
-}
-
 /// The phone's period at a glance (#675), above the list of days: the same
 /// days as the grid, seven columns of their numbers under the initials of
 /// the weekdays. The list shows only the days that carry something, so a
 /// month with nothing in it showed no date at all.
 ///
 /// `.phone`: a PC has the grid itself, and `display: none` takes this out
-/// of its accessibility tree too. A day that carries something is a link
-/// to its entry in the list (`day_anchor`) — no `view=day`, no script — and
-/// its name says so, the dot the sheet draws under it being only the
+/// of its accessibility tree too. Each day is a link to its day view
+/// (#793; to its entry in the list before). A day that carries something
+/// says so in its name, the dot the sheet draws under it being only the
 /// visible half (WCAG 1.4.1). Its titles stay in the list: here, a count.
 ///
 /// These are document bytes, paid on every page view, on a PC too: the
@@ -863,11 +971,11 @@ fn render_mini(
                 said.push(events_label(count));
             }
             let inner = if said.is_empty() {
-                n.to_string()
+                format!(r#"<a href="{}">{n}</a>"#, day_href(*day))
             } else {
                 format!(
-                    r##"<a href="#{anchor}">{n}<span class="sr-only"> {month}, {label}</span></a>"##,
-                    anchor = day_anchor(*day),
+                    r#"<a href="{href}">{n}<span class="sr-only"> {month}, {label}</span></a>"#,
+                    href = day_href(*day),
                     month = FR_MONTHS[(day.month() - 1) as usize],
                     label = said.join(", "),
                 )
@@ -946,7 +1054,10 @@ fn overflow_label(hidden: usize) -> String {
 /// can arrive empty, see `home.rs::row_assignee_ids`). An id the roster does
 /// not know — a member who left, a roster that could not be read — names
 /// nobody and is dropped.
-fn people<'a>(occ: &OccurrenceResponse, members: &'a [GroupMember]) -> Vec<&'a GroupMember> {
+pub(crate) fn people<'a>(
+    occ: &OccurrenceResponse,
+    members: &'a [GroupMember],
+) -> Vec<&'a GroupMember> {
     let e = &occ.event;
     let ids = if e.assignee_ids.is_empty() {
         std::slice::from_ref(&e.created_by)
@@ -960,7 +1071,7 @@ fn people<'a>(occ: &OccurrenceResponse, members: &'a [GroupMember]) -> Vec<&'a G
 
 /// Their initials, each the member's `.avatar` (`aria-hidden`: the chip is
 /// named by its time and title, and the detail page names the people).
-fn initials(people: &[&GroupMember]) -> String {
+pub(crate) fn initials(people: &[&GroupMember]) -> String {
     people
         .iter()
         .map(|m| member_avatar(m.user_id, &m.display_name, None))
@@ -1039,10 +1150,11 @@ pub(crate) fn render_chips(
             )
         })
         .collect();
+    // The rest is in the day view of that day (#793), which lists it all.
     if hidden > 0 {
         out.push_str(&format!(
-            r#"<a href="/agenda?view=week&date={day}" class="chip">{label}</a>"#,
-            day = day,
+            r#"<a href="{href}" class="chip">{label}</a>"#,
+            href = day_href(day),
             label = html_escape(&overflow_label(hidden)),
         ));
     }
@@ -1374,10 +1486,10 @@ mod tests {
         assert!(html.contains("Événement 1"), "{html}");
         assert!(!html.contains("Événement 2"), "{html}");
         assert!(html.contains("+3 autres"), "{html}");
-        // The indicator is a destination, not a dead end: the week view of
-        // that very day, which caps nothing.
+        // The indicator is a destination, not a dead end: the day view of
+        // that very day (#793), which lists everything.
         assert!(
-            html.contains(r#"href="/agenda?view=week&date=2026-07-15""#),
+            html.contains(r#"href="/agenda?view=day&date=2026-07-15" class="chip">+3 autres"#),
             "{html}"
         );
     }
@@ -1389,7 +1501,7 @@ mod tests {
         let html = render_chips(&refs, Some(MONTH_CHIP_CAP), day(15), &[], &[]);
         assert!(html.contains("Dentiste"), "{html}");
         assert!(!html.contains("autre"), "{html}");
-        assert!(!html.contains("view=week"), "{html}");
+        assert!(!html.contains("view=day"), "{html}");
     }
 
     #[test]
@@ -1644,7 +1756,13 @@ mod tests {
     fn a_visitor_of_one_family_gets_no_selector() {
         let groups = [summary(1, "Seule", "sarcelle")];
         assert_eq!(
-            family_selector(&groups, &[&groups[0]], groups[0].group_id, false, day(15)),
+            family_selector(
+                &groups,
+                &[&groups[0]],
+                groups[0].group_id,
+                Period::Month,
+                day(15)
+            ),
             ""
         );
     }
@@ -1652,7 +1770,13 @@ mod tests {
     #[test]
     fn the_selector_is_a_get_form_of_a_box_per_family_and_toutes() {
         let groups = two_families();
-        let html = family_selector(&groups, &[&groups[1]], groups[0].group_id, true, day(15));
+        let html = family_selector(
+            &groups,
+            &[&groups[1]],
+            groups[0].group_id,
+            Period::Week,
+            day(15),
+        );
         // The hook of `enhance.js` names the active family (#750): unticking
         // « Toutes » keeps it, and only it.
         assert!(
@@ -1709,7 +1833,7 @@ mod tests {
             &groups,
             &[&groups[0], &groups[1]],
             groups[0].group_id,
-            false,
+            Period::Month,
             day(15),
         );
         assert!(html.contains(r#"value="toutes" checked/>Toutes"#), "{html}");
@@ -1727,7 +1851,7 @@ mod tests {
             &groups,
             &[&groups[0], &groups[2]],
             groups[0].group_id,
-            false,
+            Period::Month,
             day(15),
         );
         assert!(html.contains(r#"value="toutes"/>Toutes"#), "{html}");
@@ -1747,7 +1871,7 @@ mod tests {
     #[test]
     fn the_head_keeps_the_selection_on_every_way_out() {
         let kept = "familles=toutes";
-        let html = render_nav(false, day(15), "juillet 2026", kept);
+        let html = render_nav(Period::Month, day(15), "juillet 2026", kept);
         let today = today_paris();
         for href in [
             "/agenda?view=month&date=2026-06-01&familles=toutes".to_string(),
@@ -1761,7 +1885,7 @@ mod tests {
                 "{href}: {html}"
             );
         }
-        assert!(!render_nav(false, day(15), "x", "").contains("familles"));
+        assert!(!render_nav(Period::Month, day(15), "x", "").contains("familles"));
     }
 
     // -- the page of several families against a stand-in apps/api ---------
@@ -1827,7 +1951,7 @@ mod tests {
     }
 
     const OCTOBER: View<'static> = View {
-        is_week: false,
+        period: Period::Month,
         focus: match NaiveDate::from_ymd_opt(2026, 10, 15) {
             Some(d) => d,
             None => panic!(),
@@ -1884,6 +2008,78 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("« Les Martin »"), "{html}");
+    }
+
+    /// The day the stand-in apps/api's occurrence falls on.
+    const OCTOBER_20: View<'static> = View {
+        period: Period::Day,
+        focus: match NaiveDate::from_ymd_opt(2026, 10, 20) {
+            Some(d) => d,
+            None => panic!(),
+        },
+        notice: None,
+    };
+
+    /// The day view (#793) of two families, one of them failing: the
+    /// other's event is a block of the hours wearing its family, under the
+    /// notice naming the missing one — and without « Rien de prévu ».
+    #[tokio::test]
+    async fn the_day_view_draws_the_hours_of_every_family_shown() {
+        let state = fake_families_api().await;
+        let groups = two_families();
+        let (html, _) = body(
+            &state,
+            None,
+            &groups,
+            &groups[0],
+            Some(&FamilySelection::All),
+            &OCTOBER_20,
+        )
+        .await
+        .expect("the page is drawn");
+        assert!(html.contains("<h1>mardi 20 octobre 2026</h1>"), "{html}");
+        // 08:00Z is 10:00 in Paris in October (CEST).
+        assert!(
+            html.contains(r#"<span class="t">10:00–11:00</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="fam" data-accent="sarcelle"><span class="swatch"></span>Les Dupont</span>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<tr id="h8">"#), "{html}");
+        assert!(
+            html.contains("Impossible de charger les événements de « Les Martin »"),
+            "{html}"
+        );
+        assert!(!html.contains("Rien de prévu"), "{html}");
+        // No grid, no mini grid, no panel: the day is the page.
+        assert!(!html.contains(r#"class="cal""#), "{html}");
+        assert!(!html.contains(r#"class="mini"#), "{html}");
+        // The selector keeps the view.
+        assert!(
+            html.contains(r#"<input type="hidden" name="view" value="day"/>"#),
+            "{html}"
+        );
+    }
+
+    /// A day the occurrence does not fall on: the hours, empty, say so.
+    #[tokio::test]
+    async fn a_day_view_with_nothing_at_an_hour_says_so() {
+        let state = fake_families_api().await;
+        let groups = two_families();
+        let view = View {
+            focus: NaiveDate::from_ymd_opt(2026, 10, 21).unwrap(),
+            ..OCTOBER_20
+        };
+        let (html, _) = body(&state, None, &groups, &groups[0], None, &view)
+            .await
+            .expect("the page is drawn");
+        assert!(!html.contains("Piscine"), "{html}");
+        assert!(
+            html.contains("Rien de prévu à l'heure ce jour-là."),
+            "{html}"
+        );
     }
 
     /// Another family alone that fails, the active one not shown: one
@@ -2014,14 +2210,9 @@ mod tests {
     }
 
     #[test]
-    fn a_day_is_anchored_by_its_full_date() {
-        // A month grid shows the 1st to the 9th twice (July's and August's):
-        // the day number alone would give two cells the same id.
-        assert_eq!(day_anchor(day(15)), "j2026-07-15");
-    }
-
-    #[test]
-    fn a_day_of_the_list_carries_the_anchor_the_mini_grid_points_at() {
+    fn every_day_of_the_grid_leads_to_its_day_view() {
+        // #793: the number of each day, with something or not, of the month
+        // or of another; no cell is an anchor any more.
         let occs = [occurrence(9, "Dentiste")];
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
@@ -2034,12 +2225,17 @@ mod tests {
             None,
             "juillet 2026",
         );
+        for d in &days {
+            assert!(
+                html.contains(&format!(r#"<a href="/agenda?view=day&date={d}">"#)),
+                "{d}: {html}"
+            );
+        }
         assert!(
-            html.contains(r#"<td class="cal-cell" id="j2026-07-15">"#),
+            html.contains(r#"<div class="cal-day outside"><a href="/agenda?view=day&date=2026-06-29">29</a></div>"#),
             "{html}"
         );
-        // Only a day the list shows needs one: the others are not targets.
-        assert_eq!(html.matches(" id=").count(), 1, "{html}");
+        assert!(!html.contains(" id="), "{html}");
     }
 
     // -- the weekday of a day (#792) --------------------------------------
@@ -2100,20 +2296,28 @@ mod tests {
             "Semaine du 13 juillet",
         );
         assert!(
-            html.contains(r#"<div class="cal-day"><span class="phone">mercredi </span>15</div>"#),
+            html.contains(r#"<div class="cal-day"><a href="/agenda?view=day&date=2026-07-15"><span class="phone">mercredi </span>15</a></div>"#),
             "{html}"
         );
         assert_eq!(html.matches(r#"class="phone""#).count(), 1, "{html}");
-        assert!(html.contains(r#"<div class="cal-day">16</div>"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<div class="cal-day"><a href="/agenda?view=day&date=2026-07-16">16</a></div>"#
+            ),
+            "{html}"
+        );
+        // No cell carries an id any more: the mini grid leads to the day
+        // view, not to an entry of the list (#793).
+        assert!(!html.contains(" id="), "{html}");
     }
 
     /// The `<td>…</td>` of the mini grid that holds day `n` of July 2026.
     fn mini_cell(html: &str, n: u32) -> String {
-        let anchor = format!("j2026-07-{n:02}");
+        let href = format!("date=2026-07-{n:02}\"");
         let cells: Vec<&str> = html.split("<td").skip(1).collect();
         let found = cells
             .iter()
-            .find(|c| c.contains(&format!(">{n}</td>")) || c.contains(&anchor))
+            .find(|c| c.contains(&href))
             .expect("the day is rendered");
         format!("<td{}", &found[..found.find("</td>").unwrap() + 5])
     }
@@ -2139,7 +2343,12 @@ mod tests {
         assert_eq!(html.matches("<td").count(), 42, "{html}");
         assert_eq!(html.matches("<tr>").count(), 1 + 6, "{html}");
         for n in 1..=31 {
-            assert!(html.contains(&format!(">{n}</td>")), "day {n}: {html}");
+            assert!(
+                html.contains(&format!(
+                    r#"<a href="/agenda?view=day&date=2026-07-{n:02}">{n}</a></td>"#
+                )),
+                "day {n}: {html}"
+            );
         }
         // July 2026 runs Wednesday to Friday: Monday 29 June leads the grid,
         // Sunday 9 August ends it — 2 + 9 days of other months, muted.
@@ -2148,8 +2357,10 @@ mod tests {
             11,
             "{html}"
         );
-        // No day carries anything, so nothing is a link.
-        assert!(!html.contains("<a "), "{html}");
+        // Every day is a link to its day view (#793); none carries
+        // anything, so none says more than its number.
+        assert_eq!(html.matches("<a ").count(), 42, "{html}");
+        assert!(!html.contains("sr-only"), "{html}");
     }
 
     #[test]
@@ -2202,13 +2413,13 @@ mod tests {
         );
         assert_eq!(
             mini_cell(&html, 15),
-            r#"<td class="current" aria-current="date">15</td>"#
+            r#"<td class="current" aria-current="date"><a href="/agenda?view=day&date=2026-07-15">15</a></td>"#
         );
         assert_eq!(html.matches("aria-current").count(), 1, "{html}");
     }
 
     #[test]
-    fn a_day_that_carries_something_links_to_its_entry_in_the_list() {
+    fn a_day_that_carries_something_says_so_in_its_link() {
         let occs = [occurrence(9, "Dentiste"), occurrence(14, "Piscine")];
         let by_day: BTreeMap<NaiveDate, Vec<&OccurrenceResponse>> =
             [(day(15), occs.iter().collect())].into_iter().collect();
@@ -2221,14 +2432,14 @@ mod tests {
             "juillet 2026",
             &BTreeMap::new(),
         );
-        // An anchor, no `view=day`, no script. Its name says the day and
-        // that it carries something — not the hue of a dot alone (WCAG
-        // 1.4.1): "15 juillet, 2 événements".
+        // Its day view (#793). Its name says the day and that it carries
+        // something — not the hue of a dot alone (WCAG 1.4.1): "15
+        // juillet, 2 événements".
         assert_eq!(
             mini_cell(&html, 15),
-            r##"<td><a href="#j2026-07-15">15<span class="sr-only"> juillet, 2 événements</span></a></td>"##
+            r#"<td><a href="/agenda?view=day&date=2026-07-15">15<span class="sr-only"> juillet, 2 événements</span></a></td>"#
         );
-        assert_eq!(html.matches("<a ").count(), 1, "{html}");
+        assert_eq!(html.matches("sr-only").count(), 1, "{html}");
         // The titles stay in the list: the grid only counts.
         assert!(!html.contains("Dentiste"), "{html}");
     }
@@ -2249,7 +2460,7 @@ mod tests {
             &BTreeMap::new(),
         );
         assert!(
-            html.contains(r##"<td class="outside"><a href="#j2026-06-30">30<span class="sr-only"> juin, 1 événement</span></a></td>"##),
+            html.contains(r#"<td class="outside"><a href="/agenda?view=day&date=2026-06-30">30<span class="sr-only"> juin, 1 événement</span></a></td>"#),
             "{html}"
         );
     }
@@ -2383,12 +2594,12 @@ mod tests {
 
     #[test]
     fn the_month_view_is_named_by_month_and_year() {
-        assert_eq!(view_title(false, day(15)), "juillet 2026");
+        assert_eq!(view_title(Period::Month, day(15)), "juillet 2026");
     }
 
     #[test]
     fn the_week_view_is_named_by_its_first_day() {
-        assert_eq!(view_title(true, day(13)), "Semaine du 13 juillet");
+        assert_eq!(view_title(Period::Week, day(13)), "Semaine du 13 juillet");
     }
 
     #[test]
@@ -2396,11 +2607,11 @@ mod tests {
         // « Aujourd'hui » and the arrows of the week view keep the day they
         // were given, a Wednesday as often as a Monday: the title has to
         // name the week, not that day.
-        assert_eq!(view_title(true, day(15)), "Semaine du 13 juillet");
-        assert_eq!(view_title(true, day(19)), "Semaine du 13 juillet");
+        assert_eq!(view_title(Period::Week, day(15)), "Semaine du 13 juillet");
+        assert_eq!(view_title(Period::Week, day(19)), "Semaine du 13 juillet");
         // 2026-08-02 is a Sunday: its week starts in July.
         let sunday = NaiveDate::from_ymd_opt(2026, 8, 2).unwrap();
-        assert_eq!(view_title(true, sunday), "Semaine du 27 juillet");
+        assert_eq!(view_title(Period::Week, sunday), "Semaine du 27 juillet");
     }
 
     // -- render_nav ----------------------------------------------------
@@ -2422,7 +2633,7 @@ mod tests {
 
     #[test]
     fn the_month_arrows_are_an_icon_named_for_the_month_they_reach() {
-        let html = render_nav(false, day(15), "juillet 2026", "");
+        let html = render_nav(Period::Month, day(15), "juillet 2026", "");
         let prev = nav_link(&html, "month", "2026-06-01");
         let next = nav_link(&html, "month", "2026-08-01");
         assert!(prev.contains(r#"aria-label="Mois précédent""#), "{prev}");
@@ -2441,7 +2652,7 @@ mod tests {
     fn the_week_arrows_are_named_for_the_week_they_reach() {
         // They step seven days: calling them "Mois précédent" would announce
         // a jump the link does not make.
-        let html = render_nav(true, day(15), "Semaine du 13 juillet", "");
+        let html = render_nav(Period::Week, day(15), "Semaine du 13 juillet", "");
         let prev = nav_link(&html, "week", "2026-07-08");
         let next = nav_link(&html, "week", "2026-07-22");
         assert!(
@@ -2454,9 +2665,61 @@ mod tests {
     }
 
     #[test]
+    fn the_day_arrows_step_one_day_and_keep_the_families() {
+        let html = render_nav(
+            Period::Day,
+            day(15),
+            "mercredi 15 juillet 2026",
+            "familles=toutes",
+        );
+        let prev = nav_link(&html, "day", "2026-07-14&familles=toutes");
+        let next = nav_link(&html, "day", "2026-07-16&familles=toutes");
+        assert!(prev.contains(r#"aria-label="Jour précédent""#), "{prev}");
+        assert!(next.contains(r#"aria-label="Jour suivant""#), "{next}");
+        let today = today_paris();
+        assert!(
+            html.contains(&format!(
+                r#"href="/agenda?view=day&date={today}&familles=toutes">Aujourd'hui</a>"#
+            )),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_toggle_has_three_views_and_keeps_the_day() {
+        let html = render_nav(Period::Day, day(15), "x", "");
+        let toggle = views_toggle(&html);
+        assert!(
+            toggle.contains(
+                r#"<a href="/agenda?view=day&date=2026-07-15" aria-current="true">Jour</a><a href="/agenda?view=week&date=2026-07-15">Semaine</a><a href="/agenda?view=month&date=2026-07-15">Mois</a>"#
+            ),
+            "{toggle}"
+        );
+        let month = render_nav(Period::Month, day(15), "x", "");
+        assert!(
+            views_toggle(&month).contains(r#"<a href="/agenda?view=day&date=2026-07-15">Jour</a>"#),
+            "{month}"
+        );
+    }
+
+    #[test]
+    fn the_day_view_is_named_by_its_day_month_and_year() {
+        assert_eq!(view_title(Period::Day, day(15)), "mercredi 15 juillet 2026");
+    }
+
+    #[test]
+    fn the_view_is_read_from_the_query_month_by_default() {
+        assert_eq!(Period::of(Some("day")), Period::Day);
+        assert_eq!(Period::of(Some("week")), Period::Week);
+        assert_eq!(Period::of(Some("month")), Period::Month);
+        assert_eq!(Period::of(Some("jour")), Period::Month);
+        assert_eq!(Period::of(None), Period::Month);
+    }
+
+    #[test]
     fn no_literal_quote_reaches_the_nav_text() {
         // Attribute values are quoted; text between tags never is.
-        let html = render_nav(false, day(15), "juillet 2026", "");
+        let html = render_nav(Period::Month, day(15), "juillet 2026", "");
         for text in html.split('>').filter_map(|s| s.split('<').next()) {
             assert!(!text.contains('"'), "quoted text node: {text:?}");
         }
@@ -2478,7 +2741,7 @@ mod tests {
         // Mois and Semaine are one control with two positions, on a phone
         // as on a PC: the one on screen says so, in markup and not only in
         // colour.
-        let month = render_nav(false, day(15), "juillet 2026", "");
+        let month = render_nav(Period::Month, day(15), "juillet 2026", "");
         let toggle = views_toggle(&month);
         assert!(
             toggle.contains(
@@ -2490,7 +2753,7 @@ mod tests {
             toggle.contains(r#"<a href="/agenda?view=week&date=2026-07-15">Semaine</a>"#),
             "{toggle}"
         );
-        let week = render_nav(true, day(15), "Semaine du 13 juillet", "");
+        let week = render_nav(Period::Week, day(15), "Semaine du 13 juillet", "");
         let toggle = views_toggle(&week);
         assert!(
             toggle.contains(
@@ -2504,8 +2767,9 @@ mod tests {
     #[test]
     fn today_keeps_the_view_it_was_pressed_in() {
         let today = today_paris();
-        for (is_week, view) in [(false, "month"), (true, "week")] {
-            let html = render_nav(is_week, day(15), "x", "");
+        for period in [Period::Day, Period::Week, Period::Month] {
+            let view = period.param();
+            let html = render_nav(period, day(15), "x", "");
             assert!(
                 html.contains(&format!(
                     r#"href="/agenda?view={view}&date={today}">Aujourd'hui</a>"#
@@ -2519,7 +2783,7 @@ mod tests {
     fn a_new_event_is_a_button_on_a_pc_and_the_floating_plus_on_a_phone() {
         // The home's floating "+" (#524), the same `.fab`: the mock-up of
         // the phone agenda draws it where the PC has its button.
-        let html = render_nav(false, day(15), "juillet 2026", "");
+        let html = render_nav(Period::Month, day(15), "juillet 2026", "");
         assert!(
             html.contains(r#"<a class="btn pc" href="/agenda/new">"#),
             "{html}"
@@ -2848,14 +3112,13 @@ mod tests {
         // Under the number, before the chips; a paragraph, not an `<a>`.
         assert!(
             cell.contains(
-                r#"<div class="cal-day"><span class="phone">dimanche </span>25</div><p class="nat">Passage à l'heure d'hiver</p>"#
+                r#"<div class="cal-day"><a href="/agenda?view=day&date=2026-10-25"><span class="phone">dimanche </span>25</a></div><p class="nat">Passage à l'heure d'hiver</p>"#
             ),
             "{cell}"
         );
-        assert!(!cell.contains("<a "), "{cell}");
+        // The day's number is its only link (#793).
+        assert_eq!(cell.matches("<a ").count(), 1, "{cell}");
         assert!(!cell.contains("chip"), "{cell}");
-        // A day of the list on a phone, so the mini grid's target.
-        assert!(cell.contains(r#" id="j2026-10-25""#), "{cell}");
     }
 
     #[test]
@@ -2872,10 +3135,7 @@ mod tests {
         );
         // Written out on its first day: in the phone's list.
         let first = grid_cell(&html, ymd(2026, 10, 17), &grid);
-        assert!(
-            first.starts_with(r#"<td class="cal-cell hol" id="j2026-10-17">"#),
-            "{first}"
-        );
+        assert!(first.starts_with(r#"<td class="cal-cell hol">"#), "{first}");
         assert!(
             first.contains(r#"<p class="nat">Vacances de la Toussaint</p>"#),
             "{first}"
@@ -2937,16 +3197,16 @@ mod tests {
         let html = render_mini(&grid, &by_day, Some(7), day(1), "juillet 2026", &marks);
         assert_eq!(
             mini_cell(&html, 14),
-            r##"<td><a href="#j2026-07-14">14<span class="sr-only"> juillet, Fête nationale, 1 événement</span></a></td>"##
+            r#"<td><a href="/agenda?view=day&date=2026-07-14">14<span class="sr-only"> juillet, Fête nationale, 1 événement</span></a></td>"#
         );
         assert_eq!(
             mini_cell(&html, 15),
-            r##"<td><a href="#j2026-07-15">15<span class="sr-only"> juillet, Rien</span></a></td>"##
+            r#"<td><a href="/agenda?view=day&date=2026-07-15">15<span class="sr-only"> juillet, Rien</span></a></td>"#
         );
     }
 
     #[test]
-    fn a_school_holiday_day_not_written_out_is_no_link_of_the_mini_grid() {
+    fn a_school_holiday_day_not_written_out_says_nothing_in_the_mini_grid() {
         let (grid, national) = october_2026();
         let marks = marks_by_day(&grid, &national);
         let html = render_mini(
@@ -2957,9 +3217,15 @@ mod tests {
             "x",
             &marks,
         );
-        // The 21st has no entry in the list: no anchor to point at.
-        assert!(html.contains("<td>21</td>"), "{html}");
-        assert!(html.contains(r##"<a href="#j2026-10-17">"##), "{html}");
+        // The 21st has no entry in the list: its link says its number.
+        assert!(
+            html.contains(r#"<td><a href="/agenda?view=day&date=2026-10-21">21</a></td>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/agenda?view=day&date=2026-10-17">17<span class="sr-only">"#),
+            "{html}"
+        );
     }
 
     /// The acceptance criterion of #565: an answer the page cannot read is

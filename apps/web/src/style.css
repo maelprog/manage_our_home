@@ -619,6 +619,11 @@ dialog.viewer { width: 100%; max-width: min(var(--w-read), 100% - 2 * var(--s4))
   font-size: var(--t-xs);
   text-decoration: none;
 }
+/* A block of the day view's hours and an entry of its « Journée » banner
+   (#793, `routes::agenda::day`): a chip's ground and text, declared here so
+   that the member's tint below wins over it, and an edge the member's hue
+   paints further down. */
+.blk, .ad { border-left: var(--s1) solid var(--border); background: var(--hover); color: var(--fg); text-decoration: none; }
 /* A chip in its member's tint (#525, `routes::agenda::calendar::member_tint`): 16 % of the hue
    mixed into --surface, the text staying --fg — DESIGN.md → Couleur, the
    event ground; app.rs measures --fg on all eight, in both themes. Declared
@@ -632,6 +637,16 @@ dialog.viewer { width: 100%; max-width: min(var(--w-read), 100% - 2 * var(--s4))
 .m6 { background: color-mix(in srgb, var(--surface), var(--m6) 16%); }
 .m7 { background: color-mix(in srgb, var(--surface), var(--m7) 16%); }
 .m8 { background: color-mix(in srgb, var(--surface), var(--m8) 16%); }
+/* The day view's edge in the member's hue (#793), as the mock-up draws it;
+   the initials beside the title still name them (WCAG 1.4.1). */
+:is(.blk, .ad).m1 { border-left-color: var(--m1); }
+:is(.blk, .ad).m2 { border-left-color: var(--m2); }
+:is(.blk, .ad).m3 { border-left-color: var(--m3); }
+:is(.blk, .ad).m4 { border-left-color: var(--m4); }
+:is(.blk, .ad).m5 { border-left-color: var(--m5); }
+:is(.blk, .ad).m6 { border-left-color: var(--m6); }
+:is(.blk, .ad).m7 { border-left-color: var(--m7); }
+:is(.blk, .ad).m8 { border-left-color: var(--m8); }
 /* The initials in a chip: the avatar at the height of the chip's line. */
 .chip .avatar { width: var(--s4); height: var(--s4); margin-right: var(--s1); vertical-align: top; }
 /* A chip of an agenda showing several families (#622): its family's colour
@@ -723,7 +738,11 @@ progress::-moz-progress-bar { background: currentColor; }
 .mini .outside { color: var(--muted); }
 .mini .current { border-radius: var(--r-sm); background: var(--accent); color: var(--accent-fg); }
 .mini a { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); height: var(--s12); color: inherit; font-weight: 600; text-decoration: none; }
-.mini a::after { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; background: currentColor; }
+/* Every day is a link to its day view (#793); the dot, kept in every link
+   so that the numbers line up, is drawn under a day that carries something
+   — the one whose name says so. */
+.mini a::after { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; }
+.mini a:has(.sr-only)::after { background: currentColor; }
 /* A day's national days (#565, `calendar::marks_html`): a head line under
    its number, in --muted at the chip's size — a paragraph, not a link, so
    it does not read as an event. It wraps, where a chip is cut: there is no
@@ -731,6 +750,48 @@ progress::-moz-progress-bar { background: currentColor; }
    top of each day it covers, its name written in the cell or `.sr-only`. */
 .nat { margin: 0; color: var(--muted); font-size: var(--t-xs); white-space: normal; }
 .hol { box-shadow: inset 0 var(--s1) var(--accent); }
+/* A day's number leads to its day view (#793): underlined in the accent,
+   in the colour of the number — today's is on the accent itself. */
+.cal-day a { color: inherit; text-decoration: underline var(--accent); text-underline-offset: var(--s1); }
+/* -- The day view (#793, `routes::agenda::day`) ---------------------------
+   The « Journée » banner: the day's national days and its events of a
+   whole day or more, a line each. A national day, and an event of more
+   than a day, wear the ocre of what the app generates. */
+.allday { display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s3); padding: var(--s2x); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+.ad { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); min-height: var(--s8); margin: 0; padding: var(--s1) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); }
+.ad.gen { border-left-color: var(--warning); background: var(--warning-soft); }
+/* The hours, a row per quarter of an hour, an hour 56px tall: a scroller
+   that opens on 08:00 (`#h8`) without a script where the browser knows
+   `scroll-initial-target`, through `enhance.js` elsewhere. The table's own
+   ground draws a rule per hour. */
+.hours-scroll { max-height: 70vh; overflow: hidden auto; border-top: 1px solid var(--line); background: var(--surface); }
+#h8 { scroll-initial-target: nearest; }
+.hours { table-layout: fixed; background: repeating-linear-gradient(var(--line) 0 1px, transparent 1px calc(var(--s12) + var(--s2x))); }
+.hours tr { height: calc((var(--s12) + var(--s2x)) / 4); }
+.hours th, .hours td { position: relative; padding: 0; border: 0; vertical-align: top; }
+.hours th { width: var(--s12); padding-right: var(--s2x); text-align: right; font-size: var(--t-xs); font-weight: 400; font-variant-numeric: tabular-nums; }
+.hours p { margin: var(--s4) 0; text-align: center; white-space: normal; }
+/* A block fills the cells it spans: placed by the table's `rowspan` and
+   `colspan`, no inline style. Its title on a line, its hours and initials
+   under it, its family under them; two rows tall (`.short`), one line,
+   the hours first. Cut at an edge of the day, that edge is flat and
+   dashed. */
+.blk { position: absolute; inset: 1px var(--s2) 1px 0; display: flex; flex-wrap: wrap; align-content: flex-start; align-items: center; gap: 0 var(--s1); overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: normal; }
+.blk strong { flex-basis: 100%; }
+.blk .t { font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+:is(.blk, .ad) .avatar { width: var(--s4); height: var(--s4); }
+.fam { display: flex; flex-basis: 100%; align-items: center; gap: var(--s1); font-size: var(--t-xs); }
+.blk.short { flex-wrap: nowrap; white-space: nowrap; }
+.blk.short strong { flex-basis: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.blk.short .t { order: -1; }
+.cut-s { border-top: var(--s2) dashed; border-top-left-radius: 0; border-top-right-radius: 0; }
+.cut-e { border-bottom: var(--s2) dashed; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+/* The current time across its hour, to the quarter, drawn when the page
+   is: from the hour's name to the scroller's edge, which clips it. */
+.now { position: absolute; z-index: 1; top: 0; left: 100%; width: 100vw; border-top: var(--s2) solid var(--accent); }
+.now.q1 { top: 25%; }
+.now.q2 { top: 50%; }
+.now.q3 { top: 75%; }
 /* The event form as the mock-up's sheet (#525). The fieldsets it holds are
    cards of their own elsewhere (the edit page); inside the sheet they are
    groups of fields, not a card on a card. */
