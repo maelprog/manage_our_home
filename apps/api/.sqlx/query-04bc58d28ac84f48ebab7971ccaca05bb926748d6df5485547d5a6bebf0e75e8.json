@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO recipe_selections (group_id, recipe_id, servings, created_by)\n        VALUES ($1, $2, $3, $4)\n        ON CONFLICT (recipe_id) WHERE status = 'planned' DO UPDATE SET\n            servings = COALESCE(EXCLUDED.servings, recipe_selections.servings),\n            updated_at = CASE\n                WHEN EXCLUDED.servings IS NOT NULL\n                     AND EXCLUDED.servings IS DISTINCT FROM recipe_selections.servings\n                THEN now()\n                ELSE recipe_selections.updated_at\n            END\n        RETURNING id, recipe_id, status, servings, created_by, created_at, updated_at,\n                  (xmax = 0) AS \"inserted!\"\n        ",
+  "query": "\n        UPDATE recipe_selections SET\n            servings = COALESCE($3, servings),\n            planned_on = $4,\n            meal_slot = $5,\n            updated_at = now()\n        WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'\n        RETURNING id, recipe_id, status, servings, planned_on, meal_slot,\n                  created_by, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,28 @@
       },
       {
         "ordinal": 4,
+        "name": "planned_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "planned_on"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "meal_slot",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "meal_slot"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "created_by",
         "type_info": "Uuid",
         "origin": {
@@ -59,7 +81,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -70,7 +92,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -79,12 +101,6 @@
             "name": "updated_at"
           }
         }
-      },
-      {
-        "ordinal": 7,
-        "name": "inserted!",
-        "type_info": "Bool",
-        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -92,7 +108,8 @@
         "Uuid",
         "Uuid",
         "Int4",
-        "Uuid"
+        "Date",
+        "Text"
       ]
     },
     "nullable": [
@@ -100,11 +117,12 @@
       false,
       false,
       true,
+      true,
+      true,
       false,
       false,
-      false,
-      null
+      false
     ]
   },
-  "hash": "cbe89c52f89b828472e4698ac3f9bf79075be34085d5ebe4f207d7d98342f879"
+  "hash": "04bc58d28ac84f48ebab7971ccaca05bb926748d6df5485547d5a6bebf0e75e8"
 }
