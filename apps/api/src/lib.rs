@@ -454,6 +454,14 @@ pub fn build_router(state: AppState) -> Router {
             post(grocery_list::items::add_missing_grocery_items),
         )
         .route(
+            "/groups/{id}/recipes/{recipe_id}/selection/replacements",
+            get(recipes::selections::list_replacements),
+        )
+        .route(
+            "/groups/{id}/recipes/{recipe_id}/selection/replacement",
+            post(recipes::selections::replace_selection),
+        )
+        .route(
             "/groups/{id}/grocery-items",
             post(grocery_list::items::create_grocery_item)
                 .get(grocery_list::items::list_grocery_items),

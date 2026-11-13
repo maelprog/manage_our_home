@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, servings, planned_on, meal_slot FROM recipe_selections\n            WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "servings"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "planned_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "planned_on"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "meal_slot",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_selections",
+            "name": "meal_slot"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "fd339c14365ce4d7a787ee37e15cd8fec7d119d98f4dfa12e2eedf46d74239cc"
+}

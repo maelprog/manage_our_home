@@ -104,13 +104,33 @@ pub async fn suggest_recipes(
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
+    let mut suggestions = score_recipes(&mut tx, group_id).await?;
+    tx.commit().await?;
 
+    if query.possible {
+        suggestions.retain(|s| is_possible(s.matched_ingredients, s.total_required_ingredients));
+    }
+    suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    let limit = query.limit.unwrap_or(20).max(0) as usize;
+    suggestions.truncate(limit);
+
+    Ok(Json(json!({ "suggestions": suggestions })))
+}
+
+/// Every recipe of the group, scored, in the order the rows came in.
+/// Shared by the suggestions and the replacements of a planned selection
+/// (#815).
+pub(crate) async fn score_recipes(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> AppResult<Vec<RecipeSuggestion>> {
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
         "SELECT id, name FROM recipes WHERE group_id = $1",
         group_id,
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
 
     let ingredient_rows = sqlx::query_as!(
@@ -122,7 +142,7 @@ pub async fn suggest_recipes(
         "#,
         group_id,
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
 
     // `off_products` is the public Open Food Facts cache (no RLS, see
@@ -138,7 +158,7 @@ pub async fn suggest_recipes(
         "#,
         group_id,
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?
     .into_iter()
     .map(|r| stock_entry(taxonomy, &r.name, &r.categories_tags.unwrap_or_default()))
@@ -155,14 +175,12 @@ pub async fn suggest_recipes(
         VARIETY_WINDOW_DAYS,
         today(),
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?
     .into_iter()
     .map(|r| (r.recipe_id, r.last_eaten_on))
     .collect();
     let recent_meals: HashMap<Uuid, NaiveDate> = recent_meals.into_iter().collect();
-
-    tx.commit().await?;
 
     let mut ingredients_by_recipe: HashMap<Uuid, Vec<&IngredientRow>> = HashMap::new();
     for ing in &ingredient_rows {
@@ -176,7 +194,7 @@ pub async fn suggest_recipes(
     // day of a month, the UTC month is still the previous one until 1–2 a.m.
     let current_month = today().month() as i32;
 
-    let mut suggestions: Vec<RecipeSuggestion> = recipe_rows
+    let suggestions: Vec<RecipeSuggestion> = recipe_rows
         .into_iter()
         .map(|recipe| {
             let ingredients = ingredients_by_recipe
@@ -236,16 +254,7 @@ pub async fn suggest_recipes(
             }
         })
         .collect();
-
-    if query.possible {
-        suggestions.retain(|s| is_possible(s.matched_ingredients, s.total_required_ingredients));
-    }
-    suggestions.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-
-    let limit = query.limit.unwrap_or(20).max(0) as usize;
-    suggestions.truncate(limit);
-
-    Ok(Json(json!({ "suggestions": suggestions })))
+    Ok(suggestions)
 }
 
 /// An article in stock as the matching sees it: its name, trimmed and
@@ -294,9 +303,114 @@ fn is_possible(matched: usize, total_required: usize) -> bool {
     total_required > 0 && matched == total_required
 }
 
+/// How many recipes a planned selection is offered in its place (#815).
+pub(crate) const REPLACEMENTS_MAX: usize = 3;
+
+/// The recipes offered in place of a planned one (#815): neither the
+/// replaced recipe nor a recipe already planned, the best score first;
+/// equal scores by name, then id, so that the offer does not depend on the
+/// order the rows came in. At most [`REPLACEMENTS_MAX`], none when no
+/// other recipe is left.
+pub(crate) fn replacement_candidates(
+    ranked: Vec<RecipeSuggestion>,
+    replaced: Uuid,
+    planned: &HashSet<Uuid>,
+) -> Vec<RecipeSuggestion> {
+    let mut candidates: Vec<RecipeSuggestion> = ranked
+        .into_iter()
+        .filter(|s| s.recipe_id != replaced && !planned.contains(&s.recipe_id))
+        .collect();
+    candidates.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.recipe_id.cmp(&b.recipe_id))
+    });
+    candidates.truncate(REPLACEMENTS_MAX);
+    candidates
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- replacement_candidates (#815) -------------------------------------
+
+    fn id(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn suggestion(n: u128, name: &str, score: f64) -> RecipeSuggestion {
+        RecipeSuggestion {
+            recipe_id: id(n),
+            name: name.to_string(),
+            score,
+            matched_ingredients: 0,
+            total_required_ingredients: 0,
+            missing_ingredients: vec![],
+            recently_eaten: false,
+            last_eaten_on: None,
+        }
+    }
+
+    fn offered(ranked: Vec<RecipeSuggestion>, replaced: u128, planned: &[u128]) -> Vec<u128> {
+        let planned: HashSet<Uuid> = planned.iter().copied().map(id).collect();
+        replacement_candidates(ranked, id(replaced), &planned)
+            .into_iter()
+            .map(|s| s.recipe_id.as_u128())
+            .collect()
+    }
+
+    #[test]
+    fn neither_the_replaced_recipe_nor_a_planned_one_is_offered() {
+        let ranked = vec![
+            suggestion(1, "Gratin", 100.0),
+            suggestion(2, "Soupe", 90.0),
+            suggestion(3, "Tarte", 80.0),
+            suggestion(4, "Quiche", 70.0),
+        ];
+        // 1 is replaced, 1 and 3 are planned.
+        assert_eq!(offered(ranked, 1, &[1, 3]), [2, 4]);
+    }
+
+    #[test]
+    fn the_best_score_comes_first_whatever_the_order_given() {
+        let ranked = vec![
+            suggestion(1, "Gratin", 10.0),
+            suggestion(2, "Soupe", 95.0),
+            suggestion(3, "Tarte", -20.0),
+            suggestion(4, "Quiche", 50.0),
+        ];
+        assert_eq!(offered(ranked, 9, &[9]), [2, 4, 1]);
+    }
+
+    #[test]
+    fn equal_scores_go_by_name_then_id() {
+        let ranked = vec![
+            suggestion(3, "Tarte", 60.0),
+            suggestion(5, "Gratin", 60.0),
+            suggestion(4, "Gratin", 60.0),
+        ];
+        assert_eq!(offered(ranked, 9, &[9]), [4, 5, 3]);
+    }
+
+    #[test]
+    fn at_most_three_are_offered() {
+        let ranked: Vec<_> = (1..=6)
+            .map(|n| suggestion(n, &format!("R{n}"), 100.0 - n as f64))
+            .collect();
+        assert_eq!(offered(ranked, 9, &[9]), [1, 2, 3]);
+        assert_eq!(REPLACEMENTS_MAX, 3);
+    }
+
+    #[test]
+    fn fewer_or_none_when_few_recipes_are_left() {
+        let ranked = vec![suggestion(1, "Gratin", 50.0), suggestion(2, "Soupe", 40.0)];
+        assert_eq!(offered(ranked, 1, &[1]), [2]);
+        let ranked = vec![suggestion(1, "Gratin", 50.0), suggestion(2, "Soupe", 40.0)];
+        assert!(offered(ranked, 1, &[1, 2]).is_empty());
+        assert!(offered(vec![], 1, &[1]).is_empty());
+    }
 
     fn entry(name: &str, off: &[&str]) -> StockEntry {
         let off: Vec<String> = off.iter().map(|s| s.to_string()).collect();
