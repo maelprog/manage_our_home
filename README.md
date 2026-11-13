@@ -65,7 +65,7 @@ Three things the diagram is meant to make obvious:
 | Path | What it is |
 |------|-----------|
 | `apps/api` | Backend HTTP API — Rust (axum + sqlx + Postgres). Handles auth, groups, messaging, calendar, files, admin. |
-| `apps/web` | Web front-end — Rust (Leptos **server-side rendering**, no WASM). Plain HTML forms, works with JS disabled. Talks to `apps/api`. |
+| `apps/web` | Web front-end — Rust (Leptos **server-side rendering**, no WASM bundle; one same-origin WebAssembly module, the barcode reader of the live stock scan, #806). Plain HTML forms, works with JS disabled. Talks to `apps/api`. |
 | `apps/shared` | Rust code shared between `api` and `web`. |
 | `e2e` | End-to-end tests (Playwright / TypeScript) driving the real running stack. |
 | `infra` | `docker-compose.yml` + `Caddyfile` to run the whole stack (Postgres, MinIO, Ollama, api, web, Caddy reverse-proxy). |
