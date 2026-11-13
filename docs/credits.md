@@ -60,3 +60,21 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Lecteur de codes-barres
+
+Le scan en direct des stocks (#807) lit les codes-barres dans le navigateur avec
+[zxing-wasm](https://github.com/Sec-ant/zxing-wasm) 3.1.6 (paquet npm
+`zxing-wasm`, licence MIT, Copyright (c) 2023 Ze-Zheng Wu), qui compile en
+WebAssembly le décodeur [ZXing C++](https://github.com/zxing-cpp/zxing-cpp)
+(licence Apache 2.0, commit `2c3dcfe` d'après le paquet). `apps/web` en sert
+deux fichiers depuis son binaire, sous une URL portant leur empreinte
+(`apps/web/src/assets.rs`, `Vendored`) : le script `dist/iife/reader/index.js`
+et le module `dist/reader/zxing_reader.wasm`, copiés sans modification. Le
+texte des deux licences les accompagne,
+`apps/web/vendor/zxing-wasm/LICENSE` et
+`apps/web/vendor/zxing-wasm/LICENSE-zxing-cpp`. Rien n'est demandé à un
+CDN : la bibliothèque irait chercher son module sur jsDelivr par défaut, la
+page qui la charge la pointe vers la copie servie par `apps/web` (#807), et
+quoi qu'il arrive la CSP
+(`infra/Caddyfile`) refuse toute autre origine.

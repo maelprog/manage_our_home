@@ -274,6 +274,95 @@ async fn serve_script(script: Script) -> Response {
         .into_response()
 }
 
+/// Third-party files served out of the binary (#806), under the scripts'
+/// naming rule: `/assets/<stem>-<digest>.<ext>`, a year of `immutable`.
+///
+/// Today one library, the barcode reader of the live scan (#807): zxing-wasm
+/// 3.1.6 (MIT), the ZXing C++ decoder (Apache-2.0) compiled to WebAssembly.
+/// Its two files are committed under `apps/web/vendor/zxing-wasm/` with
+/// both licences, and credited in `docs/credits.md`. They are
+/// `include_bytes!`'d, not left to `ServeDir`: a copy on disk could be a
+/// deploy behind the binary (see `STYLESHEET`), and a vendored file in
+/// `assets/` would be served unhashed, `immutable` under a name that does
+/// not change with its bytes.
+///
+/// - `BarcodeReaderScript`: the library's classic-script build
+///   (`dist/iife/reader/index.js`), which defines the `ZXingWASM` global.
+/// - `BarcodeReaderWasm`: the decoder it instantiates
+///   (`dist/reader/zxing_reader.wasm`). The script fetches it from jsDelivr
+///   unless told otherwise: the page that loads it has to point
+///   `prepareZXingModule`'s `locateFile` at `BarcodeReaderWasm.href()`.
+///   The CSP (`default-src 'self'`, `infra/Caddyfile`) refuses the CDN
+///   anyway; `WebAssembly.instantiate` needs its `'wasm-unsafe-eval'`, and
+///   `instantiateStreaming` the `application/wasm` type served here.
+///
+/// Neither is loaded by any page yet: #807 is the one that will.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vendored {
+    BarcodeReaderScript,
+    BarcodeReaderWasm,
+}
+
+impl Vendored {
+    pub const ALL: [Vendored; 2] = [Vendored::BarcodeReaderScript, Vendored::BarcodeReaderWasm];
+
+    fn stem(self) -> &'static str {
+        match self {
+            Vendored::BarcodeReaderScript | Vendored::BarcodeReaderWasm => "zxing-reader",
+        }
+    }
+
+    fn ext(self) -> &'static str {
+        match self {
+            Vendored::BarcodeReaderScript => "js",
+            Vendored::BarcodeReaderWasm => "wasm",
+        }
+    }
+
+    fn content_type(self) -> &'static str {
+        match self {
+            Vendored::BarcodeReaderScript => "text/javascript; charset=utf-8",
+            Vendored::BarcodeReaderWasm => "application/wasm",
+        }
+    }
+
+    /// What the file holds.
+    pub fn bytes(self) -> &'static [u8] {
+        match self {
+            Vendored::BarcodeReaderScript => {
+                include_bytes!("../vendor/zxing-wasm/zxing-reader.js")
+            }
+            Vendored::BarcodeReaderWasm => {
+                include_bytes!("../vendor/zxing-wasm/zxing_reader.wasm")
+            }
+        }
+    }
+
+    /// The URL the file is served under, computed once per process.
+    pub fn href(self) -> &'static str {
+        static HREFS: LazyLock<Vec<String>> = LazyLock::new(|| {
+            Vendored::ALL
+                .iter()
+                .map(|v| fingerprinted_url(v.stem(), v.ext(), v.bytes()))
+                .collect()
+        });
+        let at = Vendored::ALL
+            .iter()
+            .position(|v| *v == self)
+            .expect("Vendored::ALL lists every file");
+        &HREFS[at]
+    }
+}
+
+/// `GET <Vendored::href>` — the file, straight out of the binary.
+async fn serve_vendored(file: Vendored) -> Response {
+    (
+        [(CONTENT_TYPE, HeaderValue::from_static(file.content_type()))],
+        file.bytes(),
+    )
+        .into_response()
+}
+
 /// Resolve the directory `ServeDir` is rooted at. Split out from
 /// `router` so the fallback is testable without a filesystem.
 pub fn resolve_assets_dir(configured: Option<String>) -> PathBuf {
@@ -283,8 +372,8 @@ pub fn resolve_assets_dir(configured: Option<String>) -> PathBuf {
     }
 }
 
-/// `GET /assets/*` — the stylesheet, the scripts and the icons (#542) out
-/// of the binary, the fonts off `dir`, every served response carrying the
+/// `GET /assets/*` — the stylesheet, the scripts, the icons (#542) and the
+/// vendored barcode reader (#806) out of the binary, the fonts off `dir`, every served response carrying the
 /// immutable cache header. Plus, outside `/assets` and without that header,
 /// `/manifest.webmanifest` and `/favicon.ico` (`crate::brand`).
 /// Generic over the state so it merges into the application router before
@@ -304,6 +393,9 @@ where
     }
     for icon in crate::brand::Icon::ALL {
         router = router.route(icon.href(), get(move || crate::brand::serve_icon(icon)));
+    }
+    for file in Vendored::ALL {
+        router = router.route(file.href(), get(move || serve_vendored(file)));
     }
     router
         .nest_service("/assets", ServeDir::new(dir))
@@ -641,6 +733,110 @@ mod tests {
             "/assets/enhance.js".to_string(),
             "/assets/enhance-0000000000000000.js".to_string(),
             fingerprinted_url("enhance", "js", b"alert(1)"),
+        ] {
+            assert_eq!(get(&path).await.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    // -- the vendored barcode reader (#806) -------------------------------
+
+    #[test]
+    fn each_vendored_file_is_named_by_its_stem_and_the_digest_of_its_bytes() {
+        for file in Vendored::ALL {
+            assert_eq!(
+                file.href(),
+                fingerprinted_url(file.stem(), file.ext(), file.bytes()),
+                "{file:?}"
+            );
+        }
+        let js = Vendored::BarcodeReaderScript.href();
+        let wasm = Vendored::BarcodeReaderWasm.href();
+        assert!(
+            js.starts_with("/assets/zxing-reader-") && js.ends_with(".js"),
+            "{js}"
+        );
+        assert!(
+            wasm.starts_with("/assets/zxing-reader-") && wasm.ends_with(".wasm"),
+            "{wasm}"
+        );
+        // Same stem, different bytes: never the same name, nor the name of
+        // one of the app's own scripts.
+        assert_ne!(js, wasm);
+        for script in Script::ALL {
+            assert_ne!(script.href(), js);
+        }
+    }
+
+    #[test]
+    fn the_vendored_files_are_the_library_and_not_a_placeholder() {
+        // A WebAssembly module opens on `\0asm` and version 1; a Git LFS
+        // pointer or an HTML error page saved by mistake would not.
+        let wasm = Vendored::BarcodeReaderWasm.bytes();
+        assert_eq!(&wasm[..8], b"\0asm\x01\0\0\0");
+        let js = std::str::from_utf8(Vendored::BarcodeReaderScript.bytes()).expect("UTF-8");
+        assert!(
+            js.starts_with("var ZXingWASM="),
+            "the IIFE build, global ZXingWASM"
+        );
+        assert!(
+            js.contains("prepareZXingModule"),
+            "the hook #807 points at our wasm"
+        );
+        // The version the docs and the licence files name.
+        assert!(js.contains("`3.1.6`"), "zxing-wasm 3.1.6");
+    }
+
+    #[tokio::test]
+    async fn serves_each_vendored_file_out_of_the_binary_with_its_type() {
+        for (file, content_type) in [
+            (
+                Vendored::BarcodeReaderScript,
+                "text/javascript; charset=utf-8",
+            ),
+            // `WebAssembly.instantiateStreaming` refuses any other type.
+            (Vendored::BarcodeReaderWasm, "application/wasm"),
+        ] {
+            let res = get(file.href()).await;
+            assert_eq!(res.status(), StatusCode::OK, "GET {}", file.href());
+            assert_eq!(
+                res.headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some(content_type),
+                "{file:?}"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(axum::http::header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some(CACHE_FOR_A_YEAR),
+                "{file:?}"
+            );
+            let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+                .await
+                .expect("a body");
+            assert_eq!(body.as_ref(), file.bytes(), "{file:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_vendored_files_need_no_assets_directory() {
+        let missing = std::env::temp_dir().join("mhome-web-there-is-no-such-directory");
+        let _ = std::fs::remove_dir_all(&missing);
+        for file in Vendored::ALL {
+            let (status, body) = get_from(&missing, file.href()).await;
+            assert_eq!(status, StatusCode::OK, "{file:?}");
+            assert_eq!(body, file.bytes(), "{file:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_other_vendored_name_is_served() {
+        for path in [
+            "/assets/zxing_reader.wasm".to_string(),
+            "/assets/zxing-reader.js".to_string(),
+            "/assets/zxing-reader-0000000000000000.wasm".to_string(),
+            fingerprinted_url("zxing-reader", "wasm", b"\0asm"),
         ] {
             assert_eq!(get(&path).await.status(), StatusCode::NOT_FOUND, "{path}");
         }
