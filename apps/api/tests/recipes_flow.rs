@@ -2403,3 +2403,64 @@ async fn a_refused_replacement_leaves_the_selection_and_the_list_as_they_were(db
         .unwrap();
     assert_eq!(rows, 2);
 }
+
+/// Issue #815: the list follows the replaced recipe through the names of
+/// its ingredients, whichever recipe its items are attributed to. The
+/// gratin's only ingredient is on the list under the tart, planned first:
+/// the line stays (the tart still needs it) and the soup's is added.
+#[sqlx::test]
+async fn a_replacement_follows_a_list_holding_the_recipe_under_another(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "replace-shared").await;
+    let tarte = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Tarte",
+        serde_json::json!([{"name": "Crème", "quantity": 10.0, "unit": "cl", "is_optional": false}]),
+    )
+    .await;
+    let gratin = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([{"name": "crème", "quantity": 20.0, "unit": "cl", "is_optional": false}]),
+    )
+    .await;
+    let soupe = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Soupe",
+        serde_json::json!([{"name": "Poireaux", "quantity": 3.0, "is_optional": false}]),
+    )
+    .await;
+    assert_eq!(
+        generate_grocery_list(&router, &owner_cookie, &group_id).await,
+        1
+    );
+
+    let replace = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{gratin}/selection/replacement"),
+        Some(&member_cookie),
+        Some(serde_json::json!({"recipe_id": soupe})),
+    )
+    .await;
+    assert_status(&replace, StatusCode::OK);
+    let replaced = json_body(replace).await;
+    assert!(replaced["removed_grocery_items"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        grocery_lines(&router, &owner_cookie, &group_id).await,
+        [
+            ("Crème".to_string(), Some(tarte.clone())),
+            ("Poireaux".to_string(), Some(soupe.clone())),
+        ]
+    );
+}
