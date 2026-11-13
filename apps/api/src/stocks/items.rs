@@ -139,8 +139,9 @@ pub struct StockItemResponse {
 
 /// Whether an article left at `quantity` by a quantity-only adjustment is
 /// removed (#800): at 0 with no reorder threshold, it reminds nobody of
-/// anything. With a threshold — even 0 — it stays, « à racheter ».
-fn should_remove_at_zero(quantity: f64, reorder_threshold: Option<f64>) -> bool {
+/// anything. With a threshold — even 0 — it stays, « à racheter ». Marking
+/// a recipe done applies it too, to the lines it takes from (#801).
+pub(crate) fn should_remove_at_zero(quantity: f64, reorder_threshold: Option<f64>) -> bool {
     quantity == 0.0 && reorder_threshold.is_none()
 }
 

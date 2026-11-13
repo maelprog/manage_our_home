@@ -22,7 +22,11 @@
 //! already capped, so a larger quantity means the stock changed since, or a
 //! request asking for more than there is. A line gone since is 409
 //! `stock_item_gone`. The stock is decremented, a `meal_history` entry is
-//! inserted as « log a meal » does, and the selection becomes `done`.
+//! inserted as « log a meal » does, and the selection becomes `done`. A
+//! line taken from that is left at 0 without a reorder threshold is
+//! deleted (#801), the rule of a quantity-only adjustment
+//! (`should_remove_at_zero`, #800); the response gives its last state with
+//! `removed: true`. A line with a threshold, even 0, stays at 0.
 //!
 //! **Other products (#540).** The application also takes `others`, products
 //! used that the recipe does not call for: `{stock_item_id, quantity}`, the
@@ -86,7 +90,9 @@ use crate::groups::require_role;
 use crate::recipes::can_modify;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::selections::SelectionResponse;
-use crate::stocks::items::{day_or_today, today, StockItemResponse, StockItemRow};
+use crate::stocks::items::{
+    day_or_today, should_remove_at_zero, today, StockItemResponse, StockItemRow,
+};
 use crate::stocks::planned_usage::stock_lines;
 use crate::AppState;
 
@@ -897,7 +903,20 @@ pub async fn apply_done(
         )
         .fetch_one(&mut *tx)
         .await?;
-        updated.push(row);
+        // A line emptied without a reorder threshold goes, as a
+        // quantity-only adjustment removes it (#800, #801): what is taken
+        // here is such an adjustment, open to any member.
+        let removed = should_remove_at_zero(row.quantity, row.reorder_threshold);
+        if removed {
+            sqlx::query!(
+                "DELETE FROM stock_items WHERE id = $1 AND group_id = $2",
+                id,
+                group_id
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+        updated.push((row, removed));
     }
 
     let meal = sqlx::query_as!(
@@ -981,7 +1000,10 @@ pub async fn apply_done(
     let today = today();
     let stock_items: Vec<StockItemResponse> = updated
         .into_iter()
-        .map(|r| StockItemResponse::from_row(r, today))
+        .map(|(r, removed)| StockItemResponse {
+            removed,
+            ..StockItemResponse::from_row(r, today)
+        })
         .collect();
     Ok(Json(json!({
         "selection": selection,
