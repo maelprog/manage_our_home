@@ -2612,6 +2612,7 @@ mod tests {
             "--warning-soft",
             ".notice.warning, .badge.soon",
         ),
+        ("--fg", "--warning-soft", ".ad.gen (#793)"),
     ];
 
     /// `color-mix(in srgb, …)` of equal parts, which is what
@@ -2917,12 +2918,14 @@ mod tests {
     /// A ceiling, not a target: it exists so the 173 do not creep back one
     /// route at a time. What is left is what no class can carry — a member's
     /// computed hue, a control's one-off width, a table column's alignment —
-    /// plus the messagerie bits #72 reworks.
+    /// plus the messagerie bits #72 reworks, and since #793 the place of a
+    /// block of the day view, to the minute (DESIGN.md, journal of
+    /// 2026-11-13).
     ///
     /// At module level rather than inside the test below because
     /// `budget_report` prints it too, and a report that restated the number
     /// beside the guard would drift from it (#95).
-    const INLINE_STYLE_CEILING: usize = 5;
+    const INLINE_STYLE_CEILING: usize = 6;
 
     #[test]
     fn inline_styles_are_bounded_to_a_justified_residue() {
@@ -4406,6 +4409,8 @@ mod tests {
                 ("web/src/routes/admin/users.rs", 5),
                 // The grid's weekdays and the mini grid's initials (#675).
                 ("web/src/routes/agenda/calendar.rs", 2),
+                // The day view's hours, each heading its rows (#793).
+                ("web/src/routes/agenda/day.rs", 1),
                 ("web/src/routes/agenda/imports.rs", 4),
             ],
         );

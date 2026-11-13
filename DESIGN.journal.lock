@@ -89,3 +89,4 @@ c5abe44df8cb5236  2026-11-10  Un lien de texte en gras plutôt que souligné (#7
 c171ffa77ec1c712  2026-11-12  Le bouton d'un formulaire en cours d'envoi attend, une roue 
 0be0b92b241b87fa  2026-11-12  Le jour de la semaine dans la liste de l'agenda sur téléphon
 eb1c868dc9fc1ffc  2026-11-13  Un module WebAssembly same-origin, pour le scan de codes-bar
+db10a0a2713f65d7  2026-11-13  Une vue jour, heure par heure, sur téléphone comme sur PC (#

@@ -198,6 +198,212 @@ test.describe("Agenda — several families (#622)", () => {
   });
 });
 
+// #793 — the day view of several families: each block names its family,
+// and the arrows keep the selection.
+test.describe("Agenda — the day view of several families (#793)", () => {
+  test("both families' events side by side, each named; › keeps the selection; the other's opens in it", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-agfamday", "Agenda Familles Jour");
+    await createGroup(page, F2);
+    await page.goto("/agenda/new");
+    await submitSheet(page, "Piscine Deux", 15);
+    await createGroup(page, F1);
+    await page.goto("/agenda/new");
+    await submitSheet(page, "Dentiste Un", 15);
+    const date = parisDayOfMonth(15);
+    // A quarter of an hour: a short block, on one line.
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Pharmacie");
+    await page.getByLabel("Début").fill(`${date}T12:15`);
+    await page.getByLabel("Fin").fill(`${date}T12:30`);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await page.goto("/agenda");
+    await show(page, [F1, F2]);
+
+    await page.getByRole("navigation", { name: "Affichage" }).getByRole("link", { name: "Jour", exact: true }).click();
+    await expect(page).toHaveURL(/view=day/);
+    await expect(page).toHaveURL(/familles=/);
+    await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+    const pool = page.locator("a.blk", { hasText: "Piscine Deux" });
+    const dentist = page.locator("a.blk", { hasText: "Dentiste Un" });
+    await expect(pool).toContainText(F2);
+    await expect(dentist).toContainText(F1);
+    // Both 10:00–11:00: side by side.
+    const [a, b] = [await dentist.boundingBox(), await pool.boundingBox()];
+    if (!a || !b) throw new Error("the blocks have no box");
+    expect(Math.abs(a.y - b.y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(a.x - b.x)).toBeGreaterThanOrEqual(Math.min(a.width, b.width) - 1);
+    // The short block keeps its title whole, its family on the same line.
+    const pharmacy = page.locator("a.blk.short", { hasText: "Pharmacie" });
+    await expect(pharmacy).toContainText(F1);
+    const title = pharmacy.locator("strong");
+    const fam = pharmacy.locator(".fam");
+    expect(await title.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+    const [t, f] = [await title.boundingBox(), await fam.boundingBox()];
+    if (!t || !f) throw new Error("the short block's parts have no box");
+    expect(Math.abs(t.y + t.height / 2 - (f.y + f.height / 2))).toBeLessThanOrEqual(2);
+    expect(f.x).toBeGreaterThan(t.x + t.width);
+
+    await page.getByRole("link", { name: "Jour suivant", exact: true }).click();
+    await expect(page).toHaveURL(/view=day&date=.*familles=/);
+    await expect(box(page, F1)).toBeChecked();
+    await expect(box(page, F2)).toBeChecked();
+
+    // F2's event, F1 being active, opens in F2.
+    await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+    await pool.click();
+    await expect(page.getByRole("heading", { level: 1, name: "Piscine Deux" })).toBeVisible();
+    await expect(page).toHaveURL(/famille=/);
+    await expect(activeFamily(page)).toHaveText(F1);
+  });
+
+  // A block of 45 minutes is two lines tall: its family, on a third line,
+  // was cut through by the block's edge, half its glyphs showing.
+  test("a block under an hour keeps its family whole, on a phone and on a PC", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agfammid", "Agenda Familles Mid");
+    await createGroup(page, F2);
+    await createGroup(page, F1);
+    const date = parisDayOfMonth(15);
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Cours de piano");
+    await page.getByLabel("Début").fill(`${date}T14:00`);
+    await page.getByLabel("Fin").fill(`${date}T14:45`);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+
+    for (const viewport of [
+      { width: 390, height: 844 },
+      { width: 1280, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+      const block = page.locator("a.blk", { hasText: "Cours de piano" });
+      await expect(block).toContainText(F1);
+      const fit = await block.evaluate((blk) => {
+        const b = blk.getBoundingClientRect();
+        const s = getComputedStyle(blk);
+        const bottom = b.bottom - parseFloat(s.borderBottomWidth) - parseFloat(s.paddingBottom);
+        const fam = blk.querySelector(".fam")!;
+        const f = fam.getBoundingClientRect();
+        return { famBottom: f.bottom, bottom, famRight: f.right, right: b.right, famWidth: f.width };
+      });
+      expect(fit.famBottom, `${viewport.width}px`).toBeLessThanOrEqual(fit.bottom + 0.5);
+      expect(fit.famRight, `${viewport.width}px`).toBeLessThanOrEqual(fit.right + 0.5);
+      expect(fit.famWidth, `${viewport.width}px`).toBeGreaterThan(0);
+    }
+  });
+
+  // Whatever its length, its title and its column, a block shows a part of
+  // itself whole or not at all: nothing cut by its edge — its lock, its
+  // initials, its family's swatch —, its title on one line, its initials
+  // round. Blocks of 30, 31–59 and 60–90 minutes, alone and two, three and
+  // four abreast, long titles, private blocks and tasks among them, from
+  // both families.
+  test("no part of a block is cut by its edge, one to four columns, on a phone and on a PC", async ({ page }) => {
+    test.setTimeout(120_000);
+    await registerAndLogin(page, "e2e-agfamcut", "Agenda Familles Bord");
+    const date = parisDayOfMonth(15);
+    // `p` private, `t` a task.
+    const post = async (title: string, from: string, to: string, marks = "") => {
+      const form: Record<string, string> = { title, starts_at: `${date}T${from}`, ends_at: `${date}T${to}` };
+      if (marks.includes("p")) form.is_private = "on";
+      if (marks.includes("t")) form.is_task = "on";
+      const r = await page.request.post("/agenda/new", {
+        form,
+        maxRedirects: 0,
+      });
+      expect(r.status(), title).toBe(303);
+    };
+    await createGroup(page, F2);
+    for (const [t, a, b, m] of [
+      ["Réunion parents-professeurs du collège Jean Moulin", "09:00", "10:30"],
+      ["Cours de piano", "11:00", "11:40", "p"],
+      ["Kinésithérapie du genou après l'opération du ménisque", "13:00", "13:45"],
+      ["Appel conseillère de la banque", "13:15", "14:15"],
+      ["Goûter chez les voisins du dessus", "16:10", "16:55"],
+    ]) {
+      await post(t, a, b, m);
+    }
+    await createGroup(page, F1);
+    for (const [t, a, b, m] of [
+      ["Cours de piano avec Madame Dubois-Lefebvre", "08:00", "08:45"],
+      ["Appel assurance", "10:45", "11:15", "p"],
+      ["Rendez-vous notaire", "11:00", "12:00"],
+      ["Dentiste Léa, contrôle et détartrage au cabinet de la place du marché", "13:00", "14:30"],
+      ["Pharmacie", "13:00", "13:30", "pt"],
+      ["Natation", "16:00", "17:00"],
+      ["Coiffeur des enfants", "16:20", "17:20", "pt"],
+    ]) {
+      await post(t, a, b, m);
+    }
+
+    // Every phone width from 320 to 440 px, five by five: a column's width
+    // moves with it, and a part fits or not by a few pixels. Then a PC.
+    const widths = [...Array.from({ length: 25 }, (_, i) => 320 + 5 * i), 1280];
+    await page.goto(`/agenda?view=day&date=${date}&familles=toutes`);
+    await expect(page.locator("a.blk")).toHaveCount(12);
+    const faults: Record<number, string[]> = {};
+    for (const width of widths) {
+      await page.setViewportSize({ width, height: width < 1000 ? 844 : 800 });
+      faults[width] = await page.locator("a.blk").evaluateAll((blocks) =>
+        blocks.flatMap((blk) => {
+          // What an element's box shows of its content: inside its borders.
+          const inner = (e: Element) => {
+            const r = e.getBoundingClientRect();
+            const s = getComputedStyle(e);
+            return {
+              top: r.top + parseFloat(s.borderTopWidth),
+              bottom: r.bottom - parseFloat(s.borderBottomWidth),
+              left: r.left + parseFloat(s.borderLeftWidth),
+              right: r.right - parseFloat(s.borderRightWidth),
+            };
+          };
+          const box = inner(blk);
+          const title = blk.querySelector("strong")!.textContent;
+          const out: string[] = [];
+          for (const part of blk.querySelectorAll("*")) {
+            const p = part.getBoundingClientRect();
+            // Out of sight by design: the words for a screen reader.
+            if (p.width === 0 || p.height === 0 || part.closest(".sr-only")) continue;
+            // What is left of it in sight, once each ancestor up to the
+            // block that clips has clipped it.
+            const seen = { top: p.top, bottom: p.bottom, left: p.left, right: p.right };
+            for (let a = part.parentElement; a; a = a.parentElement) {
+              if (getComputedStyle(a).overflowX !== "visible") {
+                const c = inner(a);
+                seen.top = Math.max(seen.top, c.top);
+                seen.bottom = Math.min(seen.bottom, c.bottom);
+                seen.left = Math.max(seen.left, c.left);
+                seen.right = Math.min(seen.right, c.right);
+              }
+              if (a === blk) break;
+            }
+            const hidden = seen.bottom - seen.top <= 0.5 || seen.right - seen.left <= 0.5;
+            const whole =
+              seen.top <= p.top + 0.5 &&
+              seen.bottom >= p.bottom - 0.5 &&
+              seen.left <= p.left + 0.5 &&
+              seen.right >= p.right - 0.5;
+            if (!hidden && !whole) out.push(`${title}: ${part.tagName}.${part.getAttribute("class")} cut`);
+            if (!hidden && part.classList.contains("avatar") && Math.abs(p.width - p.height) > 0.5)
+              out.push(`${title}: avatar ${p.width}×${p.height}`);
+          }
+          const strong = blk.querySelector("strong")!;
+          const t = strong.getBoundingClientRect();
+          if (!blk.classList.contains("short")) {
+            if (t.bottom > box.bottom + 0.5 || t.right > box.right + 0.5) out.push(`${title}: title not shown`);
+            if (t.height > parseFloat(getComputedStyle(strong).lineHeight) + 1) out.push(`${title}: title on ${t.height}px`);
+          }
+          return out;
+        }),
+      );
+    }
+    expect(faults).toEqual(Object.fromEntries(widths.map((w) => [w, []])));
+  });
+});
+
 // #750 — on a phone, the selector applies each box at once: no « Afficher »
 // to press, « Toutes » ticking every family or leaving the active one, and
 // the last family kept ticked.

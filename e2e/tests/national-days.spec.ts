@@ -47,9 +47,17 @@ async function openSettings(page: Page, family: string): Promise<void> {
   await expect(page.getByRole("heading", { level: 1, name: family })).toBeVisible();
 }
 
+/** A day's cell of the grid, found by its number's link to its day view
+ *  (#793; by an anchor `#jAAAA-MM-JJ` before). */
+function dayCell(page: Page, date: string) {
+  return page
+    .locator("table.cal td.cal-cell")
+    .filter({ has: page.locator(`.cal-day a[href="/agenda?view=day&date=${date}"]`) });
+}
+
 /** The head line of a day of the grid: its `.nat` paragraphs. */
 function nationalLine(page: Page, date: string) {
-  return page.locator(`table.cal td#j${date} .nat`);
+  return dayCell(page, date).locator(".nat");
 }
 
 test.describe("Agenda — jours nationaux (#565)", () => {
@@ -83,7 +91,7 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await createGroup(page, "Famille Liste");
 
     await page.goto("/agenda?view=month&date=2026-10-15");
-    const entry = page.locator("table.cal td#j2026-10-25");
+    const entry = dayCell(page, "2026-10-25");
     await expect(entry).toBeVisible();
     await expect(entry).toContainText("Passage à l'heure d'hiver");
     // A day with nothing on it stays out of the list.
@@ -92,7 +100,12 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     const link = page
       .locator("table.mini")
       .getByRole("link", { name: "25 octobre, Passage à l'heure d'hiver" });
-    await expect(link).toHaveAttribute("href", "#j2026-10-25");
+    await expect(link).toHaveAttribute("href", "/agenda?view=day&date=2026-10-25");
+    // In bold, where an empty day, a link too, is not.
+    const empty = page.locator('table.mini a[href="/agenda?view=day&date=2026-10-14"]');
+    const weight = (l: typeof link) => l.evaluate((e) => getComputedStyle(e).fontWeight);
+    expect(await weight(link)).toBe("600");
+    expect(await weight(empty)).toBe("400");
     // A list that shows a day is not empty: no « Rien de prévu » under it.
     await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
   });
@@ -131,7 +144,7 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await expect(nationalLine(page, "2026-10-17")).toHaveText("Vacances de la Toussaint");
     await expect(nationalLine(page, "2026-10-19")).toHaveText("Vacances de la Toussaint");
     await expect(page.locator("table.cal td.hol")).toHaveCount(16);
-    await expect(page.locator("table.cal td#j2026-10-17")).toHaveClass(/\bhol\b/);
+    await expect(dayCell(page, "2026-10-17")).toHaveClass(/\bhol\b/);
     await expect(page.locator("table.cal td.hol").nth(4)).toContainText("Vacances de la Toussaint");
     // The day after the holidays is not one.
     const after = page.locator("table.cal td.cal-cell").nth(
@@ -142,7 +155,7 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await expect(after).not.toHaveClass(/\bhol\b/);
     // Forced colours drop the band's shadow: a top border stands in for it.
     await page.emulateMedia({ forcedColors: "active" });
-    await expect(page.locator("table.cal td#j2026-10-17")).toHaveCSS("border-top-width", "4px");
+    await expect(dayCell(page, "2026-10-17")).toHaveCSS("border-top-width", "4px");
     await expect(after).not.toHaveCSS("border-top-width", "4px");
     await page.emulateMedia({ forcedColors: "none" });
 

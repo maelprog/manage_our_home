@@ -18,6 +18,7 @@
 
 pub mod attachments;
 pub mod calendar;
+pub mod day;
 pub mod detail;
 pub mod edit;
 pub mod imports;

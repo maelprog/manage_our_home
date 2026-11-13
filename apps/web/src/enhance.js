@@ -527,6 +527,18 @@
     bar.scrollTo({ left: bar.scrollLeft + offset, top: 0, behavior: "instant" });
   }
 
+  // The day view's hours (#793) open on 08:00: the sheet's
+  // `scroll-initial-target` does it without a script where the browser
+  // knows it, and this where it does not. Not over a position the reader
+  // or the browser has already scrolled to.
+  function morningHours() {
+    var hours = document.querySelector(".hours-scroll");
+    var eight = document.getElementById("h8");
+    if (!hours || !eight || hours.scrollTop !== 0) return;
+    if (window.CSS && CSS.supports && CSS.supports("scroll-initial-target", "nearest")) return;
+    hours.scrollTop = eight.getBoundingClientRect().top - hours.getBoundingClientRect().top;
+  }
+
   // Loaded from the <head>: the fields are there once the document is. The
   // script comes after the sheet's <link>, so the layout the scroll
   // positions are read from is the styled one. The two scroll fixes run
@@ -546,6 +558,7 @@
     try {
       restoreScroll();
     } catch (e) {}
+    morningHours();
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", ready);
