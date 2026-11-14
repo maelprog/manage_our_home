@@ -913,9 +913,40 @@ progress::-moz-progress-bar { background: currentColor; }
    each, keep to their rows. */
 .slot, .slots { position: absolute; inset: 0; }
 .slots { bottom: auto; }
-.slots a { display: block; height: calc((var(--s12) + var(--s2x)) / 2); }
-:is(.slot, .slots a):hover { box-shadow: inset 0 0 0 1px var(--border); }
-:is(.slot, .slots a):focus-visible { outline-offset: calc(-1 * var(--s2)); }
+.slots > * { display: block; width: 100%; height: calc((var(--s12) + var(--s2x)) / 2); }
+:is(.slot, .slots > *):hover { box-shadow: inset 0 0 0 1px var(--border); }
+:is(.slot, .slots > *):focus-visible { outline-offset: calc(-1 * var(--s2)); }
+/* Choosing a day and an hour from an event's form (#795,
+   `routes::agenda::pick`): the same banner and hours, whose half hours and
+   banner are the form's buttons. A button is bare until hovered or
+   focused, then the accent's tint and its hour, right-aligned. The entries
+   and blocks are lines, not links: a click goes through them to the half
+   hour under. The event the form edits is outlined, dashed, and named. */
+:is(.slots button, button.slot) { min-width: 0; padding: 0 var(--s2x); border: 0; border-radius: 0; background: none; color: transparent; font-size: var(--t-xs); font-weight: 400; text-align: right; }
+:is(.slots button, button.slot):is(:hover, :focus-visible) { background: var(--accent-soft); color: var(--accent); }
+.chooser :is(.blk, .ad) { pointer-events: none; }
+.chooser .hours-scroll { max-height: calc(6 * (var(--s12) + var(--s2x))); }
+.self { outline: var(--s2) dashed var(--accent); outline-offset: calc(-1 * var(--s2)); }
+/* What a half hour would give, drawn by enhance.js over the hours. */
+.ghost { position: absolute; left: 0; right: 0; z-index: 2; pointer-events: none; border: var(--s2) solid var(--accent); border-radius: var(--r-sm); }
+/* The month: a button per day, Monday first, the week-end tinted as in
+   the grid, today outlined, the day of Début outlined thicker when another
+   is chosen, the chosen one filled; a dot under a day with events. */
+.chooser h2 { margin: 0; font-size: var(--t-base); }
+.mm { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--s2); text-align: center; font-variant-numeric: tabular-nums; }
+.mm > span { font-size: var(--t-xs); font-weight: 600; color: var(--muted); }
+.mm button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); min-width: 0; min-height: var(--s12); padding: 0; border: 0; background: none; color: var(--fg); font-weight: 400; }
+.mm button::after { content: ""; width: var(--s1); height: var(--s1); border-radius: 50%; }
+.mm .busy::after { background: currentColor; }
+.mm .we { background: var(--hover); }
+.mm button:not([aria-pressed]):hover { background: var(--border); }
+.mm [aria-current] { box-shadow: inset 0 0 0 1px var(--accent); }
+.mm .start { box-shadow: inset 0 0 0 var(--s2) var(--accent); font-weight: 600; }
+.mm [aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+/* With JavaScript, in a dialog as wide as the form column. */
+dialog:has(> .chooser) { width: 100%; }
+/* Début and Fin a choice has just filled, until they are changed. */
+input.picked { border-color: var(--accent); background: var(--accent-soft); }
 /* The event form as the mock-up's sheet (#525). The fieldsets it holds are
    cards of their own elsewhere (the edit page); inside the sheet they are
    groups of fields, not a card on a card. */

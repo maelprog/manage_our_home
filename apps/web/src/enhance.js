@@ -97,6 +97,201 @@
     dialog.showModal();
   });
 
+  // `data-pick` (`agenda::pick::pick_button`, #795): « Choisir dans le
+  // calendrier » opens the choice in a `<dialog>` instead of sending the
+  // form to the choice page: that page's `[data-pick-body]`, read from the
+  // button's `formaction` (`GET`, with the day asked and the form's Début).
+  // A day or a month reads it again, the arrows move through the days. A
+  // half hour fills Début, and Fin as long after it as the form already
+  // said — an hour when it said nothing usable —, counted by the clock; the
+  // banner ticks « Journée entière » on that day. Both fields wear `picked`
+  // until changed. Escape, the cross and « Retour au formulaire sans
+  // changer » close it untouched; the focus goes back to the button.
+  // Without `showModal`, `fetch`, or an answer, the form goes to the page.
+  var picking = null;
+
+  function clock(value) {
+    var m = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)$/.exec(value || "");
+    return m ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) / 60000 : NaN;
+  }
+
+  function stamp(minutes) {
+    return new Date(minutes * 60000).toISOString().slice(0, 16);
+  }
+
+  function pickLength(form) {
+    var start = form.elements.starts_at;
+    var length = start.type === "date" ? NaN : clock(form.elements.ends_at.value) - clock(start.value);
+    return length > 0 ? length : 60;
+  }
+
+  function choose(form, value) {
+    var box = form.elements.all_day;
+    var start = form.elements.starts_at;
+    var end = form.elements.ends_at;
+    var whole = value.length === 10;
+    var length = pickLength(form);
+    if (box && box.checked !== whole) {
+      box.checked = whole;
+      allDay(box);
+    }
+    start.value = value;
+    end.value = whole ? value : stamp(clock(value) + length);
+    start.classList.add("picked");
+    end.classList.add("picked");
+    if (start.hasAttribute("data-min-of")) bound(start, false);
+  }
+
+  function loadPick(day) {
+    var form = picking.form;
+    var url = picking.url + "&debut=" + encodeURIComponent(form.elements.starts_at.value) + (day ? "&jour=" + day : "");
+    return fetch(url, { credentials: "same-origin" })
+      .then(function (answer) {
+        if (!answer.ok) throw new Error(answer.status);
+        return answer.text();
+      })
+      .then(function (html) {
+        if (!picking) return;
+        var body = new DOMParser().parseFromString(html, "text/html").querySelector("[data-pick-body]");
+        if (!body) throw new Error("no choice");
+        picking.dialog.replaceChildren(document.adoptNode(body));
+        Array.prototype.forEach.call(picking.dialog.querySelectorAll(".mm button"), function (d) {
+          d.tabIndex = d.getAttribute("aria-pressed") === "true" ? 0 : -1;
+        });
+        if (picking.dialog.open) morningOf(picking.dialog);
+      });
+  }
+
+  // The hours open on 08:00, as the day view's do (`morningHours`).
+  function morningOf(dialog) {
+    var hours = dialog.querySelector(".hours-scroll");
+    var eight = dialog.querySelector("#h8");
+    if (hours && eight) hours.scrollTop += eight.getBoundingClientRect().top - hours.getBoundingClientRect().top;
+  }
+
+  function openPick(button) {
+    var dialog = document.getElementById("pick");
+    if (!dialog) {
+      dialog = document.createElement("dialog");
+      dialog.id = "pick";
+      dialog.setAttribute("aria-label", "Choisir dans le calendrier");
+      document.body.appendChild(dialog);
+      dialog.addEventListener("close", function () {
+        if (!picking) return;
+        picking.button.focus();
+        picking = null;
+      });
+    }
+    picking = { button: button, form: button.form, dialog: dialog, url: button.formAction };
+    loadPick("").then(
+      function () {
+        dialog.showModal();
+        morningOf(dialog);
+      },
+      function () {
+        picking = null;
+        button.removeAttribute("data-pick");
+        button.click();
+      }
+    );
+  }
+
+  // A button of the choice: a day or a month reads the choice again, the
+  // focus kept on what was pressed; `choix` closes, filling the form first
+  // when it holds a value.
+  function pickButton(button) {
+    var name = button.getAttribute("name");
+    if (name === "jour") {
+      var label = button.getAttribute("aria-label");
+      loadPick(button.value).then(function () {
+        if (!picking) return;
+        var again = label
+          ? picking.dialog.querySelector('[aria-label="' + label + '"]')
+          : picking.dialog.querySelector('.mm [aria-pressed="true"]');
+        if (again) again.focus();
+      });
+    } else if (name === "choix") {
+      if (button.value) choose(picking.form, button.value);
+      picking.dialog.close();
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    var button = closest(event.target, "[data-pick]");
+    if (button) {
+      if (typeof HTMLDialogElement !== "function" || !window.fetch || !button.form) return;
+      event.preventDefault();
+      openPick(button);
+      return;
+    }
+    var inside = picking && closest(event.target, "#pick button");
+    if (inside) {
+      event.preventDefault();
+      pickButton(inside);
+    }
+  });
+
+  // ← → a day, ↑ ↓ a week, Début and Fin the ends of the week, Page up and
+  // Page down a month, the same day or the month's last. A day of another
+  // month reads that month.
+  document.addEventListener("keydown", function (event) {
+    var day = picking && closest(event.target, "#pick .mm button");
+    if (!day) return;
+    var date = new Date(day.value + "T12:00Z");
+    var weekday = (date.getUTCDay() + 6) % 7;
+    var step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7, Home: -weekday, End: 6 - weekday }[event.key];
+    var months = { PageUp: -1, PageDown: 1 }[event.key];
+    if (step === undefined && months === undefined) return;
+    event.preventDefault();
+    if (months) {
+      var dayOfMonth = date.getUTCDate();
+      date.setUTCDate(1);
+      date.setUTCMonth(date.getUTCMonth() + months);
+      var last = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+      date.setUTCDate(Math.min(dayOfMonth, last));
+    } else {
+      date.setUTCDate(date.getUTCDate() + step);
+    }
+    var value = date.toISOString().slice(0, 10);
+    var target = picking.dialog.querySelector('.mm button[value="' + value + '"]');
+    if (target) {
+      day.tabIndex = -1;
+      target.tabIndex = 0;
+      target.focus();
+      return;
+    }
+    loadPick(value).then(function () {
+      if (!picking) return;
+      var chosen = picking.dialog.querySelector('.mm [aria-pressed="true"]');
+      if (chosen) chosen.focus();
+    });
+  });
+
+  // Over a half hour, what it would give: the line under the hours says
+  // it, a frame (`ghost`) draws it.
+  function preview(event) {
+    var slot = picking && closest(event.target, "#pick .slots button");
+    if (!slot) return;
+    var length = pickLength(picking.form);
+    var status = picking.dialog.querySelector("[data-pick-status]");
+    if (status) status.textContent = "Début " + slot.value.slice(11) + " · Fin " + stamp(clock(slot.value) + length).slice(11);
+    var ghost = slot.parentNode.querySelector(".ghost");
+    if (!ghost) {
+      ghost = document.createElement("span");
+      ghost.className = "ghost";
+      slot.parentNode.appendChild(ghost);
+    }
+    ghost.style.top = slot.offsetTop + "px";
+    ghost.style.height = (slot.offsetHeight * length) / 30 + "px";
+  }
+  document.addEventListener("mouseover", preview);
+  document.addEventListener("focusin", preview);
+
+  document.addEventListener("input", function (event) {
+    var field = event.target;
+    if (field.classList && field.classList.contains("picked")) field.classList.remove("picked");
+  });
+
   // `data-viewer="<id>"` on a tile of an event's attachments
   // (`agenda::detail::attachment_tile`, #776): opens the viewer `<dialog>`
   // of that id as a modal instead of following the link to the file. The
