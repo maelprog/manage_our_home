@@ -92,9 +92,10 @@ async function show(page: Page, families: string[]): Promise<void> {
   await expect(page).toHaveURL(/familles=/);
 }
 
-/** The chip of `title`, whose name ends with its family's in a view of several. */
+/** The month's bar of `title` (#836), whose name ends with its family's
+ *  in a view of several. */
 function chip(page: Page, title: string) {
-  return page.locator("a.chip", { hasText: title });
+  return page.locator("a.bar", { hasText: title });
 }
 
 test.describe("Agenda — several families (#622)", () => {

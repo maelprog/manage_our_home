@@ -128,6 +128,7 @@ use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::day;
+use super::month;
 use super::{
     agenda_cookie, fmt_paris, json_from_response, occurrences_from_response, paris_local_to_utc,
     private_mark, read_or_log, service_unavailable_page, today_paris, with_family, DISPLAY_TZ,
@@ -219,7 +220,7 @@ impl Period {
 const DAY_LOOKBACK: i64 = 7;
 
 /// The day view of `day`, where a day's number leads (#793).
-fn day_href(day: NaiveDate) -> String {
+pub(crate) fn day_href(day: NaiveDate) -> String {
     format!("/agenda?view=day&date={day}")
 }
 
@@ -414,10 +415,13 @@ struct View<'q> {
     period: Period,
     focus: NaiveDate,
     notice: Option<&'q str>,
+    /// The visitor: the month's bars are filled for what concerns them
+    /// (#836, `month::concerns`).
+    me: Uuid,
 }
 
 impl<'q> View<'q> {
-    fn of(query: &'q CalendarQuery) -> Self {
+    fn of(query: &'q CalendarQuery, me: Uuid) -> Self {
         Self {
             period: Period::of(query.view.as_deref()),
             focus: query
@@ -426,6 +430,7 @@ impl<'q> View<'q> {
                 .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
                 .unwrap_or_else(today_paris),
             notice: query.notice.as_deref(),
+            me,
         }
     }
 }
@@ -454,7 +459,7 @@ pub async fn get(
         &groups,
         active,
         requested.as_ref(),
-        &View::of(&query),
+        &View::of(&query, me.user_id),
     )
     .await
     else {
@@ -664,28 +669,35 @@ async fn body(
     };
 
     let today = today_paris();
-    // One grid for both views: the month shows six weeks of it, the week
-    // one. What differs is how many days it is handed, whether any of them
-    // is muted as belonging to another month, and whether a crowded cell
-    // may stop listing and start counting — a row of seven cells has
-    // nothing under it to push out of view, so the week caps nothing.
-    let is_week = period == Period::Week;
-    let (focus_month, cap) = if is_week {
-        (None, None)
+    let (grid_html, mini_html) = if period == Period::Week {
+        // The week: the grid of #71, one row of it, which a phone reads as
+        // a list headed by the mini grid of #675, then what the list says
+        // when it is empty. A row of seven cells has nothing under it to
+        // push out of view, so it caps nothing.
+        (
+            render_grid(&days, &cells, None, today, None, &title),
+            render_mini(&days, &by_day, None, today, &title, &marks)
+                + &empty_state(&days, &by_day, &marks, true, load_error),
+        )
     } else {
-        (Some(focus.month()), Some(MONTH_CHIP_CAP))
+        // The month (#836): one grid of bars, read on a phone as on a PC.
+        let items = month::items(&occurrences, &national);
+        let viewer = month::Viewer {
+            me: view.me,
+            members: &members,
+            families: &families,
+        };
+        (
+            month::month_html(&days, &items, focus.month(), today, &title, &viewer),
+            String::new(),
+        )
     };
-    let grid_html = render_grid(&days, &cells, focus_month, today, cap, &title);
     let panel_html = day_panel(
         focus,
         by_day.get(&focus).map(|v| v.as_slice()).unwrap_or(&[]),
         &members,
         &families,
     );
-    // The head of a phone's list (#675): the period at a glance, then what
-    // the list says when it is empty.
-    let mini_html = render_mini(&days, &by_day, focus_month, today, &title, &marks)
-        + &empty_state(&days, &by_day, &marks, is_week, load_error);
 
     let body = view! {
         <div inner_html=nav_html></div>
@@ -1166,7 +1178,7 @@ pub(crate) fn render_chips(
 // -- the national days (#565) -------------------------------------------
 
 /// The `kind` of a school holiday period (apps/api, `SCHOOL_HOLIDAY`).
-const SCHOOL_HOLIDAY: &str = "school_holiday";
+pub(crate) const SCHOOL_HOLIDAY: &str = "school_holiday";
 
 /// What a day of the grid carries besides the family's events (#565):
 /// the labels of its one-day national days — public holiday, clock change,
@@ -1959,6 +1971,7 @@ mod tests {
             None => panic!(),
         },
         notice: None,
+        me: Uuid::nil(),
     };
 
     /// The acceptance criterion of #622: one family failing at apps/api,
@@ -2020,6 +2033,7 @@ mod tests {
             None => panic!(),
         },
         notice: None,
+        me: Uuid::nil(),
     };
 
     /// The day view (#793) of two families, one of them failing: the
