@@ -170,9 +170,14 @@ pub async fn refill_notifications(
 /// Schedules again the reminders of `event_id` once its occurrences moved
 /// (#841): the notifications still pending were computed on the old ones
 /// and go, then every reminder of the event is refilled on `event`, the
-/// event as just written. Those already sent, failed or retired stay as
-/// they are — and keep their `(reminder, occurrence)` slot, so an
-/// occurrence already reminded is not reminded twice.
+/// event as just written. Those already sent or failed stay as they are.
+/// An occurrence that moved is a new instant: already reminded at its old
+/// hour, it is reminded again at its new one.
+///
+/// A one-off moved to an hour already past is not scheduled again: its
+/// `fire_at` would be past too, and the worker would send it at once. A
+/// series needs no such check, `refill_notifications` unrolling it from
+/// now on.
 pub async fn reschedule_pending(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event_id: Uuid,
@@ -184,6 +189,9 @@ pub async fn reschedule_pending(
     )
     .execute(&mut **tx)
     .await?;
+    if event.rrule.is_none() && event.starts_at < Utc::now() {
+        return Ok(());
+    }
     let reminders = sqlx::query!(
         "SELECT id, offset_minutes FROM event_reminders WHERE event_id = $1",
         event_id,

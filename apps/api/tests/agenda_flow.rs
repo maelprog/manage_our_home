@@ -2113,6 +2113,51 @@ async fn a_new_rule_or_all_day_flag_reschedules_the_reminders(db: PgPool) {
     assert_eq!(notifications_in(&db, event, "sent").await, sent);
 }
 
+/// #841: an event moved to an hour already past is not reminded — its
+/// pending reminder goes, and none is scheduled with a `fire_at` the worker
+/// would send at once.
+#[sqlx::test]
+async fn an_event_moved_into_the_past_is_not_reminded(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    let starts_at = whole_seconds(Utc::now() + Duration::days(1));
+    let create = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&cookie),
+        Some(serde_json::json!({
+            "title": "Dentiste",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event: Uuid = json_body(create).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    add_reminder(&router, &cookie, &events_path, event, 30).await;
+    assert_eq!(notifications_in(&db, event, "pending").await.len(), 1);
+
+    let past = whole_seconds(Utc::now() - Duration::hours(1));
+    patched(
+        &router,
+        &cookie,
+        &group_id,
+        event,
+        serde_json::json!({ "starts_at": past, "ends_at": past + Duration::hours(1) }),
+    )
+    .await;
+
+    assert_eq!(notifications_in(&db, event, "pending").await, []);
+}
+
 /// #841: renaming an event, or changing its description or place, leaves
 /// its pending reminders alone — and the reminder sent afterwards names
 /// the event by its new title, read from the event when it goes.
