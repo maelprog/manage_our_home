@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name FROM recipes WHERE group_id = $1",
+  "query": "SELECT id, name, required_equipment FROM recipes WHERE group_id = $1",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "name"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "required_equipment",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "required_equipment"
+          }
+        }
       }
     ],
     "parameters": {
@@ -33,8 +44,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "5e483def6f4c3f8cb365af47af5da5e92062367774de2166f2c74cd6f7cd3e7f"
+  "hash": "62b32d704482b7834808820a66d76d1e0612b642888ed1460395f78ba39903cd"
 }

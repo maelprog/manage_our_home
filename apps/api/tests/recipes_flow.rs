@@ -2517,3 +2517,141 @@ async fn a_line_only_the_new_recipe_needs_comes_back_from_it(db: PgPool) {
         [("Oignon".to_string(), Some(soupe.clone()))]
     );
 }
+
+/// Issue #815: a replacement never touches a checked item — bought, it
+/// stays on the list — and only unchecked items bearing a required
+/// ingredient's name make the list follow the replaced recipe: a checked
+/// one, or one named after an optional ingredient, does not.
+#[sqlx::test]
+async fn a_replacement_leaves_checked_items_and_follows_unchecked_required_ones(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, _member_cookie, group_id) =
+        group_with_member(&router, &db, "replace-checked").await;
+    let check = |name: &'static str| {
+        let db = db.clone();
+        async move {
+            let checked = sqlx::query("UPDATE grocery_items SET checked = true WHERE name = $1")
+                .bind(name)
+                .execute(&db)
+                .await
+                .unwrap()
+                .rows_affected();
+            assert_eq!(checked, 1, "{name}");
+        }
+    };
+    let replace = |from: String, to: String| {
+        let router = router.clone();
+        let (cookie, group) = (owner_cookie.clone(), group_id.clone());
+        async move {
+            let res = call(
+                &router,
+                Method::POST,
+                &format!("/groups/{group}/recipes/{from}/selection/replacement"),
+                Some(&cookie),
+                Some(serde_json::json!({ "recipe_id": to })),
+            )
+            .await;
+            assert_status(&res, StatusCode::OK);
+            let body = json_body(res).await;
+            (
+                body["removed_grocery_items"].as_array().unwrap().len(),
+                body["added_grocery_items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|i| i["name"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+
+    // The list does not follow: its only line of the gratin is checked,
+    // and the parsley it holds is optional in the gratin.
+    let gratin = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([
+            {"name": "Crème", "is_optional": false},
+            {"name": "Persil", "is_optional": true}
+        ]),
+    )
+    .await;
+    assert_eq!(
+        generate_grocery_list(&router, &owner_cookie, &group_id).await,
+        1
+    );
+    check("Crème").await;
+    let manual = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"name": "Persil"})),
+    )
+    .await;
+    assert_status(&manual, StatusCode::CREATED);
+    let soupe = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Soupe",
+        serde_json::json!([{"name": "Poireaux", "is_optional": false}]),
+    )
+    .await;
+    assert_eq!(
+        replace(gratin.clone(), soupe.clone()).await,
+        (0, Vec::<String>::new())
+    );
+    assert_eq!(
+        grocery_lines(&router, &owner_cookie, &group_id).await,
+        [
+            ("Crème".to_string(), Some(gratin.clone())),
+            ("Persil".to_string(), None),
+        ]
+    );
+
+    // The list follows: the soup's unchecked leek goes, its checked salt
+    // stays, the tart's dough comes.
+    sqlx::query("DELETE FROM grocery_items")
+        .execute(&db)
+        .await
+        .unwrap();
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/recipes/{soupe}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"ingredients": [
+            {"name": "Poireaux", "is_optional": false},
+            {"name": "Sel", "is_optional": false}
+        ]})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        generate_grocery_list(&router, &owner_cookie, &group_id).await,
+        2
+    );
+    check("Sel").await;
+    let tarte = recipe_with(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Tarte",
+        serde_json::json!([{"name": "Pâte", "is_optional": false}]),
+    )
+    .await;
+    assert_eq!(
+        replace(soupe.clone(), tarte.clone()).await,
+        (1, vec!["Pâte".to_string()])
+    );
+    assert_eq!(
+        grocery_lines(&router, &owner_cookie, &group_id).await,
+        [
+            ("Pâte".to_string(), Some(tarte.clone())),
+            ("Sel".to_string(), Some(soupe.clone())),
+        ]
+    );
+}

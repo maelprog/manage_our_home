@@ -2086,6 +2086,38 @@ async fn food_constraints_are_their_holders_alone(db: PgPool) {
     // A member of the family, asking for it while scoped elsewhere.
     assert_eq!(read(owner_a, group_b, group_a).await, nothing);
 
+    // #818 (0058): the anonymous tags of the other members — the holder's
+    // own left out for the holder, and the same guards as above.
+    let others = |user: Uuid, scope: Uuid, asked: Uuid| {
+        let scoped = scoped(user, scope);
+        async move {
+            let mut tx = scoped.await;
+            let tags: Vec<String> =
+                sqlx::query_scalar("SELECT * FROM group_other_anonymous_allergy_tags($1)")
+                    .bind(asked)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .unwrap();
+            tx.rollback().await.unwrap();
+            tags
+        }
+    };
+    assert_eq!(
+        others(owner_a, group_a, group_a).await,
+        vec!["en:eggs".to_string()]
+    );
+    for (user, scope) in [
+        (holder, group_a),
+        (owner_b, group_b),
+        (owner_b, group_a),
+        (owner_a, group_b),
+    ] {
+        assert!(
+            others(user, scope, group_a).await.is_empty(),
+            "{user} scoped to {scope}"
+        );
+    }
+
     for statement in [
         format!(
             "REVOKE ALL ON user_allergies, allergy_sharing, user_dislikes, group_members \
