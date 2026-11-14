@@ -548,7 +548,11 @@ rechargement (`routes/agenda/day.rs`) :
   (« 13:00–… »). Dans une colonne étroite (à 390 px, trois ou quatre blocs
   côte à côte), un bloc de moins d'une heure peut ne garder que son titre
   et ses heures, voire que ses heures, quand un bloc de 62 minutes ou plus
-  garde sa famille sur la troisième ligne, abrégée au besoin. Le lien garde le tout dans son nom. Des
+  garde sa famille sur la troisième ligne, abrégée au besoin. Un bloc court
+(`.short`) trop étroit pour son titre et ses heures — moins de 9em, à 390 px
+quand trois ou quatre se chevauchent — garde son titre et laisse ses heures
+(#836) : sa place dans les heures dit quand, rien d'autre ne dit quoi ; il ne
+montrait que ses heures avant. Le lien garde le tout dans son nom. Des
   blocs qui se chevauchent se rangent côte à côte, chacun dans la première colonne libre
   puis étendu à droite sur les colonnes que rien ne lui dispute ; un bloc
   seul prend toute la largeur. Un événement commencé la veille ou fini le
@@ -567,19 +571,22 @@ rechargement (`routes/agenda/day.rs`) :
   reste à un défilement.
 - **L'heure courante**, le jour même : un trait `--accent` sur son heure, au
   quart près, posé au rendu (`.now`), au-dessus des blocs, « Il est 14:20 »
-  en `.sr-only`.
+  en `.sr-only` ; en tête du trait, la pastille de la maquette, `--s2x` de
+  diamètre, centrée sur lui (#836).
 - Aucun événement horaire : « Rien de prévu à l'heure ce jour-là. » à 8 h —
   pas quand les événements n'ont pas pu être lus.
-- **Accès** : le numéro de chaque jour de la grille (mois et semaine, donc
-  aussi la liste du téléphone qui la relit), chaque jour de la mini-grille,
-  et « +N autres » mènent à la vue jour de ce jour.
+- **Accès** : chaque jour de la grille du mois, toute sa case (#836), le
+  numéro de chaque jour de la semaine (donc aussi la liste du téléphone qui
+  la relit), chaque jour de la mini-grille de la semaine, et « +N » mènent à
+  la vue jour de ce jour.
 - **Créer à une heure (#794)** : chaque demi-heure, libre ou occupée
   (arbitrage du 2026-11-11 : des créneaux de 30 min, une heure par défaut,
   comme Google), est un lien (`.slots`) vers
   `/agenda/new?debut=AAAA-MM-JJTHH:MM` — Début à ce créneau, Fin une heure
   plus tard en temps écoulé (01:30 finit à 03:30 la nuit où l'on avance
-  l'heure ; la nuit où on la recule, 02:30 finit à 03:30, l'heure d'après
-  se lisant 02:30 à nouveau). Les liens couvrent toute la largeur, la
+  l'heure). La nuit où on la recule, une heure plus tard se lirait la même
+  heure à l'horloge : 02:00 finit à 03:00 et 02:30 à 03:30, soit deux heures
+  écoulées, Début étant le premier 02:00 ou 02:30. Les liens couvrent toute la largeur, la
   colonne des heures comprise, sous les blocs : une demi-heure occupée
   reste cliquable par son heure. La sélection des familles de la vue
   (`?familles=`) suit, donc la famille où l'on crée et le choix « Famille »
@@ -592,9 +599,11 @@ rechargement (`routes/agenda/day.rs`) :
   chaque événement du jour avant le premier créneau, au lieu de traverser
   48 liens pour arriver au premier événement — et sans `tabindex` ni
   script. Le lecteur d'écran les trouve nommés, après les événements, dans
-  l'ordre des heures. Le jour où l'on recule l'heure, les deux 02:30
-  portent le même nom et ouvrent la même heure, la première : un champ
-  `datetime-local` ne dit pas de quel 02:30 il s'agit.
+  l'ordre des heures. Le jour où l'on recule l'heure, les deux 02:00 et les
+  deux 02:30 portent chacun le même nom et ouvrent la même heure, la
+  première : un champ `datetime-local` ne dit pas de quel 02:00 ou 02:30 il
+  s'agit. La croix « Fermer » de la feuille ouverte depuis un créneau ou le
+  bandeau ramène à la vue jour de ce jour (#836), et à `/agenda` sinon.
 
 Ce qu'elle concède :
 
@@ -667,41 +676,92 @@ journée qui déborde s'arrête à trois lignes, la dernière comptant le reste
 (« +N autres ») et menant à la vue jour de ce jour (#793 ; à la vue
 semaine avant), qui ne plafonne rien.
 
+**Le mois n'est plus relu en liste depuis #836** (voir
+[la grille du mois en barres](#la-grille-du-mois-en-barres-836-après-la-mini-grille-675)) :
+sur téléphone comme sur PC, il est une grille de barres de titres, un second
+balisage à lui que la vue semaine ne partage pas. La table de #71, sa relecture
+en liste sous 861 px et son plafond de trois lignes (« +N autres ») restent
+ceux de la vue semaine, qui ne plafonne rien ; la première concession
+ci-dessus — la liste en projection de cellules de grille — ne vaut donc plus
+que pour la semaine.
+
 Une conséquence de cette table unique, qui n'allait pas de soi : `outside` —
 le gris des jours affichés seulement parce que la grille du mois est faite de
 semaines entières — **n'existe pas en vue semaine**. Les sept jours y sont
 ceux qu'on a demandés, y compris quand la semaine chevauche deux mois ; les
 griser dirait d'eux quelque chose de faux.
 
-#### La mini-grille au-dessus de la liste (#675)
+<!-- L'ancre du titre de #675, que cite l'entrée du journal du 2026-11-02 :
+     une entrée atterrie ne se réécrit pas, l'ancre reste. -->
+<a id="la-mini-grille-au-dessus-de-la-liste-675"></a>
 
-La liste ne montre que les jours qui portent quelque chose : un mois sans
-événement n'affichait donc, sur téléphone, que l'en-tête de la page — aucun
-repère de date. Arbitrage du 2026-11-02 : **une mini-grille au-dessus de la
-liste.** Sous 861 px, l'agenda commence par sept colonnes de la période
-affichée (le mois, ou la semaine en vue semaine) : les initiales des jours,
-le numéro de chacun, ceux d'un autre mois atténués comme dans la grille,
-aujourd'hui en aplat `--accent`. Chaque jour est un lien vers sa vue jour
-(#793 ; jusque-là, seul un jour qui portait quelque chose était un lien,
-vers son entrée dans la liste, une ancre). Un jour qui porte quelque chose
-est signalé par un point sous son numéro, en gras, **et** par son nom (« 15 juillet,
-2 événements », WCAG 1.4.1). La liste suit, inchangée ; vide, elle laisse la
-place à « Rien de prévu ce mois-ci » ou « cette semaine ». Au-dessus de
-861 px, la mini-grille et l'état vide sont `.phone`, donc hors de l'arbre
-d'accessibilité, et la grille est celle de #71.
+#### La grille du mois en barres (#836), après la mini-grille (#675)
 
-C'est **un second rendu**, ce que l'arbitrage de #71 refusait, et il ne le
-renverse pas : ce que #71 refusait de payer, c'était une liste qui grandit
-avec ce que le foyer a enregistré. La mini-grille tient 42 jours au plus et
-compte les occurrences sans les lister : son coût est borné par la période,
-pas par les données, et il est payé sur PC aussi, où elle n'est pas
-dessinée. Mesuré sur `/agenda` avec `npm run seed` puis `npm run measure` :
-voir l'entrée du 2026-11-02 au [journal](#journal-des-décisions).
+La liste de #71 ne montrait que les jours qui portaient quelque chose : un mois
+sans événement n'affichait donc, sur téléphone, aucun repère de date.
+L'arbitrage du 2026-11-02 avait mis **une mini-grille au-dessus de la liste**
+(#675) : les numéros de la période, un point sous ceux qui portaient quelque
+chose. Elle ne disait ni le type d'un événement ni s'il concernait le
+visiteur, et la grille du PC tronquait vite à « +N autres ».
 
-Ce qu'elle ne rattrapait pas : le jour de la semaine n'était toujours pas
-écrit dans une entrée de la liste (première concession ci-dessus) — la
-mini-grille le donnait au-dessus, par la colonne où tombe le numéro. Chaque
-entrée le dit en toutes lettres depuis #792.
+**Depuis #836 (demande du 2026-11-13, maquette validée le même jour), le
+mois est une grille de barres de titres, sur téléphone comme sur PC**, sur le
+modèle des agendas de téléphone (`routes/agenda/month.rs`) :
+
+- **Six semaines de sept jours**, en cases hautes : 6,75rem au moins sur
+  téléphone, 9,25rem (148 px) sur PC. En tête, les jours en initiales sur
+  téléphone et abrégés sur PC, « lun. » (`aria-hidden` : chaque jour se
+  nomme en entier) ; sur PC, le numéro de chaque semaine (« S46 ») sur son
+  lundi, en pastille `--bg`.
+- **Chaque jour est un lien vers sa vue jour, toute sa case** (`.day`) : son
+  numéro en tête, aujourd'hui en pastille `--accent` (`aria-current="date"`),
+  un jour d'un autre mois en `--muted`, le samedi et le dimanche sur
+  `--hover`, atténué à 60 % hors du mois (le fond seul, pas le numéro). Son nom dit ce qu'il porte : « jeudi 12 novembre, 7 événements,
+  3 qui te concernent », « …, aucun ne te concerne », « …, rien de prévu ».
+- **Une barre par événement**, une ligne de titre coupée par des points de
+  suspension, la vue jour le lisant en entier ; « ↻ » devant un événement
+  récurrent, « ☐ » / « ☑ » devant une tâche. Un événement d'un jour porte la
+  teinte et le liseré de son premier membre : **pleine** s'il concerne le
+  visiteur (il en est assigné, ou il l'a créé sans assigné), **à contour**
+  s'il concerne d'autres membres (`.oth`, contour dans la teinte, fond de la
+  case) — la forme porte la différence, pas la teinte seule (WCAG 1.4.1).
+- **Un événement de plusieurs jours** — sur la journée entière, ou de 24 h ou
+  plus, la règle du bandeau de la vue jour — est une barre sur toutes ses
+  colonnes, coupée aux bords de la semaine et reprise la semaine suivante,
+  dans l'ocre des jours générés (`.gen`). Un jour national et des vacances
+  scolaires (#565) y sont aussi des barres ocre, du texte et pas des liens,
+  sans membre ; les vacances couvrent leurs jours comme un événement de
+  plusieurs jours.
+- **Trois barres par jour sur téléphone, quatre sur PC**, puis « +N » (« +N
+  autres » au lecteur d'écran) vers la vue jour. Les barres de plusieurs jours
+  prennent leurs lignes d'abord, les plus anciennes puis les plus longues ;
+  puis, jour par jour, les jours nationaux, les événements de la journée, les
+  autres dans l'ordre des heures, chacun à la première ligne libre de sa
+  colonne. Les barres de la quatrième ligne sont `.pc`, et chaque jour a un
+  « +N » `.phone` et un `.pc` quand ils diffèrent.
+
+**Un seul balisage pour les deux largeurs** : la mini-grille et la liste du
+mois disparaissent, et `/agenda` s'allège (voir le journal, entrée du
+2026-11-14). Le placement passe par des classes (`.c1`…`.c7`, `.s2`…`.s7`,
+`.l0`…`.l4`), aucune par un `style=` : le résiduel de
+[Composants](#composants) ne bouge pas.
+
+**Concession, arbitrée le 2026-11-14 (« Garder 12 px, consigner »)** : sur
+téléphone, le titre d'une barre est en 12 px (0,75rem), sous le
+[plancher typographique](#plancher-typographique-sur-téléphone) de 14 px. Sept
+colonnes sur 390 px laissent une cinquantaine de pixels par jour, et la
+maquette validée dessine ces 12 px ; un titre lu en entier est à une touche
+de là, dans la vue jour. Sur PC, le titre est en `--t-sm`, au-dessus du
+plancher. Une barre fait 19 px de haut sur téléphone ; 24 px sur PC, 26 à
+contour, et toute barre d'une ligne qui en porte une à contour. « +N » fait
+20 px sur téléphone et 24 sur PC (mesurés à 390 et 1280 px), sous les 44 px
+d'[Espacement](#espacement), comme la maquette les dessine ; le
+jour qui les porte, lien vers la vue jour, fait toute la case.
+
+**Ce qui reste de #675** : la vue semaine garde sa mini-grille au-dessus de la
+liste sous 861 px — sept jours, chaque jour un lien de `--s12` vers sa vue
+jour, un point et « 15 juillet, 2 événements » sur un jour qui porte quelque
+chose — et « Rien de prévu cette semaine » quand la liste est vide.
 
 #### Plusieurs familles à la fois (#622)
 
@@ -762,6 +822,10 @@ et c'est le `@media (min-width: 861px)` qui rend à l'échelle ses propres
 chiffres — la feuille est écrite mobile first. #71 n'y touche pas ; le titre
 d'événement, lui, s'arrête à `--t-base` (voir ci-dessus).
 
+**Une exception, arbitrée le 2026-11-14 (#836)** : le titre d'une barre de la
+grille du mois est en 12 px sur téléphone, sous ce plancher — voir
+[la grille du mois en barres](#la-grille-du-mois-en-barres-836-après-la-mini-grille-675).
+
 ---
 
 ## Composants
@@ -804,7 +868,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.done` | ce qui est déjà traité : tâche complétée, article coché |
 | `.multiline` | un texte dont les retours à la ligne sont ceux de l'auteur (message, méthode d'une recette) |
 | `.current` | la cellule d'aujourd'hui, l'occurrence sur laquelle une fiche est ouverte |
-| `.cal`, `.cal-cell`, `.cal-day` | l'agenda : une seule grille, que la vue mois affiche sur six semaines et la vue semaine sur une. `.cal-week`/`.cal-col` ont disparu avec #71 — la bande de semaine était un `flex` séparé, elle est aujourd'hui la même table. Depuis #793, le numéro de chaque jour est un lien vers sa vue jour, souligné en `--accent` dans la couleur du numéro (`.cal-day a`) — la pastille d'aujourd'hui est elle-même en `--accent` |
+| `.cal`, `.cal-cell`, `.cal-day` | l'agenda : une seule grille, que la vue mois affiche sur six semaines et la vue semaine sur une — la vue semaine seule depuis #836, le mois étant `.month`. `.cal-week`/`.cal-col` ont disparu avec #71 — la bande de semaine était un `flex` séparé, elle est aujourd'hui la même table. Depuis #793, le numéro de chaque jour est un lien vers sa vue jour, souligné en `--accent` dans la couleur du numéro (`.cal-day a`) — la pastille d'aujourd'hui est elle-même en `--accent` |
 | `.composer`, `.live-status` | la zone de saisie de la messagerie et sa ligne d'état. Depuis #528, le champ et « Envoyer » (l'icône d'envoi devant le mot, à `--s1` de lui) sur une ligne, un `.notice` éventuel (erreur, message auquel on répond) sur la sienne au-dessus — son lien « Annuler » en `--accent`, 600 ; le champ part d'une ligne et grandit avec son texte jusqu'à `--s16` × 2 là où `field-sizing` existe, défile ailleurs. `.content > .composer` colle au bas du viewport sur PC (#72) **et**, depuis #528, sur téléphone, au-dessus de la barre d'onglets : son pied y vaut `--s16`, la hauteur réservée à la barre. Le sélecteur descendant *direct* est le point — la même classe habille le formulaire d'édition d'un message, qui ne doit pas coller |
 | lien de texte | un lien sans classe — dans une phrase, une colonne `.links`, le pied de page, une `.notice`, un document `.prose` — et `.more`, `.replies` (#752) : `--accent`, 600, **sans soulignement au repos**, pour une « meilleure lecture » que le soulignement du navigateur (demande du 2026-11-08). Le soulignement revient au survol et au focus clavier : la couleur n'est jamais le seul indice (WCAG 1.4.1), la graisse en est un autre. La règle est dans `:where()` et ne pèse rien : un lien qui a sa boîte (`.btn`, `.tile`, `.chip`, `.navlink`, `a.list-row`, `.filters a`, `.mini a`) garde son rendu, et les deux moitiés du `.segment` sont exclues, sans quoi la non-courante passerait en 600. `.member` et `.quote`, dans la couleur de leur ligne, restent soulignés. `--accent` est mesuré sur `--bg`, `--surface`, `--hover`, `--warning-soft` et `--success-soft`, les fonds où un tel lien se pose |
 | `.quote` | la citation du message auquel une réponse répond (#465), au-dessus de son contenu : un lien vers la ligne citée, filet gauche en `--border`, portée avec `.muted` qui lui donne couleur et taille. Le composeur qui répond nomme son message dans un `.notice` nu |
@@ -838,12 +902,14 @@ aucune n'introduit de valeur hors des échelles :
 | `.m1` … `.m8` | la teinte d'une pastille de l'agenda (#525) : 16 % de la couleur du membre dans `--surface`, le fond d'événement de [Couleur](#ce-que-les-écrans-repris-peindront-en-sombre), texte `--fg` — une classe et non un `style=`, choisie par `agenda::calendar::member_tint` sur le même hachage que la couleur du membre. La pastille porte aussi l'initiale de chacun de ses membres, et une pastille qui ne nomme personne reste neutre. Une tâche faite n'est pas teintée : `--muted` tombe sous AA sur les teintes sombres. Sur PC, une pastille tient une ligne, coupée par des points de suspension ; le lien garde le titre entier pour nom |
 | `.agenda` | la grille de l'agenda et, sur PC, le panneau du jour à côté d'elle (#525) — en dessous quand la colonne est trop étroite pour les deux. Le panneau est une `.card.pc` : le jour de `?date=` (aujourd'hui sans paramètre), une ligne par occurrence avec l'heure en `.when`, le titre sur les noms, les initiales au bout. Ses lignes ne sont pas des liens : la pastille de la grille en est un. Sur PC, chaque jour de la grille est une case à lui (`border-spacing`), aujourd'hui cerclé en `--accent` et son numéro en pastille pleine |
 | `.views` | Jour \| Semaine \| Mois en tête de l'agenda (#525, Jour depuis #793), sur téléphone comme sur PC : un `.segment` (`<nav aria-label="Affichage">`), la vue affichée en `aria-current="true"`. À côté, `‹` · « Aujourd'hui » · `›`, qui avancent d'un jour, d'une semaine ou d'un mois selon la vue ; « Nouvel événement » sur PC, le `.fab` de l'accueil sur téléphone |
-| `.mini` | la période de l'agenda d'un coup d'œil sur téléphone (#675), au-dessus de la liste des jours : un `<table>` `.phone` de sept colonnes, les initiales des jours en en-tête (le nom entier en `aria-label`), le numéro de chaque jour, ceux d'un autre mois en `--muted`, aujourd'hui en aplat `--accent` avec `aria-current="date"`. Chaque jour est un lien de `--s12` vers sa vue jour (#793 ; un jour qui portait quelque chose menait avant à son entrée dans la liste, `#jAAAA-MM-JJ`) ; un jour qui porte quelque chose est en 600 avec un point `currentColor` sous son numéro et « 15 juillet, 2 événements » pour nom (`.mini a:has(.sr-only)`), les autres en 400 avec leur seul numéro. Quand la liste est vide, « Rien de prévu ce mois-ci » / « cette semaine » la remplace, `.phone` aussi. Voir [La mini-grille](#la-mini-grille-au-dessus-de-la-liste-675) |
-| `.nat`, `.hol` | les jours nationaux de l'agenda (#565), lus par un appel de plus à côté des événements (`GET /groups/:id/national-days`) et absents si cet appel échoue. `.nat` : la ligne d'en-tête d'un jour, sous son numéro et avant ses pastilles — férié, changement d'heure, fête —, un `<p>` en `--muted` à la taille d'une pastille, ni lien ni `.chip`, qui passe à la ligne au lieu d'être coupé. `.hol` : une période de vacances scolaires de la zone de la famille, une bande `--accent` de `--s1` en haut de chaque jour couvert (en couleurs forcées, qui suppriment `box-shadow`, une bordure haute de même largeur) ; son nom est écrit en `.nat` le premier jour, le premier jour de la grille et chaque lundi, et en `.sr-only` les autres jours — jamais la couleur seule. Sur téléphone, un jour dont un nom est écrit entre dans la liste (`:has(.chip, .nat)`) et la `.mini` en fait un lien nommé « 25 octobre, Passage à l'heure d'hiver » |
+| `.mini` | la période de l'agenda d'un coup d'œil sur téléphone (#675), au-dessus de la liste des jours — la vue semaine seule depuis #836 : un `<table>` `.phone` de sept colonnes, les initiales des jours en en-tête (le nom entier en `aria-label`), le numéro de chaque jour, ceux d'un autre mois en `--muted`, aujourd'hui en aplat `--accent` avec `aria-current="date"`. Chaque jour est un lien de `--s12` vers sa vue jour (#793 ; un jour qui portait quelque chose menait avant à son entrée dans la liste, `#jAAAA-MM-JJ`) ; un jour qui porte quelque chose est en 600 avec un point `currentColor` sous son numéro et « 15 juillet, 2 événements » pour nom (`.mini a:has(.sr-only)`), les autres en 400 avec leur seul numéro. Quand la liste est vide, « Rien de prévu cette semaine » la remplace, `.phone` aussi. Voir [La mini-grille](#la-grille-du-mois-en-barres-836-après-la-mini-grille-675) |
+| `.month`, `.dh`, `.wk`, `.day`, `.wn` | la grille du mois (#836), sur téléphone comme sur PC : `.month`, une carte à plat (`--surface`, filet `--line`) ; `.dh`, les jours de la semaine en tête, `--muted` sur `--bg`, `aria-hidden` ; `.wk`, une semaine, une grille de sept colonnes dont la première ligne porte les numéros et les suivantes les barres ; `.day`, un jour, lien vers sa vue jour haut de toute sa semaine sous ses barres, nommé par ce qu'il porte, son numéro en tête (`--t-sm`, 600), aujourd'hui en pastille `--accent`, un jour d'un autre mois en `--muted` et 400, samedi et dimanche sur `--hover`, à 60 % hors du mois ; `.wn`, le numéro de la semaine sur son lundi, en pastille `--bg`, PC seulement. Voir [la grille du mois en barres](#la-grille-du-mois-en-barres-836-après-la-mini-grille-675) |
+| `.bar` (+ `.oth`, `.gen`), `.plus`, `.c1`…`.c7`, `.s2`…`.s7`, `.l0`…`.l4` | une barre de la grille du mois (#836) : une ligne de titre coupée par des points de suspension, 12 px sur téléphone (concession arbitrée le 2026-11-14) et `--t-sm` sur PC, le fond et le liseré `--s1` d'une pastille — la teinte du membre (`.m1`…`.m8`) ; `.oth`, à contour dans cette teinte sur le fond de la case, pour un événement d'autres membres ; `.gen`, l'ocre d'un événement de plusieurs jours, d'un jour national ou de vacances scolaires ; `.done`, une tâche faite, sans teinte. Un événement est un lien vers sa fiche, un jour national un `<span>`. `.plus`, le « +N » d'un jour vers sa vue jour, souligné en `--accent`, 600. Placées par leur première colonne (`.c1`…), les colonnes qu'elles couvrent (`.s2`…) et leur ligne (`.l0`…, `.l4` portant le « +N » d'un PC) |
+| `.nat`, `.hol` | les jours nationaux de l'agenda (#565), dans la vue semaine depuis #836 (le mois les dessine en barres `.gen`), lus par un appel de plus à côté des événements (`GET /groups/:id/national-days`) et absents si cet appel échoue. `.nat` : la ligne d'en-tête d'un jour, sous son numéro et avant ses pastilles — férié, changement d'heure, fête —, un `<p>` en `--muted` à la taille d'une pastille, ni lien ni `.chip`, qui passe à la ligne au lieu d'être coupé. `.hol` : une période de vacances scolaires de la zone de la famille, une bande `--accent` de `--s1` en haut de chaque jour couvert (en couleurs forcées, qui suppriment `box-shadow`, une bordure haute de même largeur) ; son nom est écrit en `.nat` le premier jour, le premier jour de la grille et chaque lundi, et en `.sr-only` les autres jours — jamais la couleur seule. Sur téléphone, un jour dont un nom est écrit entre dans la liste (`:has(.chip, .nat)`) et la `.mini` en fait un lien nommé « 25 octobre, Passage à l'heure d'hiver » |
 | `.allday`, `.ad` (+ `.gen`) | le bandeau « Journée » de la vue jour (#793) : une carte à plat (`--surface`, filet `--line`) titrée `h2.eyebrow`, une ligne `.ad` par jour national, vacances scolaires ou événement d'un jour ou plus — le fond et le liseré `--s1` d'une pastille, la teinte du membre (`.m1`…`.m8`, et son liseré) sur un événement d'un jour, l'ocre des jours générés (`.gen` : liseré `--warning` sur `--warning-soft`, texte `--fg`) sur un jour national et un événement de plusieurs jours, initiales gardées. Un événement est un lien vers sa fiche, un jour national un `<p>`. Voir [vue jour](#lagenda-sur-téléphone--vue-jour) |
 | `.hours-scroll`, `.hours` | les heures de la vue jour (#793) : un défileur d'au plus 70 % de la fenêtre, ouvert sur 08:00 (`#h8`, `scroll-initial-target`), qui tient une table `role="presentation"` d'une ligne par heure écoulée (23, 24 ou 25), 56 px chacune, chaque heure nommée dans sa première colonne en `--muted` à `--t-xs`, un filet `--line` par heure tiré du fond de la table |
 | `.blk` (+ `.short`, `.mid`, `.cut-s`, `.cut-e`), `.sub`, `.fam` | un événement horaire de la vue jour (#793) : un lien en `position: absolute` dans la cellule de l'heure où il commence, placé à la minute par son `style` inline (`top`, `bottom`, `left`, `right` en % de l'heure et de la largeur, `day::inset`), aussi haut qu'il dure (30 min au moins) et débordant sur les heures suivantes ; les blocs qui se chevauchent se partagent la largeur en colonnes (`day::lanes`). Fond et liseré `--s1` de son membre (la teinte d'une pastille). Ses lignes : le titre, coupé par des points de suspension ; les heures (« 10:00–11:30 ») et les initiales (`.sub`) ; `.fam` — pastille et nom de la famille — dans une vue de plusieurs familles. Une ligne qui ne tient pas sous les autres passe dans une colonne hors de vue (`flex-flow: column wrap`, un écart de la largeur du bloc), un élément de `.sub` qui ne tient pas à une ligne hors de vue : rien n'est coupé par le bord, ce qui ne tient pas est retiré. `.short` : sous trois quarts d'heure, une ligne, l'heure d'abord. `.mid` : sous l'heure, la famille dans `.sub`, à côté des heures, 4em au moins. `.cut-s`/`.cut-e` : coupé au bord du jour, ce bord plat et tireté. Une tâche faite est `.done`, sans teinte |
-| `.now` (+ `.q1`…`.q3`) | l'heure courante dans la vue jour d'aujourd'hui (#793) : un trait `--accent` de `--s2` sur son heure, au quart près, posé au rendu, « Il est 14:20 » en `.sr-only` |
+| `.now` (+ `.q1`…`.q3`) | l'heure courante dans la vue jour d'aujourd'hui (#793) : un trait `--accent` de `--s2` sur son heure, au quart près, posé au rendu, « Il est 14:20 » en `.sr-only` ; en tête, une pastille `--accent` de `--s2x` centrée sur le trait (#836), une bordure, que les couleurs forcées repeignent |
 | `.slots`, `.slot` | créer depuis la vue jour (#794) : `.slots`, après la table des heures, un lien par demi-heure (28 px, la moitié d'une ligne) sur toute la largeur des heures, leurs noms compris, sous les blocs ; `.slot`, un lien sous les entrées du bandeau « Journée », sur toute sa surface. Rien n'est dessiné au repos ; au survol, un filet `--border` intérieur ; au focus clavier, l'anneau des liens, ramené dans la boîte (le défileur rognerait son débord). Le nom est en `.sr-only` : « Créer un événement le jeudi 12 novembre à 09:30 », « Créer un événement sur la journée du jeudi 12 novembre » |
 | `.sheet` | le formulaire d'un nouvel événement en feuille (#525) : la famille en `.eyebrow` au-dessus du titre, une croix « Fermer » vers l'agenda, puis les champs dans l'ordre de la maquette — titre, horaires, récurrence, rappel, membres —, ce qu'elle ne dessine pas ensuite. Une `.card` ; sur téléphone, bord à bord et arrondie en haut. Les fieldsets qu'elle contient y perdent leur carte. Depuis #527, la même feuille porte l'ajout d'un article du stock — la famille en `.eyebrow` (« Dans le stock de … »), la croix vers `/stocks` — et la reprise d'une photo de code illisible |
 | `.picks`, `.pick` | « Assigné à » en pastilles (#525) : la case, l'initiale du membre, son nom ; une case cochée prend `--accent-soft` et une bordure `--accent`. La case reste dessinée et reste le contrôle, le nom reste son libellé |
@@ -2053,3 +2119,4 @@ quatre tours de vérification à #72.
 | 2026-11-13 | Un module WebAssembly same-origin, pour le scan de codes-barres seulement (#806) | Arbitrage de l'utilisateur du 2026-11-13 : « Autoriser et amender DESIGN.md ». Le scan en direct (#807) lit les codes dans le navigateur quand `BarcodeDetector` manque, avec zxing-wasm. La contrainte n°1 interdisait tout WASM ; elle visait un bundle de framework (hydratation), qui reste exclu. L'exception est bornée : ce seul module, servi depuis le binaire sous une URL à empreinte, aucun CDN ; la CSP gagne `'wasm-unsafe-eval'` et jamais `'unsafe-eval'`, ce que `apps/web/src/csp.rs` vérifie. |
 | 2026-11-13 | Une vue jour, heure par heure, sur téléphone comme sur PC (#793) | Demande du 2026-11-11, sur le modèle de Google Agenda ; arbitrages du 2026-11-11 : blocs proportionnels à la durée, le téléphone garde le mois par défaut ; maquette validée le 2026-11-13. Reprend la concession « pas de `view=day` » de #71, comme une vue à elle et non une relecture de la grille : `?view=day`, un bandeau « Journée » (jours nationaux, événements d'un jour ou plus, un horaire de 24 h ou plus compris), puis les heures, un bloc par événement à son heure et haut de sa durée, les chevauchements côte à côte, coupés à minuit. Les blocs sont placés à la minute, comme la maquette, par un `style` inline par bloc (`top`, `bottom`, `left`, `right` en centièmes de l'heure et de la largeur, dans la cellule de l'heure où le bloc commence) : arbitrage du 2026-11-13, qui relève `INLINE_STYLE_CEILING` de 5 à 6. Une minute n'est pas une classe — il en faudrait une par minute de l'heure et une par fraction de largeur —, et la première version, une table d'un quart d'heure par ligne placée par `rowspan` et `colspan`, dessinait un événement de 10:05 à 10:00 ; elle passe à une ligne par heure. Le site est unique (`day::block_html`), sa valeur ne porte que des longueurs, jamais une couleur. Arbitrage du même jour : les cibles de la maquette sont gardées sous les 44 px — bloc court 26 px de haut, ligne du bandeau `.ad` 32 px, numéro de jour de la grille 28 × 28 px sur PC et 25 px de haut dans la liste du téléphone —, écart assumé, suivi par #838. 8 h en haut au chargement sans script par `scroll-initial-target` (Chromium), par `enhance.js` ailleurs. Les événements de plusieurs jours prennent l'ocre des jours générés (arbitrage de la maquette). Le numéro de chaque jour de la grille et de la mini-grille, et « +N autres », mènent à la vue jour ; les ancres `#jAAAA-MM-JJ` de la liste, qui n'avaient plus de lien, sont retirées. Une paire de contraste nouvelle, `--fg` sur `--warning-soft` (`.ad.gen`), ajoutée à `TEXT_PAIRS`. **Coût mesuré** (`npm run seed` puis `npm run measure`, même base semée, binaire web de `main` b7d052a puis de cette branche, `node:zlib` niveau par défaut) : `/agenda` passe de 22 726 à 25 493 o bruts, de 5 234 à 5 304 o gzip (+70) et de 5 327 à 5 407 o zstd — un lien par numéro de jour, 42 dans la grille et 42 dans la mini-grille ; les autres routes ne bougent pas à 1 o près. `/agenda?view=day`, placé à la minute, pesé sur chaque jour du mois semé (même script de connexion, même encodeur) : de 2 218 à 2 457 o gzip (7 061 à 7 769 bruts), sous le budget de réponse de 14 336 o compressés ; ce jeu de données ne met pas plus de deux événements horaires sur un jour, et un jour chargé de 24 blocs d'une heure, un toutes les demi-heures depuis 08:00, pèse de 3 253 o gzip (14 590 bruts) avec des titres courts (« Rendez-vous numéro 7 ») à 3 645 o gzip (14 762 bruts) avec des titres de 20 à 34 caractères — le poids d'un tel jour dépend d'abord de ses titres. Feuille : de 23 764 à 25 605 o compressés (flate2 niveau 6, `budget_report`), sous `SHEET_CEILING` ; les trois tests de redondance restent verts. |
 | 2026-11-14 | Cliquer un créneau de la vue jour ouvre la création à cette heure (#794) | Demande du 2026-11-11 ; arbitrage du même jour : des créneaux de 30 min, une heure par défaut, comme Google. Chaque demi-heure, libre ou occupée, est un lien (`.slots`) vers `/agenda/new?debut=AAAA-MM-JJTHH:MM` ; le bandeau « Journée », dessiné désormais même sans entrée, ouvre `/agenda/new?jour=AAAA-MM-JJ`, la case cochée. Fin = Début + 1 h en temps écoulé, sauf la nuit où l'on recule l'heure, où 02:30 finit à 03:30 à l'horloge (une heure plus tard se lirait encore 02:30, et `form_bounds` relirait le même instant). La sélection des familles de la vue suit ; créé depuis là, l'événement ramène à la vue jour de son jour. **Le clavier**, que l'issue laissait au choix : les créneaux sont après la table dans le document, le lien du bandeau après ses entrées — chaque événement du jour vient avant le premier créneau, sans `tabindex` ni script, et les créneaux restent atteignables, nommés (« Créer un événement le jeudi 12 novembre à 09:30 »). Écartés : `tabindex="-1"`, qui les retirait du clavier, et un lien d'évitement, qui n'aidait pas à atteindre un événement du milieu de la journée. Les liens couvrent la colonne des heures, sous les blocs : une demi-heure occupée reste cliquable par son heure. Un créneau fait 28 px de haut, la moitié d'une ligne de 56 px : l'exception des cibles de la vue jour (arbitrage du 2026-11-13, #838) s'étend à lui. La note d'un jour vide sort du flux (`.hours p`), pour qu'aucune ligne ne grandisse sous les créneaux. **Coût mesuré** (`npm run seed`, puis chaque jour de novembre 2026 pesé avec la session du compte semé, binaire web de `main` 5f5c4f7 puis de cette branche sur la même base, `node:zlib` niveau par défaut) : `/agenda?view=day` passe de 2 218–2 458 à 2 653–2 868 o gzip (7 061–7 769 à 13 479–14 275 bruts ; zstd 2 324–2 556 à 2 655–2 873), et un jour de 24 blocs d'une heure, un toutes les demi-heures depuis 08:00, titrés « Rendez-vous numéro N », de 3 251 à 3 688 o gzip (14 590 à 21 057 bruts) — sous le budget de réponse de 14 336 o compressés. Les créneaux et le lien du bandeau coûtent, jour par jour, de 6 369 à 6 565 o bruts et de 408 à 438 o gzip : un nom et une URL par créneau, très répétitifs. Feuille : de 25 605 à 25 875 o compressés (flate2 niveau 6, `budget_report`), sous `SHEET_CEILING`. |
+| 2026-11-14 | La grille du mois en barres de titres, sur téléphone comme sur PC (#836) | Demande du 2026-11-13, en prolongement de #793 ; maquette validée le 2026-11-13. La mini-grille du téléphone (#675) ne montrait qu'un point par jour, la grille du PC (#71) s'arrêtait à trois lignes puis « +N autres », et aucune ne disait le type d'un événement ni s'il concernait le visiteur. Le mois est une seule grille de barres de titres (`routes/agenda/month.rs`) : trois par jour sur téléphone, quatre sur PC, puis « +N » vers la vue jour ; pleine pour ce qui concerne le visiteur, à contour pour ce qui concerne d'autres membres (WCAG 1.4.1 : la forme, pas la teinte seule) ; « ↻ » devant un récurrent, « ☐ » / « ☑ » devant une tâche ; un événement de plusieurs jours, un jour national et des vacances scolaires en barres ocre (`.gen`), sur toutes leurs colonnes, coupées au bord de la semaine ; chaque jour un lien vers sa vue jour, toute sa case, nommé « jeudi 12 novembre, 7 événements, 3 qui te concernent ». Reprend pour le mois la concession « liste en projection de la grille » de #71 : la liste et la mini-grille ne restent qu'à la vue semaine. **Arbitrage du 2026-11-14, « Garder 12 px, consigner »** : sur téléphone, le titre d'une barre est en 12 px, sous le plancher de 14 px (Layout → « La grille du mois en barres », et Plancher typographique). Aucune couleur ni paire de contraste nouvelle : `--fg` sur la teinte d'un membre, sur `--warning-soft`, `--hover` et `--surface`, `--muted` et `--accent` sur `--hover`, toutes déjà mesurées. Le placement passe par des classes, aucun `style=` de plus. En passant, dans la vue jour (#793) : un bloc court trop étroit garde son titre plutôt que ses heures, et le trait de l'heure courante prend la pastille de la maquette. **Coût mesuré** (`npm run seed` puis `npm run measure`, même base semée, binaire web de `main` 1c4498f puis de cette branche, `node:zlib` niveau par défaut) : `/agenda` passe de 25 488 à 18 264 o bruts, de 5 311 à 5 040 o gzip et de 5 413 à 5 197 o zstd, sous le budget de réponse de 14 336 o compressés — la mini-grille et la liste du mois ne sont plus rendues ; les autres routes ne bougent pas à 1 o près. Feuille : de 25 875 à 27 582 o compressés (flate2 niveau 6, `budget_report`), sous `SHEET_CEILING` (43 008 o). |

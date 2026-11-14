@@ -202,7 +202,8 @@ test.describe("navigation — the content column", () => {
       // `/agenda`, month view, a guard rather than a proof of #673 — its wide
       // grid already filled the column: the grid and the day's panel beside
       // it (`.agenda`, #525) still span the column's content box, and the
-      // table takes all of it but the panel and the gap between them.
+      // grid (`.month`, #836) takes all of it but the panel and the gap
+      // between them.
       await page.goto("/agenda");
       const inner = await page.locator("main.content").evaluate((node) => {
         const style = getComputedStyle(node);
@@ -213,7 +214,7 @@ test.describe("navigation — the content column", () => {
         .locator(".agenda")
         .evaluate((node) => parseFloat(getComputedStyle(node).columnGap));
       const beside = (await width(page, ".agenda > .card")) + gap;
-      expect(Math.abs((await width(page, "table.cal")) - (inner - beside))).toBeLessThanOrEqual(1);
+      expect(Math.abs((await width(page, ".agenda > .month")) - (inner - beside))).toBeLessThanOrEqual(1);
 
       // A `w-form` route measures `--w-form` (28rem), whatever it holds.
       const rem = await page.evaluate(() =>

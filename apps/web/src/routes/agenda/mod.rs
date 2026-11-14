@@ -22,6 +22,7 @@ pub mod day;
 pub mod detail;
 pub mod edit;
 pub mod imports;
+pub mod month;
 pub mod new;
 pub mod reminders;
 

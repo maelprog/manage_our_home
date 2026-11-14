@@ -628,10 +628,14 @@ dialog.viewer { width: 100%; max-width: min(var(--w-read), 100% - 2 * var(--s4))
   text-decoration: none;
 }
 /* A block of the day view's hours and an entry of its « Journée » banner
-   (#793, `routes::agenda::day`): a chip's ground and text, declared here so
+   (#793, `routes::agenda::day`), a bar of the month (#836,
+   `routes::agenda::month`): a chip's ground and text, declared here so
    that the member's tint below wins over it, and an edge the member's hue
-   paints further down. */
-.blk, .ad { border-left: var(--s1) solid var(--border); background: var(--hover); color: var(--fg); text-decoration: none; }
+   paints further down. A bar of other members' event is outlined in that
+   hue and left on the day's ground — the shape, not the hue alone, says
+   it is not the visitor's (WCAG 1.4.1). */
+.blk, .ad, .bar { border-left: var(--s1) solid var(--border); background: var(--hover); color: var(--fg); text-decoration: none; }
+.bar.oth { border: 1px solid var(--border); border-left-width: var(--s1); background: transparent; }
 /* A chip in its member's tint (#525, `routes::agenda::calendar::member_tint`): 16 % of the hue
    mixed into --surface, the text staying --fg — DESIGN.md → Couleur, the
    event ground; app.rs measures --fg on all eight, in both themes. Declared
@@ -646,7 +650,10 @@ dialog.viewer { width: 100%; max-width: min(var(--w-read), 100% - 2 * var(--s4))
 .m7 { background: color-mix(in srgb, var(--surface), var(--m7) 16%); }
 .m8 { background: color-mix(in srgb, var(--surface), var(--m8) 16%); }
 /* The day view's edge in the member's hue (#793), as the mock-up draws it;
-   the initials beside the title still name them (WCAG 1.4.1). */
+   the initials beside the title still name them (WCAG 1.4.1). The left
+   edge only: a block's dashed cut edges (`.cut-s`, `.cut-e`) stay --fg. A
+   bar of the month (#836) takes the hue on its outline too: its other
+   sides have no width unless it is outlined. */
 :is(.blk, .ad).m1 { border-left-color: var(--m1); }
 :is(.blk, .ad).m2 { border-left-color: var(--m2); }
 :is(.blk, .ad).m3 { border-left-color: var(--m3); }
@@ -655,6 +662,14 @@ dialog.viewer { width: 100%; max-width: min(var(--w-read), 100% - 2 * var(--s4))
 :is(.blk, .ad).m6 { border-left-color: var(--m6); }
 :is(.blk, .ad).m7 { border-left-color: var(--m7); }
 :is(.blk, .ad).m8 { border-left-color: var(--m8); }
+.bar.m1 { border-color: var(--m1); }
+.bar.m2 { border-color: var(--m2); }
+.bar.m3 { border-color: var(--m3); }
+.bar.m4 { border-color: var(--m4); }
+.bar.m5 { border-color: var(--m5); }
+.bar.m6 { border-color: var(--m6); }
+.bar.m7 { border-color: var(--m7); }
+.bar.m8 { border-color: var(--m8); }
 /* The initials in a chip: the avatar at the height of the chip's line. */
 .chip .avatar { width: var(--s4); height: var(--s4); margin-right: var(--s1); vertical-align: top; }
 /* A chip of an agenda showing several families (#622): its family's colour
@@ -730,7 +745,7 @@ progress::-moz-progress-bar { background: currentColor; }
    when the column is too narrow for both. `min-width: 0` lets the table
    give way instead of pushing the column past the viewport. */
 .agenda { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s4); }
-.agenda > .cal { flex: 999 1 36rem; min-width: 0; }
+.agenda > :is(.cal, .month) { flex: 999 1 36rem; min-width: 0; }
 .agenda > .card { flex: 1 1 20rem; margin: 0; }
 /* Semaine | Mois (#525): the kitchen's segment, beside the arrows. The
    861px query keeps it on a PC, where the kitchen's goes. */
@@ -762,13 +777,78 @@ progress::-moz-progress-bar { background: currentColor; }
 /* A day's number leads to its day view (#793): underlined in the accent,
    in the colour of the number — today's is on the accent itself. */
 .cal-day a { color: inherit; text-decoration: underline var(--accent); text-underline-offset: var(--s1); }
+/* -- The month (#836, `routes::agenda::month`) -----------------------------
+   Six weeks of seven days, on a phone as on a PC. A week is a grid: the
+   days' numbers, then a row per bar. Each day is a link to its day view as
+   tall as its week, under its bars; a bar is placed by its first column
+   (`.c1`…), the columns it spans (`.s2`…) and its row (`.l0`…). A phone
+   shows three bars a day and its « +N » in the fourth row; a PC four, and
+   its « +N » in the fifth (`.pc` and `.phone` sort them). On a phone a
+   title is 12px, under the floor of DESIGN.md → Plancher typographique: a
+   concession of #836, the day view a touch away reading it whole. */
+.month { border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; background: var(--surface); font-variant-numeric: tabular-nums; }
+.dh, .wk { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.dh { padding: var(--s1) 0; background: var(--bg); color: var(--muted); font-size: var(--t-xs); font-weight: 600; text-align: center; }
+/* The first row is sized here, not by the numbers: a day spans the flexible
+   last row too, and an item spanning a flexible track does not size the
+   others — the row would collapse under the bars. */
+.wk { grid-template-rows: calc(var(--s6) + var(--s1)) repeat(4, 1.25rem) minmax(var(--s1), 1fr); min-height: 6.75rem; border-top: 1px solid var(--line); }
+.c1 { grid-column-start: 1; }
+.c2 { grid-column-start: 2; }
+.c3 { grid-column-start: 3; }
+.c4 { grid-column-start: 4; }
+.c5 { grid-column-start: 5; }
+.c6 { grid-column-start: 6; }
+.c7 { grid-column-start: 7; }
+.s2 { grid-column-end: span 2; }
+.s3 { grid-column-end: span 3; }
+.s4 { grid-column-end: span 4; }
+.s5 { grid-column-end: span 5; }
+.s6 { grid-column-end: span 6; }
+.s7 { grid-column-end: span 7; }
+.l0 { grid-row: 2; }
+.l1 { grid-row: 3; }
+.l2 { grid-row: 4; }
+.l3 { grid-row: 5; }
+.l4 { grid-row: 6; }
+/* A day, its number at its head: a weekend on --hover, today's number on
+   the accent, a day of another month in --muted. The focus ring stays
+   inside the week, which clips what overflows it. */
+.day { grid-row: 1 / -1; display: flex; justify-content: flex-end; align-items: flex-start; padding: var(--s2); color: var(--fg); font-size: var(--t-sm); font-weight: 600; text-decoration: none; }
+.day:not(.c1) { border-left: 1px solid var(--line); }
+.day:is(.c6, .c7) { background: var(--hover); }
+.day.out { color: var(--muted); font-weight: 400; }
+/* Its weekend ground faded, as the mock-up draws it: the ground alone,
+   never its number, which keeps --muted's contrast. */
+.day.out:is(.c6, .c7) { background: color-mix(in srgb, var(--hover) 60%, transparent); }
+.day span { min-width: var(--s6); line-height: var(--s6); border-radius: var(--r-sm); text-align: center; }
+.day[aria-current] span { background: var(--accent); color: var(--accent-fg); }
+.day:focus-visible { outline-offset: -2px; }
+/* The week's number, on a PC: over its Monday, which the pointer reaches,
+   on a pastille of the page's ground. */
+.wn { grid-row: 1; justify-self: start; align-self: center; margin-left: var(--s2x); padding: 0 var(--s1); border-radius: var(--s1); background: var(--bg); color: var(--muted); font-size: var(--t-xs); pointer-events: none; }
+/* A bar: one line, cut by an ellipsis; its ground, edge and outline are
+   the chips' (above). In a view of several families, its family's colour
+   is its edge, as on a chip (#622). Bars and « +N » sit over the days,
+   whose links come later in the document than a bar that crosses them. A day's « +N » is underlined in the
+   accent, as the mock-up draws it: a link among bars, not in a sentence. */
+.bar { z-index: 1; min-width: 0; margin: 0 1px 1px; padding: 0 var(--s1); overflow: hidden; border-radius: var(--s1); font-size: 0.75rem; line-height: 1.125rem; white-space: nowrap; text-overflow: ellipsis; }
+.bar[data-accent] { border-left-color: var(--accent); }
+.plus { z-index: 1; margin: 0 1px; padding: 0 var(--s1); color: var(--accent); font-size: 0.75rem; font-weight: 600; line-height: 1.125rem; }
+@media (min-width: 861px) {
+  /* 148px at least, the mock-up's week: its rows of bars as tall as what
+     they hold, so that an empty week keeps to it. */
+  .wk { grid-template-rows: calc(var(--s6) + var(--s2x)) repeat(5, auto) minmax(var(--s1), 1fr); min-height: 9.25rem; }
+  .day span { min-width: calc(var(--s6) + var(--s1)); line-height: calc(var(--s6) + var(--s1)); }
+  .bar, .plus { margin-inline: var(--s1); padding: 0 var(--s2x); font-size: var(--t-sm); line-height: 1.5rem; }
+}
 /* -- The day view (#793, `routes::agenda::day`) ---------------------------
    The « Journée » banner: the day's national days and its events of a
    whole day or more, a line each. A national day, and an event of more
    than a day, wear the ocre of what the app generates. */
 .allday { position: relative; display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s3); padding: var(--s2x); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
 .ad { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); min-height: var(--s8); margin: 0; padding: var(--s1) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); }
-.ad.gen { border-left-color: var(--warning); background: var(--warning-soft); }
+:is(.ad, .bar).gen { border-color: var(--warning); background: var(--warning-soft); }
 /* The hours, a row per hour, 56px tall: a scroller
    that opens on 08:00 (`#h8`) without a script where the browser knows
    `scroll-initial-target`, through `enhance.js` elsewhere. The table's own
@@ -793,8 +873,10 @@ progress::-moz-progress-bar { background: currentColor; }
    the hours first: what does not fit beside the title wraps to a next line
    as far below. Its title keeps room for its lock and an ellipsis, or a
    letter and one, else wraps away with what follows it: a narrower box
-   would cut them in two. Cut at an edge of the day, that edge is flat and
-   dashed. */
+   would cut them in two. Too narrow for both its hours and that room — a
+   column of three or four at 390px —, it drops its hours rather than its
+   title (#836): its place in the hours says when, nothing else says what.
+   Cut at an edge of the day, that edge is flat and dashed. */
 .blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
 .blk > *, .sub > * { overflow: hidden; text-overflow: ellipsis; }
 .blk:not(.short) > * { width: 100%; }
@@ -807,14 +889,18 @@ progress::-moz-progress-bar { background: currentColor; }
 .blk .swatch { margin-right: var(--s1); vertical-align: middle; }
 /* Beside the hours, the family takes what is left, 4em at least. */
 .sub .fam { flex: 1 1 0; min-width: 4em; }
-.blk.short { flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
+.blk.short { container-type: inline-size; flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
 .blk.short strong { flex: 1 1 0; min-width: 2.5em; max-width: max-content; }
 .blk.short .t { order: -1; }
+@container (width < 9em) { .blk.short .t { display: none; } }
 .cut-s { border-top: var(--s2) dashed; border-top-left-radius: 0; border-top-right-radius: 0; }
 .cut-e { border-bottom: var(--s2) dashed; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 /* The current time across its hour, to the quarter, drawn when the page
-   is: from the hour's name to the scroller's edge, which clips it. */
+   is: from the hour's name to the scroller's edge, which clips it, a dot
+   at its head as the mock-up draws it (#836), centred on the line: a
+   border, which forced colours repaint rather than drop. */
 .now { position: absolute; z-index: 2; top: 0; left: 100%; width: 100vw; border-top: var(--s2) solid var(--accent); }
+.now::before { content: ""; position: absolute; top: calc(var(--s2) / -2); left: 0; border: var(--s1) solid var(--accent); border-radius: 50%; translate: -50% -50%; }
 .now.q1 { top: 25%; }
 .now.q2 { top: 50%; }
 .now.q3 { top: 75%; }
@@ -1216,6 +1302,9 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   /* The phone side of the one markup (`app::app_header`, #523): what only
      a PC shows. Here, after `.navlink`, which it has to override. */
   .pc { display: none; }
+  /* The month's weekday heads (#836): « lun. » on a PC, its capital
+     initial here. */
+  .dh { text-transform: uppercase; }
   /* The home's cards on a phone (#524): two columns, the two tiles side by
      side, every card the whole row. */
   .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: var(--s3); }

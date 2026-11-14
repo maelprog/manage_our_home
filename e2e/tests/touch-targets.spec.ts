@@ -70,7 +70,7 @@ async function seed(page: Page): Promise<string[]> {
   await page.getByLabel("Fin").fill(todayAt(11));
   await page.getByRole("button", { name: "Créer l'événement" }).click();
   await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
-  const eventHref = await page.locator("a.chip", { hasText: "Rendez-vous" }).first().getAttribute("href");
+  const eventHref = await page.locator("a.bar", { hasText: "Rendez-vous" }).first().getAttribute("href");
   if (!eventHref) throw new Error("no link to the seeded event");
   // The visit below measures the assignee's link only if there is one.
   await page.goto(eventHref);
@@ -100,7 +100,8 @@ interface Box {
  * member's name as a link to their profile (`.member`, #466 — the seeded
  * message's author on /messagerie, the member list, the event's assignee),
  * every day of the phone's mini grid, a link to its day view (#675, #793),
- * and the day view's own head (#793).
+ * every day of the month's grid, a link as tall as its week (#836), and the
+ * day view's own head (#793).
  *
  * Left out, each for a stated reason:
  * - a bare text link (`<a>` with no class): inside a sentence it is WCAG
@@ -118,13 +119,18 @@ interface Box {
  *   (`.ad`), 32px; a day's number in the grid (`.cal-day a`), 28px square on
  *   a PC and 25px tall in the phone's list. A half hour of the hours
  *   (`.slots a`, #794) is 28px tall, half a row of 56px, and the selector
- *   above does not take it either.
+ *   above does not take it either;
+ * - the month's bars and « +N » (#836, `.bar`, `.plus`), drawn at the
+ *   mock-up's size: one line of a title, 19px tall on a phone and 24px on a
+ *   PC (26px outlined, and in a row holding an outlined one); « +N » 20px
+ *   on a phone, 24px on a PC — the day they sit on, a link to its day view,
+ *   is measured.
  */
 async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
     const out: { what: string; width: number; height: number }[] = [];
     const nodes = document.querySelectorAll<HTMLElement>(
-      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member, .mini a',
+      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member, .mini a, .day',
     );
     const wide = window.matchMedia("(min-width: 861px)").matches;
     for (const node of nodes) {

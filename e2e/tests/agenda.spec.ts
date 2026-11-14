@@ -908,37 +908,38 @@ test.describe("Agenda — mise en page (#525)", () => {
   });
 });
 
-// #675 — a phone's list shows only the days that carry something, so an
-// empty month showed no date at all. A mini grid of the period now heads it.
-test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
-  test("an empty month shows its days, today marked, and says nothing is planned", async ({ page }) => {
+// #675 — a phone's list showed only the days that carried something, so an
+// empty month showed no date at all; a mini grid of the period headed it.
+// #836 — the month is now one grid of bars on a phone as on a PC, every day
+// a link to its day view, named by what it carries; the mini grid, the list
+// and their empty state stay with the week.
+test.describe("Agenda — mini-grille sur téléphone (#675, #836)", () => {
+  test("an empty month shows its days, today marked; an empty week says nothing is planned", async ({
+    page,
+  }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await registerAndLogin(page, "e2e-agmini", "Agenda Mini");
     await createGroup(page, "Famille Grille");
     await page.goto("/agenda");
 
-    const mini = page.locator("table.mini");
-    await expect(mini).toBeVisible();
-    const cells = mini.locator("td");
-    const count = await cells.count();
-    expect(count).toBeGreaterThanOrEqual(28);
-    expect(count).toBeLessThanOrEqual(42);
-    // A day number, then — on a national day (#565), a link — its name in
-    // words: « 11 novembre, Armistice 1918 ».
-    for (const text of await cells.allInnerTexts()) expect(text.trim()).toMatch(/^\d{1,2}(\s|$)/);
+    const month = page.locator(".month");
+    await expect(month).toBeVisible();
+    const days = month.locator("a.day");
+    await expect(days).toHaveCount(42);
+    for (const name of await days.evaluateAll((links) => links.map((l) => l.getAttribute("aria-label")))) {
+      expect(name).toMatch(/^\S+ \d{1,2} \S+, rien de prévu$/);
+    }
 
-    const today = mini.locator('td[aria-current="date"]');
+    const today = month.locator('a.day[aria-current="date"]');
     await expect(today).toHaveCount(1);
-    await expect(today).toHaveClass(/\bcurrent\b/);
-    await expect(today).toHaveText(new RegExp(`^${Number(parisDay().slice(8))}(\\s|$)`));
+    await expect(today).toHaveText(`${Number(parisDay().slice(8))}`);
 
-    // A national day written out puts its day in the list (#565): the
-    // empty state is read on a month and a week that have none — February
-    // 2027's grid runs from 1 February to 14 March.
+    // The month says nothing more: its grid of empty days does. The week's
+    // list, empty, says so — February 2027 has no national day.
     await page.goto("/agenda?view=month&date=2027-02-10");
-    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeVisible();
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toHaveCount(0);
     await page.goto("/agenda?view=week&date=2027-02-10");
-    await expect(mini.locator("td")).toHaveCount(7);
+    await expect(page.locator("table.mini td")).toHaveCount(7);
     await expect(page.getByText("Rien de prévu cette semaine.")).toBeVisible();
   });
 
@@ -950,20 +951,18 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     await createEvent(page, { title: "Réunion parents", start: `${date}T10:00`, end: `${date}T11:00` });
 
     await page.goto(`/agenda?view=month&date=${date}`);
-    // The 15th may also be a national day (15 August, #565): its name
-    // comes before the count.
     const link = page
-      .locator("table.mini")
-      .getByRole("link", { name: /^15 \S+, (.+, )?1 événement$/ });
+      .locator(".month")
+      .getByRole("link", { name: /^\S+ 15 \S+, 1 événement, 1 qui te concerne$/ });
     await expect(link).toHaveAttribute("href", `/agenda?view=day&date=${date}`);
-    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
+    await expect(page.locator(".month a.bar", { hasText: "Réunion parents" })).toBeVisible();
     await link.click();
     await expect(page).toHaveURL(`/agenda?view=day&date=${date}`);
     await expect(page.locator("a.blk", { hasText: "Réunion parents" })).toBeVisible();
     // A day with nothing leads there too.
     await page.goto(`/agenda?view=month&date=${date}`);
     const other = dayThisMonth(16);
-    await page.locator("table.mini").getByRole("link", { name: "16", exact: true }).click();
+    await page.locator(".month").getByRole("link", { name: /^\S+ 16 \S+, rien de prévu$/ }).click();
     await expect(page).toHaveURL(`/agenda?view=day&date=${other}`);
   });
 
@@ -971,9 +970,12 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     await page.setViewportSize({ width: 360, height: 780 });
     await registerAndLogin(page, "e2e-agmini360", "Agenda Étroit");
     await createGroup(page, "Famille Étroite");
-    for (const path of ["/agenda", "/agenda?view=week"]) {
+    for (const [path, head] of [
+      ["/agenda", ".month"],
+      ["/agenda?view=week", "table.mini"],
+    ]) {
       await page.goto(path);
-      await expect(page.locator("table.mini")).toBeVisible();
+      await expect(page.locator(head)).toBeVisible();
       const overflow = await page.evaluate(
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
       );
@@ -981,20 +983,26 @@ test.describe("Agenda — mini-grille sur téléphone (#675)", () => {
     }
   });
 
-  test("a PC keeps its grid and gets neither the mini grid nor the empty state", async ({ page }) => {
+  test("a PC's month is the same grid, with neither a mini grid nor an empty state", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await registerAndLogin(page, "e2e-agminipc", "Agenda Bureau");
     await createGroup(page, "Famille Bureau");
     await page.goto("/agenda");
+    await expect(page.locator(".month")).toBeVisible();
+    await expect(page.locator("table.mini")).toHaveCount(0);
+    await expect(page.locator("table.cal")).toHaveCount(0);
+    await expect(page.getByText("Rien de prévu ce mois-ci.")).toHaveCount(0);
+    // The week keeps its grid, and its mini grid stays a phone's.
+    await page.goto("/agenda?view=week");
     await expect(page.locator("table.cal")).toBeVisible();
     await expect(page.locator("table.mini")).toBeHidden();
-    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
   });
 });
 
 // #792 — a day of a phone's list says its weekday, « jeudi 16 »; a PC's
 // grid, whose column headers already do, keeps the number alone, and its
-// screen reader does not hear the weekday twice.
+// screen reader does not hear the weekday twice. Since #836 the list is the
+// week's only: a day of the month is named in full on both layouts.
 test.describe("Agenda — jour de la semaine dans la liste (#792)", () => {
   test("a phone's list writes it out, a PC's grid neither draws nor reads it", async ({ page }) => {
     await registerAndLogin(page, "e2e-agweekday", "Agenda Semaine");
@@ -1012,7 +1020,7 @@ test.describe("Agenda — jour de la semaine dans la liste (#792)", () => {
 
     for (const [layout, viewport] of AGENDA_LAYOUTS) {
       await page.setViewportSize(viewport);
-      for (const view of ["month", "week"]) {
+      for (const view of ["week"]) {
         await page.goto(`/agenda?view=${view}&date=${date}`);
         await expect(number, `${layout} ${view}`).toBeVisible();
         const snapshot = await number.ariaSnapshot();
@@ -1056,6 +1064,101 @@ function longDate(date: string): string {
     year: "numeric",
     timeZone: "UTC",
   }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+// #836 — the month as bars of titles, on a phone as on a PC, without
+// JavaScript: an event of a day is filled when it concerns the visitor and
+// outlined when it is other members'; an event of several days is one ocre
+// bar across its columns, cut at the week's edge and continued on the next.
+// 10 March 2027 is a Wednesday; 13 and 14 March close its week.
+for (const [layout, viewport] of AGENDA_LAYOUTS) {
+  test.describe(`Agenda — grille du mois en barres, ${layout}, sans JavaScript (#836)`, () => {
+    test.use({ viewport, javaScriptEnabled: false });
+
+    test("filled for oneself, outlined for the others, several days one ocre bar cut at the week", async ({
+      page,
+      browser,
+    }) => {
+      test.slow();
+      const family = "Famille Barres";
+      await registerAndLogin(page, "e2e-agbars", "Alix Barres");
+      await createGroup(page, family);
+      const href = await invitation(page, family);
+      const bContext = await browser.newContext({ viewport, javaScriptEnabled: false });
+      const b = await bContext.newPage();
+      await registerAndLogin(b, "e2e-agbarsb", "Basile Barres");
+      await join(b, href);
+
+      // B's, assigned to nobody: it concerns its creator.
+      await postEvent(b, `title=Piscine+de+Basile&starts_at=${DAY}T17:00&ends_at=${DAY}T18:00`);
+      // A's, Saturday 13 to Tuesday 16 March, whole days.
+      await postEvent(page, "title=S%C3%A9jour+chez+Papi&all_day=on&starts_at=2027-03-13&ends_at=2027-03-16");
+
+      const month = `/agenda?view=month&date=${DAY}`;
+      const day = (p: Page, date: string) => p.locator(`.month a.day[href="/agenda?view=day&date=${date}"]`);
+      await page.goto(month);
+      await b.goto(month);
+
+      // The same event, outlined for A, filled for B.
+      const theirs = page.locator(".month a.bar", { hasText: "Piscine de Basile" });
+      const own = b.locator(".month a.bar", { hasText: "Piscine de Basile" });
+      await expect(theirs).toHaveCSS("border-top-width", "1px");
+      await expect(theirs).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      await expect(own).toHaveCSS("border-top-width", "0px");
+      expect(await own.evaluate((e) => getComputedStyle(e).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+      await expect(day(page, DAY)).toHaveAccessibleName("mercredi 10 mars, 1 événement, aucun ne te concerne");
+      await expect(day(b, DAY)).toHaveAccessibleName("mercredi 10 mars, 1 événement, 1 qui te concerne");
+
+      // Several days: a bar on Saturday and Sunday, another on Monday and
+      // Tuesday, in the ocre of the generated days.
+      const stay = page.locator(".month a.bar", { hasText: "Séjour chez Papi" });
+      await expect(stay).toHaveCount(2);
+      await expect(stay.first()).toHaveCSS("background-color", "rgb(247, 238, 218)");
+      const within = async (bar: number, from: string, to: string) => {
+        const box = await stay.nth(bar).boundingBox();
+        const first = await day(page, from).boundingBox();
+        const last = await day(page, to).boundingBox();
+        if (!box || !first || !last) throw new Error("a box is missing");
+        expect(Math.abs(box.x - first.x), `${from} left`).toBeLessThanOrEqual(6);
+        expect(Math.abs(box.x + box.width - (last.x + last.width)), `${to} right`).toBeLessThanOrEqual(6);
+        expect(box.y).toBeGreaterThan(first.y);
+        expect(box.y + box.height).toBeLessThanOrEqual(first.y + first.height);
+      };
+      await within(0, "2027-03-13", "2027-03-14");
+      await within(1, "2027-03-15", "2027-03-16");
+      await expect(day(page, "2027-03-15")).toHaveAccessibleName("lundi 15 mars, 1 événement, 1 qui te concerne");
+
+      // On a PC, the week's number on its Monday keeps to its own width:
+      // its pastille does not cover the Monday's number, which is seen and
+      // reached.
+      if (viewport.width >= 861) {
+        const number = day(page, "2027-03-15").locator("span");
+        const week = page.locator('.month .wk:has(a.day[href="/agenda?view=day&date=2027-03-15"]) .wn');
+        await expect(week).toHaveText("S11");
+        const [n, w] = [await number.boundingBox(), await week.boundingBox()];
+        if (!n || !w) throw new Error("a box is missing");
+        expect(w.x + w.width, "S11 ends before 15").toBeLessThan(n.x);
+        await number.click({ trial: true });
+      }
+
+      // Dark, from the device: the ocre's own ground, and nothing wider
+      // than the screen in either theme.
+      for (const scheme of ["light", "dark"] as const) {
+        await page.emulateMedia({ colorScheme: scheme });
+        await page.goto(month);
+        const overflow = await page.evaluate(
+          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        );
+        expect(overflow, scheme).toBeLessThanOrEqual(0);
+      }
+      await expect(stay.first()).toHaveCSS("background-color", "rgb(51, 40, 19)");
+
+      // A bar is a link to its event.
+      await theirs.click();
+      await expect(page.getByRole("heading", { name: "Piscine de Basile" })).toBeVisible();
+      await bContext.close();
+    });
+  });
 }
 
 for (const [layout, viewport] of AGENDA_LAYOUTS) {
@@ -1170,6 +1273,9 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
       await expect(page).toHaveURL(`/agenda/new?debut=${DAY}T14:30`);
       await expect(page.getByLabel("Début")).toHaveValue(`${DAY}T14:30`);
       await expect(page.getByLabel("Fin")).toHaveValue(`${DAY}T15:30`);
+      // Its cross closes it back to that day.
+      await page.getByRole("link", { name: "Fermer" }).click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
 
       // 09:30, free: Début 09:30, Fin an hour later, that day.
       await page.goto(`/agenda?view=day&date=${DAY}`);
@@ -1213,21 +1319,19 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
     }) => {
       await registerAndLogin(page, "e2e-agdaynav", "Agenda Jour Nav");
       await createGroup(page, "Famille Accès");
-      for (const hour of [8, 10, 12, 14]) {
+      const hours = [8, 10, 12, 14, 16, 18];
+      for (const hour of hours) {
         const h = String(hour).padStart(2, "0");
         await postEvent(page, `title=Rendez-vous+${hour}h&starts_at=${DAY}T${h}:00&ends_at=${DAY}T${h}:30`);
       }
 
-      // The day's number, in the grid on a PC, in the mini grid on a phone.
-      // A month grid shows a 10 of two months: the grid's is found by its
-      // link.
+      // A day of the month grid (#836), on a phone as on a PC. A month
+      // grid shows a 10 of two months: the day is found by its link.
       await page.goto(`/agenda?view=month&date=${DAY}`);
-      const dayLink = page.locator(`table.cal .cal-day a[href="/agenda?view=day&date=${DAY}"]`);
-      const number =
-        layout === "PC" ? dayLink : page.locator("table.mini").getByRole("link", { name: /^10 mars, / });
-      await number.click();
+      // Its number: the bars cover the rest of its case.
+      await page.locator(`.month a.day[href="/agenda?view=day&date=${DAY}"] > span`).click();
       await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
-      for (const hour of [8, 10, 12, 14]) {
+      for (const hour of hours) {
         await expect(page.locator("a.blk", { hasText: `Rendez-vous ${hour}h` })).toHaveCount(1);
       }
 
@@ -1237,15 +1341,20 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
       await toggle.getByRole("link", { name: "Semaine", exact: true }).click();
       await expect(page).toHaveURL(`/agenda?view=week&date=${DAY}`);
       // In the week, the day's number leads to it too.
+      const dayLink = page.locator(`table.cal .cal-day a[href="/agenda?view=day&date=${DAY}"]`);
       await expect(dayLink).toHaveText(layout === "PC" ? "10" : "mercredi 10", { useInnerText: true });
       await dayLink.click();
       await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
       await toggle.getByRole("link", { name: "Mois", exact: true }).click();
       await expect(page).toHaveURL(`/agenda?view=month&date=${DAY}`);
 
-      // A crowded day of the month counts the rest into « +N autres »,
-      // which leads to the day view of that day.
-      await page.locator("table.cal").getByRole("link", { name: "+2 autres" }).click();
+      // A crowded day of the month counts the rest into « +N autres » —
+      // past three bars on a phone, four on a PC (#836) —, which leads to
+      // the day view of that day.
+      await page
+        .locator(".month")
+        .getByRole("link", { name: layout === "PC" ? "+2 autres" : "+3 autres" })
+        .click();
       await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
     });
   });
@@ -1336,22 +1445,22 @@ test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
 // event is seen by its creator and the members of its « pour qui » only
 // (apps/api's policy, #620); everyone else in the family gets nothing — not
 // on the agenda, not on the home page, and the "not found" page for its URL.
+/** A fresh invitation link into the family `page`'s user owns. */
+async function invitation(page: Page, family: string): Promise<string> {
+  await page.goto("/groups");
+  await page.locator("li", { hasText: family }).getByRole("link", { name: "Membres" }).click();
+  await page.getByRole("button", { name: "Créer une invitation" }).click();
+  const href = await page.locator(".notice.success a").getAttribute("href");
+  if (!href) throw new Error("no invitation link");
+  return href;
+}
+
+async function join(page: Page, href: string): Promise<void> {
+  await page.goto(href);
+  await page.getByRole("button", { name: "Rejoindre le groupe" }).click();
+}
+
 test.describe("Agenda — événements privés (#621)", () => {
-  /** A fresh invitation link into the family `page`'s user owns. */
-  async function invitation(page: Page, family: string): Promise<string> {
-    await page.goto("/groups");
-    await page.locator("li", { hasText: family }).getByRole("link", { name: "Membres" }).click();
-    await page.getByRole("button", { name: "Créer une invitation" }).click();
-    const href = await page.locator(".notice.success a").getAttribute("href");
-    if (!href) throw new Error("no invitation link");
-    return href;
-  }
-
-  async function join(page: Page, href: string): Promise<void> {
-    await page.goto(href);
-    await page.getByRole("button", { name: "Rejoindre le groupe" }).click();
-  }
-
   /** The event's id, read off its chip on the agenda of `date`. */
   async function eventId(page: Page, date: string, title: string): Promise<string> {
     await page.goto(`/agenda?date=${date}`);
@@ -1398,7 +1507,7 @@ test.describe("Agenda — événements privés (#621)", () => {
 
     // A sees it, marked « Privé »: on the agenda, on the home page, on its page.
     const secret = await eventId(page, date, "Rendez-vous secret");
-    await expect(page.getByRole("link", { name: /^Privé 10:00 Rendez-vous secret$/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: /^Privé Rendez-vous secret$/ })).toBeVisible();
     await page.goto("/");
     await expect(page.getByText(/^Privé Rendez-vous secret$/).first()).toBeVisible();
     await page.goto(`/agenda/${secret}`);
@@ -1422,7 +1531,7 @@ test.describe("Agenda — événements privés (#621)", () => {
     await page.getByRole("button", { name: "Créer l'événement" }).click();
     await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
     await c.goto(`/agenda?date=${date}`);
-    await expect(c.getByRole("link", { name: /^Privé 14:00 Surprise pour Côme$/ })).toBeVisible();
+    await expect(c.getByRole("link", { name: /^Privé Surprise pour Côme$/ })).toBeVisible();
     await expect(c.getByRole("link", { name: /Rendez-vous secret/ })).toHaveCount(0);
     await b.goto(`/agenda?date=${date}`);
     await expect(b.getByRole("link", { name: /Surprise pour Côme/ })).toHaveCount(0);
@@ -1435,7 +1544,7 @@ test.describe("Agenda — événements privés (#621)", () => {
     await expect(page.getByText("Événement mis à jour.")).toBeVisible();
     await expect(page.getByText("Privé — visible seulement")).toHaveCount(0);
     await b.goto(`/agenda?date=${date}`);
-    await expect(b.getByRole("link", { name: /^10:00 Rendez-vous secret$/ })).toBeVisible();
+    await expect(b.getByRole("link", { name: /^Rendez-vous secret$/ })).toBeVisible();
 
     await bContext.close();
     await cContext.close();
@@ -1455,7 +1564,7 @@ test.describe("Agenda — événements privés (#621)", () => {
     await page.getByRole("button", { name: "Créer l'événement" }).click();
     await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
     await page.goto(`/agenda?date=${date}`);
-    await expect(page.getByRole("link", { name: /^Privé 09:00 Note discrète$/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: /^Privé Note discrète$/ })).toBeVisible();
     await context.close();
   });
 });
@@ -1577,9 +1686,15 @@ test.describe("Agenda — case « Événement récurrent » (#698)", () => {
 // occurrences asks what the change applies to — the whole series (by
 // default), this occurrence and the following ones, or this one alone.
 test.describe("Agenda — portée d'une modification de série", () => {
-  /** The calendar chip of `title`'s occurrence on `day` (17:00 in Paris is
-   *  the same UTC day, which the chip's `occ` names). */
-  const chipOn = (page: Page, day: string) => page.locator(`a.chip[href*="occ=${day}T"]`);
+  /** The month's bar of the occurrence on `day` (17:00 in Paris is the
+   *  same UTC day, which the bar's `occ` names). */
+  const barOn = (page: Page, day: string) => page.locator(`a.bar[href*="occ=${day}T"]`);
+  /** The week view's chip of the occurrence on `day`, which says its time
+   *  — a bar of the month says its title alone (#836). */
+  async function chipOn(page: Page, day: string) {
+    await page.goto(`/agenda?view=week&date=${day}`);
+    return page.locator(`a.chip[href*="occ=${day}T"]`);
+  }
   const scopeGroup = (page: Page) =>
     page.getByRole("group", { name: "Appliquer la modification à" });
 
@@ -1598,7 +1713,7 @@ test.describe("Agenda — portée d'une modification de série", () => {
 
     // The third occurrence, alone, moved to 19:00 and renamed.
     await page.goto(`/agenda?date=${first}`);
-    await chipOn(page, third).click();
+    await barOn(page, third).click();
     await page.getByRole("link", { name: "Modifier" }).click();
     await expect(page.getByLabel("Début")).toHaveValue(`${third}T17:00`);
     const scope = scopeGroup(page);
@@ -1619,12 +1734,13 @@ test.describe("Agenda — portée d'une modification de série", () => {
     await expect(page.getByText("Récurrence :")).toHaveCount(0);
 
     await page.goto(`/agenda?date=${first}`);
-    await expect(page.locator("a.chip", { hasText: "Atelier déplacé" })).toHaveCount(1);
-    await expect(chipOn(page, third)).toHaveText(/19:00 Atelier déplacé/);
-    await expect(chipOn(page, fourth)).toHaveText(/17:00 Atelier$/);
+    await expect(page.locator("a.bar", { hasText: "Atelier déplacé" })).toHaveCount(1);
+    await expect(await chipOn(page, third)).toHaveText(/19:00 Atelier déplacé/);
+    await expect(await chipOn(page, fourth)).toHaveText(/17:00 Atelier$/);
 
     // From the fifth on, renamed: the fourth keeps its title.
-    await chipOn(page, fifth).click();
+    await page.goto(`/agenda?date=${first}`);
+    await barOn(page, fifth).click();
     await page.getByRole("link", { name: "Modifier" }).click();
     await scopeGroup(page).getByRole("radio", { name: "Cet événement et les suivants" }).check();
     await page.getByLabel("Titre").fill("Atelier du soir");
@@ -1633,11 +1749,10 @@ test.describe("Agenda — portée d'une modification de série", () => {
     await expect(page.getByRole("heading", { name: "Atelier du soir" })).toBeVisible();
     await expect(page.getByText("Récurrence : Tous les jours")).toBeVisible();
 
-    await page.goto(`/agenda?date=${first}`);
-    await expect(chipOn(page, first)).toHaveText(/17:00 Atelier$/);
-    await expect(chipOn(page, fourth)).toHaveText(/17:00 Atelier$/);
-    await expect(chipOn(page, fifth)).toHaveText(/17:00 Atelier du soir$/);
-    await expect(chipOn(page, sixth)).toHaveText(/17:00 Atelier du soir$/);
+    await expect(await chipOn(page, first)).toHaveText(/17:00 Atelier$/);
+    await expect(await chipOn(page, fourth)).toHaveText(/17:00 Atelier$/);
+    await expect(await chipOn(page, fifth)).toHaveText(/17:00 Atelier du soir$/);
+    await expect(await chipOn(page, sixth)).toHaveText(/17:00 Atelier du soir$/);
   });
 
   test("sur un événement unique, le formulaire ne demande rien", async ({

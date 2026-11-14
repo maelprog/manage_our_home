@@ -42,6 +42,7 @@ use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::attachments::{relay, Relay};
+use super::calendar::day_href;
 
 use super::{
     agenda_cookie, date_only, family_context_choosing, family_context_for, forbidden_page,
@@ -804,6 +805,16 @@ pub(crate) fn initial_form(
     }
 }
 
+/// Where the sheet's cross leads: back to the day view of the day it was
+/// opened on from that view (#794), the agenda otherwise, as before.
+pub(crate) fn close_href(prefill: Option<Prefill>) -> String {
+    match prefill {
+        None => "/agenda".to_string(),
+        Some(Prefill::At(at)) => day_href(at.date()),
+        Some(Prefill::Day(day)) => day_href(day),
+    }
+}
+
 /// Where a created event sends the browser (#794): back to the day view of
 /// the day it starts on when the sheet was opened from it, the agenda
 /// otherwise, as before.
@@ -847,7 +858,8 @@ fn page<'a>(
     // the top, the same position the `view!`-based pages give it.
     //
     // The sheet of the mock-up (#525): the family over the title, the cross
-    // that closes it back to the agenda, then the fields in the order the
+    // that closes it back to the agenda — to the day it was opened on from
+    // the day view (#794) —, then the fields in the order the
     // mock-up asks them — title, when, how often, the reminder, who for.
     // What it does not draw (a task, a place, a description) follows. It is
     // still a page and a plain `POST`: without JavaScript nothing changes.
@@ -888,7 +900,12 @@ fn page<'a>(
         },
         location = html_escape(&form.location),
         description = html_escape(&form.description),
-        close = icon_link("btn secondary", "/agenda", "Fermer", Icon::Close),
+        close = icon_link(
+            "btn secondary",
+            &close_href(family.prefill),
+            "Fermer",
+            Icon::Close
+        ),
     );
     shell_with_header(Width::Form, "Nouvel événement", header, &body)
 }
@@ -2490,12 +2507,34 @@ mod tests {
         );
         let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
         assert!(e > s);
+        // From 02:00 too: an hour later reads 02:00 again, so Fin is 03:00
+        // by the clock — two hours elapsed, Début being the first 02:00.
+        let form = initial_form(Some(at("2026-10-25T02:00")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-10-25T02:00", "2026-10-25T03:00")
+        );
+        let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
+        assert_eq!(e - s, chrono::Duration::hours(2));
         // Each of these reads back an hour or more apart.
         for start in ["2026-10-25T01:30", "2026-10-25T02:00", "2026-03-29T01:30"] {
             let form = initial_form(Some(at(start)), now());
             let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
             assert!(e - s >= chrono::Duration::hours(1), "{start}");
         }
+    }
+
+    #[test]
+    fn the_cross_closes_back_to_the_day_the_sheet_was_opened_on() {
+        assert_eq!(close_href(None), "/agenda");
+        assert_eq!(
+            close_href(Some(at("2026-11-12T09:30"))),
+            "/agenda?view=day&date=2026-11-12"
+        );
+        assert_eq!(
+            close_href(Some(day("2026-11-12"))),
+            "/agenda?view=day&date=2026-11-12"
+        );
     }
 
     #[test]

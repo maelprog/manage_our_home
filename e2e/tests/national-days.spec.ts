@@ -6,7 +6,9 @@ import { fetchVerificationToken, seedSchoolHoliday } from "../lib/db";
 // holidays as a band named in words, and the zone and Alsace-Moselle in the
 // family settings. The Rust tests check the markup and the failing API;
 // only a browser says the line is on screen, and that a phone's list keeps
-// a day that carries nothing but a national day.
+// a day that carries nothing but a national day. Since #836 the month draws
+// them as ocre bars — a school holiday one bar per week it covers — and the
+// head line, the band and the phone's list are the week's.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -55,9 +57,24 @@ function dayCell(page: Page, date: string) {
     .filter({ has: page.locator(`.cal-day a[href="/agenda?view=day&date=${date}"]`) });
 }
 
-/** The head line of a day of the grid: its `.nat` paragraphs. */
+/** The head line of a day of the week's grid: its `.nat` paragraphs. */
 function nationalLine(page: Page, date: string) {
   return dayCell(page, date).locator(".nat");
+}
+
+/** The month's bars carrying `text` (#836): ocre, and not links. */
+function bars(page: Page, text: string) {
+  return page.locator(".month span.bar.gen", { hasText: text });
+}
+
+/** That `bar` starts on `date`'s column of the month and sits in its week. */
+async function startsOn(page: Page, bar: ReturnType<Page["locator"]>, date: string): Promise<void> {
+  const box = await bar.boundingBox();
+  const day = await page.locator(`.month a.day[href="/agenda?view=day&date=${date}"]`).boundingBox();
+  if (!box || !day) throw new Error(`no box for ${date}`);
+  expect(Math.abs(box.x - day.x), date).toBeLessThanOrEqual(6);
+  expect(box.y).toBeGreaterThan(day.y);
+  expect(box.y + box.height).toBeLessThanOrEqual(day.y + day.height);
 }
 
 test.describe("Agenda — jours nationaux (#565)", () => {
@@ -71,18 +88,18 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await page.goto("/agenda?view=month&date=2027-05-15");
     // Easter 2027 is 28 March: Ascension on 6 May. Pentecost is 16 May, so
     // Mother's Day stays on the last Sunday, the 30th.
-    await expect(nationalLine(page, "2027-05-06")).toHaveText("Ascension");
-    await expect(nationalLine(page, "2027-05-30")).toHaveText("Fête des mères");
-    // A head line, not an event: no link in it.
-    await expect(nationalLine(page, "2027-05-06").getByRole("link")).toHaveCount(0);
+    await startsOn(page, bars(page, "Ascension"), "2027-05-06");
+    await startsOn(page, bars(page, "Fête des mères"), "2027-05-30");
+    // An ocre bar, not an event: not a link.
     await expect(page.getByRole("link", { name: /Ascension/ })).toHaveCount(0);
 
     await page.goto("/agenda?view=month&date=2026-10-15");
-    await expect(nationalLine(page, "2026-10-25")).toHaveText("Passage à l'heure d'hiver");
+    await startsOn(page, bars(page, "Passage à l'heure d'hiver"), "2026-10-25");
 
-    // The week view is the same grid.
+    // The week view: a head line of its day.
     await page.goto("/agenda?view=week&date=2026-10-25");
     await expect(nationalLine(page, "2026-10-25")).toHaveText("Passage à l'heure d'hiver");
+    await expect(nationalLine(page, "2026-10-25").getByRole("link")).toHaveCount(0);
   });
 
   test("a phone's list keeps a day that carries only a national day", async ({ page }) => {
@@ -90,24 +107,29 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await registerAndLogin(page, "e2e-natphone", "Jours Téléphone");
     await createGroup(page, "Famille Liste");
 
+    // The month's grid draws it on its day, on a phone too (#836).
     await page.goto("/agenda?view=month&date=2026-10-15");
+    await startsOn(page, bars(page, "Passage à l'heure d'hiver"), "2026-10-25");
+
+    // The week's list keeps it: 19 to 25 October.
+    await page.goto("/agenda?view=week&date=2026-10-25");
     const entry = dayCell(page, "2026-10-25");
     await expect(entry).toBeVisible();
     await expect(entry).toContainText("Passage à l'heure d'hiver");
     // A day with nothing on it stays out of the list.
-    await expect(page.locator("table.cal td.cal-cell").filter({ hasText: /^\s*14\s*$/ })).toBeHidden();
+    await expect(dayCell(page, "2026-10-21")).toBeHidden();
     // The mini grid points at it, by name.
     const link = page
       .locator("table.mini")
       .getByRole("link", { name: "25 octobre, Passage à l'heure d'hiver" });
     await expect(link).toHaveAttribute("href", "/agenda?view=day&date=2026-10-25");
     // In bold, where an empty day, a link too, is not.
-    const empty = page.locator('table.mini a[href="/agenda?view=day&date=2026-10-14"]');
+    const empty = page.locator('table.mini a[href="/agenda?view=day&date=2026-10-21"]');
     const weight = (l: typeof link) => l.evaluate((e) => getComputedStyle(e).fontWeight);
     expect(await weight(link)).toBe("600");
     expect(await weight(empty)).toBe("400");
     // A list that shows a day is not empty: no « Rien de prévu » under it.
-    await expect(page.getByText("Rien de prévu ce mois-ci.")).toBeHidden();
+    await expect(page.getByText("Rien de prévu cette semaine.")).toBeHidden();
   });
 
   test("zone B set in the settings brings its Toussaint holidays to the agenda", async ({ page }) => {
@@ -127,7 +149,6 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     // No zone yet: no school holidays.
     await page.goto("/agenda?view=month&date=2026-10-15");
     await expect(page.getByText("Vacances de la Toussaint")).toHaveCount(0);
-    await expect(page.locator("table.cal td.hol")).toHaveCount(0);
 
     await openSettings(page, "Famille Vacances");
     const card = page.locator("section#calendrier");
@@ -139,24 +160,27 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await expect(card.getByRole("radio", { name: "Zone B" })).toBeChecked();
 
     await page.goto("/agenda?view=month&date=2026-10-15");
-    // Written on its first day and on each Monday it covers, and a band on
-    // all sixteen days, each named for a screen reader.
+    // One bar per week it covers (#836): Saturday 17 and Sunday 18, then
+    // the two weeks from Monday 19 to Sunday 1 November.
+    const holiday = bars(page, "Vacances de la Toussaint");
+    await expect(holiday).toHaveCount(3);
+    await startsOn(page, holiday.nth(0), "2026-10-17");
+    await startsOn(page, holiday.nth(1), "2026-10-19");
+    await startsOn(page, holiday.nth(2), "2026-10-26");
+
+    // The week of 12 October: written on its first day, a band on the days
+    // it covers, each named for a screen reader; 16 October is not one.
+    await page.goto("/agenda?view=week&date=2026-10-12");
     await expect(nationalLine(page, "2026-10-17")).toHaveText("Vacances de la Toussaint");
-    await expect(nationalLine(page, "2026-10-19")).toHaveText("Vacances de la Toussaint");
-    await expect(page.locator("table.cal td.hol")).toHaveCount(16);
-    await expect(dayCell(page, "2026-10-17")).toHaveClass(/\bhol\b/);
-    await expect(page.locator("table.cal td.hol").nth(4)).toContainText("Vacances de la Toussaint");
-    // The day after the holidays is not one.
-    const after = page.locator("table.cal td.cal-cell").nth(
-      // October 2026's grid opens on Monday 28 September: 2 November is
-      // the 36th day.
-      35,
-    );
-    await expect(after).not.toHaveClass(/\bhol\b/);
+    await expect(page.locator("table.cal td.hol")).toHaveCount(2);
+    await expect(dayCell(page, "2026-10-18")).toHaveClass(/\bhol\b/);
+    await expect(dayCell(page, "2026-10-18")).toContainText("Vacances de la Toussaint");
+    const before = dayCell(page, "2026-10-16");
+    await expect(before).not.toHaveClass(/\bhol\b/);
     // Forced colours drop the band's shadow: a top border stands in for it.
     await page.emulateMedia({ forcedColors: "active" });
     await expect(dayCell(page, "2026-10-17")).toHaveCSS("border-top-width", "4px");
-    await expect(after).not.toHaveCSS("border-top-width", "4px");
+    await expect(before).not.toHaveCSS("border-top-width", "4px");
     await page.emulateMedia({ forcedColors: "none" });
 
     // Alsace-Moselle adds Good Friday (26 March 2027).
@@ -167,9 +191,9 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await page.getByRole("button", { name: "Enregistrer le calendrier" }).click();
     await expect(page).toHaveURL(/\/settings\?notice=calendar_changed$/);
     await page.goto("/agenda?view=month&date=2027-03-15");
-    await expect(nationalLine(page, "2027-03-26")).toHaveText("Vendredi saint");
+    await startsOn(page, bars(page, "Vendredi saint"), "2027-03-26");
     // The zone was kept.
     await page.goto("/agenda?view=month&date=2026-10-15");
-    await expect(page.locator("table.cal td.hol")).toHaveCount(16);
+    await expect(bars(page, "Vacances de la Toussaint")).toHaveCount(3);
   });
 });

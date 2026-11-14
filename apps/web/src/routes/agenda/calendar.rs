@@ -6,11 +6,14 @@
 //! the 7-day view, `?view=day` to one day hour by hour (#793, `super::day`);
 //! `?date=YYYY-MM-DD` moves the focus.
 //!
-//! # One markup, two readings (#71)
+//! # The week: one markup, two readings (#71)
+//!
+//! The month is no longer drawn here: since #836 it is a grid of bars,
+//! read on a phone as on a PC (`super::month`). What follows is the week's.
 //!
 //! Seven columns on a 390px phone give ~50px a day, which no stylesheet
-//! rescues, so DESIGN.md → Layout asks for a day view below 861px. This
-//! route does **not** render one. It renders the grid, once, and
+//! rescues, so DESIGN.md → Layout asks for a day view below 861px. The
+//! week does **not** render one. It renders the grid, once, and
 //! `style.css`'s `@media not all and (min-width: 861px)` block re-reads
 //! those same cells as a list of the days that carry something.
 //!
@@ -44,9 +47,9 @@
 //! no inline style) *and* their initials, since WCAG 1.4.1 forbids the hue
 //! carrying the information alone.
 //!
-//! The month view caps a crowded day at `MONTH_CHIP_CAP` and counts the
-//! rest into a "+N autres" link to the day view of that day (#793; to the
-//! week view before), which lists everything.
+//! The week caps nothing: a row of seven cells has nothing under it to
+//! push out of view. A crowded day of the month counts what its bars do
+//! not show into a « +N » link to its day view (#836, `super::month`).
 //!
 //! # The mock-up's head and day panel (#525)
 //!
@@ -55,18 +58,19 @@
 //! the panel of the day in focus (`day_panel`, `.pc`): the day `?date=`
 //! names, today when it names none.
 //!
-//! # A phone's period at a glance (#675)
+//! # A phone's week at a glance (#675)
 //!
-//! The list of #71 shows only the days that carry something, so a month
-//! with nothing in it showed no date at all. A phone now gets, above the
-//! list, a mini grid of the same days (`render_mini`, `.phone`): their
+//! The list of #71 shows only the days that carry something, so a week
+//! with nothing in it showed no date at all. A phone gets, above the list,
+//! a mini grid of the same seven days (`render_mini`, `.phone`): their
 //! numbers under the weekdays' initials, each a link to its day view (#793;
 //! a day that carries something led to its entry in the list before),
 //! and an empty state when that list is
 //! empty (`empty_state`). It is a second markup, the trade #71 refused, and
 //! it does not undo that refusal: what #71 would not pay was a list growing
-//! with what the family has stored. The mini grid holds 42 days at most and
-//! counts occurrences without listing them.
+//! with what the family has stored. The mini grid holds seven days and
+//! counts occurrences without listing them. The month had both, list and
+//! mini grid, until its bars replaced them (#836).
 //!
 //! # The national days (#565)
 //!
@@ -128,6 +132,7 @@ use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::day;
+use super::month;
 use super::{
     agenda_cookie, fmt_paris, json_from_response, occurrences_from_response, paris_local_to_utc,
     private_mark, read_or_log, service_unavailable_page, today_paris, with_family, DISPLAY_TZ,
@@ -165,16 +170,14 @@ pub(crate) fn member_tint(user_id: uuid::Uuid) -> &'static str {
     MEMBER_TINTS[member_index(user_id)]
 }
 
-/// The most occurrences a month-grid cell lists before it stops listing and
-/// starts counting. A cell is 6.5rem tall (104px) and that is what three
-/// chips and a day number come to: 3 × (13px line + 2px padding × 2 + 2px
-/// margin) + a 14px line + the cell's own 4px padding ≈ 105px.
+/// The most chips a day of the home page's week lists before it stops
+/// listing and starts counting (`routes::home`). The name is the month
+/// grid's of #71, whose cells it capped at three until #836 drew the month
+/// in bars, which count by their own caps (`super::month`, `PHONE_BARS`
+/// and `PC_BARS`).
 ///
-/// The week view caps nothing — not because its cells are taller (since
-/// #71 they are the same cells) but because there is only one row of them,
-/// so a cell that grows past 6.5rem pushes nothing out of view. The month
-/// grid's "+N autres" sends the reader to the day view of that day (#793),
-/// which lists everything.
+/// The agenda's week caps nothing: there is only one row of cells, so a
+/// cell that grows pushes nothing out of view.
 pub(crate) const MONTH_CHIP_CAP: usize = 3;
 
 #[derive(serde::Deserialize)]
@@ -219,7 +222,7 @@ impl Period {
 const DAY_LOOKBACK: i64 = 7;
 
 /// The day view of `day`, where a day's number leads (#793).
-fn day_href(day: NaiveDate) -> String {
+pub(crate) fn day_href(day: NaiveDate) -> String {
     format!("/agenda?view=day&date={day}")
 }
 
@@ -414,10 +417,13 @@ struct View<'q> {
     period: Period,
     focus: NaiveDate,
     notice: Option<&'q str>,
+    /// The visitor: the month's bars are filled for what concerns them
+    /// (#836, `month::concerns`).
+    me: Uuid,
 }
 
 impl<'q> View<'q> {
-    fn of(query: &'q CalendarQuery) -> Self {
+    fn of(query: &'q CalendarQuery, me: Uuid) -> Self {
         Self {
             period: Period::of(query.view.as_deref()),
             focus: query
@@ -426,6 +432,7 @@ impl<'q> View<'q> {
                 .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
                 .unwrap_or_else(today_paris),
             notice: query.notice.as_deref(),
+            me,
         }
     }
 }
@@ -454,7 +461,7 @@ pub async fn get(
         &groups,
         active,
         requested.as_ref(),
-        &View::of(&query),
+        &View::of(&query, me.user_id),
     )
     .await
     else {
@@ -664,28 +671,35 @@ async fn body(
     };
 
     let today = today_paris();
-    // One grid for both views: the month shows six weeks of it, the week
-    // one. What differs is how many days it is handed, whether any of them
-    // is muted as belonging to another month, and whether a crowded cell
-    // may stop listing and start counting — a row of seven cells has
-    // nothing under it to push out of view, so the week caps nothing.
-    let is_week = period == Period::Week;
-    let (focus_month, cap) = if is_week {
-        (None, None)
+    let (grid_html, mini_html) = if period == Period::Week {
+        // The week: the grid of #71, one row of it, which a phone reads as
+        // a list headed by the mini grid of #675, then what the list says
+        // when it is empty. A row of seven cells has nothing under it to
+        // push out of view, so it caps nothing.
+        (
+            render_grid(&days, &cells, None, today, None, &title),
+            render_mini(&days, &by_day, None, today, &title, &marks)
+                + &empty_state(&days, &by_day, &marks, true, load_error),
+        )
     } else {
-        (Some(focus.month()), Some(MONTH_CHIP_CAP))
+        // The month (#836): one grid of bars, read on a phone as on a PC.
+        let items = month::items(&occurrences, &national);
+        let viewer = month::Viewer {
+            me: view.me,
+            members: &members,
+            families: &families,
+        };
+        (
+            month::month_html(&days, &items, focus.month(), today, &title, &viewer),
+            String::new(),
+        )
     };
-    let grid_html = render_grid(&days, &cells, focus_month, today, cap, &title);
     let panel_html = day_panel(
         focus,
         by_day.get(&focus).map(|v| v.as_slice()).unwrap_or(&[]),
         &members,
         &families,
     );
-    // The head of a phone's list (#675): the period at a glance, then what
-    // the list says when it is empty.
-    let mini_html = render_mini(&days, &by_day, focus_month, today, &title, &marks)
-        + &empty_state(&days, &by_day, &marks, is_week, load_error);
 
     let body = view! {
         <div inner_html=nav_html></div>
@@ -1166,7 +1180,7 @@ pub(crate) fn render_chips(
 // -- the national days (#565) -------------------------------------------
 
 /// The `kind` of a school holiday period (apps/api, `SCHOOL_HOLIDAY`).
-const SCHOOL_HOLIDAY: &str = "school_holiday";
+pub(crate) const SCHOOL_HOLIDAY: &str = "school_holiday";
 
 /// What a day of the grid carries besides the family's events (#565):
 /// the labels of its one-day national days — public holiday, clock change,
@@ -1959,6 +1973,7 @@ mod tests {
             None => panic!(),
         },
         notice: None,
+        me: Uuid::nil(),
     };
 
     /// The acceptance criterion of #622: one family failing at apps/api,
@@ -2020,6 +2035,7 @@ mod tests {
             None => panic!(),
         },
         notice: None,
+        me: Uuid::nil(),
     };
 
     /// The day view (#793) of two families, one of them failing: the
