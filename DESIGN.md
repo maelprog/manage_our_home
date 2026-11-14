@@ -584,8 +584,9 @@ montrait que ses heures avant. Le lien garde le tout dans son nom. Des
   comme Google), est un lien (`.slots`) vers
   `/agenda/new?debut=AAAA-MM-JJTHH:MM` — Début à ce créneau, Fin une heure
   plus tard en temps écoulé (01:30 finit à 03:30 la nuit où l'on avance
-  l'heure ; la nuit où on la recule, 02:30 finit à 03:30, l'heure d'après
-  se lisant 02:30 à nouveau). Les liens couvrent toute la largeur, la
+  l'heure). La nuit où on la recule, une heure plus tard se lirait la même
+  heure à l'horloge : 02:00 finit à 03:00 et 02:30 à 03:30, soit deux heures
+  écoulées, Début étant le premier 02:00 ou 02:30. Les liens couvrent toute la largeur, la
   colonne des heures comprise, sous les blocs : une demi-heure occupée
   reste cliquable par son heure. La sélection des familles de la vue
   (`?familles=`) suit, donc la famille où l'on crée et le choix « Famille »
@@ -598,9 +599,10 @@ montrait que ses heures avant. Le lien garde le tout dans son nom. Des
   chaque événement du jour avant le premier créneau, au lieu de traverser
   48 liens pour arriver au premier événement — et sans `tabindex` ni
   script. Le lecteur d'écran les trouve nommés, après les événements, dans
-  l'ordre des heures. Le jour où l'on recule l'heure, les deux 02:30
-  portent le même nom et ouvrent la même heure, la première : un champ
-  `datetime-local` ne dit pas de quel 02:30 il s'agit. La croix « Fermer » de la feuille ouverte depuis un créneau ou le
+  l'ordre des heures. Le jour où l'on recule l'heure, les deux 02:00 et les
+  deux 02:30 portent chacun le même nom et ouvrent la même heure, la
+  première : un champ `datetime-local` ne dit pas de quel 02:00 ou 02:30 il
+  s'agit. La croix « Fermer » de la feuille ouverte depuis un créneau ou le
   bandeau ramène à la vue jour de ce jour (#836), et à `/agenda` sinon.
 
 Ce qu'elle concède :

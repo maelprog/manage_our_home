@@ -2507,6 +2507,15 @@ mod tests {
         );
         let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
         assert!(e > s);
+        // From 02:00 too: an hour later reads 02:00 again, so Fin is 03:00
+        // by the clock — two hours elapsed, Début being the first 02:00.
+        let form = initial_form(Some(at("2026-10-25T02:00")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-10-25T02:00", "2026-10-25T03:00")
+        );
+        let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
+        assert_eq!(e - s, chrono::Duration::hours(2));
         // Each of these reads back an hour or more apart.
         for start in ["2026-10-25T01:30", "2026-10-25T02:00", "2026-03-29T01:30"] {
             let form = initial_form(Some(at(start)), now());
