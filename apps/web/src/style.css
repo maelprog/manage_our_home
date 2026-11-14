@@ -857,11 +857,6 @@ progress::-moz-progress-bar { background: currentColor; }
 .allday { position: relative; display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s3); padding: var(--s2x); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
 .ad { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); min-height: var(--s8); margin: 0; padding: var(--s1) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); }
 :is(.ad, .bar).gen { border-color: var(--warning); background: var(--warning-soft); }
-/* A line is 32px, as the mock-up draws it; its link's target is 44px
-   (#838), 6px more above and below, a box drawn by nothing. Two links in
-   a row stand 12px apart, so that neither box covers the other's line. */
-a.ad::before { content: ""; position: absolute; inset: calc(-1 * (var(--s1) + var(--s2))) 0; }
-a.ad + a.ad { margin-top: var(--s2x); }
 /* The hours, a row per hour, 56px tall: a scroller
    that opens on 08:00 (`#h8`) without a script where the browser knows
    `scroll-initial-target`, through `enhance.js` elsewhere. The table's own
@@ -869,9 +864,7 @@ a.ad + a.ad { margin-top: var(--s2x); }
    and its line of the hour stay under the phone's tab bar. */
 .hours-scroll { position: relative; isolation: isolate; max-height: 70vh; overflow: hidden auto; border-top: 1px solid var(--line); background: var(--surface); }
 #h8 { scroll-initial-target: nearest; }
-/* Cut at midnight, below: the target of a short block late in the day
-   (`.blk::before`) would otherwise lengthen the scroller. */
-.hours { table-layout: fixed; overflow: visible clip; background:repeating-linear-gradient(var(--line) 0 1px, transparent 1px calc(var(--s12) + var(--s2x))); }
+.hours { table-layout: fixed; background: repeating-linear-gradient(var(--line) 0 1px, transparent 1px calc(var(--s12) + var(--s2x))); }
 .hours tr { height: calc(var(--s12) + var(--s2x)); }
 .hours th, .hours td { position: relative; padding: 0; border: 0; vertical-align: top; }
 .hours th { width: var(--s12); padding-right: var(--s2x); text-align: right; font-size: var(--t-xs); font-weight: 400; font-variant-numeric: tabular-nums; }
@@ -891,16 +884,8 @@ a.ad + a.ad { margin-top: var(--s2x); }
    would cut them in two. Too narrow for both its hours and that room — a
    column of three or four at 390px —, it drops its hours rather than its
    title (#836): its place in the hours says when, nothing else says what.
-   Cut at an edge of the day, that edge is flat and dashed.
-   Its target is 44px tall at least (#838): a block shorter than that —
-   one of half an hour is 26px — reaches down by a box drawn by nothing
-   (`::before`), never up. A block that starts later comes later in the
-   document (`day::hours_html`), and so lies over that box: it covers no
-   part of another block. What would show past the block's edge is cut
-   by its `clip-path`, which, unlike `overflow`, lets that box out: 44px
-   down, and 4px around for the focus ring. */
-.blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; clip-path: inset(calc(-1 * var(--s1)) calc(-1 * var(--s1)) min(calc(-1 * var(--s1)), 100% - var(--s12) + var(--s1))); padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
-.blk::before { content: ""; position: absolute; top: 0; right: 0; left: 0; height: max(100%, var(--s12) - var(--s1)); }
+   Cut at an edge of the day, that edge is flat and dashed. */
+.blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
 .blk > *, .sub > * { overflow: hidden; text-overflow: ellipsis; }
 .blk:not(.short) > * { width: 100%; }
 /* One line, as tall as an avatar or as its text, whichever is taller. */
@@ -912,9 +897,7 @@ a.ad + a.ad { margin-top: var(--s2x); }
 .blk .swatch { margin-right: var(--s1); vertical-align: middle; }
 /* Beside the hours, the family takes what is left, 4em at least. */
 .sub .fam { flex: 1 1 0; min-width: 4em; }
-/* What wraps goes a gap of its height plus 24px away: past the box of
-   the target above, where the `clip-path` cuts it. */
-.blk.short { container-type: inline-size; flex-flow: row wrap; align-items: center; gap: calc(100% + var(--s6)) var(--s1); }
+.blk.short { container-type: inline-size; flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
 .blk.short strong { flex: 1 1 0; min-width: 2.5em; max-width: max-content; }
 .blk.short .t { order: -1; }
 @container (width < 9em) { .blk.short .t { display: none; } }
