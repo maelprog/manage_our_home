@@ -856,6 +856,233 @@ async fn adding_the_missing_ingredients_is_idempotent(db: PgPool) {
     assert_eq!(again[0]["name"], "Lait");
 }
 
+/// A grocery line: name, quantity, unit, source and last update.
+type Line = (
+    String,
+    Option<f64>,
+    Option<String>,
+    String,
+    chrono::DateTime<chrono::Utc>,
+);
+
+/// The unchecked grocery lines, by name.
+async fn unchecked_lines(db: &PgPool) -> Vec<Line> {
+    sqlx::query_as(
+        "SELECT name, quantity, unit, source, updated_at FROM grocery_items \
+         WHERE checked = false ORDER BY name",
+    )
+    .fetch_all(db)
+    .await
+    .unwrap()
+}
+
+/// What `unchecked_lines` says, without the last update.
+fn counted(lines: &[Line]) -> Vec<(&str, Option<f64>, Option<&str>, &str)> {
+    lines
+        .iter()
+        .map(|(n, q, u, s, _)| (n.as_str(), *q, u.as_deref(), s.as_str()))
+        .collect()
+}
+
+/// Issue #842: a recipe planned after its ingredient is already on the list
+/// raises the recipe line of the same unit to what both recipes call for;
+/// a line in another unit and a manual line stay as they are, and
+/// generating again changes nothing.
+#[sqlx::test]
+async fn generate_raises_a_recipe_line_to_what_the_planned_recipes_need(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-raise@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/grocery-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Sucre", "quantity": 100.0, "unit": "g"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let a = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Crepes",
+            "ingredients": [
+                {"name": "Farine", "quantity": 200.0, "unit": "g"},
+                {"name": "Beurre", "quantity": 1.0, "unit": "kg"}
+            ]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &a, None).await;
+    assert_eq!(generate(&router, &cookie, &group_id).await.len(), 2);
+
+    let b = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Gateau",
+            "ingredients": [
+                {"name": "farine", "quantity": 300.0, "unit": "g"},
+                {"name": "Beurre", "quantity": 300.0, "unit": "g"},
+                {"name": "Sucre", "quantity": 50.0, "unit": "g"}
+            ]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &b, None).await;
+    assert!(generate(&router, &cookie, &group_id).await.is_empty());
+    let lines = unchecked_lines(&db).await;
+    assert_eq!(
+        counted(&lines),
+        vec![
+            ("Beurre", Some(1.0), Some("kg"), "recipe"),
+            ("Farine", Some(500.0), Some("g"), "recipe"),
+            ("Sucre", Some(100.0), Some("g"), "manual"),
+        ]
+    );
+
+    // Generated again: no line changes, not even its last update.
+    assert!(generate(&router, &cookie, &group_id).await.is_empty());
+    assert_eq!(unchecked_lines(&db).await, lines);
+}
+
+/// Issue #842: adding a planned recipe's missing ingredients raises the
+/// line another planned recipe put on the list by what this one lacks, as
+/// the generation does; replaying changes nothing.
+#[sqlx::test]
+async fn adding_the_missing_ingredients_raises_a_recipe_line(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-missing-raise@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let a = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Crepes",
+            "ingredients": [{"name": "Farine", "quantity": 200.0, "unit": "g"}]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &a, None).await;
+    assert_eq!(generate(&router, &cookie, &group_id).await.len(), 1);
+    let b = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Gateau",
+            "ingredients": [
+                {"name": "Farine", "quantity": 300.0, "unit": "g"},
+                {"name": "Oeufs", "quantity": 2.0}
+            ]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &b, None).await;
+
+    let path = format!("/groups/{group_id}/recipes/{b}/selection/missing");
+    let res = call(&router, Method::POST, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    let created = json_body(res).await["items"].as_array().unwrap().clone();
+    assert_eq!(created.len(), 1, "{created:?}");
+    assert_eq!(created[0]["name"], "Oeufs");
+    let lines = unchecked_lines(&db).await;
+    assert_eq!(
+        counted(&lines),
+        vec![
+            ("Farine", Some(500.0), Some("g"), "recipe"),
+            ("Oeufs", Some(2.0), Some("unité"), "recipe"),
+        ]
+    );
+
+    // Replayed, for either recipe, or generated: nothing changes.
+    for path in [
+        path.clone(),
+        format!("/groups/{group_id}/recipes/{a}/selection/missing"),
+    ] {
+        let res = call(&router, Method::POST, &path, Some(&cookie), None).await;
+        assert_status(&res, StatusCode::CREATED);
+        assert!(json_body(res).await["items"].as_array().unwrap().is_empty());
+    }
+    assert!(generate(&router, &cookie, &group_id).await.is_empty());
+    assert_eq!(unchecked_lines(&db).await, lines);
+}
+
+/// Issue #842: what another planned recipe lacks of an ingredient only
+/// weighs against a recipe line already on the list. A line created by
+/// adding one recipe's missing ingredients carries that recipe's quantity.
+#[sqlx::test]
+async fn adding_the_missing_ingredients_creates_the_recipe_own_quantity(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-missing-own@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let a = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Crepes",
+            "ingredients": [{"name": "Farine", "quantity": 200.0, "unit": "g"}]
+        }),
+    )
+    .await;
+    let b = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Gateau",
+            "ingredients": [{"name": "Farine", "quantity": 300.0, "unit": "g"}]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &a, None).await;
+    select(&router, &cookie, &group_id, &b, None).await;
+
+    let path = format!("/groups/{group_id}/recipes/{a}/selection/missing");
+    let res = call(&router, Method::POST, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    let created = json_body(res).await["items"].as_array().unwrap().clone();
+    assert_eq!(created.len(), 1, "{created:?}");
+    assert_eq!(created[0]["quantity"], 200.0);
+    assert_eq!(
+        counted(&unchecked_lines(&db).await),
+        vec![("Farine", Some(200.0), Some("g"), "recipe")]
+    );
+
+    // B's missing ingredients then raise that line by B's share.
+    let path = format!("/groups/{group_id}/recipes/{b}/selection/missing");
+    let res = call(&router, Method::POST, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    assert!(json_body(res).await["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        counted(&unchecked_lines(&db).await),
+        vec![("Farine", Some(500.0), Some("g"), "recipe")]
+    );
+}
+
 /// Issue #559: adding the missing ingredients needs a `planned` selection of
 /// the recipe in the group named by the path: another group's selection, a
 /// recipe not planned, or a selection already done is 404, and nothing is

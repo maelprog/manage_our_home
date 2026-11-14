@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE grocery_items SET quantity = $3, updated_at = now() WHERE id = $1 AND group_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "86e65dc15a97b952bdfea5a338212448634058b3de46444312353d4e8910bc96"
+}
