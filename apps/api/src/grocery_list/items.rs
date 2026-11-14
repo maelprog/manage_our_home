@@ -12,7 +12,8 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::can_modify;
 use crate::grocery_list::planned::{
-    count_against_list, plan_lines, with_other_planned, ListChange, ListedLine, PlannedIngredient,
+    count_against_list, count_missing_against_list, plan_lines, ListChange, ListedLine,
+    PlannedIngredient,
 };
 use crate::groups::require_role;
 use crate::notifications::center;
@@ -563,8 +564,8 @@ pub async fn generate_grocery_items(
 /// `POST /groups/:id/recipes/:recipe_id/selection/missing` (#559): adds to
 /// the grocery list what the stock lacks of the recipe's `planned`
 /// selection (`recipes::availability::missing`), one item per element,
-/// with the quantity lacking and the recipe in `source_recipe_id`. A name
-/// already on the list unchecked is not added again, as for
+/// with what this recipe lacks of it and the recipe in `source_recipe_id`.
+/// A name already on the list unchecked is not added again, as for
 /// `generate_grocery_items`, but a recipe line of it is raised as there to
 /// what the planned recipes lack of it together (`add_missing_lines`), so
 /// replaying changes nothing. 404 without a
@@ -613,7 +614,8 @@ pub async fn add_missing_grocery_items(
 /// (`planned::count_against_list`, #842), against what every planned
 /// recipe lacks of it, each weighed alone against the stock
 /// (`planned::with_other_planned`): the line another recipe put there is
-/// raised by this recipe's share. Shared by `add_missing_grocery_items` and
+/// raised by this recipe's share. A line created carries only what this
+/// recipe lacks (`planned::count_missing_against_list`). Shared by `add_missing_grocery_items` and
 /// the replacement of a selection (#815).
 pub(crate) async fn add_missing_lines(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -625,9 +627,9 @@ pub(crate) async fn add_missing_lines(
         .await?
         .into_iter()
         .flat_map(|a| a.missing);
-    let needs = with_other_planned(recipe_id, missing);
     let listed = listed_lines(tx, group_id).await?;
-    apply_list_changes(tx, group_id, user_id, count_against_list(needs, &listed)).await
+    let changes = count_missing_against_list(recipe_id, missing, &listed);
+    apply_list_changes(tx, group_id, user_id, changes).await
 }
 
 /// The unchecked lines of the group's grocery list, oldest first.

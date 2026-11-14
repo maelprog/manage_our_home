@@ -1024,6 +1024,65 @@ async fn adding_the_missing_ingredients_raises_a_recipe_line(db: PgPool) {
     assert_eq!(unchecked_lines(&db).await, lines);
 }
 
+/// Issue #842: what another planned recipe lacks of an ingredient only
+/// weighs against a recipe line already on the list. A line created by
+/// adding one recipe's missing ingredients carries that recipe's quantity.
+#[sqlx::test]
+async fn adding_the_missing_ingredients_creates_the_recipe_own_quantity(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-missing-own@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let a = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Crepes",
+            "ingredients": [{"name": "Farine", "quantity": 200.0, "unit": "g"}]
+        }),
+    )
+    .await;
+    let b = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Gateau",
+            "ingredients": [{"name": "Farine", "quantity": 300.0, "unit": "g"}]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &a, None).await;
+    select(&router, &cookie, &group_id, &b, None).await;
+
+    let path = format!("/groups/{group_id}/recipes/{a}/selection/missing");
+    let res = call(&router, Method::POST, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    let created = json_body(res).await["items"].as_array().unwrap().clone();
+    assert_eq!(created.len(), 1, "{created:?}");
+    assert_eq!(created[0]["quantity"], 200.0);
+    assert_eq!(
+        counted(&unchecked_lines(&db).await),
+        vec![("Farine", Some(200.0), Some("g"), "recipe")]
+    );
+
+    // B's missing ingredients then raise that line by B's share.
+    let path = format!("/groups/{group_id}/recipes/{b}/selection/missing");
+    let res = call(&router, Method::POST, &path, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::CREATED);
+    assert!(json_body(res).await["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        counted(&unchecked_lines(&db).await),
+        vec![("Farine", Some(500.0), Some("g"), "recipe")]
+    );
+}
+
 /// Issue #559: adding the missing ingredients needs a `planned` selection of
 /// the recipe in the group named by the path: another group's selection, a
 /// recipe not planned, or a selection already done is 404, and nothing is

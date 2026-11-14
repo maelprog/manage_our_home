@@ -212,6 +212,39 @@ pub(crate) fn with_other_planned(
     }))
 }
 
+/// What adding `recipe_id`'s missing ingredients does to the list (#842):
+/// a recipe line already there is counted against what every planned
+/// recipe lacks of its name (`with_other_planned`), but a line created
+/// carries only what `recipe_id` lacks.
+pub(crate) fn count_missing_against_list(
+    recipe_id: Uuid,
+    missing: impl IntoIterator<Item = PlannedLine>,
+    listed: &[ListedLine],
+) -> Vec<ListChange> {
+    let missing: Vec<PlannedLine> = missing.into_iter().collect();
+    let own = with_other_planned(
+        recipe_id,
+        missing.iter().filter(|l| l.recipe_id == recipe_id).cloned(),
+    );
+    count_against_list(with_other_planned(recipe_id, missing), listed)
+        .into_iter()
+        .map(|change| match change {
+            // `with_other_planned` keeps one line per name of the recipe's
+            // own lines, so the need always has its own counterpart.
+            ListChange::Add(need) => {
+                let key = need.name.trim().to_lowercase();
+                ListChange::Add(
+                    own.iter()
+                        .find(|l| l.name.trim().to_lowercase() == key)
+                        .cloned()
+                        .unwrap_or(need),
+                )
+            }
+            raise => raise,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,6 +608,39 @@ mod tests {
                 line(2, "Oeufs", Some(2.0), Some("pièce")),
             ]
         );
+    }
+
+    // -- count_missing_against_list (#842) -----------------------------------
+
+    #[test]
+    fn a_missing_line_is_created_with_the_recipe_own_quantity() {
+        // A lacks 200 g, B 300 g; nothing on the list yet.
+        let changes = count_missing_against_list(
+            Uuid::from_u128(1),
+            [
+                line(1, "Farine", Some(200.0), Some("g")),
+                line(2, "Farine", Some(300.0), Some("g")),
+            ],
+            &[],
+        );
+        assert_eq!(
+            changes,
+            vec![ListChange::Add(line(1, "Farine", Some(200.0), Some("g")))]
+        );
+    }
+
+    #[test]
+    fn a_listed_recipe_line_counts_against_every_planned_recipe() {
+        // A's 200 g already listed; adding B's missing raises it to 500 g.
+        let changes = count_missing_against_list(
+            Uuid::from_u128(2),
+            [
+                line(1, "Farine", Some(200.0), Some("g")),
+                line(2, "Farine", Some(300.0), Some("g")),
+            ],
+            &[listed(9, "Farine", Some(200.0), Some("g"), "recipe")],
+        );
+        assert_eq!(changes, vec![raise(9, 500.0)]);
     }
 
     #[test]
