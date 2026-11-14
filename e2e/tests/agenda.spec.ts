@@ -1128,6 +1128,19 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
       await within(1, "2027-03-15", "2027-03-16");
       await expect(day(page, "2027-03-15")).toHaveAccessibleName("lundi 15 mars, 1 événement, 1 qui te concerne");
 
+      // On a PC, the week's number on its Monday keeps to its own width:
+      // its pastille does not cover the Monday's number, which is seen and
+      // reached.
+      if (viewport.width >= 861) {
+        const number = day(page, "2027-03-15").locator("span");
+        const week = page.locator('.month .wk:has(a.day[href="/agenda?view=day&date=2027-03-15"]) .wn');
+        await expect(week).toHaveText("S11");
+        const [n, w] = [await number.boundingBox(), await week.boundingBox()];
+        if (!n || !w) throw new Error("a box is missing");
+        expect(w.x + w.width, "S11 ends before 15").toBeLessThan(n.x);
+        await number.click({ trial: true });
+      }
+
       // Dark, from the device: the ocre's own ground, and nothing wider
       // than the screen in either theme.
       for (const scheme of ["light", "dark"] as const) {

@@ -826,7 +826,7 @@ progress::-moz-progress-bar { background: currentColor; }
 .day:focus-visible { outline-offset: -2px; }
 /* The week's number, on a PC: over its Monday, which the pointer reaches,
    on a pastille of the page's ground. */
-.wn { grid-row: 1; align-self: center; margin-left: var(--s2x); padding: 0 var(--s1); border-radius: var(--s1); background: var(--bg); color: var(--muted); font-size: var(--t-xs); pointer-events: none; }
+.wn { grid-row: 1; justify-self: start; align-self: center; margin-left: var(--s2x); padding: 0 var(--s1); border-radius: var(--s1); background: var(--bg); color: var(--muted); font-size: var(--t-xs); pointer-events: none; }
 /* A bar: one line, cut by an ellipsis; its ground, edge and outline are
    the chips' (above). In a view of several families, its family's colour
    is its edge, as on a chip (#622). Bars and « +N » sit over the days,

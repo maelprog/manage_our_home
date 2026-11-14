@@ -121,8 +121,10 @@ interface Box {
  *   (`.slots a`, #794) is 28px tall, half a row of 56px, and the selector
  *   above does not take it either;
  * - the month's bars and « +N » (#836, `.bar`, `.plus`), drawn at the
- *   mock-up's size: one line of a title, 19px tall on a phone and 25px on a
- *   PC — the day they sit on, a link to its day view, is measured.
+ *   mock-up's size: one line of a title, 19px tall on a phone and 24px on a
+ *   PC (26px outlined, and in a row holding an outlined one); « +N » 20px
+ *   on a phone, 24px on a PC — the day they sit on, a link to its day view,
+ *   is measured.
  */
 async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
