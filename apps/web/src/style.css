@@ -858,8 +858,10 @@ progress::-moz-progress-bar { background: currentColor; }
    the hours first: what does not fit beside the title wraps to a next line
    as far below. Its title keeps room for its lock and an ellipsis, or a
    letter and one, else wraps away with what follows it: a narrower box
-   would cut them in two. Cut at an edge of the day, that edge is flat and
-   dashed. */
+   would cut them in two. Too narrow for both its hours and that room — a
+   column of three or four at 390px —, it drops its hours rather than its
+   title (#836): its place in the hours says when, nothing else says what.
+   Cut at an edge of the day, that edge is flat and dashed. */
 .blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
 .blk > *, .sub > * { overflow: hidden; text-overflow: ellipsis; }
 .blk:not(.short) > * { width: 100%; }
@@ -872,14 +874,18 @@ progress::-moz-progress-bar { background: currentColor; }
 .blk .swatch { margin-right: var(--s1); vertical-align: middle; }
 /* Beside the hours, the family takes what is left, 4em at least. */
 .sub .fam { flex: 1 1 0; min-width: 4em; }
-.blk.short { flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
+.blk.short { container-type: inline-size; flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
 .blk.short strong { flex: 1 1 0; min-width: 2.5em; max-width: max-content; }
 .blk.short .t { order: -1; }
+@container (width < 9em) { .blk.short .t { display: none; } }
 .cut-s { border-top: var(--s2) dashed; border-top-left-radius: 0; border-top-right-radius: 0; }
 .cut-e { border-bottom: var(--s2) dashed; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 /* The current time across its hour, to the quarter, drawn when the page
-   is: from the hour's name to the scroller's edge, which clips it. */
+   is: from the hour's name to the scroller's edge, which clips it, a dot
+   at its head as the mock-up draws it (#836), centred on the line: a
+   border, which forced colours repaint rather than drop. */
 .now { position: absolute; z-index: 2; top: 0; left: 100%; width: 100vw; border-top: var(--s2) solid var(--accent); }
+.now::before { content: ""; position: absolute; top: calc(var(--s2) / -2); left: 0; border: var(--s1) solid var(--accent); border-radius: 50%; translate: -50% -50%; }
 .now.q1 { top: 25%; }
 .now.q2 { top: 50%; }
 .now.q3 { top: 75%; }

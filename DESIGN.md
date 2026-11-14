@@ -548,7 +548,11 @@ rechargement (`routes/agenda/day.rs`) :
   (« 13:00–… »). Dans une colonne étroite (à 390 px, trois ou quatre blocs
   côte à côte), un bloc de moins d'une heure peut ne garder que son titre
   et ses heures, voire que ses heures, quand un bloc de 62 minutes ou plus
-  garde sa famille sur la troisième ligne, abrégée au besoin. Le lien garde le tout dans son nom. Des
+  garde sa famille sur la troisième ligne, abrégée au besoin. Un bloc court
+(`.short`) trop étroit pour son titre et ses heures — moins de 9em, à 390 px
+quand trois ou quatre se chevauchent — garde son titre et laisse ses heures
+(#836) : sa place dans les heures dit quand, rien d'autre ne dit quoi ; il ne
+montrait que ses heures avant. Le lien garde le tout dans son nom. Des
   blocs qui se chevauchent se rangent côte à côte, chacun dans la première colonne libre
   puis étendu à droite sur les colonnes que rien ne lui dispute ; un bloc
   seul prend toute la largeur. Un événement commencé la veille ou fini le
@@ -567,7 +571,8 @@ rechargement (`routes/agenda/day.rs`) :
   reste à un défilement.
 - **L'heure courante**, le jour même : un trait `--accent` sur son heure, au
   quart près, posé au rendu (`.now`), au-dessus des blocs, « Il est 14:20 »
-  en `.sr-only`.
+  en `.sr-only` ; en tête du trait, la pastille de la maquette, `--s2x` de
+  diamètre, centrée sur lui (#836).
 - Aucun événement horaire : « Rien de prévu à l'heure ce jour-là. » à 8 h —
   pas quand les événements n'ont pas pu être lus.
 - **Accès** : chaque jour de la grille du mois, toute sa case (#836), le
@@ -894,7 +899,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.allday`, `.ad` (+ `.gen`) | le bandeau « Journée » de la vue jour (#793) : une carte à plat (`--surface`, filet `--line`) titrée `h2.eyebrow`, une ligne `.ad` par jour national, vacances scolaires ou événement d'un jour ou plus — le fond et le liseré `--s1` d'une pastille, la teinte du membre (`.m1`…`.m8`, et son liseré) sur un événement d'un jour, l'ocre des jours générés (`.gen` : liseré `--warning` sur `--warning-soft`, texte `--fg`) sur un jour national et un événement de plusieurs jours, initiales gardées. Un événement est un lien vers sa fiche, un jour national un `<p>`. Voir [vue jour](#lagenda-sur-téléphone--vue-jour) |
 | `.hours-scroll`, `.hours` | les heures de la vue jour (#793) : un défileur d'au plus 70 % de la fenêtre, ouvert sur 08:00 (`#h8`, `scroll-initial-target`), qui tient une table `role="presentation"` d'une ligne par heure écoulée (23, 24 ou 25), 56 px chacune, chaque heure nommée dans sa première colonne en `--muted` à `--t-xs`, un filet `--line` par heure tiré du fond de la table |
 | `.blk` (+ `.short`, `.mid`, `.cut-s`, `.cut-e`), `.sub`, `.fam` | un événement horaire de la vue jour (#793) : un lien en `position: absolute` dans la cellule de l'heure où il commence, placé à la minute par son `style` inline (`top`, `bottom`, `left`, `right` en % de l'heure et de la largeur, `day::inset`), aussi haut qu'il dure (30 min au moins) et débordant sur les heures suivantes ; les blocs qui se chevauchent se partagent la largeur en colonnes (`day::lanes`). Fond et liseré `--s1` de son membre (la teinte d'une pastille). Ses lignes : le titre, coupé par des points de suspension ; les heures (« 10:00–11:30 ») et les initiales (`.sub`) ; `.fam` — pastille et nom de la famille — dans une vue de plusieurs familles. Une ligne qui ne tient pas sous les autres passe dans une colonne hors de vue (`flex-flow: column wrap`, un écart de la largeur du bloc), un élément de `.sub` qui ne tient pas à une ligne hors de vue : rien n'est coupé par le bord, ce qui ne tient pas est retiré. `.short` : sous trois quarts d'heure, une ligne, l'heure d'abord. `.mid` : sous l'heure, la famille dans `.sub`, à côté des heures, 4em au moins. `.cut-s`/`.cut-e` : coupé au bord du jour, ce bord plat et tireté. Une tâche faite est `.done`, sans teinte |
-| `.now` (+ `.q1`…`.q3`) | l'heure courante dans la vue jour d'aujourd'hui (#793) : un trait `--accent` de `--s2` sur son heure, au quart près, posé au rendu, « Il est 14:20 » en `.sr-only` |
+| `.now` (+ `.q1`…`.q3`) | l'heure courante dans la vue jour d'aujourd'hui (#793) : un trait `--accent` de `--s2` sur son heure, au quart près, posé au rendu, « Il est 14:20 » en `.sr-only` ; en tête, une pastille `--accent` de `--s2x` centrée sur le trait (#836), une bordure, que les couleurs forcées repeignent |
 | `.slots`, `.slot` | créer depuis la vue jour (#794) : `.slots`, après la table des heures, un lien par demi-heure (28 px, la moitié d'une ligne) sur toute la largeur des heures, leurs noms compris, sous les blocs ; `.slot`, un lien sous les entrées du bandeau « Journée », sur toute sa surface. Rien n'est dessiné au repos ; au survol, un filet `--border` intérieur ; au focus clavier, l'anneau des liens, ramené dans la boîte (le défileur rognerait son débord). Le nom est en `.sr-only` : « Créer un événement le jeudi 12 novembre à 09:30 », « Créer un événement sur la journée du jeudi 12 novembre » |
 | `.sheet` | le formulaire d'un nouvel événement en feuille (#525) : la famille en `.eyebrow` au-dessus du titre, une croix « Fermer » vers l'agenda, puis les champs dans l'ordre de la maquette — titre, horaires, récurrence, rappel, membres —, ce qu'elle ne dessine pas ensuite. Une `.card` ; sur téléphone, bord à bord et arrondie en haut. Les fieldsets qu'elle contient y perdent leur carte. Depuis #527, la même feuille porte l'ajout d'un article du stock — la famille en `.eyebrow` (« Dans le stock de … »), la croix vers `/stocks` — et la reprise d'une photo de code illisible |
 | `.picks`, `.pick` | « Assigné à » en pastilles (#525) : la case, l'initiale du membre, son nom ; une case cochée prend `--accent-soft` et une bordure `--accent`. La case reste dessinée et reste le contrôle, le nom reste son libellé |
