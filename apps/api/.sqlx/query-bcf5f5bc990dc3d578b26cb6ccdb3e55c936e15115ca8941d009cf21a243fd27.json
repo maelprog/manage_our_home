@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT group_has_anonymous_allergy($1) AS \"anonymous!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "anonymous!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bcf5f5bc990dc3d578b26cb6ccdb3e55c936e15115ca8941d009cf21a243fd27"
+}

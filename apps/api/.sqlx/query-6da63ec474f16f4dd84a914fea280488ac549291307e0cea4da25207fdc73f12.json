@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings, duration_minutes)\n        VALUES ($1, $2, $3, $4, $5, $6, $7)\n        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at\n        ",
+  "query": "\n        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,17 @@
       },
       {
         "ordinal": 8,
+        "name": "required_equipment",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "required_equipment"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -116,13 +127,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Uuid",
-        "Text",
-        "Text",
-        "Text",
-        "Int4",
-        "Int4"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -135,8 +140,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "c384af2aa4cbd42349d03273ca9add5ee7925b03461744ee9ad29f69e79fc7a0"
+  "hash": "6da63ec474f16f4dd84a914fea280488ac549291307e0cea4da25207fdc73f12"
 }

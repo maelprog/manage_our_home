@@ -44,6 +44,8 @@ pub struct ExportCategories {
     pub audit_log: Vec<Value>,
     pub push_subscriptions: Vec<Value>,
     pub notifications: Vec<Value>,
+    pub allergies: Vec<Value>,
+    pub dislikes: Vec<Value>,
 }
 
 /// Assembles the final export document from already-fetched, already-user-
@@ -79,6 +81,8 @@ pub fn build_export(profile: Value, categories: ExportCategories) -> Value {
         "audit_log": categories.audit_log,
         "push_subscriptions": categories.push_subscriptions,
         "notifications": categories.notifications,
+        "allergies": categories.allergies,
+        "dislikes": categories.dislikes,
     })
 }
 
@@ -196,6 +200,8 @@ mod tests {
                 audit_log: vec![json!({"id": "al"})],
                 push_subscriptions: vec![json!({"id": "ps"})],
                 notifications: vec![json!({"id": "no"})],
+                allergies: vec![json!({"id": "al2"})],
+                dislikes: vec![json!({"id": "di"})],
             },
         );
 
@@ -228,18 +234,20 @@ mod tests {
             ("audit_log", "al"),
             ("push_subscriptions", "ps"),
             ("notifications", "no"),
+            ("allergies", "al2"),
+            ("dislikes", "di"),
         ] {
             assert_eq!(doc[key][0]["id"], id, "{key}");
         }
-        // The profile and the 27 categories, nothing else.
-        assert_eq!(doc.as_object().unwrap().len(), 28);
+        // The profile and the 29 categories, nothing else.
+        assert_eq!(doc.as_object().unwrap().len(), 30);
     }
 
     #[test]
     fn build_export_keeps_every_key_when_empty() {
         let doc = build_export(json!({"id": "u1"}), ExportCategories::default());
         let object = doc.as_object().unwrap();
-        assert_eq!(object.len(), 28);
+        assert_eq!(object.len(), 30);
         for (key, value) in object {
             if key != "profile" {
                 assert_eq!(value.as_array().map(Vec::len), Some(0), "{key}");

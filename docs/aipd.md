@@ -8,7 +8,8 @@ transferts mis à jour le 2026-10-04 (Scaleway remplace Mailjet, #328) ;
 état de TLS mis à jour le 2026-10-05 (#327) ; responsable désigné par un
 pseudonyme le 2026-10-09 (#379) ; mesure 5 (chiffrement du volume)
 retenue le 2026-10-10 (#380) ; photo de profil prise en compte le
-2026-10-23 (#467).
+2026-10-23 (#467) ; allergies alimentaires d'un membre prises en compte le
+2026-11-14 (#817).
 
 **Statut : projet.** L'analyse est rédigée ; la conclusion (dernière
 section) est une **proposition**, qui ne vaut décision qu'une fois relue et
@@ -25,7 +26,7 @@ traitement qui en réunit au moins deux requiert en principe une AIPD.
 | Évaluation ou notation | non | Les suggestions de recettes sont un tri par règles sur le contenu du groupe (`apps/api/src/recipes/suggestions.rs`), pas une évaluation de personnes |
 | Décision automatique avec effet juridique | non | Aucune |
 | Surveillance systématique | non | Aucune journalisation des connexions, aucune géolocalisation |
-| Données sensibles ou à caractère hautement personnel | **oui** | Aucun champ ne les nomme, mais le texte libre (`events.title`, `events.description`, `messages.content`, recettes, liste de courses) et les pièces jointes (PNG, JPEG, WebP, **PDF**, vidéo MP4 et WebM, 20 Mio au plus ; pour une image, le serveur garde en plus une miniature dérivée, un JPEG de 400 px au plus sur son grand côté, #774) en recevront : un rendez-vous médical, une ordonnance, un régime révélant une conviction. La messagerie est une correspondance privée. La photo de profil (#467) est la photo d'une personne, parfois d'un mineur : elle n'est pas une donnée biométrique au sens de l'art. 4(14) — aucun traitement technique n'en tire de quoi identifier quelqu'un —, mais elle révèle un visage, et parfois un lieu ou une appartenance. Le serveur n'en garde qu'un carré de 256 px ré-encodé, sans métadonnées (ni position GPS, ni date, ni appareil), servi au titulaire et aux membres d'un groupe commun seulement |
+| Données sensibles ou à caractère hautement personnel | **oui** | Un champ en nomme une depuis #817 : les allergies alimentaires d'un membre (`user_allergies`), donnée de santé, saisies par le membre lui-même sur son consentement explicite (section 4, « Allergies alimentaires »). Le texte libre (`events.title`, `events.description`, `messages.content`, recettes, liste de courses) et les pièces jointes (PNG, JPEG, WebP, **PDF**, vidéo MP4 et WebM, 20 Mio au plus ; pour une image, le serveur garde en plus une miniature dérivée, un JPEG de 400 px au plus sur son grand côté, #774) en recevront : un rendez-vous médical, une ordonnance, un régime révélant une conviction. La messagerie est une correspondance privée. La photo de profil (#467) est la photo d'une personne, parfois d'un mineur : elle n'est pas une donnée biométrique au sens de l'art. 4(14) — aucun traitement technique n'en tire de quoi identifier quelqu'un —, mais elle révèle un visage, et parfois un lieu ou une appartenance. Le serveur n'en garde qu'un carré de 256 px ré-encodé, sans métadonnées (ni position GPS, ni date, ni appareil), servi au titulaire et aux membres d'un groupe commun seulement |
 | Collecte à grande échelle | pas aujourd'hui | Cible de premier déploiement : 10 à 15 familles (`docs/v2-deployment.md`). Le critère se réévalue si le service est ouvert largement |
 | Croisement de données | non | Seul l'import iCal fait entrer des données d'ailleurs, à l'initiative d'un membre, sans croisement |
 | Personnes vulnérables | **oui** | Des mineurs de 15 à 17 ans peuvent ouvrir un compte (arbitrage du 2026-09-19, #137), et le contenu d'un foyer parle d'enfants plus jeunes |
@@ -53,8 +54,9 @@ données. Il n'est pas requis (art. 37(1)) : le responsable n'est pas un
 organisme public, ses activités de base ne consistent ni en un suivi
 régulier et systématique des personnes à grande échelle, ni en un
 traitement **à grande échelle** de catégories particulières de données —
-celles qui arrivent ici le font par la bande, pas comme objet du service,
-et le service n'est pas à grande échelle (section 1).
+celles qui arrivent ici le font par la bande, sauf les allergies
+alimentaires (#817), que le membre déclare de lui-même pour adapter les
+recettes, et le service n'est pas à grande échelle (section 1).
 
 **Les supports.**
 - Le service, prévu sur un VPS loué à un hébergeur tiers, sous-traitant
@@ -77,8 +79,8 @@ et le service n'est pas à grande échelle (section 1).
 | Principe | Où il est tenu | Ce qui reste ouvert |
 |---|---|---|
 | Finalités déterminées | Une par catégorie, registre | — |
-| Bases légales | Registre ; exécution du contrat pour l'essentiel | — |
-| Minimisation | Pas de date de naissance (déclaration d'âge seule), pas de téléphone, pas d'adresse, pas d'IP ni d'user-agent en base ; photo de profil facultative, réduite à 256 px et privée de ses métadonnées avant d'être stockée (#467) | — |
+| Bases légales | Registre ; exécution du contrat pour l'essentiel ; consentement explicite pour les allergies (art. 9(2)(a)), retirable par « tout effacer » (#817) | — |
+| Minimisation | Une allergie n'est qu'une catégorie d'aliment, sans gravité ni texte libre, partagée famille par famille au choix du membre, `private` par défaut (#817) ; pas de date de naissance (déclaration d'âge seule), pas de téléphone, pas d'adresse, pas d'IP ni d'user-agent en base ; photo de profil facultative, réduite à 256 px et privée de ses métadonnées avant d'être stockée (#467) | — |
 | Durées de conservation | Purge du compte, purge horaire de conservation (#138, #139, #256) | — |
 | Information | `docs/privacy-policy.md`, notice de l'art. 14 dans l'email d'invitation | Pseudonyme et contact du responsable encore à renseigner (`docs/v2-deployment.md` #16) ; un pseudonyme plutôt que le nom civil, risque résiduel au regard de l'art. 13(1)(a) décrit au registre, à valider (#379) |
 | Droits d'accès et de portabilité | `GET /account/export` | — |
@@ -141,6 +143,42 @@ l'art. 15 et 20 en remet un, présigné et valable 5 minutes (#467).
   secrets ne passent pas encore par Sealed Secrets (#15).
 
 **Vraisemblance : limitée**, une fois TLS en place ; **importante** sans lui.
+
+### Allergies alimentaires (#817)
+
+**Impacts.** Révélation d'une donnée de santé d'un membre à sa famille ou
+à un tiers. **Gravité : importante.**
+
+**Mesures existantes.** L'allergie appartient au membre, pas à une
+famille : ses lignes (`user_allergies`, `allergy_sharing`,
+`user_dislikes`) sont sous une politique RLS forcée qui ne laisse lire et
+écrire que leur titulaire, quel que soit son rôle dans une famille
+(migration 0057). Ce qu'un autre membre en apprend passe par trois
+fonctions de la base, recalculées à chaque lecture, sans copie : rien pour
+`private` (le défaut), un booléen « au moins un membre est allergique »
+pour `anonymous`, le nom et la catégorie pour `public` ; elles ne
+répondent qu'à un membre de la famille, pour cette famille. La catégorie
+d'une allergie anonyme ne sert qu'au calcul du serveur et n'est jamais
+renvoyée. Ni le journal d'audit, ni les journaux techniques, ni une
+notification ne portent une allergie ou un niveau de partage ; la
+catégorie passe dans le corps des requêtes, jamais dans une adresse
+qu'un journal d'accès garderait. Quitter une famille supprime les niveaux
+de partage qui y étaient posés ; « tout effacer », la purge du compte et
+l'export (art. 15, 20) couvrent ces tables.
+
+**Ce qui reste exposé.**
+- **Inférence dans une famille de deux membres** : l'indication anonyme
+  « un membre est allergique » désigne l'autre membre à celui qui sait ne
+  pas l'être.
+- **Inférence par les propositions** : une recette écartée des
+  propositions de la famille pour une allergie anonyme (#818) laisse
+  deviner la catégorie d'aliment, par élimination, à qui compare les
+  recettes proposées et celles qui ne le sont pas.
+- Comme le reste des données, les allergies ne sont pas chiffrées au
+  repos par l'application, et le responsable, qui a accès au serveur, peut
+  les lire.
+
+**Vraisemblance : limitée.**
 
 ### Modification non désirée des données
 

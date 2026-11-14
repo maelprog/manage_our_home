@@ -1115,6 +1115,9 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("audit_log", "audit_log"),
         ("push_subscriptions", "push_subscriptions"),
         ("notifications", "notifications"),
+        ("user_allergies", "allergies"),
+        ("allergy_sharing", "allergies"),
+        ("user_dislikes", "dislikes"),
     ];
     const LEFT_OUT: &[(&str, &str)] = &[
         (
@@ -1165,6 +1168,10 @@ async fn export_accounts_for_every_table(db: PgPool) {
             "the expiry recap's bookkeeping (#700): which family item a recap announced to the \
              account, for which date; the recaps themselves are exported to their recipient \
              (notifications), the items with the family's stock",
+        ),
+        (
+            "group_equipment",
+            "the household's kitchen equipment (#817): equipment codes of a family, no account",
         ),
         (
             "off_products",
@@ -1245,6 +1252,12 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
         ("audit_log", "actor_user_id"),
         ("push_subscriptions", "user_id"),
         ("notifications", "user_id"),
+        // #817: the member's own food constraints, under `app.user_id`.
+        ("user_allergies", "user_id"),
+        ("user_dislikes", "user_id"),
+        // Its key is onto the membership (`group_members`), which deletes
+        // it when the membership ends; read with the allergies.
+        ("allergy_sharing", "user_id"),
     ];
     const LEFT_OUT: &[(&str, &str, &str)] = &[
         (

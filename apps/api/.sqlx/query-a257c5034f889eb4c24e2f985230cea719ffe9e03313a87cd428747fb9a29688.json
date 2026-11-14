@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.tag, a.created_at,\n                  COALESCE(jsonb_agg(jsonb_build_object('group_id', s.group_id, 'share', s.share)\n                                     ORDER BY s.group_id)\n                           FILTER (WHERE s.group_id IS NOT NULL), '[]') AS \"sharing!\"\n           FROM user_allergies a\n           LEFT JOIN allergy_sharing s ON s.user_id = a.user_id AND s.tag = a.tag\n           WHERE a.user_id = $1\n           GROUP BY a.tag, a.created_at\n           ORDER BY a.created_at, a.tag",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_allergies",
+            "name": "tag"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_allergies",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sharing!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "a257c5034f889eb4c24e2f985230cea719ffe9e03313a87cd428747fb9a29688"
+}

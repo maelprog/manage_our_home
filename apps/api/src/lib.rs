@@ -247,6 +247,28 @@ pub fn build_router(state: AppState) -> Router {
         .route("/account/delete", post(auth::delete_account))
         .route("/account/delete/cancel", post(auth::cancel_delete_account))
         .route("/account/export", get(rgpd::export_account))
+        // #817: the caller's food constraints. Tags travel in the bodies,
+        // never in a path, which access logs keep.
+        .route(
+            "/me/allergies",
+            get(recipes::constraints::list_allergies)
+                .post(recipes::constraints::add_allergy)
+                .delete(recipes::constraints::remove_allergy),
+        )
+        .route(
+            "/me/allergies/sharing",
+            put(recipes::constraints::set_allergy_sharing),
+        )
+        .route(
+            "/me/dislikes",
+            get(recipes::constraints::list_dislikes)
+                .post(recipes::constraints::add_dislike)
+                .delete(recipes::constraints::remove_dislike),
+        )
+        .route(
+            "/me/dietary-constraints",
+            delete(recipes::constraints::erase_constraints),
+        )
         .route(
             "/me/avatar",
             // The body limit on `PUT` only: `MethodRouter::layer` applies to
@@ -408,6 +430,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/groups/{id}/recipes",
             post(recipes::crud::create_recipe).get(recipes::crud::list_recipes),
+        )
+        .route(
+            "/groups/{id}/allergies",
+            get(recipes::constraints::group_allergies),
+        )
+        .route(
+            "/groups/{id}/equipment",
+            get(recipes::constraints::get_equipment).put(recipes::constraints::put_equipment),
         )
         .route(
             "/groups/{id}/recipes/import",

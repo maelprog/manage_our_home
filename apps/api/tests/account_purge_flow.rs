@@ -142,6 +142,22 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
     .execute(db)
     .await
     .unwrap();
+    // Food constraints (#817): an allergy, its level in the family, a
+    // dislike.
+    for sql in [
+        "INSERT INTO user_allergies (user_id, tag) VALUES ($1, 'en:peanuts')",
+        "INSERT INTO allergy_sharing (user_id, tag, group_id, share)
+         VALUES ($1, 'en:peanuts', $2, 'public')",
+        "INSERT INTO user_dislikes (user_id, tag) VALUES ($1, 'en:mushrooms')",
+    ] {
+        let query = sqlx::query(sql).bind(user);
+        let query = if sql.contains("$2") {
+            query.bind(group)
+        } else {
+            query
+        };
+        query.execute(db).await.unwrap();
+    }
     // A notification received (#534), and one caused: its text names the
     // account, so it goes too — from the centre of an account nobody purges.
     let reader = insert_user(db, &format!("lecteur-{tag}@example.test"), None).await;
@@ -219,6 +235,18 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
             "notifications caused",
             "SELECT count(*) FROM notifications WHERE actor_id = $1",
         ),
+        (
+            "user_allergies",
+            "SELECT count(*) FROM user_allergies WHERE user_id = $1",
+        ),
+        (
+            "allergy_sharing",
+            "SELECT count(*) FROM allergy_sharing WHERE user_id = $1",
+        ),
+        (
+            "user_dislikes",
+            "SELECT count(*) FROM user_dislikes WHERE user_id = $1",
+        ),
     ] {
         let n: i64 = sqlx::query_scalar(sql)
             .bind(user)
@@ -246,6 +274,9 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "stock_expiry_announcements",
         "notifications",
         "notifications caused",
+        "user_allergies",
+        "allergy_sharing",
+        "user_dislikes",
     ]
     .into_iter()
     .map(|t| (t, n))

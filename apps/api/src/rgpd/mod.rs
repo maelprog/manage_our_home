@@ -348,7 +348,8 @@ pub async fn export_account(
         }));
 
         let recipe_rows = sqlx::query!(
-            r#"SELECT id, group_id, name, instructions, source_url, servings, duration_minutes, created_at
+            r#"SELECT id, group_id, name, instructions, source_url, servings, duration_minutes,
+                      required_equipment, created_at
                FROM recipes WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -373,7 +374,7 @@ pub async fn export_account(
                     "id": r.id, "group_id": r.group_id, "name": r.name,
                     "instructions": r.instructions, "source_url": r.source_url,
                     "servings": r.servings, "duration_minutes": r.duration_minutes,
-                    "created_at": r.created_at,
+                    "required_equipment": r.required_equipment, "created_at": r.created_at,
                 })
             })
             .collect();
@@ -727,6 +728,41 @@ pub async fn export_account(
                 "body": n.body, "read_at": n.read_at, "created_at": n.created_at,
             })
         })
+        .collect();
+
+    // The food constraints (#817): the caller's allergies, each with the
+    // levels set for it, and dislikes. Under the holder policies of 0057,
+    // hence `app.user_id`, and filtered on the caller a second time.
+    let mut constraints_tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    let allergies = sqlx::query!(
+        r#"SELECT a.tag, a.created_at,
+                  COALESCE(jsonb_agg(jsonb_build_object('group_id', s.group_id, 'share', s.share)
+                                     ORDER BY s.group_id)
+                           FILTER (WHERE s.group_id IS NOT NULL), '[]') AS "sharing!"
+           FROM user_allergies a
+           LEFT JOIN allergy_sharing s ON s.user_id = a.user_id AND s.tag = a.tag
+           WHERE a.user_id = $1
+           GROUP BY a.tag, a.created_at
+           ORDER BY a.created_at, a.tag"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *constraints_tx)
+    .await?;
+    let dislikes = sqlx::query!(
+        r#"SELECT tag, created_at FROM user_dislikes WHERE user_id = $1
+           ORDER BY created_at, tag"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *constraints_tx)
+    .await?;
+    constraints_tx.commit().await?;
+    c.allergies = allergies
+        .into_iter()
+        .map(|a| json!({"tag": a.tag, "created_at": a.created_at, "sharing": a.sharing}))
+        .collect();
+    c.dislikes = dislikes
+        .into_iter()
+        .map(|d| json!({"tag": d.tag, "created_at": d.created_at}))
         .collect();
 
     let doc = export::build_export(profile_json, c);
