@@ -133,7 +133,7 @@ use super::{
     private_mark, read_or_log, service_unavailable_page, today_paris, with_family, DISPLAY_TZ,
 };
 
-const FR_MONTHS: [&str; 12] = [
+pub(crate) const FR_MONTHS: [&str; 12] = [
     "janvier",
     "février",
     "mars",
@@ -148,7 +148,7 @@ const FR_MONTHS: [&str; 12] = [
     "décembre",
 ];
 pub(crate) const FR_WEEKDAYS: [&str; 7] = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
-const FR_LONG_WEEKDAYS: [&str; 7] = [
+pub(crate) const FR_LONG_WEEKDAYS: [&str; 7] = [
     "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche",
 ];
 
@@ -590,7 +590,8 @@ async fn body(
     // The page's `<h1>` and the grid's `<caption>` (#145) say the same
     // thing, so they are computed once.
     let title = view_title(period, focus);
-    let nav_html = render_nav(period, focus, &title, &families_query(&carried))
+    let kept = families_query(&carried);
+    let nav_html = render_nav(period, focus, &title, &kept)
         + &family_selector(groups, &shown, active.group_id, period, focus);
     // One family's events that could not be read: the generic notice of
     // #455. Several families shown: the one that is missing, by name.
@@ -629,7 +630,7 @@ async fn body(
                     .collect()
             })
             .unwrap_or_default();
-        let day_html = day::banner_html(focus, &banner, &national, &members, &families)
+        let day_html = day::banner_html(focus, &banner, &national, &members, &families, &kept)
             + &day::hours_html(
                 focus,
                 &blocks,
@@ -637,6 +638,7 @@ async fn body(
                 &families,
                 Some(chrono::Utc::now()),
                 !load_error,
+                &kept,
             );
         let body = view! {
             <div inner_html=nav_html></div>

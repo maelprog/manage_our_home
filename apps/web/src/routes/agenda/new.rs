@@ -4,7 +4,9 @@
 //! pre-validated (`validate_event_form`) with an inline error and no API
 //! round-trip; the backend's matching 400s (`ends_at_before_starts_at`,
 //! `invalid_rrule`) are mapped defensively. 403 (non-member) → forbidden
-//! page. Success (201) → PRG `/agenda?notice=event_created`.
+//! page. Success (201) → PRG `/agenda?notice=event_created`, or, for a
+//! sheet opened on a half hour or a day of the day view (`?debut=`,
+//! `?jour=`, #794), the day view of the day the event starts on.
 //!
 //! The sheet can carry one attachment (#525), so it is sent as
 //! `multipart/form-data`; a plain form post is still read. The file is
@@ -43,7 +45,7 @@ use super::attachments::{relay, Relay};
 
 use super::{
     agenda_cookie, date_only, family_context_choosing, family_context_for, forbidden_page,
-    form_bounds, to_datetime_local, with_family, EventFamily,
+    form_bounds, paris_local_to_utc, to_datetime_local, with_family, EventFamily,
 };
 
 /// Reminder offset presets exposed by the "Rappel" select — key → minutes
@@ -123,9 +125,15 @@ pub(crate) fn form_body(pairs: &[(String, String)]) -> String {
 /// A file apps/api did not keep sends it to the event's page, where it can
 /// be sent again, under the reason it was refused.
 /// The event's page is the one of the family it was created in (#622).
-pub(crate) fn after_attachment(event_id: Uuid, relay: Relay, family: Option<Uuid>) -> String {
+/// A file kept ends where any creation does, `created` (`created_redirect`).
+pub(crate) fn after_attachment(
+    event_id: Uuid,
+    relay: Relay,
+    family: Option<Uuid>,
+    created: &str,
+) -> String {
     match relay {
-        Relay::Created => "/agenda?notice=event_created".to_string(),
+        Relay::Created => created.to_string(),
         Relay::Rejected(code) => with_family(&format!("/agenda/{event_id}?error={code}"), family),
         Relay::NotFound | Relay::Unavailable | Relay::TimedOut | Relay::Failed => {
             with_family(&format!("/agenda/{event_id}?error=upload_failed"), family)
@@ -142,6 +150,9 @@ pub(crate) struct SheetFamily<'a> {
     /// The « Famille » choice (`family_choice`), empty when the agenda
     /// shows one family.
     choice: String,
+    /// The half hour or the day it was opened on from the day view (#794):
+    /// the form posts with it, to come back to that day.
+    prefill: Option<Prefill>,
 }
 
 /// A family named, the active one, with no choice.
@@ -151,6 +162,7 @@ impl<'a> From<&'a str> for SheetFamily<'a> {
             name,
             carried: None,
             choice: String::new(),
+            prefill: None,
         }
     }
 }
@@ -179,6 +191,7 @@ pub(crate) fn family_choice(
     shown: &[&GroupSummary],
     chosen: Uuid,
     active: Option<&GroupSummary>,
+    prefill: Option<Prefill>,
 ) -> String {
     if shown.len() < 2 {
         return String::new();
@@ -194,7 +207,7 @@ pub(crate) fn family_choice(
             };
             format!(
                 r#"<a href="{href}" data-accent="{accent}"{current}>{name}</a>"#,
-                href = with_family("/agenda/new", carried),
+                href = with_family(&sheet_url(prefill), carried),
                 accent = accent_of(g).as_str(),
                 name = html_escape(&g.name),
             )
@@ -702,6 +715,111 @@ fn blank_form(starts_at: String, ends_at: String) -> EventForm {
     }
 }
 
+/// The query key of a sheet opened on a half hour of the day view (#794),
+/// its Paris wall clock: `?debut=2026-11-12T09:30`.
+pub(crate) const START_PARAM: &str = "debut";
+
+/// The query key of a sheet opened on the « Journée » banner of the day
+/// view (#794): `?jour=2026-11-12`.
+pub(crate) const DAY_PARAM: &str = "jour";
+
+/// What a sheet opened from the day view starts from (#794).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Prefill {
+    /// A half hour of the hours: a timed event starting then.
+    At(chrono::NaiveDateTime),
+    /// The « Journée » banner: an event of that whole day.
+    Day(NaiveDate),
+}
+
+impl Prefill {
+    /// The query pair that opens the sheet on it.
+    pub(crate) fn query(self) -> String {
+        match self {
+            Prefill::At(at) => format!("{START_PARAM}={}", at.format("%Y-%m-%dT%H:%M")),
+            Prefill::Day(day) => format!("{DAY_PARAM}={}", day.format("%Y-%m-%d")),
+        }
+    }
+}
+
+/// What the sheet's query asks it to start from (#794): `debut`, a Paris
+/// wall clock to the minute that exists, else `jour`, a date. Anything
+/// else — absent, unreadable, an hour the clocks skip — is `None`, and the
+/// sheet opens as it always has.
+pub(crate) fn prefill_param(query: Option<&str>) -> Option<Prefill> {
+    let pairs: Vec<(String, String)> = serde_urlencoded::from_str(query?).ok()?;
+    let value = |key: &str| {
+        pairs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    };
+    let at = value(START_PARAM)
+        .and_then(|v| chrono::NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M").ok())
+        .filter(|at| paris_local_to_utc(&at.format("%Y-%m-%dT%H:%M").to_string()).is_some());
+    match at {
+        Some(at) => Some(Prefill::At(at)),
+        None => value(DAY_PARAM).and_then(date_only).map(Prefill::Day),
+    }
+}
+
+/// `/agenda/new`, opened on `prefill` when there is one: the « Famille »
+/// choice and the form's action keep it, so that neither loses the hour.
+pub(crate) fn sheet_url(prefill: Option<Prefill>) -> String {
+    match prefill {
+        Some(p) => format!("/agenda/new?{}", p.query()),
+        None => "/agenda/new".to_string(),
+    }
+}
+
+/// The form a sheet opens with (#794). From a half hour, Début is that
+/// time and Fin an hour after it, by elapsed time: across the night the
+/// clocks go forward, 01:30 ends at 03:30. When they go back, the hour
+/// after 02:30 is read as 02:30 again, which `form_bounds` would read back
+/// as the same instant: Fin is then 03:30 by the clock. From the banner,
+/// the box is ticked and Début and Fin are that day. Without either, the
+/// defaults it always had: now, and an hour later.
+pub(crate) fn initial_form(
+    prefill: Option<Prefill>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> EventForm {
+    let hour = chrono::Duration::hours(1);
+    match prefill {
+        None => blank_form(to_datetime_local(now), to_datetime_local(now + hour)),
+        Some(Prefill::Day(day)) => {
+            let day = day.format("%Y-%m-%d").to_string();
+            EventForm {
+                all_day: Some("on".to_string()),
+                ..blank_form(day.clone(), day)
+            }
+        }
+        Some(Prefill::At(at)) => {
+            let starts = at.format("%Y-%m-%dT%H:%M").to_string();
+            let ends = paris_local_to_utc(&starts)
+                .map(|s| to_datetime_local(s + hour))
+                .filter(|ends| *ends > starts)
+                .unwrap_or_else(|| (at + hour).format("%Y-%m-%dT%H:%M").to_string());
+            blank_form(starts, ends)
+        }
+    }
+}
+
+/// Where a created event sends the browser (#794): back to the day view of
+/// the day it starts on when the sheet was opened from it, the agenda
+/// otherwise, as before.
+pub(crate) fn created_redirect(
+    prefill: Option<Prefill>,
+    starts_at: chrono::DateTime<chrono::Utc>,
+) -> String {
+    match prefill {
+        None => "/agenda?notice=event_created".to_string(),
+        Some(_) => format!(
+            "/agenda?view=day&date={}&notice=event_created",
+            starts_at.with_timezone(&super::DISPLAY_TZ).date_naive()
+        ),
+    }
+}
+
 /// The sheet, filled with `form`: the defaults of a fresh create, or what
 /// was submitted when it comes back under an error (#696) — every field but
 /// the file, which a browser cannot be handed back.
@@ -761,7 +879,7 @@ fn page<'a>(
 </section>"#,
         name = html_escape(family.name),
         choice = family.choice,
-        action = with_family("/agenda/new", family.carried),
+        action = with_family(&sheet_url(family.prefill), family.carried),
         title = html_escape(&form.title),
         task = if form.is_task.is_some() {
             " checked"
@@ -787,6 +905,8 @@ pub async fn get(
 ) -> Response {
     let selection =
         selection_from_query(raw_query.as_deref()).or_else(|| selection_from_headers(&headers));
+    // A half hour or a day of the day view (#794), else now for an hour.
+    let prefill = prefill_param(raw_query.as_deref());
     let Some((fam, groups)) =
         family_context_choosing(&state, &headers, &me, "/agenda/new", |groups, active| {
             let shown = resolve_selection(groups, active, selection.as_ref());
@@ -801,12 +921,9 @@ pub async fn get(
     let sheet_family = SheetFamily {
         name: &fam.name,
         carried: fam.carried,
-        choice: family_choice(&shown, fam.gid, active),
+        choice: family_choice(&shown, fam.gid, active, prefill),
+        prefill,
     };
-    // Default to the next round hour, one-hour duration, in Paris.
-    let now = chrono::Utc::now();
-    let start = to_datetime_local(now);
-    let end = to_datetime_local(now + chrono::Duration::hours(1));
     let cookie = agenda_cookie(&headers);
     let members = fetch_group_detail(&state, cookie.as_deref(), fam.gid)
         .await
@@ -822,7 +939,7 @@ pub async fn get(
         &fam.header,
         sheet_family,
         None,
-        &blank_form(start, end),
+        &initial_form(prefill, chrono::Utc::now()),
         &members,
         &[],
         &push,
@@ -854,6 +971,7 @@ pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
     EventFamily(requested): EventFamily,
+    RawQuery(raw_query): RawQuery,
     request: axum::extract::Request,
 ) -> Response {
     let Some(kind) = create_body_kind(&headers) else {
@@ -865,6 +983,9 @@ pub async fn post(
     else {
         return Redirect::to("/groups/new").into_response();
     };
+    // The sheet opened on a half hour or a day of the day view (#794) posts
+    // with it, and goes back to that view once the event exists.
+    let prefill = prefill_param(raw_query.as_deref());
     // The sheet coming back under an error posts in the same family. The
     // choice is not offered again: changing family would drop what was
     // typed, and the family stays named over the title.
@@ -872,6 +993,7 @@ pub async fn post(
         name: &fam.name,
         carried: fam.carried,
         choice: String::new(),
+        prefill,
     };
 
     // The file is held in memory whole, through the read and the relay,
@@ -911,15 +1033,11 @@ pub async fn post(
                         .map(|g| g.members)
                         .unwrap_or_default();
                     let push = reminder_push_block(&state, cookie.as_deref()).await;
-                    let now = chrono::Utc::now();
                     return Html(page(
                         &fam.header,
                         sheet(),
                         Some(error_message("upload_failed")),
-                        &blank_form(
-                            to_datetime_local(now),
-                            to_datetime_local(now + chrono::Duration::hours(1)),
-                        ),
+                        &initial_form(prefill, chrono::Utc::now()),
                         &members,
                         &[],
                         &push,
@@ -946,7 +1064,6 @@ pub async fn post(
     // "La fin doit être après le début." for a body that simply had no
     // `starts_at` at all (#98 verification, round 2).
     let Ok(form) = serde_urlencoded::from_bytes::<EventForm>(&raw_body) else {
-        let now = chrono::Utc::now();
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(page(
@@ -955,10 +1072,7 @@ pub async fn post(
                 Some(error_message("invalid_form")),
                 &EventForm {
                     is_private: raw_is_private(&raw).then(String::new),
-                    ..blank_form(
-                        to_datetime_local(now),
-                        to_datetime_local(now + chrono::Duration::hours(1)),
-                    )
+                    ..initial_form(prefill, chrono::Utc::now())
                 },
                 &members,
                 &assignee_ids,
@@ -1033,6 +1147,7 @@ pub async fn post(
 
     match result {
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
+            let created = created_redirect(prefill, starts_at);
             let event = serde_json::from_value::<EventResponse>(resp.body).ok();
             // Fire the optional reminder against the freshly created event.
             if let Some(event) = &event {
@@ -1066,10 +1181,10 @@ pub async fn post(
                     bytes,
                 )
                 .await;
-                return Redirect::to(&after_attachment(event.id, relayed, fam.carried))
+                return Redirect::to(&after_attachment(event.id, relayed, fam.carried, &created))
                     .into_response();
             }
-            Redirect::to("/agenda?notice=event_created").into_response()
+            Redirect::to(&created).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
             render_error("ends_before_starts")
@@ -1154,6 +1269,7 @@ async fn read_multipart<S: Send + Sync>(
 mod tests {
     use super::*;
     use axum::http::header::CONTENT_TYPE;
+    use chrono::TimeZone;
 
     fn headers_with(content_type: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -1930,11 +2046,19 @@ mod tests {
         assert_eq!(assignee_ids_from_raw_form(&body), vec![a, b]);
     }
 
+    const CREATED: &str = "/agenda?notice=event_created";
+
     #[test]
     fn a_stored_attachment_ends_on_the_agenda_like_any_creation() {
         assert_eq!(
-            after_attachment(Uuid::from_u128(7), Relay::Created, None),
+            after_attachment(Uuid::from_u128(7), Relay::Created, None, CREATED),
             "/agenda?notice=event_created"
+        );
+        // From the day view, back to the day it starts on (#794).
+        let day = "/agenda?view=day&date=2026-11-12&notice=event_created";
+        assert_eq!(
+            after_attachment(Uuid::from_u128(7), Relay::Created, None, day),
+            day
         );
     }
 
@@ -1944,7 +2068,7 @@ mod tests {
     fn a_refused_attachment_ends_on_the_event_with_its_reason() {
         let id = Uuid::from_u128(7);
         assert_eq!(
-            after_attachment(id, Relay::Rejected("file_too_large"), None),
+            after_attachment(id, Relay::Rejected("file_too_large"), None, CREATED),
             format!("/agenda/{id}?error=file_too_large")
         );
     }
@@ -1959,7 +2083,7 @@ mod tests {
             Relay::Failed,
         ] {
             assert_eq!(
-                after_attachment(id, relay, None),
+                after_attachment(id, relay, None, CREATED),
                 format!("/agenda/{id}?error=upload_failed"),
                 "{relay:?}"
             );
@@ -2126,7 +2250,7 @@ mod tests {
         let groups = [family(1, "sarcelle")];
         let shown: Vec<&GroupSummary> = groups.iter().collect();
         assert_eq!(
-            family_choice(&shown, Uuid::from_u128(1), Some(&groups[0])),
+            family_choice(&shown, Uuid::from_u128(1), Some(&groups[0]), None),
             ""
         );
     }
@@ -2135,7 +2259,7 @@ mod tests {
     fn several_families_shown_are_a_choice_marking_the_chosen_one() {
         let groups = [family(1, "sarcelle"), family(2, "ocean")];
         let shown: Vec<&GroupSummary> = groups.iter().collect();
-        let html = family_choice(&shown, Uuid::from_u128(2), Some(&groups[0]));
+        let html = family_choice(&shown, Uuid::from_u128(2), Some(&groups[0]), None);
         assert!(
             html.starts_with(r#"<nav class="filters" aria-label="Famille">"#),
             "{html}"
@@ -2161,7 +2285,7 @@ mod tests {
         odd.name = "<b>".to_string();
         let groups = [family(1, "sarcelle"), odd];
         let shown: Vec<&GroupSummary> = groups.iter().collect();
-        let html = family_choice(&shown, Uuid::from_u128(1), Some(&groups[0]));
+        let html = family_choice(&shown, Uuid::from_u128(1), Some(&groups[0]), None);
         assert!(html.contains("&lt;b&gt;"), "{html}");
         assert!(!html.contains("<b>"), "{html}");
     }
@@ -2175,6 +2299,7 @@ mod tests {
                 name: "F2",
                 carried: Some(g),
                 choice: "<nav>choix</nav>".to_string(),
+                prefill: None,
             },
             None,
             &blank_form("2026-09-05T10:00".into(), "2026-09-05T11:00".into()),
@@ -2195,12 +2320,272 @@ mod tests {
     fn a_refused_file_returns_to_the_event_in_its_family() {
         let (id, g) = (Uuid::from_u128(7), Uuid::from_u128(2));
         assert_eq!(
-            after_attachment(id, Relay::Failed, Some(g)),
+            after_attachment(id, Relay::Failed, Some(g), CREATED),
             format!("/agenda/{id}?error=upload_failed&famille={g}")
         );
         assert_eq!(
-            after_attachment(id, Relay::Created, Some(g)),
+            after_attachment(id, Relay::Created, Some(g), CREATED),
             "/agenda?notice=event_created"
         );
+    }
+
+    // -- opening the sheet from the day view (#794) ------------------------
+
+    fn at(s: &str) -> Prefill {
+        Prefill::At(chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").unwrap())
+    }
+
+    fn day(s: &str) -> Prefill {
+        Prefill::Day(NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap())
+    }
+
+    #[test]
+    fn a_half_hour_or_a_day_is_read_from_the_query() {
+        assert_eq!(
+            prefill_param(Some("debut=2026-11-12T09:30")),
+            Some(at("2026-11-12T09:30"))
+        );
+        assert_eq!(
+            prefill_param(Some("jour=2026-11-12")),
+            Some(day("2026-11-12"))
+        );
+        // With the family and the selection the view carries, in any order.
+        assert_eq!(
+            prefill_param(Some(
+                "familles=toutes&debut=2026-11-12T09:30&famille=00000000-0000-0000-0000-000000000002"
+            )),
+            Some(at("2026-11-12T09:30"))
+        );
+        // Encoded as a browser would.
+        assert_eq!(
+            prefill_param(Some("debut=2026-11-12T09%3A30")),
+            Some(at("2026-11-12T09:30"))
+        );
+        // The hour wins over the day.
+        assert_eq!(
+            prefill_param(Some("jour=2026-11-13&debut=2026-11-12T09:30")),
+            Some(at("2026-11-12T09:30"))
+        );
+    }
+
+    #[test]
+    fn no_or_an_unreadable_parameter_is_no_prefill() {
+        for query in [
+            None,
+            Some(""),
+            Some("famille=00000000-0000-0000-0000-000000000002"),
+            Some("debut="),
+            Some("debut=demain"),
+            Some("debut=2026-11-12"),
+            Some("debut=2026-13-01T09:00"),
+            Some("debut=2026-11-12T25:00"),
+            Some("debut=2026-11-12 09:30"),
+            Some("jour="),
+            Some("jour=2026-02-30"),
+            Some("jour=2026-11-12T09:30"),
+            Some("%%%"),
+        ] {
+            assert_eq!(prefill_param(query), None, "{query:?}");
+        }
+    }
+
+    /// 02:30 does not exist on the day the clocks go forward: nothing to
+    /// start from, the sheet opens as before.
+    #[test]
+    fn an_hour_the_clocks_skip_is_no_prefill() {
+        assert_eq!(prefill_param(Some("debut=2026-03-29T02:30")), None);
+        assert_eq!(
+            prefill_param(Some("debut=2026-03-29T03:00")),
+            Some(at("2026-03-29T03:00"))
+        );
+    }
+
+    #[test]
+    fn the_sheet_url_carries_the_prefill() {
+        assert_eq!(sheet_url(None), "/agenda/new");
+        assert_eq!(
+            sheet_url(Some(at("2026-11-12T09:30"))),
+            "/agenda/new?debut=2026-11-12T09:30"
+        );
+        assert_eq!(
+            sheet_url(Some(day("2026-11-12"))),
+            "/agenda/new?jour=2026-11-12"
+        );
+        // Read back as it was written.
+        for p in [at("2026-11-12T09:30"), day("2026-11-12")] {
+            let url = sheet_url(Some(p));
+            assert_eq!(prefill_param(url.split_once('?').map(|(_, q)| q)), Some(p));
+        }
+    }
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.with_ymd_and_hms(2026, 9, 5, 8, 17, 0).unwrap()
+    }
+
+    fn bounds(form: &EventForm) -> (bool, &str, &str) {
+        (form.all_day.is_some(), &form.starts_at, &form.ends_at)
+    }
+
+    #[test]
+    fn without_a_prefill_the_sheet_opens_on_now_for_an_hour() {
+        let form = initial_form(None, now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-09-05T10:17", "2026-09-05T11:17")
+        );
+        assert_eq!(form.title, "");
+        // What an unreadable parameter gives.
+        let form = initial_form(prefill_param(Some("debut=demain")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-09-05T10:17", "2026-09-05T11:17")
+        );
+    }
+
+    #[test]
+    fn a_half_hour_opens_the_sheet_on_it_for_an_hour() {
+        let form = initial_form(Some(at("2026-11-12T09:30")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-11-12T09:30", "2026-11-12T10:30")
+        );
+        // The last half hour of the day ends the next day.
+        let form = initial_form(Some(at("2026-11-12T23:30")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-11-12T23:30", "2026-11-13T00:30")
+        );
+    }
+
+    #[test]
+    fn an_hour_later_is_elapsed_time_when_the_clocks_go_forward() {
+        // 2026-03-29: 02:00 becomes 03:00.
+        let form = initial_form(Some(at("2026-03-29T01:30")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-03-29T01:30", "2026-03-29T03:30")
+        );
+        let form = initial_form(Some(at("2026-03-29T03:00")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-03-29T03:00", "2026-03-29T04:00")
+        );
+    }
+
+    #[test]
+    fn when_the_clocks_go_back_fin_stays_after_debut() {
+        // 2026-10-25: 03:00 becomes 02:00. From 01:30, an hour later is the
+        // first 02:30.
+        let form = initial_form(Some(at("2026-10-25T01:30")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-10-25T01:30", "2026-10-25T02:30")
+        );
+        // From 02:30, the hour after it is 02:30 again on the clock: Fin
+        // goes to 03:30, which the form reads back after Début.
+        let form = initial_form(Some(at("2026-10-25T02:30")), now());
+        assert_eq!(
+            bounds(&form),
+            (false, "2026-10-25T02:30", "2026-10-25T03:30")
+        );
+        let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
+        assert!(e > s);
+        // Each of these reads back an hour or more apart.
+        for start in ["2026-10-25T01:30", "2026-10-25T02:00", "2026-03-29T01:30"] {
+            let form = initial_form(Some(at(start)), now());
+            let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
+            assert!(e - s >= chrono::Duration::hours(1), "{start}");
+        }
+    }
+
+    #[test]
+    fn the_banner_opens_the_sheet_on_that_whole_day() {
+        let form = initial_form(Some(day("2026-11-12")), now());
+        assert_eq!(bounds(&form), (true, "2026-11-12", "2026-11-12"));
+        // Two date fields and a ticked box, read back as that one day.
+        let html = schedule_fields(true, &form.starts_at, &form.ends_at);
+        assert_eq!(input_types(&html), ["checkbox", "date", "date"], "{html}");
+        let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
+        assert_eq!(e - s, chrono::Duration::hours(24));
+    }
+
+    #[test]
+    fn a_creation_from_the_day_view_goes_back_to_its_day() {
+        // 09:30 in Paris on 12 November.
+        let starts = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 12, 8, 30, 0)
+            .unwrap();
+        assert_eq!(
+            created_redirect(None, starts),
+            "/agenda?notice=event_created"
+        );
+        assert_eq!(
+            created_redirect(Some(at("2026-11-12T09:30")), starts),
+            "/agenda?view=day&date=2026-11-12&notice=event_created"
+        );
+        // The day the event starts on, in Paris, whatever the sheet opened
+        // on: 00:30 on the 13th is 23:30 UTC on the 12th.
+        let late = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 12, 23, 30, 0)
+            .unwrap();
+        assert_eq!(
+            created_redirect(Some(at("2026-11-12T09:30")), late),
+            "/agenda?view=day&date=2026-11-13&notice=event_created"
+        );
+        // A whole day starts on the Paris midnight opening it.
+        let midnight = chrono::Utc
+            .with_ymd_and_hms(2026, 11, 11, 23, 0, 0)
+            .unwrap();
+        assert_eq!(
+            created_redirect(Some(day("2026-11-12")), midnight),
+            "/agenda?view=day&date=2026-11-12&notice=event_created"
+        );
+    }
+
+    #[test]
+    fn the_family_choice_keeps_the_half_hour() {
+        let groups = [family(1, "sarcelle"), family(2, "ocean")];
+        let shown: Vec<&GroupSummary> = groups.iter().collect();
+        let html = family_choice(
+            &shown,
+            Uuid::from_u128(1),
+            Some(&groups[0]),
+            Some(at("2026-11-12T09:30")),
+        );
+        assert!(
+            html.contains(r#"<a href="/agenda/new?debut=2026-11-12T09:30" data-accent="sarcelle""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/agenda/new?debut=2026-11-12T09:30&famille={}" data-accent="ocean""#,
+                Uuid::from_u128(2)
+            )),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_sheet_opened_on_a_half_hour_posts_with_it() {
+        let html = page(
+            "",
+            SheetFamily {
+                name: "F1",
+                carried: None,
+                choice: String::new(),
+                prefill: Some(at("2026-11-12T09:30")),
+            },
+            None,
+            &initial_form(Some(at("2026-11-12T09:30")), now()),
+            &[member(1, "Alice")],
+            &[],
+            "",
+        );
+        assert!(
+            html.contains(r#"<form method="post" action="/agenda/new?debut=2026-11-12T09:30" enctype="multipart/form-data">"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"value="2026-11-12T09:30""#), "{html}");
+        assert!(html.contains(r#"value="2026-11-12T10:30""#), "{html}");
     }
 }
