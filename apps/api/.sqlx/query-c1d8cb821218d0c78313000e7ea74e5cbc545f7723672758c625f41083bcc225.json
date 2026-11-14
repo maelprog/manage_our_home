@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, name, instructions, source_url, servings, duration_minutes, created_at\n               FROM recipes WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "\n        INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment)\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "instructions",
         "type_info": "Text",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "source_url",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "servings",
         "type_info": "Int4",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "duration_minutes",
         "type_info": "Int4",
         "origin": {
@@ -81,7 +92,18 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
+        "name": "required_equipment",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "required_equipment"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -90,24 +112,44 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 10,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Uuid",
-        "Uuid"
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "TextArray"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      false,
       true,
       true,
       true,
       true,
+      false,
+      false,
       false
     ]
   },
-  "hash": "91c6bd0154aece58bf4f3d2ee659561c8b618a1c54bb5283a42fb5d153ae3a6e"
+  "hash": "c1d8cb821218d0c78313000e7ea74e5cbc545f7723672758c625f41083bcc225"
 }

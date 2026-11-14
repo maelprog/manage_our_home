@@ -1899,3 +1899,211 @@ async fn a_private_event_and_its_rows_are_visible_to_its_participants_alone(db: 
             .unwrap();
     }
 }
+
+/// `statement` with the holder as `$1`, and the family as `$2` when it
+/// names one.
+fn bind_holder(
+    statement: &'static str,
+    holder: Uuid,
+    group: Uuid,
+) -> sqlx::query::Query<'static, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    let query = sqlx::query(statement).bind(holder);
+    if statement.contains("$2") {
+        query.bind(group)
+    } else {
+        query
+    }
+}
+
+/// Issue #817: a member's allergies, the levels they set and their dislikes
+/// are theirs alone (0057). Another member of the same family — the owner
+/// here — and a member of another family neither read nor write them, even
+/// with a query that forgets `WHERE user_id = ...`; and what a family may
+/// learn goes through the `SECURITY DEFINER` functions only, for a member of
+/// that family scoped to it.
+#[sqlx::test]
+async fn food_constraints_are_their_holders_alone(db: PgPool) {
+    let ((owner_a, group_a), (owner_b, group_b)) = two_owned_groups(&db).await;
+    let holder: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, password_hash, display_name, email_verified) \
+         VALUES ('holder@example.test', 'x', 'Holder', true) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    for statement in [
+        "INSERT INTO group_members (group_id, user_id, role) VALUES ($2, $1, 'standard')",
+        "INSERT INTO user_allergies (user_id, tag) VALUES ($1, 'en:peanuts')",
+        "INSERT INTO user_allergies (user_id, tag) VALUES ($1, 'en:eggs')",
+        "INSERT INTO allergy_sharing (user_id, tag, group_id, share) \
+         VALUES ($1, 'en:peanuts', $2, 'public')",
+        "INSERT INTO allergy_sharing (user_id, tag, group_id, share) \
+         VALUES ($1, 'en:eggs', $2, 'anonymous')",
+        "INSERT INTO user_dislikes (user_id, tag) VALUES ($1, 'en:mushrooms')",
+    ] {
+        bind_holder(statement, holder, group_a)
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE \
+             ON user_allergies, allergy_sharing, user_dislikes, group_members TO {role}"
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let scoped = |user: Uuid, group: Uuid| {
+        let role = role.clone();
+        let db = db.clone();
+        async move {
+            #[allow(clippy::disallowed_methods)]
+            let mut tx = db.begin().await.unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            for (setting, value) in [("app.user_id", user), ("app.group_id", group)] {
+                sqlx::query("SELECT set_config($1, $2, true)")
+                    .bind(setting)
+                    .bind(value.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+            }
+            tx
+        }
+    };
+
+    // The holder sees their own rows.
+    let mut tx = scoped(holder, group_a).await;
+    for (table, expected) in [
+        ("user_allergies", 2),
+        ("allergy_sharing", 2),
+        ("user_dislikes", 1),
+    ] {
+        let seen: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(seen, expected, "the holder's own {table}");
+    }
+    tx.rollback().await.unwrap();
+
+    // The owner of the same family, and a member of another one.
+    for (reader, group) in [(owner_a, group_a), (owner_b, group_b)] {
+        let mut tx = scoped(reader, group).await;
+        for table in ["user_allergies", "allergy_sharing", "user_dislikes"] {
+            let seen: i64 =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                    .fetch_one(&mut *tx)
+                    .await
+                    .unwrap();
+            assert_eq!(seen, 0, "{table} read by {reader}");
+            for statement in [
+                format!("UPDATE {table} SET tag = 'en:milks'"),
+                format!("DELETE FROM {table}"),
+            ] {
+                let touched = sqlx::query(sqlx::AssertSqlSafe(statement.clone()))
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap()
+                    .rows_affected();
+                assert_eq!(touched, 0, "{statement} by {reader}");
+            }
+        }
+        for statement in [
+            "INSERT INTO user_allergies (user_id, tag) VALUES ($1, 'en:milks')",
+            "INSERT INTO user_dislikes (user_id, tag) VALUES ($1, 'en:milks')",
+            "INSERT INTO allergy_sharing (user_id, tag, group_id, share) \
+             VALUES ($1, 'en:eggs', $2, 'public')",
+        ] {
+            sqlx::query("SAVEPOINT write")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            let written = bind_holder(statement, holder, group_a)
+                .execute(&mut *tx)
+                .await;
+            assert!(written.is_err(), "{statement} for the holder by {reader}");
+            sqlx::query("ROLLBACK TO SAVEPOINT write")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.rollback().await.unwrap();
+    }
+
+    // What the family may learn: the public allergy with its holder, the
+    // fact that an anonymous one exists, its tag for the server — to a
+    // member of the family scoped to it, and to no one else.
+    let read = |user: Uuid, scope: Uuid, asked: Uuid| {
+        let scoped = scoped(user, scope);
+        async move {
+            let mut tx = scoped.await;
+            let public: Vec<(Uuid, String, String)> =
+                sqlx::query_as("SELECT user_id, display_name, tag FROM group_public_allergies($1)")
+                    .bind(asked)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .unwrap();
+            let anonymous: bool = sqlx::query_scalar("SELECT group_has_anonymous_allergy($1)")
+                .bind(asked)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            let tags: Vec<String> =
+                sqlx::query_scalar("SELECT * FROM group_anonymous_allergy_tags($1)")
+                    .bind(asked)
+                    .fetch_all(&mut *tx)
+                    .await
+                    .unwrap();
+            tx.rollback().await.unwrap();
+            (public, anonymous, tags)
+        }
+    };
+    assert_eq!(
+        read(owner_a, group_a, group_a).await,
+        (
+            vec![(holder, "Holder".to_string(), "en:peanuts".to_string())],
+            true,
+            vec!["en:eggs".to_string()],
+        )
+    );
+    let nothing = (Vec::new(), false, Vec::new());
+    // A member of another family, asking for this one, scoped to theirs or
+    // to this one.
+    assert_eq!(read(owner_b, group_b, group_a).await, nothing);
+    assert_eq!(read(owner_b, group_a, group_a).await, nothing);
+    // A member of the family, asking for it while scoped elsewhere.
+    assert_eq!(read(owner_a, group_b, group_a).await, nothing);
+
+    for statement in [
+        format!(
+            "REVOKE ALL ON user_allergies, allergy_sharing, user_dislikes, group_members \
+             FROM {role}"
+        ),
+        format!("DROP ROLE {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM user_allergies) + (SELECT count(*) FROM allergy_sharing) \
+              + (SELECT count(*) FROM user_dislikes)",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(kept, 5, "the holder's rows are untouched");
+}

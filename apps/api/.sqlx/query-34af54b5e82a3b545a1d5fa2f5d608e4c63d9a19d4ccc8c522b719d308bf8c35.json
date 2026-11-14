@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM user_dislikes WHERE user_id = $1 AND tag = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "34af54b5e82a3b545a1d5fa2f5d608e4c63d9a19d4ccc8c522b719d308bf8c35"
+}

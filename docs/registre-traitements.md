@@ -1,6 +1,9 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-11-14 (allergies et aversions alimentaires d'un membre, l'allergie
+étant une donnée de santé traitée sur son consentement explicite ;
+équipements de cuisine du foyer, #817) ;
 2026-11-13 (jour et repas prévus d'une recette choisie, #811) ;
 2026-11-10 (origine d'une session, application ou web, sans User-Agent
 ni adresse IP, #754) ;
@@ -372,6 +375,7 @@ ligne.
 | 2b | Assignations d'événements | événement, membre assigné, date (`event_assignees`) ; posées par un membre, par défaut le créateur de l'événement, et pour un événement importé le membre qui a lancé l'import | Indiquer pour qui est un événement | Exécution du contrat | Tant que l'événement existe et que l'assignation n'est pas retirée ; elle survit au départ du groupe, pas à la purge du compte, qui la supprime (#139) | Membres du groupe |
 | 3 | Stocks | articles du garde-manger/frigo, quantités, seuils, dates de péremption, code-barres d'un article scanné ou saisi (`stock_items.barcode`, #402) ; photo du code-barres envoyée pour le scan, qui peut montrer l'intérieur du logement : lue en mémoire par apps/web (`apps/web/src/routes/stocks/photo.rs`), ni écrite, ni journalisée, ni transmise à apps/api ou à un tiers — seul le code décodé continue : ses chiffres, ou, pour un code 2D GS1 (DataMatrix, QR, #403), son texte (numéro du produit et, selon le code, date de péremption, lot ou numéro de série), dont apps/api n'utilise que le produit et la date ; un autre code 2D de la photo est ignoré | Gestion de l'inventaire familial | Exécution du contrat | Idem #2 pour les articles ; la photo n'est pas conservée : elle disparaît avec la requête qui l'apporte | Aucun tiers (le code-barres seul est envoyé à Open Food Facts, sans donnée personnelle : voir « Sous-traitants (destinataires) ») |
 | 4 | Recettes | recettes, ingrédients, historique des repas ; adresse de la page d'où une recette a été importée (`recipes.source_url`, #405) ; recettes choisies pour les prochaines courses, avec leur statut, le nombre de personnes, le jour et le repas (midi ou soir) où elles sont prévues (#811) et le membre qui les a choisies (`recipe_selections`, #469) | Suggestions de repas (algorithme local, pas d'IA tierce) ; choix des recettes à réaliser | Exécution du contrat | Idem #2 | Aucun tiers (à l'import, le serveur télécharge la page de la recette sans donnée personnelle : voir « Sous-traitants (destinataires) ») |
+| 4a | Contraintes alimentaires (#817) | **allergies** d'un membre — **donnée de santé** (art. 9) : catégorie Open Food Facts concernée (`en:peanuts`…), date d'ajout (`user_allergies`), et, pour chaque famille dont il est membre, qui en est informé (`allergy_sharing.share`) : `public` (son nom et l'allergie, à toute la famille), `anonymous` (le seul fait qu'un membre de la famille est allergique ; la catégorie sert au calcul du serveur et n'est jamais renvoyée), `private` (rien, à personne), **`private` par défaut** ; **aversions** du membre (`user_dislikes`), jamais partagées ; **équipements de cuisine** du foyer (`group_equipment`) et ceux qu'une recette demande (`recipes.required_equipment`), codes d'une liste fermée, non sensibles. Aucune gravité, aucun texte libre. | Écarter ou signaler les recettes qui ne conviennent pas à un membre ou à sa famille (#818) | Allergies : **consentement explicite** (art. 9(2)(a)), donné par la saisie du membre lui-même, allergie par allergie et famille par famille, et retiré aussi simplement : retrait d'une allergie, passage à `private`, ou « tout effacer » (`DELETE /me/dietary-constraints`, art. 7(3)). Aversions et équipements : exécution du contrat | Tant que le membre garde l'allergie ou l'aversion : supprimée à son retrait, par « tout effacer » ou à la purge du compte ; un niveau de partage, jusqu'à ce que le membre quitte la famille, en soit retiré ou qu'elle soit supprimée ; les équipements, tant que la famille existe | Aucun tiers. Dans la famille, ce que le niveau choisi ouvre, et rien d'autre : la lecture d'un autre membre passe par trois fonctions de la base (0057), recalculées à chaque lecture, sans copie. Ni le journal d'audit, ni les journaux techniques, ni une notification ne portent une allergie, un niveau ou un changement de niveau |
 | 5 | Liste de courses | articles à acheter, source (manuel/recette/stock bas) | Liste de courses partagée | Exécution du contrat | Idem #2 | Aucun tiers |
 | 6 | Budget | dépenses saisies manuellement (montant, nom, date, catégorie, membre qui l'a payée — `paid_by`, #638, vidé quand il quitte la famille) ; catégories de dépense de la famille (nom, couleur, plafond mensuel facultatif, `budget_categories`, #532) et plafond mensuel de la famille et interrupteurs de ses alertes de plafond (`budget_settings`, #536) ; alertes de plafond déjà envoyées : mois, catégorie, seuil (`budget_alerts`, #536, aucune donnée personnelle) | Suivi du budget alimentaire familial | Exécution du contrat | Idem #2 | Aucun tiers |
 | 7 | Messagerie | contenu des messages (chiffré au repos via `pgcrypto`) | Communication au sein du groupe familial | Exécution du contrat | Idem #2 | Aucun tiers |
@@ -467,7 +471,9 @@ transaction par compte :
    d'événements (`event_assignees`), demande de réactivation en attente
    (`account_reactivation_requests`, #289), appareils abonnés aux
    notifications (`push_subscriptions`, #306), notifications adressées au
-   compte dans l'application (`notifications`, #534).
+   compte dans l'application (`notifications`, #534), allergies, niveaux
+   de partage et aversions alimentaires (`user_allergies`,
+   `allergy_sharing`, `user_dislikes`, #817).
 2. Supprime la part personnelle des autres tables : les entrées
    `audit_log` dont le compte est l'acteur, les notifications que ses
    actions ont adressées aux autres membres (`notifications.actor_id`,
@@ -516,9 +522,11 @@ jusqu'à leur terme de 14 jours dans Loki, ou jusqu'à leur rotation par
 kubelet pour la copie du nœud (ligne « Journaux techniques »).
 
 Le job tourne une fois par heure, dès le démarrage de l'API, aux mêmes
-conditions que la purge de conservation ci-dessous : cinq des tables qu'il
-vide (`group_members`, `message_read_state`, `event_assignees`,
-`invitations`, `calendar_imports`) sont sous une politique RLS forcée, et
+conditions que la purge de conservation ci-dessous : onze des tables qu'il
+vide (`groups`, `group_members`, `message_read_state`, `event_assignees`,
+`invitations`, `calendar_imports`, `notifications`,
+`stock_expiry_announcements`, `user_allergies`, `allergy_sharing`,
+`user_dislikes`) sont sous une politique RLS forcée, et
 sur un rôle sans `BYPASSRLS` il refuse de tourner plutôt que de marquer un
 compte purgé en laissant ces lignes en place.
 

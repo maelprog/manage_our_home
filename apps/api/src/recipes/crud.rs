@@ -13,6 +13,7 @@ use crate::recipes::can_modify;
 use crate::recipes::import::valid_source_url;
 use crate::recipes::selections::validate_servings;
 use crate::AppState;
+use manage_our_home_shared::validation::dietary::validate_equipment;
 
 /// The longest a recipe may say it takes, in minutes (#539): a day. The
 /// `CHECK` of `recipes.duration_minutes` (0041) holds the same bound.
@@ -52,6 +53,10 @@ pub struct CreateRecipeRequest {
     /// How long it takes, in minutes (#539), from 1 to [`DURATION_MAX`];
     /// absent, the recipe does not say.
     pub duration_minutes: Option<i32>,
+    /// The equipment it needs (#817): codes of
+    /// `validation::dietary::EQUIPMENT`, each once. Absent, none.
+    #[serde(default)]
+    pub required_equipment: Vec<String>,
 }
 
 /// Serde's blanket `Option<T>` impl treats an explicit JSON `null` the same
@@ -79,6 +84,8 @@ pub struct UpdateRecipeRequest {
     /// Same three states as `servings` (#539).
     #[serde(default, deserialize_with = "deserialize_some")]
     pub duration_minutes: Option<Option<i32>>,
+    /// When present, replaces the equipment the recipe needs (#817).
+    pub required_equipment: Option<Vec<String>>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -102,6 +109,8 @@ pub struct RecipeResponse {
     pub source_url: Option<String>,
     pub servings: Option<i32>,
     pub duration_minutes: Option<i32>,
+    /// The equipment it needs (#817), sorted; empty when none.
+    pub required_equipment: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -115,6 +124,7 @@ struct RecipeRow {
     source_url: Option<String>,
     servings: Option<i32>,
     duration_minutes: Option<i32>,
+    required_equipment: Vec<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -218,7 +228,7 @@ async fn fetch_ingredients(
     request_body = CreateRecipeRequest,
     responses(
         (status = 201, description = "Recipe created", body = RecipeResponse),
-        (status = 400, description = "`name_required`, `invalid_source_url`, `invalid_duration`, `ingredient_name_required`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`name_required`, `invalid_source_url`, `invalid_duration`, `unknown_equipment`, `duplicate_equipment`, `ingredient_name_required`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
     security(("session_cookie" = [])),
@@ -243,6 +253,7 @@ pub async fn create_recipe(
     };
     let servings = body.servings.map(validate_servings).transpose()?;
     let duration_minutes = body.duration_minutes.map(validate_duration).transpose()?;
+    let required_equipment = validate_equipment(&body.required_equipment)?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -250,9 +261,9 @@ pub async fn create_recipe(
     let recipe = sqlx::query_as!(
         RecipeRow,
         r#"
-        INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings, duration_minutes)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
+        INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
         "#,
         group_id,
         auth.user_id,
@@ -261,6 +272,7 @@ pub async fn create_recipe(
         source_url,
         servings,
         duration_minutes,
+        &required_equipment,
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -281,6 +293,7 @@ pub async fn create_recipe(
             source_url: recipe.source_url,
             servings: recipe.servings,
             duration_minutes: recipe.duration_minutes,
+            required_equipment: recipe.required_equipment,
             created_at: recipe.created_at,
             updated_at: recipe.updated_at,
         }),
@@ -312,7 +325,7 @@ pub async fn get_recipe(
 
     let recipe = sqlx::query_as!(
         RecipeRow,
-        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
+        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
            FROM recipes WHERE id = $1 AND group_id = $2"#,
         recipe_id,
         group_id,
@@ -334,6 +347,7 @@ pub async fn get_recipe(
         source_url: recipe.source_url,
         servings: recipe.servings,
         duration_minutes: recipe.duration_minutes,
+        required_equipment: recipe.required_equipment,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
     }))
@@ -363,7 +377,7 @@ pub async fn list_recipes(
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
         r#"
-        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
+        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
         FROM recipes
         WHERE group_id = $1
         ORDER BY name
@@ -399,6 +413,7 @@ pub async fn list_recipes(
             source_url: r.source_url,
             servings: r.servings,
             duration_minutes: r.duration_minutes,
+            required_equipment: r.required_equipment,
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -424,7 +439,7 @@ pub async fn list_recipes(
     request_body = UpdateRecipeRequest,
     responses(
         (status = 200, description = "Recipe updated", body = RecipeResponse),
-        (status = 400, description = "`name_required`, `invalid_source_url`, `invalid_duration`, `ingredient_name_required`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`name_required`, `invalid_source_url`, `invalid_duration`, `unknown_equipment`, `duplicate_equipment`, `ingredient_name_required`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
@@ -445,6 +460,11 @@ pub async fn update_recipe(
     if let Some(Some(minutes)) = body.duration_minutes {
         validate_duration(minutes)?;
     }
+    let required_equipment = body
+        .required_equipment
+        .as_deref()
+        .map(validate_equipment)
+        .transpose()?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
@@ -490,9 +510,10 @@ pub async fn update_recipe(
             instructions = $4,
             servings = $5,
             duration_minutes = $6,
+            required_equipment = COALESCE($7, required_equipment),
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
         "#,
         recipe_id,
         group_id,
@@ -500,6 +521,7 @@ pub async fn update_recipe(
         instructions,
         servings,
         duration_minutes,
+        required_equipment.as_deref(),
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -527,6 +549,7 @@ pub async fn update_recipe(
         source_url: recipe.source_url,
         servings: recipe.servings,
         duration_minutes: recipe.duration_minutes,
+        required_equipment: recipe.required_equipment,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
     }))

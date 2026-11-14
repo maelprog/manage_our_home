@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE recipes SET\n            name = COALESCE($3, name),\n            instructions = $4,\n            servings = $5,\n            duration_minutes = $6,\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at\n        ",
+  "query": "\n        UPDATE recipes SET\n            name = COALESCE($3, name),\n            instructions = $4,\n            servings = $5,\n            duration_minutes = $6,\n            required_equipment = COALESCE($7, required_equipment),\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,17 @@
       },
       {
         "ordinal": 8,
+        "name": "required_equipment",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "required_equipment"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -121,7 +132,8 @@
         "Text",
         "Text",
         "Int4",
-        "Int4"
+        "Int4",
+        "TextArray"
       ]
     },
     "nullable": [
@@ -134,8 +146,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "70f7479d1c9ad814e58fab78da3efa3d37e9a196a2d600e027549eeeae901b06"
+  "hash": "00f703ecfb5cdf8bbdb0a6f769401647f2b847532c6dfb1af87b35f406fc56d0"
 }
