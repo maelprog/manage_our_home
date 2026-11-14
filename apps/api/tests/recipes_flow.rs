@@ -547,6 +547,79 @@ async fn suggestions_rank_by_stock_match_and_variety(db: PgPool) {
     );
 }
 
+/// AC (#821): the suggestions' variety window is 28 days, counted back from
+/// today in Paris: a recipe eaten 28 days ago is penalized, one eaten 29
+/// days ago is not. A meal logged without taste tags changes nothing else.
+#[sqlx::test]
+async fn suggestions_variety_window_is_28_days(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-variety@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    let today = paris_day(Utc::now());
+    let mut ids = Vec::new();
+    for (name, days) in [("Omelette", 28), ("Soupe", 29)] {
+        let create = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "ingredients": []})),
+        )
+        .await;
+        let id = json_body(create).await["id"].as_str().unwrap().to_string();
+        let eaten_on = today.checked_sub_days(Days::new(days)).unwrap();
+        let log = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes/{id}/meal-history"),
+            Some(&cookie),
+            Some(serde_json::json!({"eaten_on": eaten_on})),
+        )
+        .await;
+        assert_status(&log, StatusCode::CREATED);
+        assert_eq!(json_body(log).await["taste_tags"], serde_json::json!([]));
+        ids.push(id);
+    }
+
+    let suggestions = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&suggestions, StatusCode::OK);
+    if paris_day(Utc::now()) != today {
+        // Midnight in Paris passed during the test: the window moved.
+        return;
+    }
+    let body = json_body(suggestions).await;
+    let by_id = |id: &str| {
+        body["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["recipe_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let within = by_id(&ids[0]);
+    assert_eq!(within["recently_eaten"], true);
+    // No required ingredient: a full match (100), minus the penalty (30).
+    assert_eq!(within["score"], 70.0);
+    let outside = by_id(&ids[1]);
+    assert_eq!(outside["recently_eaten"], false);
+    assert_eq!(outside["score"], 100.0);
+}
+
 /// #406: an article covers a recipe's ingredient through Open Food Facts'
 /// categories. A scanned article takes the categories of its product (here
 /// "Lait demi-écrémé Lactel", under en:semi-skimmed-milks, covers "Lait");

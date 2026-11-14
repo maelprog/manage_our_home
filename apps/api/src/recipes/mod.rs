@@ -12,6 +12,7 @@ pub mod outcome;
 pub mod prose;
 pub mod selections;
 pub mod suggestions;
+pub mod taste;
 pub mod taxonomy;
 
 /// Same permission bar as Stocks/Agenda: any member may create/read a

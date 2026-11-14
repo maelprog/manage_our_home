@@ -25,6 +25,9 @@ pub struct MealHistoryEntryResponse {
     pub eaten_on: NaiveDate,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
+    /// The taste tags given when the recipe was marked done (#821,
+    /// `recipes::taste::TasteTag`), by their wire names; empty otherwise.
+    pub taste_tags: Vec<String>,
 }
 
 #[utoipa::path(
@@ -72,7 +75,7 @@ pub async fn log_meal(
         r#"
         INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by)
         VALUES ($1, $2, $3, $4)
-        RETURNING id, recipe_id, eaten_on, created_by, created_at
+        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste_tags
         "#,
         group_id,
         recipe_id,
@@ -89,9 +92,10 @@ pub async fn log_meal(
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListMealHistoryQuery {
-    /// Only entries eaten in the last `days_back` days. Defaults to 14 to
-    /// match the variety window used by the suggestion algorithm. Counted
-    /// back from today, the Paris day (`today`).
+    /// Only entries eaten in the last `days_back` days. Defaults to 14, the
+    /// suggestions' variety window until #821 widened it to 28
+    /// (`suggestions::VARIETY_WINDOW_DAYS`). Counted back from today, the
+    /// Paris day (`today`).
     pub days_back: Option<i64>,
 }
 
@@ -122,7 +126,7 @@ pub async fn list_meal_history(
     let entries = sqlx::query_as!(
         MealHistoryEntryResponse,
         r#"
-        SELECT id, recipe_id, eaten_on, created_by, created_at
+        SELECT id, recipe_id, eaten_on, created_by, created_at, taste_tags
         FROM meal_history
         WHERE group_id = $1 AND eaten_on >= $3::date - $2::bigint * INTERVAL '1 day'
         ORDER BY eaten_on DESC
