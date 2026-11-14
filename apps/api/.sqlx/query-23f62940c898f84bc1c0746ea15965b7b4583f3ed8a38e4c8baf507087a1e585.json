@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tag FROM user_allergies WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_allergies",
+            "name": "tag"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "23f62940c898f84bc1c0746ea15965b7b4583f3ed8a38e4c8baf507087a1e585"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tag FROM user_dislikes WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_dislikes",
+            "name": "tag"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "414790a3e8ea89767cc1aa988235d19c61b120fb108dd056a55268013ed9c73c"
+}

@@ -10,6 +10,7 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
 use crate::recipes::can_modify;
+use crate::recipes::dietary_filter::{warnings_for, AllergyWarning};
 use crate::recipes::import::valid_source_url;
 use crate::recipes::selections::validate_servings;
 use crate::AppState;
@@ -113,6 +114,21 @@ pub struct RecipeResponse {
     pub required_equipment: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// What the recipe holds of the allergies the reader may see (#818).
+    pub allergy_warning: AllergyWarning,
+}
+
+/// The allergy warning of one recipe for the reader (#818).
+async fn warning_for(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    reader: Uuid,
+    recipe_id: Uuid,
+) -> AppResult<AllergyWarning> {
+    Ok(warnings_for(tx, group_id, reader, &[recipe_id])
+        .await?
+        .remove(&recipe_id)
+        .unwrap_or_default())
 }
 
 struct RecipeRow {
@@ -279,6 +295,7 @@ pub async fn create_recipe(
 
     insert_ingredients(&mut tx, recipe.id, group_id, &body.ingredients).await?;
     let ingredients = fetch_ingredients(&mut tx, recipe.id).await?;
+    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, recipe.id).await?;
     tx.commit().await?;
 
     Ok((
@@ -296,6 +313,7 @@ pub async fn create_recipe(
             required_equipment: recipe.required_equipment,
             created_at: recipe.created_at,
             updated_at: recipe.updated_at,
+            allergy_warning,
         }),
     ))
 }
@@ -335,6 +353,7 @@ pub async fn get_recipe(
     .ok_or(AppError::NotFound)?;
 
     let ingredients = fetch_ingredients(&mut tx, recipe.id).await?;
+    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, recipe.id).await?;
     tx.commit().await?;
 
     Ok(Json(RecipeResponse {
@@ -350,6 +369,7 @@ pub async fn get_recipe(
         required_equipment: recipe.required_equipment,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
+        allergy_warning,
     }))
 }
 
@@ -399,6 +419,8 @@ pub async fn list_recipes(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let recipe_ids: Vec<Uuid> = recipe_rows.iter().map(|r| r.id).collect();
+    let mut warnings = warnings_for(&mut tx, group_id, auth.user_id, &recipe_ids).await?;
     tx.commit().await?;
 
     let mut recipes: Vec<RecipeResponse> = recipe_rows
@@ -416,6 +438,7 @@ pub async fn list_recipes(
             required_equipment: r.required_equipment,
             created_at: r.created_at,
             updated_at: r.updated_at,
+            allergy_warning: warnings.remove(&r.id).unwrap_or_default(),
         })
         .collect();
 
@@ -537,6 +560,7 @@ pub async fn update_recipe(
     }
 
     let ingredients = fetch_ingredients(&mut tx, recipe_id).await?;
+    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, recipe_id).await?;
     tx.commit().await?;
 
     Ok(Json(RecipeResponse {
@@ -552,6 +576,7 @@ pub async fn update_recipe(
         required_equipment: recipe.required_equipment,
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
+        allergy_warning,
     }))
 }
 

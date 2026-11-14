@@ -18,7 +18,9 @@ use crate::messagerie::messages::MessageResponse;
 use crate::recipes::crud::RecipeResponse;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::outcome::{AbandonLineResponse, AddedIngredientResponse, DoneLineResponse};
-use crate::recipes::selections::{PlannedSelectionResponse, SelectionResponse};
+use crate::recipes::selections::{
+    PlannedSelectionResponse, SelectionResponse, SelectionWithWarning,
+};
 use crate::recipes::suggestions::RecipeSuggestion;
 use crate::stocks::items::StockItemResponse;
 use crate::stocks::reception::ReceptionLineResponse;
@@ -186,7 +188,7 @@ pub struct ReplacementList {
 /// grocery items removed and those added.
 #[derive(Serialize, ToSchema)]
 pub struct SelectionReplaced {
-    pub selection: SelectionResponse,
+    pub selection: SelectionWithWarning,
     pub removed_grocery_items: Vec<Uuid>,
     pub added_grocery_items: Vec<GroceryItemResponse>,
 }

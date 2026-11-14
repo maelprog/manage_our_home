@@ -16,7 +16,7 @@
 //! (`recipes::availability`, #559). A selection may be replaced by another
 //! recipe, keeping its day, meal and number of people (#815).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -30,7 +30,8 @@ use crate::error::{AppError, AppResult};
 use crate::grocery_list::items::add_missing_lines;
 use crate::groups::require_role;
 use crate::recipes::availability::{by_priority, planned_availability, MissingResponse};
-use crate::recipes::suggestions::{replacement_candidates, score_recipes};
+use crate::recipes::dietary_filter::{warnings_for, AllergyWarning};
+use crate::recipes::suggestions::{avoid_allergens_default, replacement_candidates, score_recipes};
 use crate::stocks::items::today;
 use crate::AppState;
 
@@ -193,6 +194,28 @@ pub struct SelectionResponse {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A selection as the member who selected, planned or replaced it reads
+/// it: with its recipe's allergy warning for them (#818).
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct SelectionWithWarning {
+    #[serde(flatten)]
+    pub selection: SelectionResponse,
+    pub allergy_warning: AllergyWarning,
+}
+
+/// The allergy warning of one recipe for the reader.
+async fn warning_for(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    reader: Uuid,
+    recipe_id: Uuid,
+) -> AppResult<AllergyWarning> {
+    Ok(warnings_for(tx, group_id, reader, &[recipe_id])
+        .await?
+        .remove(&recipe_id)
+        .unwrap_or_default())
+}
+
 /// The recipe's name, or 404 when the recipe is not in this group.
 async fn recipe_name(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -221,8 +244,8 @@ async fn recipe_name(
     ),
     request_body = SelectRecipeRequest,
     responses(
-        (status = 201, description = "Recipe planned", body = SelectionResponse),
-        (status = 200, description = "Already planned: the selection as it is", body = SelectionResponse),
+        (status = 201, description = "Recipe planned", body = SelectionWithWarning),
+        (status = 200, description = "Already planned: the selection as it is", body = SelectionWithWarning),
         (status = 400, description = "`invalid_servings`, `invalid_planned_on` (more than 366 days from today), `invalid_meal_slot` (not `lunch` nor `dinner`, or without `planned_on`)", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no such recipe", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
@@ -287,6 +310,7 @@ pub async fn select_recipe(
     )
     .fetch_one(&mut *tx)
     .await?;
+    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, recipe_id).await?;
     tx.commit().await?;
 
     let status = if row.inserted {
@@ -296,17 +320,20 @@ pub async fn select_recipe(
     };
     Ok((
         status,
-        Json(SelectionResponse {
-            id: row.id,
-            recipe_id: row.recipe_id,
-            recipe_name,
-            status: row.status,
-            servings: row.servings,
-            planned_on: row.planned_on,
-            meal_slot: row.meal_slot,
-            created_by: row.created_by,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
+        Json(SelectionWithWarning {
+            selection: SelectionResponse {
+                id: row.id,
+                recipe_id: row.recipe_id,
+                recipe_name,
+                status: row.status,
+                servings: row.servings,
+                planned_on: row.planned_on,
+                meal_slot: row.meal_slot,
+                created_by: row.created_by,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            },
+            allergy_warning,
         }),
     ))
 }
@@ -324,7 +351,7 @@ pub async fn select_recipe(
     ),
     request_body = UpdateSelectionRequest,
     responses(
-        (status = 200, description = "Selection updated", body = SelectionResponse),
+        (status = 200, description = "Selection updated", body = SelectionWithWarning),
         (status = 400, description = "`invalid_servings`, `invalid_planned_on` (more than 366 days from today), `invalid_meal_slot` (not `lunch` nor `dinner`, or left without a day)", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
@@ -386,19 +413,23 @@ pub async fn update_selection(
     )
     .fetch_one(&mut *tx)
     .await?;
+    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, recipe_id).await?;
     tx.commit().await?;
 
-    Ok(Json(SelectionResponse {
-        id: row.id,
-        recipe_id: row.recipe_id,
-        recipe_name,
-        status: row.status,
-        servings: row.servings,
-        planned_on: row.planned_on,
-        meal_slot: row.meal_slot,
-        created_by: row.created_by,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
+    Ok(Json(SelectionWithWarning {
+        selection: SelectionResponse {
+            id: row.id,
+            recipe_id: row.recipe_id,
+            recipe_name,
+            status: row.status,
+            servings: row.servings,
+            planned_on: row.planned_on,
+            meal_slot: row.meal_slot,
+            created_by: row.created_by,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        },
+        allergy_warning,
     }))
 }
 
@@ -492,8 +523,9 @@ struct PlannedRow {
 /// recipes offered in place of the recipe's `planned` selection, scored as
 /// the suggestions are (`recipes::suggestions`), neither that recipe nor
 /// one already planned, at most three, the best first
-/// (`suggestions::replacement_candidates`). Empty when no other recipe is
-/// left; 404 without a `planned` selection. Any member may.
+/// (`suggestions::replacement_candidates`), after the same hard filter as
+/// the suggestions (#818), `avoid_allergens` included. Empty when no other
+/// recipe is left; 404 without a `planned` selection. Any member may.
 #[utoipa::path(
     get,
     path = "/groups/{id}/recipes/{recipe_id}/selection/replacements",
@@ -501,6 +533,7 @@ struct PlannedRow {
     params(
         ("id" = uuid::Uuid, Path, description = "Group id"),
         ("recipe_id" = uuid::Uuid, Path, description = "Recipe of the planned selection to replace"),
+        ReplacementsQuery,
     ),
     responses(
         (status = 200, description = "Up to three recipes to plan instead, the best first", body = crate::api_docs::schemas::ReplacementList),
@@ -513,6 +546,7 @@ pub async fn list_replacements(
     State(state): State<AppState>,
     auth: AuthUser,
     Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<ReplacementsQuery>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -526,12 +560,21 @@ pub async fn list_replacements(
     .await?
     .into_iter()
     .collect();
-    let ranked = score_recipes(&mut tx, group_id).await?;
+    let ranked = score_recipes(&mut tx, group_id, auth.user_id, query.avoid_allergens).await?;
     tx.commit().await?;
 
     Ok(Json(json!({
         "replacements": replacement_candidates(ranked, recipe_id, &planned),
     })))
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ReplacementsQuery {
+    /// `true` (the default) keeps out the recipes holding an allergy the
+    /// reader may see (#818); `false` lifts that, for this request only.
+    #[serde(default = "avoid_allergens_default")]
+    pub avoid_allergens: bool,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -685,20 +728,24 @@ pub async fn replace_selection(
         let added = add_missing_lines(&mut tx, group_id, auth.user_id, new_recipe).await?;
         (removed, added)
     };
+    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, new_recipe).await?;
     tx.commit().await?;
 
     Ok(Json(json!({
-        "selection": SelectionResponse {
-            id: row.id,
-            recipe_id: row.recipe_id,
-            recipe_name,
-            status: row.status,
-            servings: row.servings,
-            planned_on: row.planned_on,
-            meal_slot: row.meal_slot,
-            created_by: row.created_by,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
+        "selection": SelectionWithWarning {
+            selection: SelectionResponse {
+                id: row.id,
+                recipe_id: row.recipe_id,
+                recipe_name,
+                status: row.status,
+                servings: row.servings,
+                planned_on: row.planned_on,
+                meal_slot: row.meal_slot,
+                created_by: row.created_by,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            },
+            allergy_warning,
         },
         "removed_grocery_items": removed,
         "added_grocery_items": added,
@@ -710,7 +757,8 @@ pub async fn replace_selection(
 /// the stock covers them), and the date by which it should be cooked to
 /// use up what expires (`use_by`), with the days left until then in
 /// Europe/Paris (`days_left`, negative once past). A non-empty `missing`
-/// is a warning: the recipe can still be cooked.
+/// is a warning: the recipe can still be cooked. So is `allergy_warning`
+/// (#818), the recipe's allergy warning for the reader.
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct PlannedSelectionResponse {
     #[serde(flatten)]
@@ -718,6 +766,7 @@ pub struct PlannedSelectionResponse {
     pub missing: Vec<MissingResponse>,
     pub use_by: Option<chrono::NaiveDate>,
     pub days_left: Option<i64>,
+    pub allergy_warning: AllergyWarning,
 }
 
 /// `GET /groups/:id/recipes/selections`: the group's `planned` selections,
@@ -762,6 +811,8 @@ pub async fn list_selections(
     .await?;
     let today = today();
     let mut availability = planned_availability(&mut tx, group_id, None, today).await?;
+    let recipe_ids: Vec<Uuid> = selections.iter().map(|s| s.recipe_id).collect();
+    let mut warnings = warnings_for(&mut tx, group_id, auth.user_id, &recipe_ids).await?;
     tx.commit().await?;
 
     let planned: Vec<_> = selections
@@ -777,7 +828,9 @@ pub async fn list_selections(
                 }
                 None => (vec![], None),
             };
+            let allergy_warning = warnings.remove(&selection.recipe_id).unwrap_or_default();
             let response = PlannedSelectionResponse {
+                allergy_warning,
                 selection,
                 missing: missing.into_iter().map(MissingResponse::from).collect(),
                 use_by,
