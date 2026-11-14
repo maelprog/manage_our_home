@@ -747,8 +747,9 @@ téléphone, le titre d'une barre est en 12 px (0,75rem), sous le
 colonnes sur 390 px laissent une cinquantaine de pixels par jour, et la
 maquette validée dessine ces 12 px ; un titre lu en entier est à une touche
 de là, dans la vue jour. Sur PC, le titre est en `--t-sm`, au-dessus du
-plancher. Les barres et « +N » font 19 px de haut sur téléphone et 25 sur PC,
-sous les 44 px d'[Espacement](#espacement), comme la maquette les dessine ; le
+plancher. Une barre fait 19 px de haut sur téléphone et 25 sur PC, « +N » la
+hauteur de sa ligne (1,25rem, 1,625rem sur PC), sous les 44 px
+d'[Espacement](#espacement), comme la maquette les dessine ; le
 jour qui les porte, lien vers la vue jour, fait toute la case.
 
 **Ce qui reste de #675** : la vue semaine garde sa mini-grille au-dessus de la
