@@ -366,13 +366,29 @@ pub(crate) fn slot_list(
             r#"<button type="submit" class="secondary sm" name="choix" value="{value}"><span>Début {time}</span> <span class="muted">Fin {end}</span></button>"#,
             value = wall.format("%Y-%m-%dT%H:%M"),
             time = wall.format("%H:%M"),
-            end = fin.get(11..).unwrap_or_default(),
+            end = fin_words(wall.date(), &fin),
         ));
     }
     for (_, line) in lines {
         out.push_str(&line);
     }
     format!(r#"<div class="pick-list">{out}</div>"#)
+}
+
+/// The Fin a half hour of `day` would give (`AAAA-MM-JJTHH:MM`), as its
+/// button says it: its hour, and the day after or how many days later
+/// when it is not `day`'s.
+fn fin_words(day: NaiveDate, fin: &str) -> String {
+    let hour = fin.get(11..).unwrap_or_default();
+    let later = fin
+        .get(..10)
+        .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+        .map_or(0, |date| (date - day).num_days());
+    match later {
+        0 => hour.to_owned(),
+        1 => format!("{hour} (jour suivant)"),
+        n => format!("{hour} (+{n} jours)"),
+    }
 }
 
 /// The page's form (#795): it posts to the form it goes back to (`retour`),
@@ -1214,10 +1230,31 @@ mod tests {
             html.contains(r#"<button type="submit" class="secondary sm" name="choix" value="2026-11-12T14:00"><span>Début 14:00</span> <span class="muted">Fin 15:30</span></button>"#),
             "{html}"
         );
-        // Across midnight, the Fin of the day after.
+        // Across midnight, the Fin of the day after, which it says.
         assert!(
-            html.contains(r#"value="2026-11-12T23:30"><span>Début 23:30</span> <span class="muted">Fin 01:00</span>"#),
+            html.contains(r#"value="2026-11-12T23:30"><span>Début 23:30</span> <span class="muted">Fin 01:00 (jour suivant)</span>"#),
             "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<span>Début 22:30</span> <span class="muted">Fin 00:00 (jour suivant)</span>"#
+            ),
+            "{html}"
+        );
+        // A Fin days later says how many.
+        let long = slot_list(
+            day("2026-11-12"),
+            &[],
+            &[],
+            Use::Pick(None),
+            "2026-11-12T09:00",
+            "2026-11-14T09:00",
+        );
+        assert!(
+            long.contains(
+                r#"<span>Début 14:00</span> <span class="muted">Fin 14:00 (+2 jours)</span>"#
+            ),
+            "{long}"
         );
         // A day the clocks go forward has no 02:00.
         let short = slot_list(day("2026-03-29"), &[], &[], Use::Pick(None), "", "");
