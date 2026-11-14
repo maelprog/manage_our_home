@@ -381,6 +381,15 @@ pub struct EventForm {
     /// The « Privé » box (#621): present iff it was checked.
     #[serde(default)]
     pub is_private: Option<String>,
+    /// Present iff the form comes back from the choice page (#795): the
+    /// half hour or the day chosen, empty for « Retour au formulaire sans
+    /// changer » (`pick::read_choice`). Such a post saves nothing.
+    #[serde(default)]
+    pub choix: Option<String>,
+    /// Present iff a file had been chosen before going to the choice page
+    /// (#795), which does not keep it.
+    #[serde(default)]
+    pub fichier_perdu: Option<String>,
 }
 
 /// Hidden field the « Événement récurrent » box carries (#698). It is
@@ -660,7 +669,21 @@ pub(crate) fn recurrence_picker(fields: &RecurrenceFields) -> String {
 /// start keeps the end's `min` on the start's value and moves an end the
 /// start has just passed onto the start. No `min` is rendered here: without
 /// JS the fields stay unlinked and `ends_before_starts` remains the check.
-pub(crate) fn schedule_fields(all_day: bool, starts: &str, ends: &str) -> String {
+///
+/// With `pick` (#795), the « Choisir dans le calendrier » button sits on the
+/// box's row (`pick::pick_button`), and Début and Fin a choice has just
+/// filled wear `.picked`.
+pub(crate) fn schedule_fields(
+    all_day: bool,
+    starts: &str,
+    ends: &str,
+    pick: Option<&Pick>,
+) -> String {
+    let picked = if pick.is_some_and(|p| p.picked) {
+        r#" class="picked""#
+    } else {
+        ""
+    };
     let field = |label: &str, name: &str, value: &str, extra: &str| {
         let kind = if date_only(value).is_some() {
             "date"
@@ -668,19 +691,43 @@ pub(crate) fn schedule_fields(all_day: bool, starts: &str, ends: &str) -> String
             "datetime-local"
         };
         format!(
-            r#"<label>{label} <input type="{kind}" name="{name}" value="{value}" required{extra}/></label>"#,
+            r#"<label>{label} <input type="{kind}" name="{name}" value="{value}"{picked} required{extra}/></label>"#,
             value = html_escape(value),
         )
     };
-    format!(
+    let all_day_box = format!(
         r#"<label class="field inline">
-<input type="checkbox" name="all_day"{checked} data-all-day/> Journée entière</label>
-{starts}
-{ends}"#,
+<input type="checkbox" name="all_day"{checked} data-all-day/> Journée entière</label>"#,
         checked = if all_day { " checked" } else { "" },
+    );
+    let row = match pick {
+        Some(p) => format!(
+            r#"<div class="split">{all_day_box}{}</div>"#,
+            super::pick::pick_button(p)
+        ),
+        None => all_day_box,
+    };
+    format!(
+        "{row}\n{starts}\n{ends}",
         starts = field("Début", "starts_at", starts, r#" data-min-of="ends_at""#),
         ends = field("Fin", "ends_at", ends, ""),
     )
+}
+
+/// The « Choisir dans le calendrier » of an event's form (#795): the form
+/// it goes back to, as its `action` writes it, the family it works in, and
+/// whether its Début and Fin come from a choice just made.
+pub(crate) struct Pick<'a> {
+    pub action: &'a str,
+    pub family: Option<Uuid>,
+    pub picked: bool,
+}
+
+/// The form's first submit button, never shown (#795): the Enter key of a
+/// field presses a form's first submit button, which « Choisir dans le
+/// calendrier » would otherwise be — it comes before the button that saves.
+pub(crate) fn default_button(label: &str) -> String {
+    format!(r#"<button type="submit" hidden>{label}</button>"#)
 }
 
 pub(crate) fn error_message(code: &str) -> &'static str {
@@ -846,7 +893,21 @@ fn page<'a>(
     let error_html = error
         .map(|e| format!(r#"<p class="notice error">{}</p>"#, html_escape(e)))
         .unwrap_or_default();
-    let schedule = schedule_fields(form.all_day.is_some(), &form.starts_at, &form.ends_at);
+    let family = family.into();
+    let action = with_family(&sheet_url(family.prefill), family.carried);
+    // Back from the choice page (#795): what it changed, and the file it
+    // did not keep.
+    let error_html = error_html + &super::pick::returned_notices(form);
+    let schedule = schedule_fields(
+        form.all_day.is_some(),
+        &form.starts_at,
+        &form.ends_at,
+        Some(&Pick {
+            action: &action,
+            family: family.carried,
+            picked: super::pick::was_picked(form),
+        }),
+    );
     let picker = recurrence_picker(&RecurrenceFields::from_form(form));
     let reminder = reminder_select(
         "reminder",
@@ -866,12 +927,12 @@ fn page<'a>(
     //
     // From a view of several families (#622), the « Famille » choice comes
     // first: choosing loads the sheet again, so it is made before typing.
-    let family = family.into();
     let body = format!(
         r#"<section class="card sheet">
 <div class="page-header"><hgroup><p class="eyebrow">{name}</p><h1>Nouvel événement</h1></hgroup>{close}</div>
 {choice}{error_html}
-<form method="post" action="{action}" enctype="multipart/form-data">
+<form method="post" action="{action_attr}" enctype="multipart/form-data">
+{default}
 <label>Titre <input type="text" name="title" required value="{title}"/></label>
 {schedule}
 {picker}
@@ -891,7 +952,8 @@ fn page<'a>(
 </section>"#,
         name = html_escape(family.name),
         choice = family.choice,
-        action = with_family(&sheet_url(family.prefill), family.carried),
+        action_attr = action,
+        default = default_button("Créer l'événement"),
         title = html_escape(&form.title),
         task = if form.is_task.is_some() {
             " checked"
@@ -978,7 +1040,7 @@ pub(crate) async fn reminder_push_block(state: &AppState, cookie: Option<&str>) 
 /// had before it took files (#525). Only the file of a multipart body,
 /// read under the upload gate, gets the route's 20 MiB: its text fields
 /// together stay within this (`read_multipart`).
-const FORM_BODY_LIMIT: usize = 2 * 1024 * 1024;
+pub(crate) const FORM_BODY_LIMIT: usize = 2 * 1024 * 1024;
 
 /// A file the sheet carried, read whole: its name and its bytes.
 type ChosenFile = (String, axum::body::Bytes);
@@ -1098,6 +1160,21 @@ pub async fn post(
         )
             .into_response();
     };
+
+    // Back from the choice page (#795): the sheet again, with what was
+    // typed, Début and Fin replaced by the choice. Nothing is created.
+    if form.choix.is_some() {
+        return Html(page(
+            &fam.header,
+            sheet(),
+            None,
+            &super::pick::with_choice(form),
+            &members,
+            &assignee_ids,
+            &push,
+        ))
+        .into_response();
+    }
 
     let render_error = |code: &str| {
         Html(page(
@@ -1382,7 +1459,7 @@ mod tests {
 
     #[test]
     fn timed_values_render_datetime_local_fields_and_an_unticked_box() {
-        let html = schedule_fields(false, "2026-09-05T10:00", "2026-09-05T11:00");
+        let html = schedule_fields(false, "2026-09-05T10:00", "2026-09-05T11:00", None);
         assert_eq!(
             input_types(&html),
             ["checkbox", "datetime-local", "datetime-local"],
@@ -1397,7 +1474,7 @@ mod tests {
     /// the last day covered.
     #[test]
     fn date_values_render_date_fields_and_a_ticked_box() {
-        let html = schedule_fields(true, "2026-09-05", "2026-09-07");
+        let html = schedule_fields(true, "2026-09-05", "2026-09-07", None);
         assert_eq!(input_types(&html), ["checkbox", "date", "date"], "{html}");
         assert!(html.contains(" checked"), "{html}");
         assert!(html.contains(r#"value="2026-09-05""#), "{html}");
@@ -1409,7 +1486,7 @@ mod tests {
     /// typed by its own value, as `form_bounds` reads it.
     #[test]
     fn each_field_is_typed_by_its_own_value() {
-        let html = schedule_fields(true, "2026-09-05T08:00", "2026-09-05T09:00");
+        let html = schedule_fields(true, "2026-09-05T08:00", "2026-09-05T09:00", None);
         assert_eq!(
             input_types(&html),
             ["checkbox", "datetime-local", "datetime-local"],
@@ -1423,8 +1500,8 @@ mod tests {
     #[test]
     fn names_labels_and_required_survive_the_swap() {
         for html in [
-            schedule_fields(false, "2026-09-05T10:00", "2026-09-05T11:00"),
-            schedule_fields(true, "2026-09-05", "2026-09-05"),
+            schedule_fields(false, "2026-09-05T10:00", "2026-09-05T11:00", None),
+            schedule_fields(true, "2026-09-05", "2026-09-05", None),
         ] {
             assert!(html.contains(r#"name="all_day""#), "{html}");
             assert!(html.contains("Journée entière"), "{html}");
@@ -1441,7 +1518,7 @@ mod tests {
     /// until then).
     #[test]
     fn the_box_asks_for_the_field_swap() {
-        let html = schedule_fields(false, "", "");
+        let html = schedule_fields(false, "", "", None);
         assert!(
             html.contains(r#"<input type="checkbox" name="all_day" data-all-day/>"#),
             "{html}"
@@ -1460,8 +1537,8 @@ mod tests {
     #[test]
     fn the_start_field_asks_the_end_to_follow_it() {
         for html in [
-            schedule_fields(false, "2026-12-01T10:00", "2026-12-01T11:00"),
-            schedule_fields(true, "2026-12-01", "2026-12-01"),
+            schedule_fields(false, "2026-12-01T10:00", "2026-12-01T11:00", None),
+            schedule_fields(true, "2026-12-01", "2026-12-01", None),
         ] {
             assert!(
                 html.contains(r#"<label>Début <input type="#)
@@ -1482,7 +1559,7 @@ mod tests {
     /// Error re-renders echo raw submitted strings back into `value`.
     #[test]
     fn submitted_values_are_escaped() {
-        let html = schedule_fields(false, r#""><script>"#, "x");
+        let html = schedule_fields(false, r#""><script>"#, "x", None);
         assert!(!html.contains("<script>"), "{html}");
         assert!(html.contains("&quot;&gt;&lt;script&gt;"), "{html}");
     }
@@ -1923,7 +2000,8 @@ mod tests {
             at(r#"name="is_task""#),
             at(r#"name="location""#),
             at(r#"name="description""#),
-            at("Créer l'événement"),
+            // The button that saves, not the form's hidden default (#795).
+            html.rfind("Créer l'événement").unwrap(),
         ];
         assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
     }
@@ -2542,7 +2620,7 @@ mod tests {
         let form = initial_form(Some(day("2026-11-12")), now());
         assert_eq!(bounds(&form), (true, "2026-11-12", "2026-11-12"));
         // Two date fields and a ticked box, read back as that one day.
-        let html = schedule_fields(true, &form.starts_at, &form.ends_at);
+        let html = schedule_fields(true, &form.starts_at, &form.ends_at, None);
         assert_eq!(input_types(&html), ["checkbox", "date", "date"], "{html}");
         let (s, e) = form_bounds(&form.starts_at, &form.ends_at).unwrap();
         assert_eq!(e - s, chrono::Duration::hours(24));

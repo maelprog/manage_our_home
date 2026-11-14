@@ -28,9 +28,9 @@ use crate::routes::groups::members::fetch_group_detail;
 use crate::state::{api_request_auth, AppState};
 
 use super::new::{
-    assignee_checkboxes, assignee_ids_from_raw_form, error_message, is_form_urlencoded,
-    private_checkbox, raw_is_private, recurrence_picker, rrule_from_form, schedule_fields,
-    EventForm, RecurrenceFields,
+    assignee_checkboxes, assignee_ids_from_raw_form, default_button, error_message,
+    is_form_urlencoded, private_checkbox, raw_is_private, recurrence_picker, rrule_from_form,
+    schedule_fields, EventForm, Pick, RecurrenceFields,
 };
 use super::{
     agenda_cookie, all_day_field_values, can_modify, date_only, event_not_found_page,
@@ -337,6 +337,50 @@ fn page(
     family: Option<Uuid>,
     scope: Option<&ScopeChoice>,
 ) -> String {
+    page_with(
+        header,
+        id,
+        is_task,
+        title,
+        description,
+        location,
+        starts_local,
+        ends_local,
+        all_day,
+        recurrence,
+        error,
+        members,
+        selected_assignees,
+        is_private,
+        family,
+        scope,
+        "",
+    )
+}
+
+/// `page`, back from the choice page (#795) with `returned`, what it says
+/// of the choice (`pick::returned_notices`): Début and Fin then wear
+/// `.picked` when it says anything.
+#[allow(clippy::too_many_arguments)]
+fn page_with(
+    header: &str,
+    id: Uuid,
+    is_task: bool,
+    title: &str,
+    description: &str,
+    location: &str,
+    starts_local: &str,
+    ends_local: &str,
+    all_day: bool,
+    recurrence: &RecurrenceFields,
+    error: Option<&str>,
+    members: &[GroupMember],
+    selected_assignees: &[Uuid],
+    is_private: bool,
+    family: Option<Uuid>,
+    scope: Option<&ScopeChoice>,
+    returned: &str,
+) -> String {
     // The family the event was opened in, when it is not the active one
     // (#622): the form posts to it and the way back returns to it — to the
     // occurrence the form was opened on, if any (#709).
@@ -356,13 +400,24 @@ fn page(
     let assignees = assignee_checkboxes(members, selected_assignees);
     let hint = assignment_hint(members);
     let private = private_checkbox(is_private);
-    let schedule = schedule_fields(all_day, starts_local, ends_local);
+    let schedule = schedule_fields(
+        all_day,
+        starts_local,
+        ends_local,
+        Some(&Pick {
+            action: &action,
+            family,
+            picked: !returned.is_empty(),
+        }),
+    );
     let kind = if is_task { "Tâche" } else { "Événement" };
+    let default = default_button("Enregistrer");
     let body = format!(
         r#"<h1>Modifier — {title_esc}</h1>
 <p class="muted">{kind} (le type ne peut pas être changé après création)</p>
-{error_html}
+{error_html}{returned}
 <form method="post" action="{action}">
+{default}
 <label>Titre <input type="text" name="title" required value="{title_attr}"/></label>
 {schedule}
 <label>Lieu <input type="text" name="location" value="{location_attr}"/></label>
@@ -542,6 +597,49 @@ pub async fn post(
     // the rule refused included: read through the rule, it fell back to
     // « Aucune » and the recurrence had to be chosen again (#696).
     let rec_for_render = RecurrenceFields::from_form(&form);
+
+    // Back from the choice page (#795): the form again, with what was
+    // typed, Début and Fin replaced by the choice. Nothing is saved. The
+    // kind of the event is not on the form: it is read, and shown as an
+    // event when it cannot be.
+    if form.choix.is_some() {
+        let returned = super::pick::returned_notices(&form);
+        let form = super::pick::with_choice(form);
+        let is_task = match api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            &format!("/groups/{}/events/{}", fam.gid, event_id),
+            cookie.as_deref(),
+            None,
+        )
+        .await
+        {
+            Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+                serde_json::from_value::<EventResponse>(resp.body).is_ok_and(|e| e.is_task)
+            }
+            _ => false,
+        };
+        return Html(page_with(
+            &fam.header,
+            event_id,
+            is_task,
+            &form.title,
+            &form.description,
+            &form.location,
+            &form.starts_at,
+            &form.ends_at,
+            form.all_day.is_some(),
+            &rec_for_render,
+            None,
+            &members,
+            &assignee_ids,
+            form.is_private.is_some(),
+            fam.carried,
+            shown_scope.as_ref(),
+            &returned,
+        ))
+        .into_response();
+    }
 
     let render_error = |code: &str| {
         Html(page(
@@ -857,7 +955,7 @@ mod tests {
             "{html}"
         );
         assert!(html.find("Aucune sélection").unwrap() < boxed, "{html}");
-        assert!(boxed < html.find("Enregistrer").unwrap(), "{html}");
+        assert!(boxed < html.rfind("Enregistrer").unwrap(), "{html}");
         assert!(html.contains(&private_checkbox(false)), "{html}");
         assert!(edit_page(true).contains(&private_checkbox(true)));
     }
@@ -1243,7 +1341,7 @@ mod tests {
         );
         let scope = html.find(r#"name="scope""#).expect(&html);
         assert!(html.find(r#"name="is_private""#).unwrap() < scope, "{html}");
-        assert!(scope < html.find("Enregistrer").unwrap(), "{html}");
+        assert!(scope < html.rfind("Enregistrer").unwrap(), "{html}");
         // The way back returns to the occurrence it came from.
         assert!(
             html.contains(&format!(
