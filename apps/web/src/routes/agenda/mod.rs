@@ -24,6 +24,7 @@ pub mod edit;
 pub mod imports;
 pub mod month;
 pub mod new;
+pub mod pick;
 pub mod reminders;
 
 use axum::extract::FromRequestParts;

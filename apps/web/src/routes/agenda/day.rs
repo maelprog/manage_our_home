@@ -13,6 +13,54 @@ use super::calendar::{
 use super::new::{sheet_url, Prefill};
 use super::{fmt_paris, private_mark, with_family, DISPLAY_TZ};
 
+/// What the day's banner and hours are drawn for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Use<'a> {
+    /// The day view (#793): each entry and block a link to its event, each
+    /// half hour and the banner a link to the sheet (#794), the selection
+    /// of families kept (`keeping`).
+    View(&'a str),
+    /// The choice of a day and an hour from an event's form (#795): the
+    /// blocks are lines, not links, and the half hours and each entry of
+    /// the banner are the form's buttons `choix`. The event the form
+    /// edits, if any, is drawn apart (`.self`) and named « Cet événement ».
+    Pick(Option<uuid::Uuid>),
+}
+
+impl Use<'_> {
+    /// Whether `occ` is the event the form of a choice edits.
+    fn is_self(self, occ: &OccurrenceResponse) -> bool {
+        matches!(self, Use::Pick(Some(id)) if id == occ.event.id)
+    }
+
+    /// The element a block is: a link in the day view, a line in a
+    /// choice, whose buttons lie under it.
+    fn element(self) -> &'static str {
+        match self {
+            Use::View(_) => "a",
+            Use::Pick(_) => "span",
+        }
+    }
+
+    /// The `href` of a block, none in a choice.
+    fn href(self, href: &str) -> String {
+        match self {
+            Use::View(_) => format!(r#" href="{href}""#),
+            Use::Pick(_) => String::new(),
+        }
+    }
+
+    /// The class and the words that set apart the event a choice's form
+    /// edits: its dashed outline is not the only thing that says so.
+    fn marks(self, occ: &OccurrenceResponse) -> (&'static str, &'static str) {
+        if self.is_self(occ) {
+            (" self", " <em>Cet événement</em>")
+        } else {
+            ("", "")
+        }
+    }
+}
+
 /// The precision of the line of the current time: a quarter of its hour.
 pub(crate) const SLOT_MINUTES: i64 = 15;
 
@@ -282,17 +330,27 @@ pub(crate) fn half_hours(day: NaiveDate) -> Vec<DateTime<Utc>> {
 /// 12 novembre à 09:30 ». They come after the table: a keyboard reaches
 /// every block of the day first, and does not walk through 48 links to
 /// get to an event.
-pub(crate) fn slots_html(day: NaiveDate, kept: &str) -> String {
+///
+/// For a choice (#795), a button `choix` per half hour instead, its value
+/// the half hour's Paris wall clock, named « Début à 09:30 » — the hour
+/// drawn, the rest `.sr-only`.
+pub(crate) fn slots_html(day: NaiveDate, usage: Use) -> String {
     let name = day_name(day);
     let links: String = half_hours(day)
         .into_iter()
         .map(|at| {
             let wall = at.with_timezone(&DISPLAY_TZ).naive_local();
-            format!(
-                r#"<a href="{href}"><span class="sr-only">Créer un événement le {name} à {time}</span></a>"#,
-                href = keeping(sheet_url(Some(Prefill::At(wall))), kept),
-                time = fmt_paris(at, "%H:%M"),
-            )
+            let time = fmt_paris(at, "%H:%M");
+            match usage {
+                Use::View(kept) => format!(
+                    r#"<a href="{href}"><span class="sr-only">Créer un événement le {name} à {time}</span></a>"#,
+                    href = keeping(sheet_url(Some(Prefill::At(wall))), kept),
+                ),
+                Use::Pick(_) => format!(
+                    r#"<button type="submit" name="choix" value="{value}"><span class="sr-only">Début à </span>{time}</button>"#,
+                    value = wall.format("%Y-%m-%dT%H:%M"),
+                ),
+            }
         })
         .collect();
     format!(r#"<div class="slots">{links}</div>"#)
@@ -306,6 +364,14 @@ fn banner_slot(day: NaiveDate, kept: &str) -> String {
         r#"<a class="slot" href="{href}"><span class="sr-only">Créer un événement sur la journée du {name}</span></a>"#,
         href = keeping(sheet_url(Some(Prefill::Day(day))), kept),
         name = day_name(day),
+    )
+}
+
+/// The button of a choice's banner with no entry (#795): that whole day,
+/// in words.
+fn whole_day_button(day: NaiveDate) -> String {
+    format!(
+        r#"<button type="submit" class="ad" name="choix" value="{day}"><strong>Journée entière ce jour</strong> <span>Rien de prévu dans le bandeau</span></button>"#
     )
 }
 
@@ -373,6 +439,18 @@ pub(crate) fn banner_html(
     families: &[FamilyTag],
     kept: &str,
 ) -> String {
+    banner_for(day, occs, national, members, families, Use::View(kept))
+}
+
+/// `banner_html`, for the day view or a choice (`Use`, #795).
+pub(crate) fn banner_for(
+    day: NaiveDate,
+    occs: &[&OccurrenceResponse],
+    national: &[&str],
+    members: &[GroupMember],
+    families: &[FamilyTag],
+    usage: Use,
+) -> String {
     let national: String = national
         .iter()
         .map(|label| format!(r#"<p class="ad gen">{}</p>"#, html_escape(label)))
@@ -394,20 +472,54 @@ pub(crate) fn banner_html(
                 (false, true) => " done",
                 (false, false) => w.tint.as_str(),
             };
+            let (me, named) = usage.marks(occ);
+            let title = html_escape(&e.title);
+            // A link to the event in the day view; in a choice, a button
+            // that chooses the whole day, which its name says.
+            let (open, tag) = match usage {
+                Use::View(_) => (format!(r#"a class="ad{class}{me}" href="{}""#, w.href), "a"),
+                Use::Pick(_) => (
+                    format!(
+                        r#"button type="submit" class="ad{class}{me}" name="choix" value="{day}" aria-label="Choisir ce jour entier : {title}""#
+                    ),
+                    "button",
+                ),
+            };
             format!(
-                r#"<a class="ad{class}" href="{href}">{initials}<strong>{private}{marker}{title}</strong> <span>{sub}</span>{family}</a>"#,
-                href = w.href,
+                r#"<{open}>{initials}<strong>{private}{marker}{title}</strong> <span>{sub}</span>{family}{named}</{tag}>"#,
                 initials = w.initials,
                 private = private_mark(e.is_private),
-                title = html_escape(&e.title),
                 sub = html_escape(&sub),
                 family = w.family,
             )
         })
         .collect();
+    let last = match usage {
+        Use::View(kept) => banner_slot(day, kept),
+        Use::Pick(_) if events.is_empty() => whole_day_button(day),
+        Use::Pick(_) => String::new(),
+    };
+    format!(r#"<div class="allday"><h2 class="eyebrow">Journée</h2>{national}{events}{last}</div>"#)
+}
+
+/// A timed event of `day` as a line among the half hours of a choice
+/// without JavaScript (#795): its hours, its people's initials, its title,
+/// in its member's tint as an entry of the banner is drawn.
+pub(crate) fn hour_line(occ: &OccurrenceResponse, members: &[GroupMember], usage: Use) -> String {
+    let e = &occ.event;
+    let (marker, done) = task_marker(occ);
+    let w = worn(occ, members, &[]);
+    let tint = if done { " done" } else { w.tint.as_str() };
+    let (me, named) = usage.marks(occ);
     format!(
-        r#"<div class="allday"><h2 class="eyebrow">Journée</h2>{national}{events}{}</div>"#,
-        banner_slot(day, kept)
+        r#"<p class="ad{tint}{me}"><span>{time}</span>{initials}<strong>{private}{marker}{title}</strong>{named}</p>"#,
+        time = html_escape(&time_label(
+            occ.occurrence_starts_at,
+            occ.occurrence_ends_at
+        )),
+        initials = w.initials,
+        private = private_mark(e.is_private),
+        title = html_escape(&e.title),
     )
 }
 
@@ -424,6 +536,7 @@ fn block_html(
     inset: &str,
     members: &[GroupMember],
     families: &[FamilyTag],
+    usage: Use,
 ) -> String {
     let e = &occ.event;
     let (marker, done) = task_marker(occ);
@@ -451,10 +564,19 @@ fn block_html(
         " mid" => format!(r#"<span class="sub">{time}{}</span>"#, w.family),
         _ => format!(r#"<span class="sub">{time}</span>{}"#, w.family),
     };
+    let (me, named) = usage.marks(occ);
+    // In a choice, the minutes of the day it takes, which `enhance.js`
+    // reads to say what a half hour would overlap — not the event the form
+    // edits, no conflict with itself.
+    let span = match usage {
+        Use::Pick(_) if me.is_empty() => format!(r#" data-span="{} {}""#, clip.from, clip.to),
+        _ => String::new(),
+    };
     format!(
-        r#"<a class="blk{tint}{short}{cut_start}{cut_end}{done}" style="{inset}" href="{href}"><strong>{private}{marker}{title}</strong> {lines}</a>"#,
+        r#"<{tag} class="blk{tint}{short}{cut_start}{cut_end}{done}{me}" style="{inset}"{href}{span}><strong>{private}{marker}{title}</strong> {lines}{named}</{tag}>"#,
+        tag = usage.element(),
         tint = w.tint,
-        href = w.href,
+        href = usage.href(&w.href),
         private = private_mark(e.is_private),
         title = html_escape(&e.title),
     )
@@ -502,6 +624,27 @@ pub(crate) fn hours_html(
     empty_note: bool,
     kept: &str,
 ) -> String {
+    hours_for(
+        day,
+        blocks,
+        members,
+        families,
+        now,
+        empty_note,
+        Use::View(kept),
+    )
+}
+
+/// `hours_html`, for the day view or a choice (`Use`, #795).
+pub(crate) fn hours_for(
+    day: NaiveDate,
+    blocks: &[(&OccurrenceResponse, Clip)],
+    members: &[GroupMember],
+    families: &[FamilyTag],
+    now: Option<DateTime<Utc>>,
+    empty_note: bool,
+    usage: Use,
+) -> String {
     let labels = hour_labels(day);
     let length = labels.len() * 60;
     let spans: Vec<(usize, usize)> = blocks.iter().map(|(_, c)| extent(*c, length)).collect();
@@ -535,13 +678,14 @@ pub(crate) fn hours_html(
                 &place,
                 members,
                 families,
+                usage,
             ));
         }
         out.push_str("</td></tr>");
     }
     format!(
         r#"<div class="hours-scroll" tabindex="0" role="region" aria-label="Heures"><table class="hours" role="presentation"><tbody>{out}</tbody></table>{slots}</div>"#,
-        slots = slots_html(day, kept),
+        slots = slots_html(day, usage),
     )
 }
 
@@ -1306,7 +1450,7 @@ mod tests {
 
     #[test]
     fn each_half_hour_opens_the_sheet_on_it_and_is_named() {
-        let html = slots_html(nov(12), "");
+        let html = slots_html(nov(12), Use::View(""));
         assert!(html.starts_with(r#"<div class="slots">"#), "{html}");
         assert_eq!(html.matches("<a ").count(), 48, "{html}");
         assert!(
@@ -1329,7 +1473,7 @@ mod tests {
 
     #[test]
     fn the_half_hours_keep_the_families_of_the_view() {
-        let html = slots_html(nov(12), "familles=toutes");
+        let html = slots_html(nov(12), Use::View("familles=toutes"));
         assert!(
             html.contains(r#"<a href="/agenda/new?debut=2026-11-12T09:30&familles=toutes">"#),
             "{html}"
@@ -1338,7 +1482,7 @@ mod tests {
 
     #[test]
     fn the_half_hours_of_a_day_of_23_hours_skip_the_hour_that_is_not() {
-        let html = slots_html(date(2026, 3, 29), "");
+        let html = slots_html(date(2026, 3, 29), Use::View(""));
         assert_eq!(html.matches("<a ").count(), 46, "{html}");
         assert!(!html.contains("T02:"), "{html}");
         assert!(html.contains("debut=2026-03-29T01:30"), "{html}");
@@ -1362,6 +1506,140 @@ mod tests {
             html.ends_with("</a></div></div>"),
             "the slots close the scroller: {html}"
         );
+    }
+
+    // -- choosing from an event's form (#795) --------------------------------
+
+    #[test]
+    fn a_choice_draws_the_hours_without_links_and_its_half_hours_as_buttons() {
+        let o = occ(
+            "Réunion école",
+            false,
+            paris(2026, 11, 12, 10, 0),
+            paris(2026, 11, 12, 11, 30),
+        );
+        let c = clip(o.occurrence_starts_at, o.occurrence_ends_at, nov(12)).unwrap();
+        let html = hours_for(
+            nov(12),
+            &[(&o, c)],
+            &[member()],
+            &[],
+            None,
+            true,
+            Use::Pick(None),
+        );
+        assert!(!html.contains("<a "), "{html}");
+        assert!(!html.contains("href="), "{html}");
+        assert!(html.contains(r#"<span class="blk "#), "{html}");
+        assert_eq!(html.matches("<button ").count(), 48, "{html}");
+        assert!(
+            html.contains(r#"<button type="submit" name="choix" value="2026-11-12T09:30"><span class="sr-only">Début à </span>09:30</button>"#),
+            "{html}"
+        );
+        assert!(!html.contains("Cet événement"), "{html}");
+    }
+
+    #[test]
+    fn a_choice_sets_apart_the_event_its_form_edits() {
+        let o = occ(
+            "Dentiste",
+            false,
+            paris(2026, 11, 12, 9, 0),
+            paris(2026, 11, 12, 11, 0),
+        );
+        let c = clip(o.occurrence_starts_at, o.occurrence_ends_at, nov(12)).unwrap();
+        let mine = hours_for(
+            nov(12),
+            &[(&o, c)],
+            &[member()],
+            &[],
+            None,
+            true,
+            Use::Pick(Some(Uuid::from_u128(1))),
+        );
+        assert!(mine.contains(" self\""), "{mine}");
+        assert!(mine.contains("<em>Cet événement</em></span>"), "{mine}");
+        let other = hours_for(
+            nov(12),
+            &[(&o, c)],
+            &[member()],
+            &[],
+            None,
+            true,
+            Use::Pick(Some(Uuid::from_u128(2))),
+        );
+        assert!(!other.contains("self"), "{other}");
+    }
+
+    #[test]
+    fn each_entry_of_a_choices_banner_chooses_the_whole_day() {
+        let one = occ(
+            "Anniversaire",
+            true,
+            paris(2026, 11, 12, 0, 0),
+            paris(2026, 11, 13, 0, 0),
+        );
+        let html = banner_for(
+            nov(12),
+            &[&one],
+            &[],
+            &[member()],
+            &[],
+            Use::Pick(Some(Uuid::from_u128(1))),
+        );
+        assert!(
+            html.contains(r#" self" name="choix" value="2026-11-12" aria-label="Choisir ce jour entier : Anniversaire">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<button type="submit" class="ad "#),
+            "{html}"
+        );
+        assert_eq!(html.matches("<button ").count(), 1, "{html}");
+        assert!(!html.contains("href="), "{html}");
+        assert!(html.contains("<em>Cet événement</em></button>"), "{html}");
+        assert!(!html.contains("Journée entière ce jour"), "{html}");
+    }
+
+    #[test]
+    fn an_empty_choices_banner_is_one_button_that_says_so() {
+        let html = banner_for(nov(12), &[], &[], &[member()], &[], Use::Pick(None));
+        assert_eq!(
+            html,
+            r#"<div class="allday"><h2 class="eyebrow">Journée</h2><button type="submit" class="ad" name="choix" value="2026-11-12"><strong>Journée entière ce jour</strong> <span>Rien de prévu dans le bandeau</span></button></div>"#
+        );
+    }
+
+    #[test]
+    fn a_choices_blocks_say_the_minutes_they_take_but_the_one_edited() {
+        let o = occ(
+            "Dentiste",
+            false,
+            paris(2026, 11, 12, 9, 0),
+            paris(2026, 11, 12, 11, 0),
+        );
+        let c = clip(o.occurrence_starts_at, o.occurrence_ends_at, nov(12)).unwrap();
+        let draw = |usage| hours_for(nov(12), &[(&o, c)], &[member()], &[], None, true, usage);
+        assert!(draw(Use::Pick(None)).contains(r#" data-span="540 660">"#));
+        assert!(!draw(Use::Pick(Some(Uuid::from_u128(1)))).contains("data-span"));
+        assert!(!draw(Use::View("")).contains("data-span"));
+    }
+
+    #[test]
+    fn a_timed_event_is_a_line_among_the_half_hours() {
+        let o = occ(
+            "Pharmacie",
+            false,
+            paris(2026, 11, 12, 12, 15),
+            paris(2026, 11, 12, 12, 45),
+        );
+        let html = hour_line(&o, &[member()], Use::Pick(None));
+        assert!(html.starts_with(r#"<p class="ad "#), "{html}");
+        assert!(html.contains("<span>12:15–12:45</span>"), "{html}");
+        assert!(html.ends_with("<strong>Pharmacie</strong></p>"), "{html}");
+        let mine = hour_line(&o, &[member()], Use::Pick(Some(Uuid::from_u128(1))));
+        assert!(mine.contains(" self\""), "{mine}");
+        assert!(mine.ends_with("<em>Cet événement</em></p>"), "{mine}");
     }
 
     #[test]
