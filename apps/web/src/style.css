@@ -650,17 +650,26 @@ dialog.viewer { width: 100%; max-width: min(var(--w-read), 100% - 2 * var(--s4))
 .m7 { background: color-mix(in srgb, var(--surface), var(--m7) 16%); }
 .m8 { background: color-mix(in srgb, var(--surface), var(--m8) 16%); }
 /* The day view's edge in the member's hue (#793), as the mock-up draws it;
-   the initials beside the title still name them (WCAG 1.4.1). A bar of
-   the month (#836) takes it on its outline too: its other sides have no
-   width unless it is outlined. */
-:is(.blk, .ad, .bar).m1 { border-color: var(--m1); }
-:is(.blk, .ad, .bar).m2 { border-color: var(--m2); }
-:is(.blk, .ad, .bar).m3 { border-color: var(--m3); }
-:is(.blk, .ad, .bar).m4 { border-color: var(--m4); }
-:is(.blk, .ad, .bar).m5 { border-color: var(--m5); }
-:is(.blk, .ad, .bar).m6 { border-color: var(--m6); }
-:is(.blk, .ad, .bar).m7 { border-color: var(--m7); }
-:is(.blk, .ad, .bar).m8 { border-color: var(--m8); }
+   the initials beside the title still name them (WCAG 1.4.1). The left
+   edge only: a block's dashed cut edges (`.cut-s`, `.cut-e`) stay --fg. A
+   bar of the month (#836) takes the hue on its outline too: its other
+   sides have no width unless it is outlined. */
+:is(.blk, .ad).m1 { border-left-color: var(--m1); }
+:is(.blk, .ad).m2 { border-left-color: var(--m2); }
+:is(.blk, .ad).m3 { border-left-color: var(--m3); }
+:is(.blk, .ad).m4 { border-left-color: var(--m4); }
+:is(.blk, .ad).m5 { border-left-color: var(--m5); }
+:is(.blk, .ad).m6 { border-left-color: var(--m6); }
+:is(.blk, .ad).m7 { border-left-color: var(--m7); }
+:is(.blk, .ad).m8 { border-left-color: var(--m8); }
+.bar.m1 { border-color: var(--m1); }
+.bar.m2 { border-color: var(--m2); }
+.bar.m3 { border-color: var(--m3); }
+.bar.m4 { border-color: var(--m4); }
+.bar.m5 { border-color: var(--m5); }
+.bar.m6 { border-color: var(--m6); }
+.bar.m7 { border-color: var(--m7); }
+.bar.m8 { border-color: var(--m8); }
 /* The initials in a chip: the avatar at the height of the chip's line. */
 .chip .avatar { width: var(--s4); height: var(--s4); margin-right: var(--s1); vertical-align: top; }
 /* A chip of an agenda showing several families (#622): its family's colour
@@ -809,11 +818,15 @@ progress::-moz-progress-bar { background: currentColor; }
 .day:not(.c1) { border-left: 1px solid var(--line); }
 .day:is(.c6, .c7) { background: var(--hover); }
 .day.out { color: var(--muted); font-weight: 400; }
+/* Its weekend ground faded, as the mock-up draws it: the ground alone,
+   never its number, which keeps --muted's contrast. */
+.day.out:is(.c6, .c7) { background: color-mix(in srgb, var(--hover) 60%, transparent); }
 .day span { min-width: var(--s6); line-height: var(--s6); border-radius: var(--r-sm); text-align: center; }
 .day[aria-current] span { background: var(--accent); color: var(--accent-fg); }
 .day:focus-visible { outline-offset: -2px; }
-/* The week's number, on a PC: over its Monday, which the pointer reaches. */
-.wn { grid-row: 1; align-self: center; margin-left: var(--s2x); color: var(--muted); font-size: var(--t-xs); pointer-events: none; }
+/* The week's number, on a PC: over its Monday, which the pointer reaches,
+   on a pastille of the page's ground. */
+.wn { grid-row: 1; align-self: center; margin-left: var(--s2x); padding: 0 var(--s1); border-radius: var(--s1); background: var(--bg); color: var(--muted); font-size: var(--t-xs); pointer-events: none; }
 /* A bar: one line, cut by an ellipsis; its ground, edge and outline are
    the chips' (above). In a view of several families, its family's colour
    is its edge, as on a chip (#622). Bars and « +N » sit over the days,
@@ -823,7 +836,9 @@ progress::-moz-progress-bar { background: currentColor; }
 .bar[data-accent] { border-left-color: var(--accent); }
 .plus { z-index: 1; margin: 0 1px; padding: 0 var(--s1); color: var(--accent); font-size: 0.75rem; font-weight: 600; line-height: 1.125rem; }
 @media (min-width: 861px) {
-  .wk { grid-template-rows: calc(var(--s6) + var(--s2x)) repeat(5, 1.625rem) minmax(var(--s1), 1fr); min-height: 9.25rem; }
+  /* 148px at least, the mock-up's week: its rows of bars as tall as what
+     they hold, so that an empty week keeps to it. */
+  .wk { grid-template-rows: calc(var(--s6) + var(--s2x)) repeat(5, auto) minmax(var(--s1), 1fr); min-height: 9.25rem; }
   .day span { min-width: calc(var(--s6) + var(--s1)); line-height: calc(var(--s6) + var(--s1)); }
   .bar, .plus { margin-inline: var(--s1); padding: 0 var(--s2x); font-size: var(--t-sm); line-height: 1.5rem; }
 }
@@ -1287,6 +1302,9 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   /* The phone side of the one markup (`app::app_header`, #523): what only
      a PC shows. Here, after `.navlink`, which it has to override. */
   .pc { display: none; }
+  /* The month's weekday heads (#836): « lun. » on a PC, its capital
+     initial here. */
+  .dh { text-transform: uppercase; }
   /* The home's cards on a phone (#524): two columns, the two tiles side by
      side, every card the whole row. */
   .dash { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: var(--s3); }

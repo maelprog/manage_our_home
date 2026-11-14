@@ -6,11 +6,14 @@
 //! the 7-day view, `?view=day` to one day hour by hour (#793, `super::day`);
 //! `?date=YYYY-MM-DD` moves the focus.
 //!
-//! # One markup, two readings (#71)
+//! # The week: one markup, two readings (#71)
+//!
+//! The month is no longer drawn here: since #836 it is a grid of bars,
+//! read on a phone as on a PC (`super::month`). What follows is the week's.
 //!
 //! Seven columns on a 390px phone give ~50px a day, which no stylesheet
-//! rescues, so DESIGN.md → Layout asks for a day view below 861px. This
-//! route does **not** render one. It renders the grid, once, and
+//! rescues, so DESIGN.md → Layout asks for a day view below 861px. The
+//! week does **not** render one. It renders the grid, once, and
 //! `style.css`'s `@media not all and (min-width: 861px)` block re-reads
 //! those same cells as a list of the days that carry something.
 //!
@@ -44,9 +47,9 @@
 //! no inline style) *and* their initials, since WCAG 1.4.1 forbids the hue
 //! carrying the information alone.
 //!
-//! The month view caps a crowded day at `MONTH_CHIP_CAP` and counts the
-//! rest into a "+N autres" link to the day view of that day (#793; to the
-//! week view before), which lists everything.
+//! The week caps nothing: a row of seven cells has nothing under it to
+//! push out of view. A crowded day of the month counts what its bars do
+//! not show into a « +N » link to its day view (#836, `super::month`).
 //!
 //! # The mock-up's head and day panel (#525)
 //!
@@ -55,18 +58,19 @@
 //! the panel of the day in focus (`day_panel`, `.pc`): the day `?date=`
 //! names, today when it names none.
 //!
-//! # A phone's period at a glance (#675)
+//! # A phone's week at a glance (#675)
 //!
-//! The list of #71 shows only the days that carry something, so a month
-//! with nothing in it showed no date at all. A phone now gets, above the
-//! list, a mini grid of the same days (`render_mini`, `.phone`): their
+//! The list of #71 shows only the days that carry something, so a week
+//! with nothing in it showed no date at all. A phone gets, above the list,
+//! a mini grid of the same seven days (`render_mini`, `.phone`): their
 //! numbers under the weekdays' initials, each a link to its day view (#793;
 //! a day that carries something led to its entry in the list before),
 //! and an empty state when that list is
 //! empty (`empty_state`). It is a second markup, the trade #71 refused, and
 //! it does not undo that refusal: what #71 would not pay was a list growing
-//! with what the family has stored. The mini grid holds 42 days at most and
-//! counts occurrences without listing them.
+//! with what the family has stored. The mini grid holds seven days and
+//! counts occurrences without listing them. The month had both, list and
+//! mini grid, until its bars replaced them (#836).
 //!
 //! # The national days (#565)
 //!
@@ -166,16 +170,14 @@ pub(crate) fn member_tint(user_id: uuid::Uuid) -> &'static str {
     MEMBER_TINTS[member_index(user_id)]
 }
 
-/// The most occurrences a month-grid cell lists before it stops listing and
-/// starts counting. A cell is 6.5rem tall (104px) and that is what three
-/// chips and a day number come to: 3 × (13px line + 2px padding × 2 + 2px
-/// margin) + a 14px line + the cell's own 4px padding ≈ 105px.
+/// The most chips a day of the home page's week lists before it stops
+/// listing and starts counting (`routes::home`). The name is the month
+/// grid's of #71, whose cells it capped at three until #836 drew the month
+/// in bars, which count by their own caps (`super::month`, `PHONE_BARS`
+/// and `PC_BARS`).
 ///
-/// The week view caps nothing — not because its cells are taller (since
-/// #71 they are the same cells) but because there is only one row of them,
-/// so a cell that grows past 6.5rem pushes nothing out of view. The month
-/// grid's "+N autres" sends the reader to the day view of that day (#793),
-/// which lists everything.
+/// The agenda's week caps nothing: there is only one row of cells, so a
+/// cell that grows pushes nothing out of view.
 pub(crate) const MONTH_CHIP_CAP: usize = 3;
 
 #[derive(serde::Deserialize)]

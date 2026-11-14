@@ -256,13 +256,15 @@ pub(crate) fn month_html(
     title: &str,
     viewer: &Viewer,
 ) -> String {
-    // The weekdays: an initial on a phone, the abbreviation on a PC. Each
-    // day's link names its weekday in full, so the heads are not read.
+    // The weekdays: a capital initial on a phone, « lun. » on a PC — the
+    // stylesheet capitalises the phone's. Each day's link names its
+    // weekday in full, so the heads are not read.
     let heads: String = FR_WEEKDAYS
         .iter()
         .map(|d| {
+            let d = d.to_lowercase();
             let (initial, rest) = d.split_at(1);
-            format!(r#"<span>{initial}<span class="pc">{rest}</span></span>"#)
+            format!(r#"<span>{initial}<span class="pc">{rest}.</span></span>"#)
         })
         .collect();
     let mut out = format!(
@@ -520,6 +522,11 @@ mod tests {
             span(false, paris(11, 0, 0), paris(12, 0, 0)),
             (ymd(11, 11), ymd(11, 11))
         );
+        // 24 hours to the minute, from evening to evening: both days.
+        assert_eq!(
+            span(false, paris(11, 18, 0), paris(12, 18, 0)),
+            (ymd(11, 11), ymd(11, 12))
+        );
     }
 
     // -- pack ---------------------------------------------------------------
@@ -711,6 +718,15 @@ mod tests {
         assert_eq!((holiday.first, holiday.last), (ymd(11, 12), ymd(11, 20)));
     }
 
+    #[test]
+    fn of_bars_of_several_days_starting_together_the_longest_comes_first() {
+        let occs = vec![
+            whole(1, "Court", 11, 12, &[1]),
+            whole(2, "Long", 11, 14, &[1]),
+        ];
+        assert_eq!(names(&items(&occs, &[])), ["Long", "Court"]);
+    }
+
     // -- month_html ---------------------------------------------------------
 
     fn november() -> Vec<NaiveDate> {
@@ -751,7 +767,7 @@ mod tests {
         );
         assert_eq!(html.matches(r#"<div class="wk">"#).count(), 6, "{html}");
         assert!(
-            html.contains(r#"<span>L<span class="pc">un</span></span>"#),
+            html.contains(r#"<span>l<span class="pc">un.</span></span>"#),
             "{html}"
         );
     }
