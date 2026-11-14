@@ -112,6 +112,7 @@ pub async fn create_reminder(
 
 /// The columns of an event its reminders are scheduled from — what
 /// `list_events` unrolls it from too (#169).
+#[derive(Clone, Copy)]
 pub struct EventTimes<'a> {
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
@@ -163,6 +164,35 @@ pub async fn refill_notifications(
         .await?;
     }
 
+    Ok(())
+}
+
+/// Schedules again the reminders of `event_id` once its occurrences moved
+/// (#841): the notifications still pending were computed on the old ones
+/// and go, then every reminder of the event is refilled on `event`, the
+/// event as just written. Those already sent, failed or retired stay as
+/// they are — and keep their `(reminder, occurrence)` slot, so an
+/// occurrence already reminded is not reminded twice.
+pub async fn reschedule_pending(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event_id: Uuid,
+    event: EventTimes<'_>,
+) -> anyhow::Result<()> {
+    sqlx::query!(
+        "DELETE FROM scheduled_notifications WHERE event_id = $1 AND status = 'pending'",
+        event_id,
+    )
+    .execute(&mut **tx)
+    .await?;
+    let reminders = sqlx::query!(
+        "SELECT id, offset_minutes FROM event_reminders WHERE event_id = $1",
+        event_id,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for reminder in reminders {
+        refill_notifications(tx, reminder.id, event_id, event, reminder.offset_minutes).await?;
+    }
     Ok(())
 }
 

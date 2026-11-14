@@ -374,3 +374,33 @@ async fn without_an_active_account_the_answer_is_401(db: PgPool) {
         assert_status(&res, StatusCode::UNAUTHORIZED);
     }
 }
+
+/// #841: an event renamed is listed under its new title, read from the
+/// event: the rename leaves its pending notification as it was.
+#[sqlx::test]
+async fn a_renamed_event_is_listed_under_its_new_title(db: PgPool) {
+    let router = build_router(test_state(db.clone()));
+    let (me, cookie) = user(&db, "me@example.test", "push").await;
+    let group = family(&db, me, &[]).await;
+    let f = reminder(&db, group, me, "IRM", 60).await;
+
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group}/events/{}", f.event),
+        Some(&cookie),
+        Some(serde_json::json!({ "title": "Scanner" })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+
+    assert_eq!(upcoming_titles(&router, &cookie).await, ["Scanner"]);
+    let pending: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM scheduled_notifications WHERE event_id = $1 AND status = 'pending'",
+    )
+    .bind(f.event)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(pending, [f.notification]);
+}

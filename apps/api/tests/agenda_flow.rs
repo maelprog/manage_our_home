@@ -1911,6 +1911,276 @@ async fn an_excluded_occurrence_is_neither_listed_nor_reminded(db: PgPool) {
     }
 }
 
+/// Whole seconds: what the base stores and gives back, so instants compare
+/// exactly.
+fn whole_seconds(at: DateTime<Utc>) -> DateTime<Utc> {
+    Utc.timestamp_opt(at.timestamp(), 0).unwrap()
+}
+
+/// The notifications of `event` in `status`, as (reminder, occurrence,
+/// fire), in that order.
+async fn notifications_in(
+    db: &PgPool,
+    event: Uuid,
+    status: &str,
+) -> Vec<(Uuid, DateTime<Utc>, DateTime<Utc>)> {
+    sqlx::query_as(
+        "SELECT event_reminder_id, occurrence_at, fire_at FROM scheduled_notifications
+         WHERE event_id = $1 AND status = $2
+         ORDER BY event_reminder_id, occurrence_at",
+    )
+    .bind(event)
+    .bind(status)
+    .fetch_all(db)
+    .await
+    .unwrap()
+}
+
+/// Posts a reminder `offset_minutes` before each occurrence of `event`.
+async fn add_reminder(
+    router: &axum::Router,
+    cookie: &str,
+    events_path: &str,
+    event: Uuid,
+    offset_minutes: i32,
+) -> Uuid {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("{events_path}/{event}/reminders"),
+        Some(cookie),
+        Some(serde_json::json!({ "offset_minutes": offset_minutes })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// `patch_event`, which must succeed.
+async fn patched(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    event: Uuid,
+    body: serde_json::Value,
+) {
+    let res = patch_event(router, cookie, group_id, &event.to_string(), body).await;
+    assert_status(&res, StatusCode::OK);
+}
+
+/// #841: an event moved two hours earlier has its pending reminders moved
+/// with it — none is left pending on the old hour — while a reminder
+/// already sent on the old hour stays as it was.
+#[sqlx::test]
+async fn moving_an_event_moves_its_pending_reminders(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    let old = whole_seconds(Utc::now() + Duration::days(1));
+    let create = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&cookie),
+        Some(serde_json::json!({
+            "title": "Dentiste",
+            "starts_at": old,
+            "ends_at": old + Duration::hours(1),
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event: Uuid = json_body(create).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let hour_before = add_reminder(&router, &cookie, &events_path, event, 60).await;
+    let on_time = add_reminder(&router, &cookie, &events_path, event, 0).await;
+    sqlx::query("UPDATE scheduled_notifications SET status = 'sent' WHERE event_reminder_id = $1")
+        .bind(hour_before)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let new = old - Duration::hours(2);
+    patched(
+        &router,
+        &cookie,
+        &group_id,
+        event,
+        serde_json::json!({ "starts_at": new, "ends_at": new + Duration::hours(1) }),
+    )
+    .await;
+
+    let mut expected = vec![
+        (hour_before, new, new - Duration::hours(1)),
+        (on_time, new, new),
+    ];
+    expected.sort();
+    assert_eq!(notifications_in(&db, event, "pending").await, expected);
+    assert_eq!(
+        notifications_in(&db, event, "sent").await,
+        [(hour_before, old, old - Duration::hours(1))]
+    );
+}
+
+/// #841: a new rule, then a new all-day flag, reschedule the pending
+/// reminders on the series' new occurrences; one already sent on an
+/// occurrence the new rule no longer lists stays as it was.
+#[sqlx::test]
+async fn a_new_rule_or_all_day_flag_reschedules_the_reminders(db: PgPool) {
+    use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
+
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    let first = paris_date(Utc::now()) + Duration::days(2);
+    let nine_on = |n: i64| {
+        rrule::Tz::Europe__Paris
+            .from_local_datetime(&(first + Duration::days(n)).and_hms_opt(9, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+    let create = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&cookie),
+        Some(serde_json::json!({
+            "title": "Kiné",
+            "starts_at": nine_on(0),
+            "ends_at": nine_on(0) + Duration::hours(1),
+            "rrule": "FREQ=DAILY;COUNT=5",
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event: Uuid = json_body(create).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let reminder = add_reminder(&router, &cookie, &events_path, event, 30).await;
+    sqlx::query(
+        "UPDATE scheduled_notifications SET status = 'sent' WHERE event_id = $1 AND occurrence_at = $2",
+    )
+    .bind(event)
+    .bind(nine_on(4))
+    .execute(&db)
+    .await
+    .unwrap();
+    let sent = vec![(reminder, nine_on(4), nine_on(4) - Duration::minutes(30))];
+
+    patched(
+        &router,
+        &cookie,
+        &group_id,
+        event,
+        serde_json::json!({ "rrule": "FREQ=DAILY;COUNT=3" }),
+    )
+    .await;
+    let expected: Vec<_> = (0..3)
+        .map(|n| (reminder, nine_on(n), nine_on(n) - Duration::minutes(30)))
+        .collect();
+    assert_eq!(notifications_in(&db, event, "pending").await, expected);
+    assert_eq!(notifications_in(&db, event, "sent").await, sent);
+
+    patched(
+        &router,
+        &cookie,
+        &group_id,
+        event,
+        serde_json::json!({ "all_day": true }),
+    )
+    .await;
+    let expected: Vec<_> = (0..3)
+        .map(|n| {
+            let midnight = paris_start_of_day(first + Duration::days(n));
+            (reminder, midnight, midnight - Duration::minutes(30))
+        })
+        .collect();
+    assert_eq!(notifications_in(&db, event, "pending").await, expected);
+    assert_eq!(notifications_in(&db, event, "sent").await, sent);
+}
+
+/// #841: renaming an event, or changing its description or place, leaves
+/// its pending reminders alone — and the reminder sent afterwards names
+/// the event by its new title, read from the event when it goes.
+#[sqlx::test]
+async fn renaming_an_event_leaves_its_reminders_and_they_carry_the_new_title(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let events_path = format!("/groups/{group_id}/events");
+
+    // Starting in 5 minutes, reminded 10 minutes before: already due.
+    let starts_at = whole_seconds(Utc::now() + Duration::minutes(5));
+    let create = call(
+        &router,
+        Method::POST,
+        &events_path,
+        Some(&cookie),
+        Some(serde_json::json!({
+            "title": "IRM",
+            "starts_at": starts_at,
+            "ends_at": starts_at + Duration::hours(1),
+        })),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let event: Uuid = json_body(create).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    add_reminder(&router, &cookie, &events_path, event, 10).await;
+    let before = notifications_in(&db, event, "pending").await;
+    assert_eq!(before.len(), 1);
+
+    patched(
+        &router,
+        &cookie,
+        &group_id,
+        event,
+        serde_json::json!({
+            "title": "Scanner",
+            "description": "Apporter l'ordonnance",
+            "location": "Hôpital",
+        }),
+    )
+    .await;
+    assert_eq!(notifications_in(&db, event, "pending").await, before);
+
+    let send = |_: String, _: String, _: String| async { Ok::<(), anyhow::Error>(()) };
+    let send_push =
+        |_: String, _: i64| async { manage_our_home::notifications::push::PushOutcome::Delivered };
+    manage_our_home::jobs::scheduled_notifications::send_due_notifications(&db, send, send_push)
+        .await
+        .unwrap();
+    let res = call(&router, Method::GET, "/notifications", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let reminders: Vec<&str> = body["notifications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["kind"] == "agenda_reminder")
+        .map(|n| n["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(reminders.len(), 1, "{body}");
+    assert!(reminders[0].contains("« Scanner »"), "{body}");
+}
+
 /// AC: tasks-as-events — `completed` can only be toggled on an
 /// `is_task` event, and setting it stamps `completed_at`.
 #[sqlx::test]
