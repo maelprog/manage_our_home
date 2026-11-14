@@ -763,6 +763,30 @@ mod tests {
     }
 
     #[test]
+    fn a_half_hour_the_night_the_clocks_go_back_ends_later_by_the_clock() {
+        // An hour after the first 02:00 or 02:30 of 25 October 2026 reads
+        // 02:00 or 02:30 again, a Fin that is not after Début: an hour
+        // later by the clock instead, as the day view's half hours do.
+        let hour = |starts: &str| picked_fields(at(starts), "2026-11-12T09:00", "2026-11-12T10:00");
+        assert_eq!(
+            hour("2026-10-25T02:00"),
+            (
+                false,
+                "2026-10-25T02:00".to_string(),
+                "2026-10-25T03:00".to_string()
+            )
+        );
+        assert_eq!(
+            hour("2026-10-25T02:30"),
+            (
+                false,
+                "2026-10-25T02:30".to_string(),
+                "2026-10-25T03:30".to_string()
+            )
+        );
+    }
+
+    #[test]
     fn a_day_ticks_the_box_on_that_day() {
         assert_eq!(
             picked_fields(
