@@ -234,14 +234,16 @@ Seven other things run on this pool, and none is a request handler:
   (`group_members`, `message_read_state`, `event_assignees`, `sessions`,
   `account_reactivation_requests`, `push_subscriptions` (#306),
   `notifications` — those it received and those it caused, whose text
-  may carry its display name (#534) —
+  may carry its display name (#534) —, `stock_expiry_announcements`
+  (#700), its food constraints (`user_allergies`, `allergy_sharing`,
+  `user_dislikes`, #817),
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`
   and `calendar_imports` it created) and anonymises its `users` row. Each
   group it owned passes to an heir when a member is eligible (`UPDATE` of
   `group_members`, #323), and a group left with no member at all is
   deleted with its content;
   each pass also emails the members named heirs and stamps their
-  `group_members` row once the email has gone. Six of
+  `group_members` row once the email has gone. Ten of
   those tables are `FORCE ROW LEVEL SECURITY`; the pass calls the same
   `ensure_bypasses_rls` guard and, on a role that does not bypass RLS,
   logs `account purge job failed` at ERROR once an hour and purges no one.

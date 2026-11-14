@@ -1,6 +1,7 @@
 pub mod agenda;
 pub mod auth;
 pub mod budget;
+pub mod dietary;
 pub mod google_calendar;
 pub mod grocery_list;
 pub mod groups;

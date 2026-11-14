@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, created_at, updated_at\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
+  "query": "SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at\n           FROM recipes WHERE id = $1 AND group_id = $2",
   "describe": {
     "columns": [
       {
@@ -93,6 +93,17 @@
       },
       {
         "ordinal": 8,
+        "name": "required_equipment",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "required_equipment"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -116,6 +127,7 @@
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         "Uuid"
       ]
     },
@@ -129,8 +141,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "774fbff16d10e10317e6cd61b9008de7c1c1026b16302effb86b4f239287db7f"
+  "hash": "1ec416317a2634a5c68a1c641e8264344b3a373e5af38877a76ed816ab9d827c"
 }

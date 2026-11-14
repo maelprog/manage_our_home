@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO allergy_sharing (user_id, tag, group_id, share)\n           VALUES ($1, $2, $3, $4)\n           ON CONFLICT (user_id, tag, group_id) DO UPDATE SET share = EXCLUDED.share",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f1d9470b16ff69d84136614eb0da36a1d931969d17a5bf1e03837b0297a06c04"
+}

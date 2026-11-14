@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM user_allergies WHERE user_id = $1 AND tag = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "871bd3e290ac7a1dd6296baa136450bf6ea8ae64585af2a4c16e05f826924445"
+}
