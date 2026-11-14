@@ -600,7 +600,8 @@ montrait que ses heures avant. Le lien garde le tout dans son nom. Des
   script. Le lecteur d'écran les trouve nommés, après les événements, dans
   l'ordre des heures. Le jour où l'on recule l'heure, les deux 02:30
   portent le même nom et ouvrent la même heure, la première : un champ
-  `datetime-local` ne dit pas de quel 02:30 il s'agit.
+  `datetime-local` ne dit pas de quel 02:30 il s'agit. La croix « Fermer » de la feuille ouverte depuis un créneau ou le
+  bandeau ramène à la vue jour de ce jour (#836), et à `/agenda` sinon.
 
 Ce qu'elle concède :
 

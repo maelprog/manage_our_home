@@ -1260,6 +1260,9 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
       await expect(page).toHaveURL(`/agenda/new?debut=${DAY}T14:30`);
       await expect(page.getByLabel("Début")).toHaveValue(`${DAY}T14:30`);
       await expect(page.getByLabel("Fin")).toHaveValue(`${DAY}T15:30`);
+      // Its cross closes it back to that day.
+      await page.getByRole("link", { name: "Fermer" }).click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}`);
 
       // 09:30, free: Début 09:30, Fin an hour later, that day.
       await page.goto(`/agenda?view=day&date=${DAY}`);
