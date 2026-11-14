@@ -875,6 +875,22 @@ pub async fn update_event(
     .fetch_one(&mut *tx)
     .await?;
 
+    if moves_occurrences(&existing, &event) {
+        reminders::reschedule_pending(
+            &mut tx,
+            event_id,
+            reminders::EventTimes {
+                starts_at: event.starts_at,
+                ends_at: event.ends_at,
+                all_day: event.all_day,
+                rrule: event.rrule.as_deref(),
+                exdates: &event.exdates,
+            },
+        )
+        .await
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to schedule notifications")))?;
+    }
+
     let assignee_ids = match new_assignees {
         Some(mut new_assignees) => {
             drop_other_assignees(&mut tx, event_id, &new_assignees).await?;
@@ -1298,6 +1314,18 @@ async fn copy_reminders(
         .map_err(|_| AppError::Internal(anyhow::anyhow!("failed to schedule notifications")))?;
     }
     Ok(())
+}
+
+/// Whether a `PATCH` moved the occurrences of an event (#841): its bounds,
+/// its all-day flag or its rule changed between the row as it was locked and
+/// as it was written back. Its reminders still pending were scheduled on the
+/// old occurrences and are scheduled again; a change of title, description,
+/// location, privacy, assignees or completion leaves them alone.
+fn moves_occurrences(before: &EventRow, after: &EventRow) -> bool {
+    before.starts_at != after.starts_at
+        || before.ends_at != after.ends_at
+        || before.all_day != after.all_day
+        || before.rrule != after.rrule
 }
 
 /// What a `DELETE` of a series does (#710).
@@ -1750,5 +1778,76 @@ mod tests {
     #[test]
     fn a_delete_from_the_first_occurrence_on_deletes_the_row() {
         assert_eq!(deletion(EditScope::ThisAndFollowing, 0), Deletion::Series);
+    }
+
+    // -- moves_occurrences (#841) ------------------------------------------
+
+    fn row(starts_at: DateTime<Utc>, all_day: bool, rrule: Option<&str>) -> EventRow {
+        EventRow {
+            id: uid(1),
+            group_id: uid(2),
+            created_by: uid(3),
+            title: "Dentiste".into(),
+            description: None,
+            location: None,
+            starts_at,
+            ends_at: starts_at + chrono::Duration::hours(1),
+            all_day,
+            is_task: false,
+            completed_at: None,
+            rrule: rrule.map(str::to_string),
+            is_private: false,
+            exdates: vec![],
+        }
+    }
+
+    fn nine() -> DateTime<Utc> {
+        "2026-11-20T08:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn an_unchanged_schedule_does_not_move_the_occurrences() {
+        let before = row(nine(), false, Some("FREQ=WEEKLY"));
+        let mut after = row(nine(), false, Some("FREQ=WEEKLY"));
+        after.title = "Orthodontiste".into();
+        after.description = Some("Salle 2".into());
+        after.location = Some("Lyon".into());
+        after.is_private = true;
+        after.completed_at = Some(nine());
+        assert!(!moves_occurrences(&before, &after));
+    }
+
+    #[test]
+    fn a_new_start_moves_the_occurrences() {
+        let before = row(nine(), false, None);
+        let mut after = row(nine() + chrono::Duration::hours(2), false, None);
+        after.ends_at = before.ends_at;
+        assert!(moves_occurrences(&before, &after));
+    }
+
+    #[test]
+    fn a_new_end_moves_the_occurrences() {
+        let before = row(nine(), false, None);
+        let mut after = row(nine(), false, None);
+        after.ends_at += chrono::Duration::minutes(30);
+        assert!(moves_occurrences(&before, &after));
+    }
+
+    #[test]
+    fn a_new_all_day_flag_moves_the_occurrences() {
+        assert!(moves_occurrences(
+            &row(nine(), false, None),
+            &row(nine(), true, None)
+        ));
+    }
+
+    #[test]
+    fn a_new_rule_moves_the_occurrences() {
+        let weekly = row(nine(), false, Some("FREQ=WEEKLY"));
+        let daily = row(nine(), false, Some("FREQ=DAILY"));
+        let once = row(nine(), false, None);
+        assert!(moves_occurrences(&weekly, &daily));
+        assert!(moves_occurrences(&weekly, &once));
+        assert!(moves_occurrences(&once, &weekly));
     }
 }
