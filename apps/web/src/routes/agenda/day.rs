@@ -330,14 +330,11 @@ pub(crate) fn half_hours(day: NaiveDate) -> Vec<DateTime<Utc>> {
 /// 12 novembre à 09:30 ». They come after the table: a keyboard reaches
 /// every block of the day first, and does not walk through 48 links to
 /// get to an event.
-pub(crate) fn slots_html(day: NaiveDate, kept: &str) -> String {
-    slots_for(day, Use::View(kept))
-}
-
-/// `slots_html`, or for a choice (#795) a button `choix` per half hour, its
-/// value the half hour's Paris wall clock, named « Début à 09:30 » — the
-/// hour drawn, the rest `.sr-only`.
-fn slots_for(day: NaiveDate, usage: Use) -> String {
+///
+/// For a choice (#795), a button `choix` per half hour instead, its value
+/// the half hour's Paris wall clock, named « Début à 09:30 » — the hour
+/// drawn, the rest `.sr-only`.
+pub(crate) fn slots_html(day: NaiveDate, usage: Use) -> String {
     let name = day_name(day);
     let links: String = half_hours(day)
         .into_iter()
@@ -647,7 +644,7 @@ pub(crate) fn hours_for(
     }
     format!(
         r#"<div class="hours-scroll" tabindex="0" role="region" aria-label="Heures"><table class="hours" role="presentation"><tbody>{out}</tbody></table>{slots}</div>"#,
-        slots = slots_for(day, usage),
+        slots = slots_html(day, usage),
     )
 }
 
@@ -1412,7 +1409,7 @@ mod tests {
 
     #[test]
     fn each_half_hour_opens_the_sheet_on_it_and_is_named() {
-        let html = slots_html(nov(12), "");
+        let html = slots_html(nov(12), Use::View(""));
         assert!(html.starts_with(r#"<div class="slots">"#), "{html}");
         assert_eq!(html.matches("<a ").count(), 48, "{html}");
         assert!(
@@ -1435,7 +1432,7 @@ mod tests {
 
     #[test]
     fn the_half_hours_keep_the_families_of_the_view() {
-        let html = slots_html(nov(12), "familles=toutes");
+        let html = slots_html(nov(12), Use::View("familles=toutes"));
         assert!(
             html.contains(r#"<a href="/agenda/new?debut=2026-11-12T09:30&familles=toutes">"#),
             "{html}"
@@ -1444,7 +1441,7 @@ mod tests {
 
     #[test]
     fn the_half_hours_of_a_day_of_23_hours_skip_the_hour_that_is_not() {
-        let html = slots_html(date(2026, 3, 29), "");
+        let html = slots_html(date(2026, 3, 29), Use::View(""));
         assert_eq!(html.matches("<a ").count(), 46, "{html}");
         assert!(!html.contains("T02:"), "{html}");
         assert!(html.contains("debut=2026-03-29T01:30"), "{html}");
@@ -1481,7 +1478,15 @@ mod tests {
             paris(2026, 11, 12, 11, 30),
         );
         let c = clip(o.occurrence_starts_at, o.occurrence_ends_at, nov(12)).unwrap();
-        let html = hours_for(nov(12), &[(&o, c)], &[member()], &[], None, true, Use::Pick(None));
+        let html = hours_for(
+            nov(12),
+            &[(&o, c)],
+            &[member()],
+            &[],
+            None,
+            true,
+            Use::Pick(None),
+        );
         assert!(!html.contains("<a "), "{html}");
         assert!(!html.contains("href="), "{html}");
         assert!(html.contains(r#"<span class="blk "#), "{html}");
@@ -1533,7 +1538,14 @@ mod tests {
             paris(2026, 11, 12, 0, 0),
             paris(2026, 11, 13, 0, 0),
         );
-        let html = banner_for(nov(12), &[&one], &[], &[member()], &[], Use::Pick(Some(Uuid::from_u128(1))));
+        let html = banner_for(
+            nov(12),
+            &[&one],
+            &[],
+            &[member()],
+            &[],
+            Use::Pick(Some(Uuid::from_u128(1))),
+        );
         assert!(html.contains(r#"<span class="ad "#), "{html}");
         assert!(!html.contains("href="), "{html}");
         assert!(html.contains("<em>Cet événement</em>"), "{html}");

@@ -933,6 +933,8 @@ progress::-moz-progress-bar { background: currentColor; }
    the grid, today outlined, the day of Début outlined thicker when another
    is chosen, the chosen one filled; a dot under a day with events. */
 .chooser h2 { margin: 0; font-size: var(--t-base); }
+/* Its title wraps beside the cross rather than pushing it below. */
+.chooser .page-header { flex-wrap: nowrap; }
 .mm { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--s2); text-align: center; font-variant-numeric: tabular-nums; }
 .mm > span { font-size: var(--t-xs); font-weight: 600; color: var(--muted); }
 .mm button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); min-width: 0; min-height: var(--s12); padding: 0; border: 0; background: none; color: var(--fg); font-weight: 400; }

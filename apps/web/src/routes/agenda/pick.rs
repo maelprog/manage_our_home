@@ -30,8 +30,8 @@ use crate::state::{api_request_auth, AppState};
 use super::calendar::FR_MONTHS;
 use super::day::{self, day_name, Use};
 use super::new::{
-    chosen_file, create_body_kind, prefill_param, CreateBody, EventForm, Pick, Prefill,
-    DAY_PARAM, FORM_BODY_LIMIT, START_PARAM,
+    chosen_file, create_body_kind, prefill_param, CreateBody, EventForm, Pick, Prefill, DAY_PARAM,
+    FORM_BODY_LIMIT, START_PARAM,
 };
 use super::{
     agenda_cookie, date_only, family_context_for, form_bounds, occurrences_from_response,
@@ -478,7 +478,10 @@ async fn read_fields(
                 .ok_or(FieldsError::TooLarge)?;
             value.extend_from_slice(&chunk);
         }
-        pairs.push((name, String::from_utf8(value).map_err(|_| FieldsError::Broken)?));
+        pairs.push((
+            name,
+            String::from_utf8(value).map_err(|_| FieldsError::Broken)?,
+        ));
     }
     Ok((pairs, had_file))
 }
@@ -548,8 +551,13 @@ async fn choice_page(
         .filter(|d| d.month() == day.month())
         .filter(|d| {
             all.iter().any(|o| {
-                day::place(o.event.all_day, o.occurrence_starts_at, o.occurrence_ends_at, *d)
-                    .is_some()
+                day::place(
+                    o.event.all_day,
+                    o.occurrence_starts_at,
+                    o.occurrence_ends_at,
+                    *d,
+                )
+                .is_some()
             })
         })
         .collect();
@@ -662,7 +670,10 @@ mod tests {
 
     #[test]
     fn a_half_hour_or_a_day_is_a_choice() {
-        assert_eq!(read_choice("2026-11-12T14:00"), Some(at("2026-11-12T14:00")));
+        assert_eq!(
+            read_choice("2026-11-12T14:00"),
+            Some(at("2026-11-12T14:00"))
+        );
         assert_eq!(
             read_choice("2026-11-12"),
             Some(Prefill::Day(day("2026-11-12")))
@@ -671,7 +682,13 @@ mod tests {
 
     #[test]
     fn nothing_or_an_unreadable_value_changes_nothing() {
-        for value in ["", "x", "2026-13-01", "2026-11-12T25:00", "2026-11-12 14:00"] {
+        for value in [
+            "",
+            "x",
+            "2026-13-01",
+            "2026-11-12T25:00",
+            "2026-11-12 14:00",
+        ] {
             assert_eq!(read_choice(value), None, "{value}");
         }
         // An hour the clocks skip, as `prefill_param` reads it.
@@ -684,7 +701,11 @@ mod tests {
     fn a_half_hour_keeps_the_length_already_typed() {
         // Two hours, moved to 14:00 another day.
         assert_eq!(
-            picked_fields(at("2026-11-20T14:00"), "2026-11-12T09:00", "2026-11-12T11:00"),
+            picked_fields(
+                at("2026-11-20T14:00"),
+                "2026-11-12T09:00",
+                "2026-11-12T11:00"
+            ),
             (
                 false,
                 "2026-11-20T14:00".to_string(),
@@ -693,7 +714,11 @@ mod tests {
         );
         // Across midnight.
         assert_eq!(
-            picked_fields(at("2026-11-20T23:30"), "2026-11-12T09:00", "2026-11-12T10:30"),
+            picked_fields(
+                at("2026-11-20T23:30"),
+                "2026-11-12T09:00",
+                "2026-11-12T10:30"
+            ),
             (
                 false,
                 "2026-11-20T23:30".to_string(),
@@ -724,7 +749,11 @@ mod tests {
         // The night the clocks go forward, two hours from 01:00 end at
         // 04:00 by the clock.
         assert_eq!(
-            picked_fields(at("2026-03-29T01:00"), "2026-11-12T09:00", "2026-11-12T11:00"),
+            picked_fields(
+                at("2026-03-29T01:00"),
+                "2026-11-12T09:00",
+                "2026-11-12T11:00"
+            ),
             (
                 false,
                 "2026-03-29T01:00".to_string(),
@@ -770,12 +799,19 @@ mod tests {
     fn a_day_chosen_ticks_the_box() {
         let form = with_choice(returned(&format!("{TYPED}&choix=2026-11-20")));
         assert_eq!(form.all_day.as_deref(), Some("on"));
-        assert_eq!((form.starts_at.as_str(), form.ends_at.as_str()), ("2026-11-20", "2026-11-20"));
+        assert_eq!(
+            (form.starts_at.as_str(), form.ends_at.as_str()),
+            ("2026-11-20", "2026-11-20")
+        );
     }
 
     #[test]
     fn coming_back_without_a_choice_changes_nothing() {
-        for body in [format!("{TYPED}&choix="), format!("{TYPED}&choix=x"), TYPED.to_string()] {
+        for body in [
+            format!("{TYPED}&choix="),
+            format!("{TYPED}&choix=x"),
+            TYPED.to_string(),
+        ] {
             let form = with_choice(returned(&body));
             assert_eq!(form.starts_at, "2026-11-12T09:00", "{body}");
             assert_eq!(form.ends_at, "2026-11-12T11:00", "{body}");
@@ -787,7 +823,10 @@ mod tests {
     #[test]
     fn the_form_back_says_what_changed_and_the_file_lost() {
         let picked = returned_notices(&returned(&format!("{TYPED}&choix=2026-11-20T14%3A00")));
-        assert!(picked.contains("Début et Fin ont été remplacés par le créneau choisi."), "{picked}");
+        assert!(
+            picked.contains("Début et Fin ont été remplacés par le créneau choisi."),
+            "{picked}"
+        );
         assert!(!picked.contains("Pièce jointe"), "{picked}");
         let day = returned_notices(&returned(&format!("{TYPED}&choix=2026-11-20")));
         assert!(day.contains("par le jour choisi"), "{day}");
@@ -798,7 +837,10 @@ mod tests {
         // A form that does not come back from the page says nothing, a
         // forged marker included.
         assert_eq!(returned_notices(&returned(TYPED)), "");
-        assert_eq!(returned_notices(&returned(&format!("{TYPED}&fichier_perdu=1"))), "");
+        assert_eq!(
+            returned_notices(&returned(&format!("{TYPED}&fichier_perdu=1"))),
+            ""
+        );
     }
 
     // -- pick_url -----------------------------------------------------------------
@@ -842,9 +884,15 @@ mod tests {
             html.contains(r#"<button type="submit" class="secondary" formaction="/agenda/choisir?retour=%2Fagenda%2Fnew" name="jour" value="2026-10-01" aria-label="Mois précédent">"#),
             "{html}"
         );
-        assert!(html.contains(r#"value="2026-12-01" aria-label="Mois suivant""#), "{html}");
+        assert!(
+            html.contains(r#"value="2026-12-01" aria-label="Mois suivant""#),
+            "{html}"
+        );
         assert!(html.contains("<h2>novembre 2026</h2>"), "{html}");
-        assert!(html.contains(r#"role="group" aria-label="novembre 2026""#), "{html}");
+        assert!(
+            html.contains(r#"role="group" aria-label="novembre 2026""#),
+            "{html}"
+        );
     }
 
     #[test]
@@ -875,8 +923,14 @@ mod tests {
     #[test]
     fn the_month_goes_to_the_months_around_it_across_a_year() {
         let html = month("2027-01-31", None, &[]);
-        assert!(html.contains(r#"value="2026-12-01" aria-label="Mois précédent""#), "{html}");
-        assert!(html.contains(r#"value="2027-02-01" aria-label="Mois suivant""#), "{html}");
+        assert!(
+            html.contains(r#"value="2026-12-01" aria-label="Mois précédent""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"value="2027-02-01" aria-label="Mois suivant""#),
+            "{html}"
+        );
         assert_eq!(html.matches(r#"name="jour""#).count(), 33, "{html}");
     }
 
@@ -896,7 +950,9 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"<input type="hidden" name="title" value="Dîner &quot;chez&quot; &lt;Léa&gt;"/>"#),
+            html.contains(
+                r#"<input type="hidden" name="title" value="Dîner &quot;chez&quot; &lt;Léa&gt;"/>"#
+            ),
             "{html}"
         );
         assert_eq!(html.matches(r#"name="assignee_ids""#).count(), 2, "{html}");
@@ -916,11 +972,27 @@ mod tests {
             family: None,
             picked,
         };
-        let html = schedule_fields(false, "2026-11-12T09:00", "2026-11-12T10:00", Some(&pick(false)));
-        assert!(html.starts_with(r#"<div class="split"><label class="field inline">"#), "{html}");
-        assert!(html.contains(r#"Journée entière</label><button type="submit""#), "{html}");
+        let html = schedule_fields(
+            false,
+            "2026-11-12T09:00",
+            "2026-11-12T10:00",
+            Some(&pick(false)),
+        );
+        assert!(
+            html.starts_with(r#"<div class="split"><label class="field inline">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"Journée entière</label><button type="submit""#),
+            "{html}"
+        );
         assert!(!html.contains("picked"), "{html}");
-        let html = schedule_fields(false, "2026-11-12T09:00", "2026-11-12T10:00", Some(&pick(true)));
+        let html = schedule_fields(
+            false,
+            "2026-11-12T09:00",
+            "2026-11-12T10:00",
+            Some(&pick(true)),
+        );
         assert_eq!(html.matches(r#" class="picked""#).count(), 2, "{html}");
     }
 
@@ -959,7 +1031,10 @@ mod tests {
             opening_day(None, "2026-11-12T09:00", today),
             day("2026-11-12")
         );
-        assert_eq!(opening_day(Some("x"), "2026-11-12", today), day("2026-11-12"));
+        assert_eq!(
+            opening_day(Some("x"), "2026-11-12", today),
+            day("2026-11-12")
+        );
         assert_eq!(opening_day(None, "", today), today);
         assert_eq!(opening_day(Some(""), "garbage", today), today);
     }

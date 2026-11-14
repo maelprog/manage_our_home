@@ -1772,3 +1772,203 @@ test.describe("Agenda — portée d'une modification de série", () => {
     await expect(page.getByRole("radio")).toHaveCount(0);
   });
 });
+
+// #795: « Choisir dans le calendrier » beside Début and Fin, in a dialog
+// with JavaScript and on a page of its own without it.
+const pickButton = (page: Page) => page.getByRole("button", { name: "Choisir dans le calendrier" });
+
+test.describe("Agenda — choisir dans le calendrier (#795)", () => {
+  const dialog = (page: Page) => page.locator("dialog#pick");
+
+  test("creating: a day, then 14:00, fills Début and Fin an hour apart", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agpick", "Agenda Choix");
+    await createGroup(page, "Famille Choix");
+    const first = dayThisMonth(12);
+    const other = dayThisMonth(20);
+    await createEvent(page, { title: "Piscine du jour", start: `${other}T10:00`, end: `${other}T11:00` });
+
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Goûter");
+    await page.getByLabel("Début").fill(`${first}T09:00`);
+    await page.getByLabel("Fin").fill(`${first}T10:00`);
+    await pickButton(page).click();
+    const box = dialog(page);
+    await expect(box).toBeVisible();
+    // The focus enters the dialog, on its cross.
+    await expect(box.getByRole("button", { name: "Fermer" })).toBeFocused();
+    // The day of Début is chosen; another day shows its events.
+    await expect(box.locator(`.mm button[value="${first}"]`)).toHaveAttribute("aria-pressed", "true");
+    await box.locator(`.mm button[value="${other}"]`).click();
+    await expect(box.locator(`.mm button[value="${other}"]`)).toHaveAttribute("aria-pressed", "true");
+    await expect(box.getByText("Piscine du jour")).toBeVisible();
+    await box.getByRole("button", { name: "Début à 14:00", exact: true }).click();
+
+    await expect(box).toBeHidden();
+    await expect(page.getByLabel("Début")).toHaveValue(`${other}T14:00`);
+    await expect(page.getByLabel("Fin")).toHaveValue(`${other}T15:00`);
+    await expect(pickButton(page)).toBeFocused();
+    await expect(page.getByLabel("Titre")).toHaveValue("Goûter");
+
+    // Escape closes it without a change.
+    await pickButton(page).click();
+    await expect(box).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(box).toBeHidden();
+    await expect(page.getByLabel("Début")).toHaveValue(`${other}T14:00`);
+    await expect(pickButton(page)).toBeFocused();
+
+    // The Enter key of a field still creates.
+    await page.getByLabel("Titre").press("Enter");
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+  });
+
+  test("the banner ticks « Journée entière » on that day", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agpickday", "Agenda Journée");
+    await createGroup(page, "Famille Journée Choisie");
+    const date = dayThisMonth(14);
+    await page.goto("/agenda/new");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await pickButton(page).click();
+    await dialog(page).getByRole("button", { name: /^Journée entière le / }).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(page.getByRole("checkbox", { name: "Journée entière" })).toBeChecked();
+    await expect(page.getByLabel("Début")).toHaveAttribute("type", "date");
+    await expect(page.getByLabel("Début")).toHaveValue(date);
+    await expect(page.getByLabel("Fin")).toHaveValue(date);
+  });
+
+  test("the month is walked with the keyboard", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agpickkeys", "Agenda Clavier");
+    await createGroup(page, "Famille Clavier");
+    const date = dayThisMonth(10);
+    await page.goto("/agenda/new");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await pickButton(page).click();
+    const box = dialog(page);
+    await expect(box).toBeVisible();
+    // Only the chosen day is in the tab order.
+    await expect(box.locator('.mm button[tabindex="0"]')).toHaveCount(1);
+    await box.locator(`.mm button[value="${date}"]`).focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(box.locator(`.mm button[value="${dayThisMonth(11)}"]`)).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(box.locator(`.mm button[value="${dayThisMonth(18)}"]`)).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Enter");
+    const week = box.locator(`.mm button[value="${dayThisMonth(17)}"]`);
+    await expect(week).toHaveAttribute("aria-pressed", "true");
+    await expect(week).toBeFocused();
+    // Page down reads the next month.
+    await page.keyboard.press("PageDown");
+    await expect(box.locator('.mm [aria-pressed="true"]')).toBeFocused();
+    await expect(box.locator(".mm button").first()).toHaveAttribute("value", /-01$/);
+    await expect(week).toHaveCount(0);
+  });
+
+  test("editing an event of two hours keeps its length, the event set apart", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agpickedit", "Agenda Modif Choix");
+    await createGroup(page, "Famille Modif Choix");
+    const date = dayThisMonth(16);
+    await createEvent(page, { title: "Atelier long", start: `${date}T09:00`, end: `${date}T11:00` });
+    await openEventDetail(page, "Atelier long");
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await pickButton(page).click();
+    const box = dialog(page);
+    await expect(box.getByText("Cet événement")).toBeVisible();
+    // Not counted against itself.
+    await expect(box.getByText("Rien de prévu", { exact: true })).toBeVisible();
+    await box.getByRole("button", { name: "Début à 14:00", exact: true }).click();
+    await expect(page.getByLabel("Début")).toHaveValue(`${date}T14:00`);
+    await expect(page.getByLabel("Fin")).toHaveValue(`${date}T16:00`);
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+  });
+
+  test("the recap shows the events of the form's family alone", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agpickfam", "Agenda Deux Familles");
+    const date = dayThisMonth(15);
+    await createGroup(page, "Famille Première");
+    await createEvent(page, { title: "Dîner Première", start: `${date}T19:00`, end: `${date}T20:00` });
+    await createGroup(page, "Famille Seconde");
+    await createEvent(page, { title: "Dîner Seconde", start: `${date}T19:00`, end: `${date}T20:00` });
+    await page.goto("/agenda/new");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:00`);
+    await pickButton(page).click();
+    const box = dialog(page);
+    await expect(box.locator(".eyebrow").first()).toHaveText("Famille Seconde");
+    await expect(box.getByText("Dîner Seconde")).toBeVisible();
+    await expect(box.getByText("Dîner Première")).toHaveCount(0);
+  });
+});
+
+test.describe("Agenda — choisir dans le calendrier sans JavaScript (#795)", () => {
+  test.use({ javaScriptEnabled: false });
+
+  test("creating, then editing: the choice page keeps what was typed", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agpicknojs", "Agenda Choix Sans JS");
+    await createGroup(page, "Famille Choix Sans Script");
+    const date = dayThisMonth(12);
+    const other = dayThisMonth(19);
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Réunion parents");
+    await page.getByLabel("Début").fill(`${date}T09:00`);
+    await page.getByLabel("Fin").fill(`${date}T10:30`);
+    await page.locator('select[name="freq"]').selectOption("weekly");
+    await page.locator('select[name="reminder"]').selectOption("60");
+    await page.getByRole("checkbox", { name: "Agenda Choix Sans JS" }).check();
+    await page.locator('textarea[name="description"]').fill("Salle 4");
+    await page.getByLabel("Pièce jointe").setInputFiles({
+      name: "ordre-du-jour.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        "base64",
+      ),
+    });
+    await pickButton(page).click();
+
+    await expect(page.getByRole("heading", { level: 1, name: "Choisir dans le calendrier" })).toBeVisible();
+    await expect(page.locator(`.mm button[value="${date}"]`)).toHaveAttribute("aria-pressed", "true");
+    await page.locator(`.mm button[value="${other}"]`).click();
+    await expect(page.locator(`.mm button[value="${other}"]`)).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Début à 14:00", exact: true }).click();
+
+    await expect(page.getByRole("heading", { level: 1, name: "Nouvel événement" })).toBeVisible();
+    await expect(page.getByText("Début et Fin ont été remplacés par le créneau choisi.")).toBeVisible();
+    await expect(page.getByText("Pièce jointe non conservée.")).toBeVisible();
+    await expect(page.getByLabel("Titre")).toHaveValue("Réunion parents");
+    await expect(page.getByLabel("Début")).toHaveValue(`${other}T14:00`);
+    await expect(page.getByLabel("Fin")).toHaveValue(`${other}T15:30`);
+    await expect(page.locator('select[name="freq"]')).toHaveValue("weekly");
+    await expect(page.locator('select[name="reminder"]')).toHaveValue("60");
+    await expect(page.getByRole("checkbox", { name: "Agenda Choix Sans JS" })).toBeChecked();
+    await expect(page.locator('textarea[name="description"]')).toHaveValue("Salle 4");
+    await page.locator('select[name="freq"]').selectOption("none");
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+
+    // Editing: the same way, and « Retour au formulaire sans changer ».
+    await page.goto(`/agenda?view=day&date=${other}`);
+    await page.getByRole("link", { name: /Réunion parents/ }).first().click();
+    await page.getByRole("link", { name: "Modifier" }).click();
+    await page.getByLabel("Titre").fill("Réunion parents déplacée");
+    await pickButton(page).click();
+    await expect(page.getByText("Cet événement")).toBeVisible();
+    await page.getByRole("button", { name: "Retour au formulaire sans changer" }).click();
+    await expect(page.getByLabel("Titre")).toHaveValue("Réunion parents déplacée");
+    await expect(page.getByLabel("Début")).toHaveValue(`${other}T14:00`);
+    await expect(page.getByText(/ont été remplacés/)).toHaveCount(0);
+    await pickButton(page).click();
+    await page.getByRole("button", { name: "Début à 16:00", exact: true }).click();
+    await expect(page.getByText("Début et Fin ont été remplacés par le créneau choisi.")).toBeVisible();
+    await expect(page.getByLabel("Titre")).toHaveValue("Réunion parents déplacée");
+    await expect(page.getByLabel("Début")).toHaveValue(`${other}T16:00`);
+    await expect(page.getByLabel("Fin")).toHaveValue(`${other}T17:30`);
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Événement mis à jour.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Réunion parents déplacée" })).toBeVisible();
+  });
+});
