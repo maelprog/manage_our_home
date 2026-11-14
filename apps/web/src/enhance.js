@@ -298,26 +298,34 @@
     });
     var status = picking.dialog.querySelector("[data-pick-status]");
     if (status) {
+      // The line never gets shorter while the day is shown: below the
+      // hours, a line that lost one would pull them down under a pointer
+      // at the bottom of the scrolled body, onto another half hour, whose
+      // line could be longer again — the preview would swing between two.
+      var tall = function () {
+        status.style.minHeight = Math.max(parseFloat(status.style.minHeight) || 0, status.offsetHeight) + "px";
+      };
+      tall();
       var said = document.createElement("b");
       said.textContent = "Début " + from + " · Fin " + to;
       var rest = document.createElement("span");
       if (clash.length) rest.className = "clash";
       rest.textContent = clash.length ? "Chevauche : " + clash.join(", ") : "libre";
       status.replaceChildren(said, " · ", rest);
+      tall();
     }
     var scroller = slot.parentNode.parentNode;
     var ghost = scroller.querySelector(".ghost");
     if (!ghost) {
       ghost = document.createElement("span");
       ghost.className = "ghost";
-      ghost.appendChild(document.createElement("span"));
       scroller.appendChild(ghost);
     }
     var label = scroller.querySelector("th");
     ghost.style.left = (label ? label.offsetWidth : 0) + "px";
     ghost.style.top = slot.parentNode.offsetTop + slot.offsetTop + "px";
     ghost.style.height = (slot.offsetHeight * length) / 30 + "px";
-    ghost.firstChild.textContent = "Nouvel événement " + from + "–" + to;
+    ghost.textContent = "Nouvel événement " + from + "–" + to;
   }
   document.addEventListener("mouseover", preview);
   document.addEventListener("focusin", preview);

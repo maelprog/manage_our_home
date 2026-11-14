@@ -1894,6 +1894,56 @@ test.describe("Agenda — choisir dans le calendrier (#795)", () => {
     await expect(page.getByText("Événement mis à jour.")).toBeVisible();
   });
 
+  test("the preview holds still under a pointer at the bottom of the scrolled body", async ({ page }) => {
+    // Below the hours, the line saying what a half hour gives went from two
+    // lines to one between a half hour and the next: at the bottom of the
+    // scrolled body, the hours slid under the pointer onto another half
+    // hour, and the preview swung between the two.
+    await registerAndLogin(page, "e2e-agpickstill", "Agenda Aperçu Stable");
+    await createGroup(page, "Famille Aperçu");
+    const date = dayThisMonth(13);
+    await createEvent(page, {
+      title: "Rendez-vous chez l'orthodontiste avec les deux enfants et leurs carnets",
+      start: `${date}T10:00`,
+      end: `${date}T11:00`,
+    });
+    for (const viewport of [
+      { width: 1280, height: 800 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto("/agenda/new");
+      await page.getByLabel("Début").fill(`${date}T09:00`);
+      await page.getByLabel("Fin").fill(`${date}T10:00`);
+      await pickButton(page).click();
+      const box = dialog(page);
+      await expect(box.locator("[data-pick-status]")).toHaveText(/la durée saisie/);
+      const body = box.locator(".pick-b");
+      await body.evaluate((b) => (b.scrollTop = b.scrollHeight));
+      const bottom = await body.evaluate((b) => b.scrollTop);
+      expect(bottom).toBeGreaterThan(0);
+      const status = box.locator("[data-pick-status]");
+      for (const [at, said] of [
+        ["10:00", /^Début 10:00 · Fin 11:00 · Chevauche : Rendez-vous/],
+        ["11:30", /^Début 11:30 · Fin 12:30 · libre$/],
+        ["10:30", /^Début 10:30 · Fin 11:30 · Chevauche : Rendez-vous/],
+        ["12:00", /^Début 12:00 · Fin 13:00 · libre$/],
+      ] as const) {
+        const slot = box.getByRole("button", { name: `Début à ${at}`, exact: true });
+        const where = await slot.boundingBox();
+        if (!where) throw new Error(`no box for ${at}`);
+        await page.mouse.move(where.x + where.width / 2, where.y + where.height / 2);
+        await expect(status).toHaveText(said);
+        // A few frames later, still the same half hour, the body unmoved.
+        await page.waitForTimeout(300);
+        await expect(status).toHaveText(said);
+        expect(await body.evaluate((b) => b.scrollTop)).toBe(bottom);
+      }
+      await page.keyboard.press("Escape");
+      await expect(box).toBeHidden();
+    }
+  });
+
   test("the recap shows the events of the form's family alone", async ({ page }) => {
     await registerAndLogin(page, "e2e-agpickfam", "Agenda Deux Familles");
     const date = dayThisMonth(15);
