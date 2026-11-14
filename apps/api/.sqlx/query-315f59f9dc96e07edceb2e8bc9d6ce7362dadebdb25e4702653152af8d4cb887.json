@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT recipe_id, name, is_optional FROM recipe_ingredients\n           WHERE group_id = $1 AND recipe_id = ANY($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "recipe_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "is_optional",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "recipe_ingredients",
+            "name": "is_optional"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "315f59f9dc96e07edceb2e8bc9d6ce7362dadebdb25e4702653152af8d4cb887"
+}

@@ -1,6 +1,7 @@
 pub mod availability;
 pub mod constraints;
 pub mod crud;
+pub mod dietary_filter;
 pub mod html;
 pub mod import;
 pub mod ingredient_line;

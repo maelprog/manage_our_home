@@ -10,6 +10,10 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::AppResult;
 use crate::groups::require_role;
+use crate::recipes::dietary_filter::{
+    allergy_warning, excluded, household_equipment, reader_dislikes, visible_allergies,
+    AllergyWarning, HardFilter, Ingredient,
+};
 use crate::recipes::taxonomy::{taxonomy, TagId, Taxonomy};
 use crate::stocks::items::today;
 use crate::AppState;
@@ -35,6 +39,11 @@ use crate::AppState;
 /// trimmed) match too, whether or not either side has a category. It stays a
 /// heuristic, not an exact reservation check (unit conversion is out of
 /// scope, same as the low_stock heuristic in stocks::items).
+///
+/// Before the scoring, a hard filter (#818, `recipes::dietary_filter`)
+/// keeps out what the reader may not be proposed: their dislikes, the
+/// equipment the household lacks and, unless `avoid_allergens=false`, the
+/// allergies they may see. It changes no score of what it keeps.
 const VARIETY_WINDOW_DAYS: i64 = 14;
 const RECENCY_PENALTY: f64 = 30.0;
 const SEASONAL_BONUS: f64 = 5.0;
@@ -42,6 +51,7 @@ const SEASONAL_BONUS: f64 = 5.0;
 struct RecipeRow {
     id: Uuid,
     name: String,
+    required_equipment: Vec<String>,
 }
 
 struct IngredientRow {
@@ -70,6 +80,8 @@ pub struct RecipeSuggestion {
     pub missing_ingredients: Vec<MissingIngredient>,
     pub recently_eaten: bool,
     pub last_eaten_on: Option<NaiveDate>,
+    /// What the recipe holds of the allergies the reader may see (#818).
+    pub allergy_warning: AllergyWarning,
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -80,6 +92,15 @@ pub struct SuggestionsQuery {
     /// ([`is_possible`], #539), before `limit` applies.
     #[serde(default)]
     pub possible: bool,
+    /// `true` (the default) keeps out the recipes holding an allergy the
+    /// reader may see (#818); `false` lifts that, for this request only.
+    /// Dislikes and equipment exclude either way.
+    #[serde(default = "avoid_allergens_default")]
+    pub avoid_allergens: bool,
+}
+
+pub(crate) fn avoid_allergens_default() -> bool {
+    true
 }
 
 #[utoipa::path(
@@ -104,7 +125,8 @@ pub async fn suggest_recipes(
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
-    let mut suggestions = score_recipes(&mut tx, group_id).await?;
+    let mut suggestions =
+        score_recipes(&mut tx, group_id, auth.user_id, query.avoid_allergens).await?;
     tx.commit().await?;
 
     if query.possible {
@@ -118,16 +140,18 @@ pub async fn suggest_recipes(
     Ok(Json(json!({ "suggestions": suggestions })))
 }
 
-/// Every recipe of the group, scored, in the order the rows came in.
-/// Shared by the suggestions and the replacements of a planned selection
-/// (#815).
+/// Every recipe of the group the hard filter (#818) leaves to `reader`,
+/// scored, in the order the rows came in. Shared by the suggestions and the
+/// replacements of a planned selection (#815).
 pub(crate) async fn score_recipes(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     group_id: Uuid,
+    reader: Uuid,
+    avoid_allergens: bool,
 ) -> AppResult<Vec<RecipeSuggestion>> {
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
-        "SELECT id, name FROM recipes WHERE group_id = $1",
+        "SELECT id, name, required_equipment FROM recipes WHERE group_id = $1",
         group_id,
     )
     .fetch_all(&mut **tx)
@@ -182,6 +206,16 @@ pub(crate) async fn score_recipes(
     .collect();
     let recent_meals: HashMap<Uuid, NaiveDate> = recent_meals.into_iter().collect();
 
+    let allergies = visible_allergies(tx, group_id, reader).await?;
+    let dislikes = reader_dislikes(tx, reader).await?;
+    let equipment = household_equipment(tx, group_id).await?;
+    let filter = HardFilter {
+        allergies: &allergies,
+        dislikes: &dislikes,
+        equipment: &equipment,
+        avoid_allergens,
+    };
+
     let mut ingredients_by_recipe: HashMap<Uuid, Vec<&IngredientRow>> = HashMap::new();
     for ing in &ingredient_rows {
         ingredients_by_recipe
@@ -196,11 +230,18 @@ pub(crate) async fn score_recipes(
 
     let suggestions: Vec<RecipeSuggestion> = recipe_rows
         .into_iter()
-        .map(|recipe| {
+        .filter_map(|recipe| {
             let ingredients = ingredients_by_recipe
                 .get(&recipe.id)
                 .cloned()
                 .unwrap_or_default();
+            let tagged: Vec<Ingredient> = ingredients
+                .iter()
+                .map(|i| Ingredient::named(taxonomy, &i.name, i.is_optional))
+                .collect();
+            if excluded(taxonomy, &filter, &tagged, &recipe.required_equipment) {
+                return None;
+            }
 
             let required: Vec<&&IngredientRow> =
                 ingredients.iter().filter(|i| !i.is_optional).collect();
@@ -242,7 +283,7 @@ pub(crate) async fn score_recipes(
             let score = match_ratio * 100.0 - if recently_eaten { RECENCY_PENALTY } else { 0.0 }
                 + seasonal_bonus;
 
-            RecipeSuggestion {
+            Some(RecipeSuggestion {
                 recipe_id: recipe.id,
                 name: recipe.name,
                 score,
@@ -251,7 +292,8 @@ pub(crate) async fn score_recipes(
                 missing_ingredients,
                 recently_eaten,
                 last_eaten_on,
-            }
+                allergy_warning: allergy_warning(taxonomy, &allergies, &tagged),
+            })
         })
         .collect();
     Ok(suggestions)
@@ -350,6 +392,7 @@ mod tests {
             missing_ingredients: vec![],
             recently_eaten: false,
             last_eaten_on: None,
+            allergy_warning: AllergyWarning::default(),
         }
     }
 
