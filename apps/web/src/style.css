@@ -324,8 +324,12 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
      the mock-up draws it: today's pill takes that size too. It takes the
      cell's top padding and its first chip's margin, so a day of three
      chips still fits its 6.5rem; centred in its square, the number sits
-     a few pixels further right than it did, as on the mock-up. */
+     a few pixels further right than it did, as on the mock-up. Its target
+     is 44px square (#838), a box drawn by nothing: 8px either side, over
+     the cell's padding and the gap between two days, and 16px above, over
+     the weekday's head — not below, where its first chip starts. */
   .cal-day a { display: inline-block; min-width: calc(var(--s6) + var(--s1)); line-height: calc(var(--s6) + var(--s1)); text-align: center; }
+  .cal .cal-day a::before { inset: calc(-1 * var(--s4)) calc(-1 * var(--s2x)) 0; }
   .cal .cal-cell { padding-top: 0; }
   .cal-day + .chip { margin-top: 0; }
   /* A chip holds one line, as the mock-up draws it: table cells do not
@@ -775,8 +779,12 @@ progress::-moz-progress-bar { background: currentColor; }
 .nat { margin: 0; color: var(--muted); font-size: var(--t-xs); white-space: normal; }
 .hol { box-shadow: inset 0 var(--s1) var(--accent); }
 /* A day's number leads to its day view (#793): underlined in the accent,
-   in the colour of the number — today's is on the accent itself. */
-.cal-day a { color: inherit; text-decoration: underline var(--accent); text-underline-offset: var(--s1); }
+   in the colour of the number — today's is on the accent itself. In the
+   phone's list it is 25px tall: its target reaches 44px (#838) by a box
+   drawn by nothing, over the day's top padding, its rule and the padding
+   of the day above (17px), and the 2px down to its first chip. */
+.cal-day a { position: relative; color: inherit; text-decoration: underline var(--accent); text-underline-offset: var(--s1); }
+.cal-day a::before { content: ""; position: absolute; inset: calc(-2 * var(--s2x) - 1px) 0 calc(-1 * var(--s2)); }
 /* -- The month (#836, `routes::agenda::month`) -----------------------------
    Six weeks of seven days, on a phone as on a PC. A week is a grid: the
    days' numbers, then a row per bar. Each day is a link to its day view as
@@ -849,6 +857,11 @@ progress::-moz-progress-bar { background: currentColor; }
 .allday { position: relative; display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s3); padding: var(--s2x); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
 .ad { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); min-height: var(--s8); margin: 0; padding: var(--s1) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); }
 :is(.ad, .bar).gen { border-color: var(--warning); background: var(--warning-soft); }
+/* A line is 32px, as the mock-up draws it; its link's target is 44px
+   (#838), 6px more above and below, a box drawn by nothing. Two links in
+   a row stand 12px apart, so that neither box covers the other's line. */
+a.ad::before { content: ""; position: absolute; inset: calc(-1 * (var(--s1) + var(--s2))) 0; }
+a.ad + a.ad { margin-top: var(--s2x); }
 /* The hours, a row per hour, 56px tall: a scroller
    that opens on 08:00 (`#h8`) without a script where the browser knows
    `scroll-initial-target`, through `enhance.js` elsewhere. The table's own
@@ -856,7 +869,9 @@ progress::-moz-progress-bar { background: currentColor; }
    and its line of the hour stay under the phone's tab bar. */
 .hours-scroll { position: relative; isolation: isolate; max-height: 70vh; overflow: hidden auto; border-top: 1px solid var(--line); background: var(--surface); }
 #h8 { scroll-initial-target: nearest; }
-.hours { table-layout: fixed; background: repeating-linear-gradient(var(--line) 0 1px, transparent 1px calc(var(--s12) + var(--s2x))); }
+/* Cut at midnight, below: the target of a short block late in the day
+   (`.blk::before`) would otherwise lengthen the scroller. */
+.hours { table-layout: fixed; overflow: visible clip; background:repeating-linear-gradient(var(--line) 0 1px, transparent 1px calc(var(--s12) + var(--s2x))); }
 .hours tr { height: calc(var(--s12) + var(--s2x)); }
 .hours th, .hours td { position: relative; padding: 0; border: 0; vertical-align: top; }
 .hours th { width: var(--s12); padding-right: var(--s2x); text-align: right; font-size: var(--t-xs); font-weight: 400; font-variant-numeric: tabular-nums; }
@@ -876,8 +891,16 @@ progress::-moz-progress-bar { background: currentColor; }
    would cut them in two. Too narrow for both its hours and that room — a
    column of three or four at 390px —, it drops its hours rather than its
    title (#836): its place in the hours says when, nothing else says what.
-   Cut at an edge of the day, that edge is flat and dashed. */
-.blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; overflow: hidden; padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
+   Cut at an edge of the day, that edge is flat and dashed.
+   Its target is 44px tall at least (#838): a block shorter than that —
+   one of half an hour is 26px — reaches down by a box drawn by nothing
+   (`::before`), never up. A block that starts later comes later in the
+   document (`day::hours_html`), and so lies over that box: it covers no
+   part of another block. What would show past the block's edge is cut
+   by its `clip-path`, which, unlike `overflow`, lets that box out: 44px
+   down, and 4px around for the focus ring. */
+.blk { position: absolute; z-index: 1; margin: 1px var(--s2) 1px 0; display: flex; flex-flow: column wrap; align-content: flex-start; gap: 0 100%; clip-path: inset(calc(-1 * var(--s1)) calc(-1 * var(--s1)) min(calc(-1 * var(--s1)), 100% - var(--s12) + var(--s1))); padding: var(--s2) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); line-height: 1.2; white-space: nowrap; }
+.blk::before { content: ""; position: absolute; top: 0; right: 0; left: 0; height: max(100%, var(--s12) - var(--s1)); }
 .blk > *, .sub > * { overflow: hidden; text-overflow: ellipsis; }
 .blk:not(.short) > * { width: 100%; }
 /* One line, as tall as an avatar or as its text, whichever is taller. */
@@ -889,7 +912,9 @@ progress::-moz-progress-bar { background: currentColor; }
 .blk .swatch { margin-right: var(--s1); vertical-align: middle; }
 /* Beside the hours, the family takes what is left, 4em at least. */
 .sub .fam { flex: 1 1 0; min-width: 4em; }
-.blk.short { container-type: inline-size; flex-flow: row wrap; align-items: center; gap: 100% var(--s1); }
+/* What wraps goes a gap of its height plus 24px away: past the box of
+   the target above, where the `clip-path` cuts it. */
+.blk.short { container-type: inline-size; flex-flow: row wrap; align-items: center; gap: calc(100% + var(--s6)) var(--s1); }
 .blk.short strong { flex: 1 1 0; min-width: 2.5em; max-width: max-content; }
 .blk.short .t { order: -1; }
 @container (width < 9em) { .blk.short .t { display: none; } }

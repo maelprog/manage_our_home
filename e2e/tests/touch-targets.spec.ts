@@ -1,4 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
+import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
 
 // Issue #74 — "Toute cible interactive ≥ 44 px" (DESIGN.md → Espacement).
@@ -83,7 +84,26 @@ async function seed(page: Page): Promise<string[]> {
   const profileHref = await page.locator("a.member").first().getAttribute("href");
   if (!profileHref) throw new Error("no link to the seeded member's profile");
 
-  return [membersHref, profileHref, eventHref];
+  // A day of the coming week with what the day view draws under 44px (#838):
+  // two lines of the « Journée » banner in a row (events of 24 hours) and a
+  // block of half an hour. Not today, whose line of the current time would
+  // cross a block wherever the clock stands.
+  const day = parisDay(7);
+  const next = parisDay(8);
+  for (const [title, starts, ends] of [
+    ["Congrès", `${day}T00:00`, `${next}T00:00`],
+    ["Séminaire", `${day}T00:00`, `${next}T00:00`],
+    ["Pharmacie", `${day}T14:00`, `${day}T14:30`],
+  ]) {
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill(title);
+    await page.getByLabel("Début").fill(starts);
+    await page.getByLabel("Fin").fill(ends);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/notice=event_created$/);
+  }
+
+  return [membersHref, profileHref, eventHref, `/agenda?view=day&date=${day}`, `/agenda?view=week&date=${day}`];
 }
 
 interface Box {
@@ -112,14 +132,11 @@ interface Box {
  * - a checkbox with no label whose form submits the same change through a
  *   button (see below);
  * - the skip link, which is off-screen until it takes focus;
- * - the day view's targets kept at the mock-up's size (#793, arbitrage of
- *   2026-11-13, DESIGN.md → « L'agenda sur téléphone : vue jour », followed
- *   by an issue of its own): a block of the hours (`.blk`), as tall as its
- *   event lasts, a short one 26px tall; a line of the « Journée » banner
- *   (`.ad`), 32px; a day's number in the grid (`.cal-day a`), 28px square on
- *   a PC and 25px tall in the phone's list. A half hour of the hours
- *   (`.slots a`, #794) is 28px tall, half a row of 56px, and the selector
- *   above does not take it either;
+ * - a half hour of the day view's hours (`.slots a`, #794), 28px tall, half
+ *   a row of 56px: half-hour slots in a row of an hour leave no room for
+ *   44 (DESIGN.md → « L'agenda sur téléphone : vue jour »). So does a block
+ *   of half an hour followed at once by another in its column: they stand
+ *   28px apart, and the seed below has none;
  * - the month's bars and « +N » (#836, `.bar`, `.plus`), drawn at the
  *   mock-up's size: one line of a title, 19px tall on a phone and 24px on a
  *   PC (26px outlined, and in a row holding an outlined one); « +N » 20px
@@ -167,6 +184,52 @@ async function undersized(page: Page): Promise<Box[]> {
   }, MIN);
 }
 
+/**
+ * The day view's targets drawn smaller than they are (#838): a line of the
+ * « Journée » banner (`a.ad`, 32px), a block of the hours (`.blk`, 26px for
+ * half an hour), a day's number in the week (`.cal-day a`, 28px square on a
+ * PC, 25px tall in the phone's list). Each reaches 44px by a box that
+ * paints nothing (`::before`), which no bounding box reports: the target is
+ * measured as a finger meets it, by asking the page which link lies under
+ * each pixel of a vertical and a horizontal line through the link's
+ * centre, and counting the run that is this link. Whatever covers it — the
+ * next line, a later block, a chip — shortens the run.
+ */
+async function undersizedHitAreas(page: Page): Promise<Box[]> {
+  return page.evaluate((min) => {
+    const out: { what: string; width: number; height: number }[] = [];
+    for (const node of document.querySelectorAll<HTMLElement>("a.ad, a.blk, .cal-day a")) {
+      if (node.getClientRects().length === 0) continue;
+      node.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+      const r = node.getBoundingClientRect();
+      const cx = Math.round(r.left + r.width / 2);
+      const cy = Math.round(r.top + r.height / 2);
+      const on = (x: number, y: number) => document.elementFromPoint(x, y)?.closest("a") === node;
+      const run = (dx: number, dy: number) => {
+        let n = 1;
+        while (n < 100 && on(cx + dx * n, cy + dy * n)) n++;
+        return n - 1;
+      };
+      if (!on(cx, cy)) {
+        out.push({ what: `${node.className} "${(node.textContent ?? "").trim().slice(0, 30)}" covered`, width: 0, height: 0 });
+        continue;
+      }
+      const height = run(0, -1) + 1 + run(0, 1);
+      const width = run(-1, 0) + 1 + run(1, 0);
+      // A pixel of tolerance: the run counts whole pixels of a box placed to
+      // the fraction.
+      if (height + 1 < min || width + 1 < min) {
+        out.push({
+          what: `a.${node.className} (hit area) "${(node.textContent ?? "").trim().slice(0, 30)}"`,
+          width,
+          height,
+        });
+      }
+    }
+    return out;
+  }, MIN);
+}
+
 const PUBLIC_PAGES = [
   "/login",
   "/register",
@@ -201,7 +264,10 @@ for (const [layout, viewport] of [
       const failures: string[] = [];
       const visit = async (path: string) => {
         await page.goto(path);
-        for (const b of await undersized(page)) {
+        // Today's day view is left to the boxes alone: its line of the
+        // current time crosses whatever block stands at that hour.
+        const hits = path === "/agenda?view=day" ? [] : await undersizedHitAreas(page);
+        for (const b of [...(await undersized(page)), ...hits]) {
           failures.push(`${path}: ${b.what} ${b.width}×${b.height}`);
         }
       };
