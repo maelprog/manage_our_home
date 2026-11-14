@@ -100,13 +100,13 @@
   // `data-pick` (`agenda::pick::pick_button`, #795): « Choisir dans le
   // calendrier » opens the choice in a `<dialog>` instead of sending the
   // form to the choice page: that page's `[data-pick-body]`, read from the
-  // button's `formaction` (`GET`, with the day asked and the form's Début).
-  // A day or a month reads it again, the arrows move through the days. A
-  // half hour fills Début, and Fin as long after it as the form already
-  // said — an hour when it said nothing usable —, counted by the clock; the
-  // banner ticks « Journée entière » on that day. Both fields wear `picked`
-  // until changed. Escape, the cross and « Retour au formulaire sans
-  // changer » close it untouched; the focus goes back to the button.
+  // button's `formaction` (`GET`, `dialogue=1`, with the day asked and the
+  // form's Début). A day or a month reads it again, the arrows move through
+  // the days. A half hour fills Début, and Fin as long after it as the form
+  // already said — an hour when it said nothing usable —, counted by the
+  // clock; an entry of the banner ticks « Journée entière » on that day.
+  // Both fields wear `picked` until changed. Escape, the cross and
+  // « Fermer » close it untouched; the focus goes back to the button.
   // Without `showModal`, `fetch`, or an answer, the form goes to the page.
   var picking = null;
 
@@ -123,6 +123,14 @@
     var start = form.elements.starts_at;
     var length = start.type === "date" ? NaN : clock(form.elements.ends_at.value) - clock(start.value);
     return length > 0 ? length : 60;
+  }
+
+  // « 1 h », « 1 h 30 », « 45 min ».
+  function lengthWords(minutes) {
+    var hours = Math.floor(minutes / 60);
+    var rest = minutes % 60;
+    if (!hours) return rest + " min";
+    return hours + " h" + (rest ? " " + (rest < 10 ? "0" : "") + rest : "");
   }
 
   function choose(form, value) {
@@ -144,7 +152,7 @@
 
   function loadPick(day) {
     var form = picking.form;
-    var url = picking.url + "&debut=" + encodeURIComponent(form.elements.starts_at.value) + (day ? "&jour=" + day : "");
+    var url = picking.url + "&dialogue=1&debut=" + encodeURIComponent(form.elements.starts_at.value) + (day ? "&jour=" + day : "");
     return fetch(url, { credentials: "same-origin" })
       .then(function (answer) {
         if (!answer.ok) throw new Error(answer.status);
@@ -158,6 +166,9 @@
         Array.prototype.forEach.call(picking.dialog.querySelectorAll(".mm button"), function (d) {
           d.tabIndex = d.getAttribute("aria-pressed") === "true" ? 0 : -1;
         });
+        // At rest, the line says the length a half hour will be given.
+        var status = picking.dialog.querySelector("[data-pick-status]");
+        if (status) status.textContent = status.textContent.replace(/\.$/, " (" + lengthWords(pickLength(form)) + ").");
         if (picking.dialog.open) morningOf(picking.dialog);
       });
   }
@@ -197,8 +208,8 @@
   }
 
   // A button of the choice: a day or a month reads the choice again, the
-  // focus kept on what was pressed; `choix` closes, filling the form first
-  // when it holds a value.
+  // focus kept on what was pressed, a day bringing its recap into view;
+  // `choix` closes, filling the form first when it holds a value.
   function pickButton(button) {
     var name = button.getAttribute("name");
     if (name === "jour") {
@@ -209,6 +220,8 @@
           ? picking.dialog.querySelector('[aria-label="' + label + '"]')
           : picking.dialog.querySelector('.mm [aria-pressed="true"]');
         if (again) again.focus();
+        var recap = !label && picking.dialog.querySelector("[data-pick-day]");
+        if (recap) recap.scrollIntoView({ block: "nearest" });
       });
     } else if (name === "choix") {
       if (button.value) choose(picking.form, button.value);
@@ -268,21 +281,43 @@
   });
 
   // Over a half hour, what it would give: the line under the hours says
-  // it, a frame (`ghost`) draws it.
+  // it, and what it overlaps of the day's blocks (`data-span`, minutes
+  // since the day opened) — « libre » otherwise; a frame (`ghost`) draws
+  // it over the hours' column.
   function preview(event) {
     var slot = picking && closest(event.target, "#pick .slots button");
     if (!slot) return;
     var length = pickLength(picking.form);
+    var span = Array.prototype.indexOf.call(slot.parentNode.children, slot) * 30;
+    var from = slot.value.slice(11);
+    var to = stamp(clock(slot.value) + length).slice(11);
+    var clash = [];
+    Array.prototype.forEach.call(picking.dialog.querySelectorAll("[data-span]"), function (block) {
+      var at = block.getAttribute("data-span").split(" ");
+      if (+at[0] < span + length && Math.max(+at[1], +at[0] + 1) > span) clash.push(block.querySelector("strong").textContent);
+    });
     var status = picking.dialog.querySelector("[data-pick-status]");
-    if (status) status.textContent = "Début " + slot.value.slice(11) + " · Fin " + stamp(clock(slot.value) + length).slice(11);
-    var ghost = slot.parentNode.querySelector(".ghost");
+    if (status) {
+      var said = document.createElement("b");
+      said.textContent = "Début " + from + " · Fin " + to;
+      var rest = document.createElement("span");
+      if (clash.length) rest.className = "clash";
+      rest.textContent = clash.length ? "Chevauche : " + clash.join(", ") : "libre";
+      status.replaceChildren(said, " · ", rest);
+    }
+    var scroller = slot.parentNode.parentNode;
+    var ghost = scroller.querySelector(".ghost");
     if (!ghost) {
       ghost = document.createElement("span");
       ghost.className = "ghost";
-      slot.parentNode.appendChild(ghost);
+      ghost.appendChild(document.createElement("span"));
+      scroller.appendChild(ghost);
     }
-    ghost.style.top = slot.offsetTop + "px";
+    var label = scroller.querySelector("th");
+    ghost.style.left = (label ? label.offsetWidth : 0) + "px";
+    ghost.style.top = slot.parentNode.offsetTop + slot.offsetTop + "px";
     ghost.style.height = (slot.offsetHeight * length) / 30 + "px";
+    ghost.firstChild.textContent = "Nouvel événement " + from + "–" + to;
   }
   document.addEventListener("mouseover", preview);
   document.addEventListener("focusin", preview);

@@ -1794,13 +1794,21 @@ test.describe("Agenda — choisir dans le calendrier (#795)", () => {
     await pickButton(page).click();
     const box = dialog(page);
     await expect(box).toBeVisible();
-    // The focus enters the dialog, on its cross.
-    await expect(box.getByRole("button", { name: "Fermer" })).toBeFocused();
+    // The focus enters the dialog, on its cross; the line under the hours
+    // says the length a half hour will be given.
+    await expect(box.getByRole("button", { name: "Fermer" }).first()).toBeFocused();
+    await expect(box.locator("[data-pick-status]")).toHaveText(/la durée saisie \(1 h\)\.$/);
     // The day of Début is chosen; another day shows its events.
     await expect(box.locator(`.mm button[value="${first}"]`)).toHaveAttribute("aria-pressed", "true");
     await box.locator(`.mm button[value="${other}"]`).click();
     await expect(box.locator(`.mm button[value="${other}"]`)).toHaveAttribute("aria-pressed", "true");
     await expect(box.getByText("Piscine du jour")).toBeVisible();
+    // Over a half hour, what it gives and what it overlaps.
+    await box.getByRole("button", { name: "Début à 10:30", exact: true }).hover();
+    await expect(box.locator("[data-pick-status]")).toHaveText("Début 10:30 · Fin 11:30 · Chevauche : Piscine du jour");
+    await expect(box.locator(".ghost")).toHaveText("Nouvel événement 10:30–11:30");
+    await box.getByRole("button", { name: "Début à 14:00", exact: true }).hover();
+    await expect(box.locator("[data-pick-status]")).toHaveText("Début 14:00 · Fin 15:00 · libre");
     await box.getByRole("button", { name: "Début à 14:00", exact: true }).click();
 
     await expect(box).toBeHidden();
@@ -1830,7 +1838,7 @@ test.describe("Agenda — choisir dans le calendrier (#795)", () => {
     await page.getByLabel("Début").fill(`${date}T09:00`);
     await page.getByLabel("Fin").fill(`${date}T10:00`);
     await pickButton(page).click();
-    await dialog(page).getByRole("button", { name: /^Journée entière le / }).click();
+    await dialog(page).getByRole("button", { name: /^Journée entière ce jour/ }).click();
     await expect(dialog(page)).toBeHidden();
     await expect(page.getByRole("checkbox", { name: "Journée entière" })).toBeChecked();
     await expect(page.getByLabel("Début")).toHaveAttribute("type", "date");
@@ -1898,7 +1906,7 @@ test.describe("Agenda — choisir dans le calendrier (#795)", () => {
     await page.getByLabel("Fin").fill(`${date}T10:00`);
     await pickButton(page).click();
     const box = dialog(page);
-    await expect(box.locator(".eyebrow").first()).toHaveText("Famille Seconde");
+    await expect(box.locator(".pick-fam")).toHaveText("Famille Seconde");
     await expect(box.getByText("Dîner Seconde")).toBeVisible();
     await expect(box.getByText("Dîner Première")).toHaveCount(0);
   });
@@ -1931,10 +1939,12 @@ test.describe("Agenda — choisir dans le calendrier sans JavaScript (#795)", ()
     await pickButton(page).click();
 
     await expect(page.getByRole("heading", { level: 1, name: "Choisir dans le calendrier" })).toBeVisible();
-    await expect(page.locator(`.mm button[value="${date}"]`)).toHaveAttribute("aria-pressed", "true");
-    await page.locator(`.mm button[value="${other}"]`).click();
-    await expect(page.locator(`.mm button[value="${other}"]`)).toHaveAttribute("aria-pressed", "true");
-    await page.getByRole("button", { name: "Début à 14:00", exact: true }).click();
+    await expect(page.locator(`.mm a[href$="jour=${date}"]`)).toHaveAttribute("aria-current", "true");
+    // A day is a link that carries what was typed.
+    await page.locator(`.mm a[href$="jour=${other}"]`).click();
+    await expect(page.locator(`.mm a[href$="jour=${other}"]`)).toHaveAttribute("aria-current", "true");
+    await expect(page).toHaveURL(/title=R%C3%A9union\+parents/);
+    await page.getByRole("button", { name: "Début 14:00 Fin 15:30", exact: true }).click();
 
     await expect(page.getByRole("heading", { level: 1, name: "Nouvel événement" })).toBeVisible();
     await expect(page.getByText("Début et Fin ont été remplacés par le créneau choisi.")).toBeVisible();
@@ -1962,7 +1972,7 @@ test.describe("Agenda — choisir dans le calendrier sans JavaScript (#795)", ()
     await expect(page.getByLabel("Début")).toHaveValue(`${other}T14:00`);
     await expect(page.getByText(/ont été remplacés/)).toHaveCount(0);
     await pickButton(page).click();
-    await page.getByRole("button", { name: "Début à 16:00", exact: true }).click();
+    await page.getByRole("button", { name: /^Début 16:00 / }).click();
     await expect(page.getByText("Début et Fin ont été remplacés par le créneau choisi.")).toBeVisible();
     await expect(page.getByLabel("Titre")).toHaveValue("Réunion parents déplacée");
     await expect(page.getByLabel("Début")).toHaveValue(`${other}T16:00`);
