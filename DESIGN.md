@@ -515,7 +515,11 @@ rechargement (`routes/agenda/day.rs`) :
   « mer. 11 à 18:00 → ven. 13 à 10:00 ». Un événement d'un jour porte la
   teinte et le liseré de son membre ; de plusieurs jours, l'ocre des jours
   générés (`.gen`, liseré `--warning` sur `--warning-soft`), initiales
-  gardées ; un jour national, l'ocre aussi.
+  gardées ; un jour national, l'ocre aussi. Depuis #794, le bandeau est
+  dessiné même sans entrée, son titre seul : un clic sur lui, hors de ses
+  entrées, ouvre la création d'un événement sur la journée entière de ce
+  jour (`/agenda/new?jour=AAAA-MM-JJ`, la case cochée, Début = Fin = ce
+  jour).
 - **Les heures** (`.hours`) : une table d'une ligne par heure écoulée —
   23, 24 ou 25 lignes, un jour de changement d'heure durant 23 ou 25
   heures —, chaque heure nommée par l'horloge (« 02:00 » deux fois le
@@ -569,6 +573,28 @@ rechargement (`routes/agenda/day.rs`) :
 - **Accès** : le numéro de chaque jour de la grille (mois et semaine, donc
   aussi la liste du téléphone qui la relit), chaque jour de la mini-grille,
   et « +N autres » mènent à la vue jour de ce jour.
+- **Créer à une heure (#794)** : chaque demi-heure, libre ou occupée
+  (arbitrage du 2026-11-11 : des créneaux de 30 min, une heure par défaut,
+  comme Google), est un lien (`.slots`) vers
+  `/agenda/new?debut=AAAA-MM-JJTHH:MM` — Début à ce créneau, Fin une heure
+  plus tard en temps écoulé (01:30 finit à 03:30 la nuit où l'on avance
+  l'heure ; la nuit où on la recule, 02:30 finit à 03:30, l'heure d'après
+  se lisant 02:30 à nouveau). Les liens couvrent toute la largeur, la
+  colonne des heures comprise, sous les blocs : une demi-heure occupée
+  reste cliquable par son heure. La sélection des familles de la vue
+  (`?familles=`) suit, donc la famille où l'on crée et le choix « Famille »
+  de la feuille sont ceux de la vue ; ce choix garde le créneau. Un
+  paramètre illisible, ou une heure que l'horloge saute, ouvre la feuille
+  comme avant. Créé depuis là, l'événement ramène à la vue jour du jour où
+  il commence (`?view=day&date=…&notice=event_created`) au lieu du mois.
+  **Le clavier** : les créneaux viennent après la table, dans le document,
+  et le lien du bandeau après ses entrées ; la tabulation atteint donc
+  chaque événement du jour avant le premier créneau, au lieu de traverser
+  48 liens pour arriver au premier événement — et sans `tabindex` ni
+  script. Le lecteur d'écran les trouve nommés, après les événements, dans
+  l'ordre des heures. Le jour où l'on recule l'heure, les deux 02:30
+  portent le même nom et ouvrent la même heure, la première : un champ
+  `datetime-local` ne dit pas de quel 02:30 il s'agit.
 
 Ce qu'elle concède :
 
@@ -584,7 +610,9 @@ Ce qu'elle concède :
   pastille, et une case de trois pastilles tient toujours ses 6,5rem — et
   25 px de haut dans la liste du téléphone. Dans une colonne assez large,
   titre et heure s'y lisent ; l'écart est suivi par une issue à part
-  (#838) ;
+  (#838). Un créneau de #794 fait 28 px de haut, la moitié d'une ligne de
+  56 px : la même exception, que les créneaux de 30 min de l'arbitrage du
+  2026-11-11 imposent à la hauteur d'une heure ;
 - **la table est `role="presentation"`** : ses liens se lisent dans l'ordre
   des heures, sans parcourir deux douzaines de cellules vides ;
 - **la lecture commence 7 jours avant le jour** : apps/api ne liste une
@@ -816,6 +844,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.hours-scroll`, `.hours` | les heures de la vue jour (#793) : un défileur d'au plus 70 % de la fenêtre, ouvert sur 08:00 (`#h8`, `scroll-initial-target`), qui tient une table `role="presentation"` d'une ligne par heure écoulée (23, 24 ou 25), 56 px chacune, chaque heure nommée dans sa première colonne en `--muted` à `--t-xs`, un filet `--line` par heure tiré du fond de la table |
 | `.blk` (+ `.short`, `.mid`, `.cut-s`, `.cut-e`), `.sub`, `.fam` | un événement horaire de la vue jour (#793) : un lien en `position: absolute` dans la cellule de l'heure où il commence, placé à la minute par son `style` inline (`top`, `bottom`, `left`, `right` en % de l'heure et de la largeur, `day::inset`), aussi haut qu'il dure (30 min au moins) et débordant sur les heures suivantes ; les blocs qui se chevauchent se partagent la largeur en colonnes (`day::lanes`). Fond et liseré `--s1` de son membre (la teinte d'une pastille). Ses lignes : le titre, coupé par des points de suspension ; les heures (« 10:00–11:30 ») et les initiales (`.sub`) ; `.fam` — pastille et nom de la famille — dans une vue de plusieurs familles. Une ligne qui ne tient pas sous les autres passe dans une colonne hors de vue (`flex-flow: column wrap`, un écart de la largeur du bloc), un élément de `.sub` qui ne tient pas à une ligne hors de vue : rien n'est coupé par le bord, ce qui ne tient pas est retiré. `.short` : sous trois quarts d'heure, une ligne, l'heure d'abord. `.mid` : sous l'heure, la famille dans `.sub`, à côté des heures, 4em au moins. `.cut-s`/`.cut-e` : coupé au bord du jour, ce bord plat et tireté. Une tâche faite est `.done`, sans teinte |
 | `.now` (+ `.q1`…`.q3`) | l'heure courante dans la vue jour d'aujourd'hui (#793) : un trait `--accent` de `--s2` sur son heure, au quart près, posé au rendu, « Il est 14:20 » en `.sr-only` |
+| `.slots`, `.slot` | créer depuis la vue jour (#794) : `.slots`, après la table des heures, un lien par demi-heure (28 px, la moitié d'une ligne) sur toute la largeur des heures, leurs noms compris, sous les blocs ; `.slot`, un lien sous les entrées du bandeau « Journée », sur toute sa surface. Rien n'est dessiné au repos ; au survol, un filet `--border` intérieur ; au focus clavier, l'anneau des liens, ramené dans la boîte (le défileur rognerait son débord). Le nom est en `.sr-only` : « Créer un événement le jeudi 12 novembre à 09:30 », « Créer un événement sur la journée du jeudi 12 novembre » |
 | `.sheet` | le formulaire d'un nouvel événement en feuille (#525) : la famille en `.eyebrow` au-dessus du titre, une croix « Fermer » vers l'agenda, puis les champs dans l'ordre de la maquette — titre, horaires, récurrence, rappel, membres —, ce qu'elle ne dessine pas ensuite. Une `.card` ; sur téléphone, bord à bord et arrondie en haut. Les fieldsets qu'elle contient y perdent leur carte. Depuis #527, la même feuille porte l'ajout d'un article du stock — la famille en `.eyebrow` (« Dans le stock de … »), la croix vers `/stocks` — et la reprise d'une photo de code illisible |
 | `.picks`, `.pick` | « Assigné à » en pastilles (#525) : la case, l'initiale du membre, son nom ; une case cochée prend `--accent-soft` et une bordure `--accent`. La case reste dessinée et reste le contrôle, le nom reste son libellé |
 | `.groceries` | la liste de courses (#526) : une carte — « x sur y dans le panier » et sa jauge `<progress>`, l'ajout rapide, puis les sections « À acheter » et « Dans le panier », tirées de l'état coché seul, en `h3.eyebrow` dans la police du corps — et, sur PC, une colonne `.pc` à côté d'elle, en dessous quand la largeur manque : les suggestions (le stock bas absent de la liste, chacun mis sur la liste d'un seul bouton) et les recettes « À réaliser », avec un lien vers les recettes |

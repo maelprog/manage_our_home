@@ -1135,7 +1135,8 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
 
       // The day after: nothing at all.
       await page.goto("/agenda?view=day&date=2027-03-12");
-      await expect(page.locator(".allday")).toHaveCount(0);
+      // Its banner has no entry, only what opens the sheet on that day (#794).
+      await expect(page.locator(".allday .ad")).toHaveCount(0);
       await expect(page.getByText("Rien de prévu à l'heure ce jour-là.")).toBeVisible();
 
       // No date, or one that cannot be read: today, as the other views do.
@@ -1143,6 +1144,68 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
         await page.goto(path);
         await expect(page.getByRole("heading", { level: 1 }), path).toHaveText(longDate(parisDay()));
       }
+    });
+
+    // #794 — a half hour of the hours, free or under a block, opens the
+    // sheet on it for an hour; the banner, on the whole day. Created from
+    // there, the event lands back on its day.
+    test("a half hour or the banner opens the sheet there, and the event comes back to its day", async ({
+      page,
+    }) => {
+      await registerAndLogin(page, "e2e-agslot", "Agenda Creneau");
+      await createGroup(page, "Famille Creneaux");
+      await postEvent(page, `title=Rendez-vous+dentiste&starts_at=${DAY}T14:00&ends_at=${DAY}T15:00`);
+      await page.goto(`/agenda?view=day&date=${DAY}`);
+
+      // In the order of the page, the keyboard's, the event comes before
+      // the 48 half hours of the day.
+      const order = await page
+        .locator(".hours-scroll")
+        .evaluate((el) => [...el.querySelectorAll("a")].map((a) => (a.classList.contains("blk") ? "blk" : "slot")));
+      expect(order).toEqual(["blk", ...Array(48).fill("slot")]);
+
+      // Under the block, 14:30 is still there, by its hour's name.
+      const busy = page.getByRole("link", { name: "Créer un événement le mercredi 10 mars à 14:30", exact: true });
+      await busy.click({ position: { x: 8, y: 14 } });
+      await expect(page).toHaveURL(`/agenda/new?debut=${DAY}T14:30`);
+      await expect(page.getByLabel("Début")).toHaveValue(`${DAY}T14:30`);
+      await expect(page.getByLabel("Fin")).toHaveValue(`${DAY}T15:30`);
+
+      // 09:30, free: Début 09:30, Fin an hour later, that day.
+      await page.goto(`/agenda?view=day&date=${DAY}`);
+      await page.getByRole("link", { name: "Créer un événement le mercredi 10 mars à 09:30", exact: true }).click();
+      await expect(page).toHaveURL(`/agenda/new?debut=${DAY}T09:30`);
+      await expect(page.getByLabel("Journée entière")).not.toBeChecked();
+      await expect(page.getByLabel("Début")).toHaveAttribute("type", "datetime-local");
+      await expect(page.getByLabel("Début")).toHaveValue(`${DAY}T09:30`);
+      await expect(page.getByLabel("Fin")).toHaveValue(`${DAY}T10:30`);
+      await page.getByLabel("Titre").fill("Cafe du creneau");
+      await page.getByRole("button", { name: "Créer l'événement" }).click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}&notice=event_created`);
+      await expect(page.getByText("Événement créé.")).toBeVisible();
+      await expect(page.locator("a.blk", { hasText: "Cafe du creneau" })).toContainText("09:30–10:30");
+
+      // The banner: the whole day, the box ticked, two date fields.
+      await page
+        .getByRole("link", { name: "Créer un événement sur la journée du mercredi 10 mars", exact: true })
+        .click();
+      await expect(page).toHaveURL(`/agenda/new?jour=${DAY}`);
+      await expect(page.getByLabel("Journée entière")).toBeChecked();
+      for (const field of ["Début", "Fin"]) {
+        await expect(page.getByLabel(field)).toHaveAttribute("type", "date");
+        await expect(page.getByLabel(field)).toHaveValue(DAY);
+      }
+      await page.getByLabel("Titre").fill("Journee du creneau");
+      await page.getByRole("button", { name: "Créer l'événement" }).click();
+      await expect(page).toHaveURL(`/agenda?view=day&date=${DAY}&notice=event_created`);
+      await expect(page.locator(".allday").getByRole("link", { name: /Journee du creneau/ })).toContainText(
+        "Journée entière",
+      );
+
+      // A parameter it cannot read: the sheet as it always opened.
+      await page.goto("/agenda/new?debut=demain");
+      await expect(page.getByLabel("Journée entière")).not.toBeChecked();
+      await expect(page.getByLabel("Début")).not.toHaveValue(/^2027-03-10/);
     });
 
     test("a day's number, « +N autres » and the toggle lead to the day, which keeps its date", async ({

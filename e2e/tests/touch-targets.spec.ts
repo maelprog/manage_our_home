@@ -116,7 +116,9 @@ interface Box {
  *   by an issue of its own): a block of the hours (`.blk`), as tall as its
  *   event lasts, a short one 26px tall; a line of the « Journée » banner
  *   (`.ad`), 32px; a day's number in the grid (`.cal-day a`), 28px square on
- *   a PC and 25px tall in the phone's list.
+ *   a PC and 25px tall in the phone's list. A half hour of the hours
+ *   (`.slots a`, #794) is 28px tall, half a row of 56px, and the selector
+ *   above does not take it either.
  */
 async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {

@@ -7,7 +7,10 @@ use manage_our_home_shared::validation::agenda::{normalize_all_day, paris_start_
 
 use crate::app::html_escape;
 
-use super::calendar::{family_of, initials, member_tint, people, short_weekday, FamilyTag};
+use super::calendar::{
+    family_of, initials, member_tint, people, short_weekday, FamilyTag, FR_LONG_WEEKDAYS, FR_MONTHS,
+};
+use super::new::{sheet_url, Prefill};
 use super::{fmt_paris, private_mark, with_family, DISPLAY_TZ};
 
 /// The precision of the line of the current time: a quarter of its hour.
@@ -239,6 +242,73 @@ pub(crate) fn banner_sub(
     (format!("jour {nth} sur {days}"), true)
 }
 
+/// The minutes of a half hour of the hours (#794), what a click on the
+/// hours opens the sheet on: arbitrage of 2026-11-11, as Google does.
+pub(crate) const HALF_HOUR: i64 = 30;
+
+/// « jeudi 12 novembre »: a day as the name of a link says it.
+pub(crate) fn day_name(day: NaiveDate) -> String {
+    format!(
+        "{} {} {}",
+        FR_LONG_WEEKDAYS[day.weekday().num_days_from_monday() as usize].to_lowercase(),
+        day.day(),
+        FR_MONTHS[(day.month() - 1) as usize]
+    )
+}
+
+/// `url` with the selection of families the view keeps (`kept`, from
+/// `families_query`, empty for the default), so that the sheet offers the
+/// view's families and creates in the one the view shows.
+fn keeping(url: String, kept: &str) -> String {
+    if kept.is_empty() {
+        return url;
+    }
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}{kept}")
+}
+
+/// The half hours of `day` (#794): the instant each opens, in elapsed
+/// time, as the rows are — 46, 48 or 50 of them.
+pub(crate) fn half_hours(day: NaiveDate) -> Vec<DateTime<Utc>> {
+    let (opens, closes) = day_bounds(day);
+    (0..(closes - opens).num_minutes() / HALF_HOUR)
+        .map(|k| opens + chrono::Duration::minutes(k * HALF_HOUR))
+        .collect()
+}
+
+/// A link per half hour of `day` (#794), over the whole width of the hours
+/// and under their blocks, opening the sheet on it — `?debut=` its Paris
+/// wall clock — for an hour. Each is named « Créer un événement le jeudi
+/// 12 novembre à 09:30 ». They come after the table: a keyboard reaches
+/// every block of the day first, and does not walk through 48 links to
+/// get to an event.
+pub(crate) fn slots_html(day: NaiveDate, kept: &str) -> String {
+    let name = day_name(day);
+    let links: String = half_hours(day)
+        .into_iter()
+        .map(|at| {
+            let wall = at.with_timezone(&DISPLAY_TZ).naive_local();
+            format!(
+                r#"<a href="{href}"><span class="sr-only">Créer un événement le {name} à {time}</span></a>"#,
+                href = keeping(sheet_url(Some(Prefill::At(wall))), kept),
+                time = fmt_paris(at, "%H:%M"),
+            )
+        })
+        .collect();
+    format!(r#"<div class="slots">{links}</div>"#)
+}
+
+/// The link under the « Journée » banner (#794): the sheet on that whole
+/// day, « Créer un événement sur la journée du jeudi 12 novembre ». Last
+/// in the banner, after its entries.
+fn banner_slot(day: NaiveDate, kept: &str) -> String {
+    format!(
+        r#"<a class="slot" href="{href}"><span class="sr-only">Créer un événement sur la journée du {name}</span></a>"#,
+        href = keeping(sheet_url(Some(Prefill::Day(day))), kept),
+        name = day_name(day),
+    )
+}
+
 // -- the page's parts ------------------------------------------------------
 
 /// A task's box and whether it is done, as on a chip of the grid.
@@ -292,17 +362,17 @@ fn worn(occ: &OccurrenceResponse, members: &[GroupMember], families: &[FamilyTag
 
 /// The « Journée » banner at the head of the day (#793): the national days
 /// and school holidays of the day, then its all-day events and those of a
-/// day or more, each a link to its page. Empty when there is none.
+/// day or more, each a link to its page. Drawn on a day without any too
+/// since #794: under its entries, the banner opens the sheet on that whole
+/// day (`banner_slot`), the selection of families kept (`kept`).
 pub(crate) fn banner_html(
     day: NaiveDate,
     occs: &[&OccurrenceResponse],
     national: &[&str],
     members: &[GroupMember],
     families: &[FamilyTag],
+    kept: &str,
 ) -> String {
-    if occs.is_empty() && national.is_empty() {
-        return String::new();
-    }
     let national: String = national
         .iter()
         .map(|label| format!(r#"<p class="ad gen">{}</p>"#, html_escape(label)))
@@ -335,7 +405,10 @@ pub(crate) fn banner_html(
             )
         })
         .collect();
-    format!(r#"<div class="allday"><h2 class="eyebrow">Journée</h2>{national}{events}</div>"#)
+    format!(
+        r#"<div class="allday"><h2 class="eyebrow">Journée</h2>{national}{events}{}</div>"#,
+        banner_slot(day, kept)
+    )
 }
 
 /// A block of the hours: its title, its real hours, its people's initials,
@@ -417,6 +490,9 @@ fn now_line(quarter: usize, now: DateTime<Utc>) -> String {
 /// drawn across its hour. `empty_note` says « Rien de prévu à l'heure » at
 /// 08:00 when no block is drawn — the caller leaves it out when the events
 /// could not be read.
+///
+/// After the table, a link per half hour opens the sheet on it
+/// (`slots_html`, #794), the selection of families kept (`kept`).
 pub(crate) fn hours_html(
     day: NaiveDate,
     blocks: &[(&OccurrenceResponse, Clip)],
@@ -424,6 +500,7 @@ pub(crate) fn hours_html(
     families: &[FamilyTag],
     now: Option<DateTime<Utc>>,
     empty_note: bool,
+    kept: &str,
 ) -> String {
     let labels = hour_labels(day);
     let length = labels.len() * 60;
@@ -463,7 +540,8 @@ pub(crate) fn hours_html(
         out.push_str("</td></tr>");
     }
     format!(
-        r#"<div class="hours-scroll" tabindex="0" role="region" aria-label="Heures"><table class="hours" role="presentation"><tbody>{out}</tbody></table></div>"#
+        r#"<div class="hours-scroll" tabindex="0" role="region" aria-label="Heures"><table class="hours" role="presentation"><tbody>{out}</tbody></table>{slots}</div>"#,
+        slots = slots_html(day, kept),
     )
 }
 
@@ -929,7 +1007,7 @@ mod tests {
                 (o, c)
             })
             .collect();
-        hours_html(nov(12), &blocks, &[member()], &[], now, true)
+        hours_html(nov(12), &blocks, &[member()], &[], now, true, "")
     }
 
     #[test]
@@ -959,7 +1037,7 @@ mod tests {
             "{html}"
         );
         // Not when the events could not be read.
-        let quiet = hours_html(nov(12), &[], &[], &[], None, false);
+        let quiet = hours_html(nov(12), &[], &[], &[], None, false, "");
         assert!(!quiet.contains("Rien de prévu"), "{quiet}");
     }
 
@@ -1001,7 +1079,7 @@ mod tests {
             carried: None,
             worn: true,
         };
-        let html = hours_html(nov(12), &[(&o, c)], &[member()], &[fam], None, true);
+        let html = hours_html(nov(12), &[(&o, c)], &[member()], &[fam], None, true, "");
         let start = html.find(r#"<a class="blk"#).expect("a block");
         html[start..start + html[start..].find("</a>").unwrap()].to_string()
     }
@@ -1139,7 +1217,7 @@ mod tests {
 
     #[test]
     fn the_morning_is_found_by_the_clock_on_a_day_of_25_hours() {
-        let html = hours_html(date(2026, 10, 25), &[], &[], &[], None, true);
+        let html = hours_html(date(2026, 10, 25), &[], &[], &[], None, true, "");
         assert_eq!(html.matches("<tr").count(), 25, "{html}");
         assert!(
             html.contains(r#"<tr id="h8"><th scope="row">08:00</th>"#),
@@ -1161,7 +1239,14 @@ mod tests {
             paris(2026, 11, 11, 0, 0),
             paris(2026, 11, 14, 0, 0),
         );
-        let html = banner_html(nov(12), &[&one, &three], &["Armistice"], &[member()], &[]);
+        let html = banner_html(
+            nov(12),
+            &[&one, &three],
+            &["Armistice"],
+            &[member()],
+            &[],
+            "",
+        );
         assert!(
             html.starts_with(r#"<div class="allday"><h2 class="eyebrow">Journée</h2><p class="ad gen">Armistice</p>"#),
             "{html}"
@@ -1185,8 +1270,111 @@ mod tests {
         assert_eq!(html.matches(r#"class="avatar""#).count(), 2, "{html}");
     }
 
+    /// A day with nothing of a whole day still has its banner, to open
+    /// the sheet on that day (#794).
     #[test]
-    fn no_banner_on_a_day_without_one() {
-        assert_eq!(banner_html(nov(12), &[], &[], &[], &[]), "");
+    fn a_day_without_an_entry_has_an_empty_banner_to_click() {
+        assert_eq!(
+            banner_html(nov(12), &[], &[], &[], &[], ""),
+            r#"<div class="allday"><h2 class="eyebrow">Journée</h2><a class="slot" href="/agenda/new?jour=2026-11-12"><span class="sr-only">Créer un événement sur la journée du jeudi 12 novembre</span></a></div>"#
+        );
+    }
+
+    // -- creating from the day view (#794) -----------------------------------
+
+    #[test]
+    fn a_day_is_named_by_its_weekday_its_number_and_its_month() {
+        assert_eq!(day_name(nov(12)), "jeudi 12 novembre");
+        assert_eq!(day_name(date(2027, 3, 1)), "lundi 1 mars");
+    }
+
+    #[test]
+    fn a_day_has_a_half_hour_per_half_hour_that_elapses() {
+        let halves = half_hours(nov(12));
+        assert_eq!(halves.len(), 48);
+        assert_eq!(halves[0], paris(2026, 11, 12, 0, 0));
+        assert_eq!(halves[19], paris(2026, 11, 12, 9, 30));
+        assert_eq!(halves[47], paris(2026, 11, 12, 23, 30));
+        // 23 hours, then 25: two rows fewer, two more.
+        let spring = half_hours(date(2026, 3, 29));
+        assert_eq!(spring.len(), 46);
+        assert_eq!(spring[4], paris(2026, 3, 29, 3, 0));
+        let autumn = half_hours(date(2026, 10, 25));
+        assert_eq!(autumn.len(), 50);
+        assert_eq!(autumn[47], paris(2026, 10, 25, 22, 30));
+    }
+
+    #[test]
+    fn each_half_hour_opens_the_sheet_on_it_and_is_named() {
+        let html = slots_html(nov(12), "");
+        assert!(html.starts_with(r#"<div class="slots">"#), "{html}");
+        assert_eq!(html.matches("<a ").count(), 48, "{html}");
+        assert!(
+            html.contains(r#"<a href="/agenda/new?debut=2026-11-12T09:30"><span class="sr-only">Créer un événement le jeudi 12 novembre à 09:30</span></a>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/agenda/new?debut=2026-11-12T00:00">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/agenda/new?debut=2026-11-12T23:30">"#),
+            "{html}"
+        );
+        // In time order.
+        let a = html.find("T09:00").unwrap();
+        let b = html.find("T09:30").unwrap();
+        assert!(a < b, "{html}");
+    }
+
+    #[test]
+    fn the_half_hours_keep_the_families_of_the_view() {
+        let html = slots_html(nov(12), "familles=toutes");
+        assert!(
+            html.contains(r#"<a href="/agenda/new?debut=2026-11-12T09:30&familles=toutes">"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_half_hours_of_a_day_of_23_hours_skip_the_hour_that_is_not() {
+        let html = slots_html(date(2026, 3, 29), "");
+        assert_eq!(html.matches("<a ").count(), 46, "{html}");
+        assert!(!html.contains("T02:"), "{html}");
+        assert!(html.contains("debut=2026-03-29T01:30"), "{html}");
+        assert!(html.contains("debut=2026-03-29T03:00"), "{html}");
+    }
+
+    #[test]
+    fn the_half_hours_come_after_every_block_of_the_hours() {
+        let o = occ(
+            "Soirée",
+            false,
+            paris(2026, 11, 12, 23, 0),
+            paris(2026, 11, 12, 23, 30),
+        );
+        let html = hours(&[o], None);
+        let block = html.find(r#"<a class="blk"#).expect(&html);
+        let slots = html.find(r#"<div class="slots">"#).expect(&html);
+        assert!(block < slots, "{html}");
+        assert!(html.find("</table>").unwrap() < slots, "{html}");
+        assert!(
+            html.ends_with("</a></div></div>"),
+            "the slots close the scroller: {html}"
+        );
+    }
+
+    #[test]
+    fn the_banner_opens_the_sheet_on_its_whole_day_after_its_entries() {
+        let one = occ(
+            "Anniversaire",
+            true,
+            paris(2026, 11, 12, 0, 0),
+            paris(2026, 11, 13, 0, 0),
+        );
+        let html = banner_html(nov(12), &[&one], &[], &[member()], &[], "familles=toutes");
+        let slot = r#"<a class="slot" href="/agenda/new?jour=2026-11-12&familles=toutes"><span class="sr-only">Créer un événement sur la journée du jeudi 12 novembre</span></a></div>"#;
+        assert!(html.ends_with(slot), "{html}");
+        assert!(html.find("Anniversaire").unwrap() < html.find(slot).unwrap());
     }
 }

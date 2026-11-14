@@ -766,21 +766,21 @@ progress::-moz-progress-bar { background: currentColor; }
    The « Journée » banner: the day's national days and its events of a
    whole day or more, a line each. A national day, and an event of more
    than a day, wear the ocre of what the app generates. */
-.allday { display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s3); padding: var(--s2x); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
-.ad { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); min-height: var(--s8); margin: 0; padding: var(--s1) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); }
+.allday { position: relative; display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s3); padding: var(--s2x); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+.ad { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); min-height: var(--s8); margin: 0; padding: var(--s1) var(--s2x); border-radius: var(--r-sm); font-size: var(--t-sm); }
 .ad.gen { border-left-color: var(--warning); background: var(--warning-soft); }
 /* The hours, a row per hour, 56px tall: a scroller
    that opens on 08:00 (`#h8`) without a script where the browser knows
    `scroll-initial-target`, through `enhance.js` elsewhere. The table's own
    ground draws a rule per hour. A stacking context of its own: its blocks
    and its line of the hour stay under the phone's tab bar. */
-.hours-scroll { isolation: isolate; max-height: 70vh; overflow: hidden auto; border-top: 1px solid var(--line); background: var(--surface); }
+.hours-scroll { position: relative; isolation: isolate; max-height: 70vh; overflow: hidden auto; border-top: 1px solid var(--line); background: var(--surface); }
 #h8 { scroll-initial-target: nearest; }
 .hours { table-layout: fixed; background: repeating-linear-gradient(var(--line) 0 1px, transparent 1px calc(var(--s12) + var(--s2x))); }
 .hours tr { height: calc(var(--s12) + var(--s2x)); }
 .hours th, .hours td { position: relative; padding: 0; border: 0; vertical-align: top; }
 .hours th { width: var(--s12); padding-right: var(--s2x); text-align: right; font-size: var(--t-xs); font-weight: 400; font-variant-numeric: tabular-nums; }
-.hours p { margin: var(--s4) 0; text-align: center; white-space: normal; }
+.hours p { position: absolute; width: 100%; margin: var(--s4) 0; text-align: center; white-space: normal; }
 /* A block in the cell of the hour it starts in, placed to the minute by its
    `style` (`day::inset`: top, bottom, left, right in hundredths of the hour
    and of the width), above the cells of the hours it runs over. Its lines
@@ -818,6 +818,18 @@ progress::-moz-progress-bar { background: currentColor; }
 .now.q1 { top: 25%; }
 .now.q2 { top: 50%; }
 .now.q3 { top: 75%; }
+/* A click on the hours or on the « Journée » banner opens the sheet there
+   (#794): a link per half hour over the whole width of the hours, their
+   names included, under the blocks (`day::slots_html`), and one under the
+   banner's entries (`.slot`). Each comes after what it lies under, so the
+   keyboard reaches the events first. A row stays 56px — the note of an
+   empty day is out of the flow (`.hours p`) — so the half hours, 28px
+   each, keep to their rows. */
+.slot, .slots { position: absolute; inset: 0; }
+.slots { bottom: auto; }
+.slots a { display: block; height: calc((var(--s12) + var(--s2x)) / 2); }
+:is(.slot, .slots a):hover { box-shadow: inset 0 0 0 1px var(--border); }
+:is(.slot, .slots a):focus-visible { outline-offset: calc(-1 * var(--s2)); }
 /* The event form as the mock-up's sheet (#525). The fieldsets it holds are
    cards of their own elsewhere (the edit page); inside the sheet they are
    groups of fields, not a card on a card. */
