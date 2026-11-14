@@ -2599,6 +2599,11 @@ mod tests {
             ".field-error, button.secondary.danger, .pw-meter",
         ),
         ("--warning", "--bg", ".pw-meter (faible)"),
+        (
+            "--warning",
+            "--surface",
+            ".clash, in the choice's dialog (#795)",
+        ),
         ("--success", "--bg", ".pw-meter (correct, solide)"),
         ("--error", "--surface", ".field-error in a card"),
         (

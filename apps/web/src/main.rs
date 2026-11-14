@@ -245,6 +245,18 @@ fn build_router(state: AppState) -> Router {
                     manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES,
                 )),
         )
+        .route(
+            "/agenda/choisir",
+            // Choosing a day and an hour from an event's form (#795). The
+            // sheet sent there without JavaScript still carries its file:
+            // the route takes the sheet's limit, and drops the file as it
+            // reads it (`routes::agenda::pick::post`).
+            get(routes::agenda::pick::get)
+                .post(routes::agenda::pick::post)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    manage_our_home_http_guard::MAX_UPLOAD_BODY_BYTES,
+                )),
+        )
         // Google Calendar import (front epic F11): registered before the
         // `/agenda/{id}` family below purely for readability — the router
         // matches the static `imports` segment ahead of the `{id}` param
