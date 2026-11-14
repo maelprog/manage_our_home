@@ -11,7 +11,10 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::can_modify;
-use crate::grocery_list::planned::{plan_lines, PlannedIngredient};
+use crate::grocery_list::planned::{
+    count_against_list, count_missing_against_list, plan_lines, ListChange, ListedLine,
+    PlannedIngredient,
+};
 use crate::groups::require_role;
 use crate::notifications::center;
 use crate::recipes::availability::planned_availability;
@@ -448,8 +451,11 @@ struct LowStockRow {
 /// first recipe that calls for it in `source_recipe_id`. Matching against
 /// existing rows is name-based (case-insensitive, trimmed), same heuristic
 /// as recipes::suggestions and stocks' low_stock — an item already present
-/// and unchecked is not duplicated, so re-running this is idempotent. Any
-/// group member may trigger it (same bar as manual add).
+/// and unchecked is not duplicated; a recipe line of the same unit that
+/// counts less than the planned recipes now call for is raised to it, never
+/// lowered (`planned::count_against_list`, #842), so re-running this is
+/// idempotent. Only the items created are returned, not the raised ones.
+/// Any group member may trigger it (same bar as manual add).
 #[utoipa::path(
     post,
     path = "/groups/{id}/grocery-items/generate",
@@ -513,42 +519,21 @@ pub async fn generate_grocery_items(
     .fetch_all(&mut *tx)
     .await?;
 
-    let existing_unchecked: HashSet<String> = sqlx::query_scalar!(
-        "SELECT name FROM grocery_items WHERE group_id = $1 AND checked = false",
+    let listed = listed_lines(&mut tx, group_id).await?;
+    // A name already on the list, or that a planned recipe calls for, gets
+    // no low-stock line.
+    let mut seen: HashSet<String> = listed
+        .iter()
+        .map(|l| l.name.trim().to_lowercase())
+        .chain(missing_lines.iter().map(|l| l.name.trim().to_lowercase()))
+        .collect();
+    let mut created = apply_list_changes(
+        &mut tx,
         group_id,
+        auth.user_id,
+        count_against_list(missing_lines, &listed),
     )
-    .fetch_all(&mut *tx)
-    .await?
-    .into_iter()
-    .map(|n| n.trim().to_lowercase())
-    .collect();
-
-    let mut seen: HashSet<String> = existing_unchecked;
-    let mut created: Vec<GroceryItemResponse> = Vec::new();
-
-    for line in missing_lines {
-        let key = line.name.to_lowercase();
-        if !seen.insert(key) {
-            continue;
-        }
-        let item = sqlx::query_as!(
-            GroceryItemRow,
-            r#"
-            INSERT INTO grocery_items (group_id, created_by, name, quantity, unit, source, source_recipe_id)
-            VALUES ($1, $2, $3, $4, $5, 'recipe', $6)
-            RETURNING id, group_id, created_by, name, quantity, unit, checked, source, source_recipe_id, created_at, updated_at
-            "#,
-            group_id,
-            auth.user_id,
-            line.name,
-            line.quantity,
-            line.unit,
-            line.recipe_id,
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        created.push(GroceryItemResponse::from(item));
-    }
+    .await?;
 
     for stock in low_stock_items {
         let key = stock.name.trim().to_lowercase();
@@ -579,9 +564,11 @@ pub async fn generate_grocery_items(
 /// `POST /groups/:id/recipes/:recipe_id/selection/missing` (#559): adds to
 /// the grocery list what the stock lacks of the recipe's `planned`
 /// selection (`recipes::availability::missing`), one item per element,
-/// with the quantity lacking and the recipe in `source_recipe_id`. A name
-/// already on the list unchecked is not added again, as for
-/// `generate_grocery_items`, so replaying adds nothing. 404 without a
+/// with what this recipe lacks of it and the recipe in `source_recipe_id`.
+/// A name already on the list unchecked is not added again, as for
+/// `generate_grocery_items`, but a recipe line of it is raised as there to
+/// what the planned recipes lack of it together (`add_missing_lines`), so
+/// replaying changes nothing. 404 without a
 /// `planned` selection of that recipe in the group. Any member may, as for
 /// the generation. 201 with the items created.
 #[utoipa::path(
@@ -623,35 +610,70 @@ pub async fn add_missing_grocery_items(
 
 /// Adds to the grocery list what the stock lacks of the recipe's `planned`
 /// selection, a name already on the list unchecked excepted; the items
-/// created. Shared by `add_missing_grocery_items` and the replacement of a
-/// selection (#815).
+/// created. A recipe line of such a name is counted, as by the generation
+/// (`planned::count_against_list`, #842), against what every planned
+/// recipe lacks of it, each weighed alone against the stock
+/// (`planned::with_other_planned`): the line another recipe put there is
+/// raised by this recipe's share. A line created carries only what this
+/// recipe lacks (`planned::count_missing_against_list`). Shared by `add_missing_grocery_items` and
+/// the replacement of a selection (#815).
 pub(crate) async fn add_missing_lines(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     group_id: Uuid,
     user_id: Uuid,
     recipe_id: Uuid,
 ) -> AppResult<Vec<GroceryItemResponse>> {
-    let missing: Vec<_> = planned_availability(tx, group_id, Some(recipe_id), today())
+    let missing = planned_availability(tx, group_id, None, today())
         .await?
         .into_iter()
-        .flat_map(|a| a.missing)
-        .collect();
+        .flat_map(|a| a.missing);
+    let listed = listed_lines(tx, group_id).await?;
+    let changes = count_missing_against_list(recipe_id, missing, &listed);
+    apply_list_changes(tx, group_id, user_id, changes).await
+}
 
-    let mut seen: HashSet<String> = sqlx::query_scalar!(
-        "SELECT name FROM grocery_items WHERE group_id = $1 AND checked = false",
+/// The unchecked lines of the group's grocery list, oldest first.
+async fn listed_lines(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> AppResult<Vec<ListedLine>> {
+    Ok(sqlx::query_as!(
+        ListedLine,
+        r#"
+        SELECT id, name, quantity, unit, source FROM grocery_items
+        WHERE group_id = $1 AND checked = false
+        ORDER BY created_at, id
+        "#,
         group_id,
     )
     .fetch_all(&mut **tx)
-    .await?
-    .into_iter()
-    .map(|n| n.trim().to_lowercase())
-    .collect();
+    .await?)
+}
 
+/// Writes what `count_against_list` decided: each new line is created as a
+/// recipe line, each raised one takes its new quantity. The items created.
+async fn apply_list_changes(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    user_id: Uuid,
+    changes: Vec<ListChange>,
+) -> AppResult<Vec<GroceryItemResponse>> {
     let mut created: Vec<GroceryItemResponse> = Vec::new();
-    for line in missing {
-        if !seen.insert(line.name.trim().to_lowercase()) {
-            continue;
-        }
+    for change in changes {
+        let line = match change {
+            ListChange::Add(line) => line,
+            ListChange::Raise { id, quantity } => {
+                sqlx::query!(
+                    "UPDATE grocery_items SET quantity = $3, updated_at = now() WHERE id = $1 AND group_id = $2",
+                    id,
+                    group_id,
+                    quantity,
+                )
+                .execute(&mut **tx)
+                .await?;
+                continue;
+            }
+        };
         let item = sqlx::query_as!(
             GroceryItemRow,
             r#"

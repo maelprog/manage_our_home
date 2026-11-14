@@ -657,7 +657,9 @@ pub async fn replace_selection(
         (vec![], vec![])
     } else {
         // The recipes still planned, the new one aside: its lines are
-        // added below with its own quantities.
+        // added below (`add_missing_lines`), created with what it lacks,
+        // a recipe line already there raised to what the planned recipes
+        // lack together (#842).
         let still_needed: Vec<String> = sqlx::query_scalar!(
             r#"
             SELECT ri.name FROM recipe_selections s
