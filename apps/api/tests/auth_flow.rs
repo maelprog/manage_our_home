@@ -3673,6 +3673,48 @@ async fn a_resent_verification_email_names_nobody(db: PgPool) {
     }
 }
 
+/// #831: anybody can register somebody else's address under a name of
+/// their choosing and then ask for a reset link: until the address is
+/// verified, the reset email greets nobody, so that name never reaches the
+/// mailbox's holder (arbitrated 2026-11-15).
+#[sqlx::test]
+async fn a_reset_email_to_an_unverified_account_names_nobody(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "victim@example.test";
+    let trap = format!("Support urgent appelez le 0800 {}", "X".repeat(200));
+    let registered = register_with(&router, email, "trap-password1", &trap).await;
+    assert_status(&registered, StatusCode::CREATED);
+    let forgot = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": email})),
+    )
+    .await;
+    assert_status(&forgot, StatusCode::OK);
+
+    let emails = outbox.emails();
+    let mail = emails.last().unwrap();
+    assert_eq!(mail.subject, "Réinitialisation de mot de passe");
+    assert!(
+        mail.body
+            .starts_with("Choisissez un nouveau mot de passe\n"),
+        "{}",
+        mail.body
+    );
+    let html = mail.html.as_deref().expect("an HTML part");
+    for part in [mail.body.as_str(), html] {
+        assert!(!part.contains("Support urgent"), "{part}");
+        assert!(!part.contains("XXXX"), "{part}");
+    }
+    common::mailed_token(
+        &outbox,
+        email,
+        "http://localhost:5173/reset-password#token=",
+    );
+}
+
 /// #831: the three emails of the auth routes — verification, password reset
 /// and "account exists" — go out in two parts, with the same link in each,
 /// and the name a person typed escaped in the HTML one.

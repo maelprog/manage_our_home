@@ -248,7 +248,9 @@ impl EmailSender {
         })
     }
 
-    /// Mailed by the forgotten-password form to a live account.
+    /// Mailed by the forgotten-password form to a live account. An empty
+    /// `display_name` greets nobody: the route passes one while the address
+    /// is unverified (#831).
     pub fn password_reset_email(
         display_name: &str,
         link: &str,

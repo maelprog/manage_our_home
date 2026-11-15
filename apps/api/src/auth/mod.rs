@@ -731,7 +731,7 @@ async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
         return Ok(());
     }
     if let Some(user) = sqlx::query!(
-        "SELECT id, display_name FROM users
+        "SELECT id, display_name, email_verified FROM users
          WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
         email
     )
@@ -756,12 +756,20 @@ async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
         // password to this API's /auth/password/reset), not on the API
         // endpoint itself (POST-only — a GET there would 405).
         let link = password_reset_link(&state.frontend_base_url, token.value());
+        // #831: until the address is verified, the name on the account was
+        // typed by whoever registered it, not necessarily by the holder of
+        // this mailbox: greet nobody rather than relay it.
+        let greeted = if user.email_verified {
+            user.display_name.as_str()
+        } else {
+            ""
+        };
         send_within_deadline(
             state,
             email,
             "Réinitialisation de mot de passe",
             crate::email::EmailSender::password_reset_email(
-                &user.display_name,
+                greeted,
                 &link,
                 &privacy_policy_url(state),
             ),
