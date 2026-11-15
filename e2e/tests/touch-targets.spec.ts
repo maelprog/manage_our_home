@@ -86,15 +86,20 @@ async function seed(page: Page): Promise<string[]> {
 
   // A day of the coming week with what the day view draws under 44px (#838):
   // two lines of the « Journée » banner in a row (events of 24 hours) and a
-  // block of half an hour, the slot of 14:30 right under it. Its week shows
-  // the day's number. Not today, whose line of the current time would cross
-  // a block wherever the clock stands.
+  // block of half an hour, the slot of 14:30 right under it. Not today, whose
+  // line of the current time would cross a block wherever the clock stands.
+  // An event the day before and the day after: in its week, the phone lists
+  // at least two days in a row, whichever weekday it is, and a day's number
+  // stands right under the day above.
   const day = parisDay(7);
+  const before = parisDay(6);
   const next = parisDay(8);
   for (const [title, starts, ends] of [
     ["Congrès", `${day}T00:00`, `${next}T00:00`],
     ["Séminaire", `${day}T00:00`, `${next}T00:00`],
     ["Pharmacie", `${day}T14:00`, `${day}T14:30`],
+    ["Marché", `${before}T10:00`, `${before}T11:00`],
+    ["Piscine", `${next}T10:00`, `${next}T11:00`],
   ]) {
     await page.goto("/agenda/new");
     await page.getByLabel("Titre").fill(title);
@@ -121,8 +126,10 @@ interface Box {
  * member's name as a link to their profile (`.member`, #466 — the seeded
  * message's author on /messagerie, the member list, the event's assignee),
  * every day of the phone's mini grid, a link to its day view (#675, #793),
- * every day of the month's grid, a link as tall as its week (#836), and the
- * day view's own head (#793).
+ * every day of the month's grid, a link as tall as its week (#836), the
+ * day view's own head (#793), and a day's number in the week (`.cal-day a`,
+ * #793), 44px square on a PC and 48px tall in the phone's list by its own
+ * padding (#838).
  *
  * Left out, each for a stated reason:
  * - a bare text link (`<a>` with no class): inside a sentence it is WCAG
@@ -141,7 +148,7 @@ interface Box {
  *   A box reaching past the line or the block would lie over a slot (the
  *   banner's `.slot` is under its whole surface, the hours' `.slots a`
  *   under every block), and a tap there must create, not open:
- *   `slotsCovered` below holds that;
+ *   `pointsTaken` below holds that;
  * - the month's bars and « +N » (#836, `.bar`, `.plus`), drawn at the
  *   mock-up's size: one line of a title, 19px tall on a phone and 24px on a
  *   PC (26px outlined, and in a row holding an outlined one); « +N » 20px
@@ -152,7 +159,7 @@ async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
     const out: { what: string; width: number; height: number }[] = [];
     const nodes = document.querySelectorAll<HTMLElement>(
-      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member, .mini a, .day',
+      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member, .mini a, .day, .cal-day a',
     );
     const wide = window.matchMedia("(min-width: 861px)").matches;
     for (const node of nodes) {
@@ -190,60 +197,18 @@ async function undersized(page: Page): Promise<Box[]> {
 }
 
 /**
- * A target drawn smaller than it is (#838): a day's number in the week
- * (`.cal-day a`, 28px square on a PC, 25px tall in the phone's list)
- * reaches 44px by a box that paints nothing (`::before`), which no bounding
- * box reports. It is measured as a finger meets it, by asking the page
- * which link lies under each pixel of a vertical and a horizontal line
- * through the link's centre, and counting the run that is this link.
- * Whatever covers it — a chip, the next day — shortens the run.
+ * A target must not take a tap from another link by a box that paints
+ * nothing (#838). On every link of the agenda's day and week views, each
+ * point of a 4px grid over the link's visible box, its first and last rows
+ * and columns of pixels included, is asked which link lies there; a point
+ * that goes to another link, outside the box of the element hit, is a
+ * point an invisible target took. A block drawn over a slot takes that
+ * part of it by design and is not counted: what is held is that the slots
+ * of #794 (`.slots a`, the banner's `.slot`) keep every point nothing is
+ * drawn on (« Créneau d'abord »), and that a day's number takes nothing
+ * from the day above or its chips.
  */
-async function undersizedHitAreas(page: Page): Promise<Box[]> {
-  return page.evaluate((min) => {
-    const out: { what: string; width: number; height: number }[] = [];
-    for (const node of document.querySelectorAll<HTMLElement>(".cal-day a")) {
-      if (node.getClientRects().length === 0) continue;
-      node.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
-      const r = node.getBoundingClientRect();
-      const cx = Math.round(r.left + r.width / 2);
-      const cy = Math.round(r.top + r.height / 2);
-      const on = (x: number, y: number) => document.elementFromPoint(x, y)?.closest("a") === node;
-      const run = (dx: number, dy: number) => {
-        let n = 1;
-        while (n < 100 && on(cx + dx * n, cy + dy * n)) n++;
-        return n - 1;
-      };
-      if (!on(cx, cy)) {
-        out.push({ what: `${node.className} "${(node.textContent ?? "").trim().slice(0, 30)}" covered`, width: 0, height: 0 });
-        continue;
-      }
-      const height = run(0, -1) + 1 + run(0, 1);
-      const width = run(-1, 0) + 1 + run(1, 0);
-      // A pixel of tolerance: the run counts whole pixels of a box placed to
-      // the fraction.
-      if (height + 1 < min || width + 1 < min) {
-        out.push({
-          what: `a.${node.className} (hit area) "${(node.textContent ?? "").trim().slice(0, 30)}"`,
-          width,
-          height,
-        });
-      }
-    }
-    return out;
-  }, MIN);
-}
-
-/**
- * The other side of a box that paints nothing: it must not take a tap from
- * another link. On every link of the agenda's day and week views, each
- * point of a 4px grid over the link's visible box is asked which link lies
- * there; a point that goes to another link, outside the box that link
- * draws, is a point an invisible target took. A block drawn over a slot
- * takes that part of it by design and is not counted: what is held is that
- * the slots of #794 (`.slots a`, the banner's `.slot`) keep every point
- * nothing is drawn on (« Créneau d'abord », #838).
- */
-async function slotsCovered(page: Page): Promise<string[]> {
+async function pointsTaken(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const out: string[] = [];
     const name = (a: Element) =>
@@ -260,21 +225,37 @@ async function slotsCovered(page: Page): Promise<string[]> {
         const c = p.getBoundingClientRect();
         [x0, y0, x1, y1] = [Math.max(x0, c.left), Math.max(y0, c.top), Math.min(x1, c.right), Math.min(y1, c.bottom)];
       }
-      const takers = new Map<Element, number>();
+      const takers = new Map<Element, { n: number; at: string }>();
       let points = 0;
-      for (let y = Math.ceil(y0) + 1; y < y1 - 1; y += 4) {
-        for (let x = Math.ceil(x0) + 1; x < x1 - 1; x += 4) {
+      // Every 4px, then the last row or column of whole pixels: the page
+      // hit-tests whole pixels.
+      const along = (from: number, to: number) => {
+        const first = Math.ceil(from);
+        const last = Math.floor(to) - 1;
+        const at: number[] = [];
+        for (let v = first; v < last; v += 4) at.push(v);
+        if (last >= first) at.push(last);
+        return at;
+      };
+      for (const y of along(y0, y1)) {
+        for (const x of along(x0, x1)) {
           points++;
           const hit = document.elementFromPoint(x, y);
           const other = hit?.closest("a");
           if (!hit || !other || other === link) continue;
           const b = hit.getBoundingClientRect();
+          // A pixel of tolerance, for a box placed to the fraction.
           if (x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1) continue;
-          takers.set(other, (takers.get(other) ?? 0) + 1);
+          const seen = takers.get(other);
+          if (seen) seen.n++;
+          else {
+            const where = `(${x}, ${y}) on ${hit.tagName.toLowerCase()}.${hit.className} at ${[b.left, b.top, b.right, b.bottom].map(Math.round).join(",")}`;
+            takers.set(other, { n: 1, at: where });
+          }
         }
       }
-      for (const [other, n] of takers) {
-        out.push(`${name(link)}: ${n} of ${points} points taken by ${name(other)} outside what it draws`);
+      for (const [other, { n, at }] of takers) {
+        out.push(`${name(link)}: ${n} of ${points} points taken by ${name(other)} outside what it draws, first ${at}`);
       }
     }
     return out;
@@ -315,14 +296,11 @@ for (const [layout, viewport] of [
       const failures: string[] = [];
       const visit = async (path: string) => {
         await page.goto(path);
-        // Today's day view is left to the boxes alone: its line of the
-        // current time crosses whatever block stands at that hour.
-        const hits = path === "/agenda?view=day" ? [] : await undersizedHitAreas(page);
-        for (const b of [...(await undersized(page)), ...hits]) {
+        for (const b of await undersized(page)) {
           failures.push(`${path}: ${b.what} ${b.width}×${b.height}`);
         }
         if (/^\/agenda\?view=(day|week)/.test(path)) {
-          for (const c of await slotsCovered(page)) failures.push(`${path}: ${c}`);
+          for (const c of await pointsTaken(page)) failures.push(`${path}: ${c}`);
         }
       };
       for (const path of PUBLIC_PAGES) await visit(path);
