@@ -197,22 +197,30 @@ async function undersized(page: Page): Promise<Box[]> {
 }
 
 /**
- * A target must not take a tap from another link by a box that paints
- * nothing (#838). On every link of the agenda's day and week views, each
- * point of a 4px grid over the link's visible box, its first and last rows
- * and columns of pixels included, is asked which link lies there; a point
- * that goes to another link, outside the box of the element hit, is a
- * point an invisible target took. A block drawn over a slot takes that
- * part of it by design and is not counted: what is held is that the slots
- * of #794 (`.slots a`, the banner's `.slot`) keep every point nothing is
- * drawn on (« Créneau d'abord »), and that a day's number takes nothing
- * from the day above or its chips.
+ * A target grown to 44px must not take a tap from another link (#838),
+ * whether by a box that paints nothing or by its own box moved over its
+ * neighbour. On every link of the agenda's day and week views, each point
+ * of a 4px grid over the link's visible box, its first and last rows and
+ * columns of pixels included, is asked which link lies there: it must be
+ * this link. Two overlaps are by design, and pass when the point lies
+ * inside the box of the element hit — what that link draws, not a box
+ * that paints nothing: a block or a line of the « Journée » banner over a
+ * slot of #794 (`.blk`, `.ad` over `.slots a`, `.slot`; « Créneau
+ * d'abord »: the slot keeps every point nothing is drawn on), and a link
+ * of a fixed or sticky bar over the page. A point a rounded corner leaves
+ * out of the link is not the link's, and is not asked.
  */
 async function pointsTaken(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const out: string[] = [];
     const name = (a: Element) =>
       `a.${a.className} "${(a.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40)}"`;
+    const onBar = (a: Element) => {
+      for (let p: Element | null = a; p; p = p.parentElement) {
+        if (["fixed", "sticky"].includes(getComputedStyle(p).position)) return true;
+      }
+      return false;
+    };
     for (const link of document.querySelectorAll<HTMLElement>("a")) {
       if (link.getClientRects().length === 0) continue;
       link.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
@@ -225,6 +233,33 @@ async function pointsTaken(page: Page): Promise<string[]> {
         const c = p.getBoundingClientRect();
         [x0, y0, x1, y1] = [Math.max(x0, c.left), Math.max(y0, c.top), Math.min(x1, c.right), Math.min(y1, c.bottom)];
       }
+      // The link's rounded corners, as the page hit-tests them: a radius in
+      // px or in % of the side, one value or two.
+      const cs = getComputedStyle(link);
+      const radii = (v: string) => {
+        const [h, w = h] = v.split(" ");
+        const len = (t: string, side: number) => (t.endsWith("%") ? (parseFloat(t) * side) / 100 : parseFloat(t) || 0);
+        return [Math.min(len(h, r.width), r.width / 2), Math.min(len(w, r.height), r.height / 2)];
+      };
+      const corners = [
+        [cs.borderTopLeftRadius, r.left, r.top, 1, 1],
+        [cs.borderTopRightRadius, r.right, r.top, -1, 1],
+        [cs.borderBottomLeftRadius, r.left, r.bottom, 1, -1],
+        [cs.borderBottomRightRadius, r.right, r.bottom, -1, -1],
+      ] as const;
+      const inShape = (x: number, y: number) => {
+        for (const [v, cx, cy, sx, sy] of corners) {
+          const [rx, ry] = radii(v);
+          if (rx < 1 || ry < 1) continue;
+          const dx = (x - (cx + sx * rx)) * sx;
+          const dy = (y - (cy + sy * ry)) * sy;
+          if (dx >= 0 || dy >= 0) continue;
+          // Out of the shape, or within a pixel and a half of its curve.
+          const near = Math.max(0, 1 - 1.5 / Math.min(rx, ry));
+          if ((dx / rx) ** 2 + (dy / ry) ** 2 > near ** 2) return false;
+        }
+        return true;
+      };
       const takers = new Map<Element, { n: number; at: string }>();
       let points = 0;
       // Every 4px, then the last row or column of whole pixels: the page
@@ -239,13 +274,16 @@ async function pointsTaken(page: Page): Promise<string[]> {
       };
       for (const y of along(y0, y1)) {
         for (const x of along(x0, x1)) {
+          if (!inShape(x, y)) continue;
           points++;
           const hit = document.elementFromPoint(x, y);
           const other = hit?.closest("a");
           if (!hit || !other || other === link) continue;
           const b = hit.getBoundingClientRect();
           // A pixel of tolerance, for a box placed to the fraction.
-          if (x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1) continue;
+          const drawn = x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1;
+          const overSlot = link.matches(".slots a, .slot") && other.matches(".blk, .ad");
+          if (drawn && (overSlot || onBar(other))) continue;
           const seen = takers.get(other);
           if (seen) seen.n++;
           else {
@@ -255,7 +293,7 @@ async function pointsTaken(page: Page): Promise<string[]> {
         }
       }
       for (const [other, { n, at }] of takers) {
-        out.push(`${name(link)}: ${n} of ${points} points taken by ${name(other)} outside what it draws, first ${at}`);
+        out.push(`${name(link)}: ${n} of ${points} points taken by ${name(other)}, first ${at}`);
       }
     }
     return out;

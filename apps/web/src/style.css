@@ -741,7 +741,9 @@ progress::-moz-progress-bar { background: currentColor; }
 .current { background: var(--accent-soft); }
 /* Today's number in the accent, as the mock-up circles it (#525): the
    pill is the link's content box (#838), its padding a target that paints
-   nothing, the radius the padding wider so that the pill keeps --r-sm. */
+   nothing. On a PC, 8px of padding all round, the radius 8px wider leaves
+   the pill --r-sm; on a phone, with no padding at the sides, its corners
+   are elliptic (20 × 8.5px), as the validated mock-up draws them. */
 .cal-cell.current .cal-day a { border-radius: calc(var(--r-sm) + var(--s2x)); background: var(--accent) content-box; color: var(--accent-fg); }
 /* The grid and, on a PC, the panel of the day beside it (#525) — under it
    when the column is too narrow for both. `min-width: 0` lets the table
