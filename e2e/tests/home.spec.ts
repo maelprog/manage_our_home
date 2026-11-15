@@ -640,3 +640,32 @@ test.describe("Accueil — le titre d'une carte est une cible tactile", () => {
     }
   });
 });
+
+// Issue #843 — a row of « Aujourd'hui » is the link to its event's page,
+// on the occurrence it shows; on a phone, a target of 48 px (--s12).
+test.describe("Accueil — la ligne d'un événement mène à sa fiche", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("cliquer la ligne ouvre la fiche de l'occurrence", async ({ page }) => {
+    await registerAndLogin(page, "e2e-homerow", "Row Owner");
+    await createGroup(page, FAMILY);
+    const day = isoDay(5);
+    await createEvent(page, {
+      title: "Contrôle technique",
+      start: `${day}T10:00`,
+      end: `${day}T11:00`,
+    });
+
+    await page.goto("/");
+    const row = card(page, "Aujourd'hui").locator("a.list-row", { hasText: "Contrôle technique" });
+    await expect(row).toHaveCount(1);
+    const box = await row.boundingBox();
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(48);
+
+    await row.click();
+    await expect(page).toHaveURL(/\/agenda\/[0-9a-f-]{36}\?occ=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    // 10:00 in Paris is 08:00 or 09:00 UTC: the same day.
+    expect(new URL(page.url()).searchParams.get("occ")?.slice(0, 10)).toBe(day);
+    await expect(page.getByRole("heading", { level: 1, name: "Contrôle technique" })).toBeVisible();
+  });
+});

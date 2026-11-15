@@ -134,8 +134,9 @@ use crate::state::{api_request_auth, AppState};
 use super::day;
 use super::month;
 use super::{
-    agenda_cookie, fmt_paris, json_from_response, occurrences_from_response, paris_local_to_utc,
-    private_mark, read_or_log, service_unavailable_page, today_paris, with_family, DISPLAY_TZ,
+    agenda_cookie, fmt_paris, json_from_response, occurrence_href, occurrences_from_response,
+    paris_local_to_utc, private_mark, read_or_log, service_unavailable_page, today_paris,
+    DISPLAY_TZ,
 };
 
 pub(crate) const FR_MONTHS: [&str; 12] = [
@@ -1128,7 +1129,6 @@ pub(crate) fn render_chips(
             } else {
                 fmt_paris(occ.occurrence_starts_at, "%H:%M")
             };
-            let occ_param = occ.occurrence_starts_at.format("%Y-%m-%dT%H:%M:%SZ");
             let (marker, done) = if e.is_task {
                 if e.completed_at.is_some() {
                     ("☑ ", " done")
@@ -1153,10 +1153,7 @@ pub(crate) fn render_chips(
             };
             format!(
                 r#"<a href="{href}" class="chip{done}{tint}"{accent}>{initials}{private}{marker}<strong>{time}</strong> {title}{family_name}</a>"#,
-                href = with_family(
-                    &format!("/agenda/{}?occ={occ_param}", e.id),
-                    family.and_then(|f| f.carried)
-                ),
+                href = occurrence_href(occ, family.and_then(|f| f.carried)),
                 done = done,
                 initials = initials(&people),
                 private = private_mark(e.is_private),

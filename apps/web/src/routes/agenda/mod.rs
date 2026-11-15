@@ -164,6 +164,21 @@ pub(crate) fn with_family(url: &str, family: Option<Uuid>) -> String {
     }
 }
 
+/// The page of one occurrence of an event: `occ` is the occurrence's own
+/// start in UTC, so that a series opens on the occurrence clicked, and
+/// `family` is carried as `with_family` does. The agenda's chips
+/// (`calendar::render_chips`) and the home page's rows (#843) link to it.
+pub(crate) fn occurrence_href(occ: &OccurrenceResponse, family: Option<Uuid>) -> String {
+    with_family(
+        &format!(
+            "/agenda/{}?occ={}",
+            occ.event.id,
+            occ.occurrence_starts_at.format("%Y-%m-%dT%H:%M:%SZ")
+        ),
+        family,
+    )
+}
+
 /// The family an event page works in: the one its URL names when the
 /// visitor belongs to it — `GET /groups` is the membership check — and the
 /// active family otherwise, an unknown or foreign id included. The second
