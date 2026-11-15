@@ -3278,6 +3278,8 @@ mod tests {
         // weight every visitor downloads for nothing, and nothing else says
         // so — a selector that matches nothing is not an error in CSS.
         let mut worn = class_mentions(ENHANCE_SCRIPT);
+        // The live scan's `ok` (#807) is put on by its script alone.
+        worn.extend(class_mentions(crate::routes::stocks::new::LIVE_SCAN_SCRIPT));
         for (_, body) in rust_sources() {
             worn.extend(class_mentions(&body));
         }
