@@ -617,6 +617,13 @@ pub(crate) fn rescan_increment(unit: &str, pack_size: Option<&str>) -> (f64, Str
     }
 }
 
+/// The quantity « +1 » or « +400 g » posts: `quantity + step`, which `f64`
+/// does not keep exact (2,2 L + 1,1 L is 3.3000000000000003), rounded to the
+/// thousandths `format_quantity` writes.
+fn rescanned_quantity(quantity: f64, step: f64) -> String {
+    fmt_num(((quantity + step) * 1000.0).round() / 1000.0)
+}
+
 /// "Déjà en stock" (#402): the family's article carrying the scanned code,
 /// with "+1" — the quantity adjustment any member may make, through the
 /// detail page's own route; one pack, « +400 g », when `pack_size` is read
@@ -685,7 +692,7 @@ fn already_in_stock_page(
 </div>"#,
         name = html_escape(&item.name),
         qty = html_escape(&format_quantity(item.quantity, &item.unit)),
-        next = html_escape(&fmt_num(item.quantity + step)),
+        next = html_escape(&rescanned_quantity(item.quantity, step)),
         label = html_escape(&label),
         raw = html_escape(raw),
     );
@@ -1764,6 +1771,16 @@ mod tests {
             rescan_increment("mL", Some("250 ml")),
             (250.0, "+250 mL".to_string())
         );
+    }
+
+    #[test]
+    fn a_rescan_posts_the_sum_rounded_to_thousandths() {
+        // 2,2 L + 1,1 L posted « 3.3000000000000003 » (#807).
+        assert_eq!(rescanned_quantity(2.2, 1.1), "3.3");
+        assert_eq!(rescanned_quantity(0.1, 0.2), "0.3");
+        assert_eq!(rescanned_quantity(400.0, 400.0), "800");
+        assert_eq!(rescanned_quantity(1.0, 1.5), "2.5");
+        assert_eq!(rescanned_quantity(0.125, 0.25), "0.375");
     }
 
     #[test]
