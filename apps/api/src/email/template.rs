@@ -121,7 +121,7 @@ fn render_html(t: &Template) -> String {
 
     let mut body = format!(
         "<h1 style=\"margin:0 0 14px;font-family:{HEAD_FONT};font-weight:600;font-size:23px;\
-         line-height:1.25;color:{FG};{WRAP}\">{title}</h1>"
+         line-height:1.25;color:{FG};text-wrap:balance;{WRAP}\">{title}</h1>"
     );
     for p in t.paragraphs {
         body.push_str(&format!(
@@ -136,7 +136,7 @@ fn render_html(t: &Template) -> String {
          style=\"margin:6px 0 12px;border-collapse:separate;\"><tr>\
          <td style=\"background:{ACCENT};border-radius:12px;\">\
          <a href=\"{link}\" style=\"display:inline-block;padding:12px 22px;\
-         font-family:{BODY_FONT};font-size:16px;font-weight:600;line-height:1.25;\
+         font-family:{BODY_FONT};font-size:16px;font-weight:600;line-height:1.5;\
          color:{SURFACE};text-decoration:none;border-radius:12px;\">{label}</a>\
          </td></tr></table>\
          <p style=\"margin:0 0 14px;font-size:13px;line-height:1.5;word-break:break-all;\">\
