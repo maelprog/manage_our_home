@@ -411,6 +411,7 @@ mod tests {
                 crate::jobs::scheduled_notifications::reminder_email(
                     "Dîner",
                     at,
+                    false,
                     "https://m.example/agenda",
                     PRIVACY,
                 ),

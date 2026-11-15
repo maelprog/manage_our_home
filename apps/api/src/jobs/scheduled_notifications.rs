@@ -429,6 +429,7 @@ where
         let content = reminder_email(
             &row.title,
             row.occurrence_at,
+            row.all_day,
             &links.agenda,
             &links.privacy_policy,
         );
@@ -651,11 +652,20 @@ pub const REMINDER_SUBJECT: &str = "Rappel d'un événement à venir";
 /// input, so it goes through `sanitize_email_line` first: no line break, no
 /// invisible character, and a bounded length (#269); the template escapes
 /// it in the HTML part.
-fn reminder_email_body(title: &str, occurrence_at: DateTime<Utc>) -> String {
+///
+/// Date and hour are those of Europe/Paris, the fixed v1 display timezone,
+/// as in the notification centre (`center::body`); an all-day event gets
+/// its day only.
+fn reminder_email_body(title: &str, occurrence_at: DateTime<Utc>, all_day: bool) -> String {
+    let local = occurrence_at.with_timezone(&rrule::Tz::Europe__Paris);
+    let when = if all_day {
+        local.format("%d/%m/%Y")
+    } else {
+        local.format("%d/%m/%Y à %H:%M")
+    };
     format!(
-        "Rappel pour « {} » prévu le {}.",
-        sanitize_email_line(title),
-        occurrence_at.format("%d/%m/%Y %H:%M")
+        "Rappel pour « {} » prévu le {when}.",
+        sanitize_email_line(title)
     )
 }
 
@@ -665,10 +675,11 @@ fn reminder_email_body(title: &str, occurrence_at: DateTime<Utc>) -> String {
 pub fn reminder_email(
     title: &str,
     occurrence_at: DateTime<Utc>,
+    all_day: bool,
     agenda_url: &str,
     privacy_policy_url: &str,
 ) -> EmailContent {
-    let sentence = reminder_email_body(title, occurrence_at);
+    let sentence = reminder_email_body(title, occurrence_at, all_day);
     template::render(&template::Template {
         title: "Un événement approche",
         paragraphs: &[&sentence],
@@ -816,14 +827,41 @@ mod tests {
     const PRIVACY: &str = "https://maison.example/privacy-policy";
 
     fn reminder(title: &str) -> crate::email::EmailContent {
-        reminder_email(title, at(), AGENDA, PRIVACY)
+        reminder_email(title, at(), false, AGENDA, PRIVACY)
     }
 
     #[test]
     fn body_carries_title_and_date() {
         assert_eq!(
-            reminder_email_body("Dîner", at()),
-            "Rappel pour « Dîner » prévu le 03/10/2026 14:30."
+            reminder_email_body("Dîner", at(), false),
+            "Rappel pour « Dîner » prévu le 03/10/2026 à 16:30."
+        );
+    }
+
+    /// Europe/Paris, the fixed v1 display timezone, as in the notification
+    /// centre (`center::body`): the email used to print the UTC hour.
+    #[test]
+    fn body_dates_the_event_in_paris_time_whatever_the_season() {
+        let winter = Utc.with_ymd_and_hms(2026, 12, 24, 19, 0, 0).unwrap();
+        assert_eq!(
+            reminder_email_body("Réveillon", winter, false),
+            "Rappel pour « Réveillon » prévu le 24/12/2026 à 20:00."
+        );
+        // 23:30 UTC on 3 October is already 4 October in Paris.
+        let late = Utc.with_ymd_and_hms(2026, 10, 3, 23, 30, 0).unwrap();
+        assert_eq!(
+            reminder_email_body("Train", late, false),
+            "Rappel pour « Train » prévu le 04/10/2026 à 01:30."
+        );
+    }
+
+    /// An all-day event has no hour to give.
+    #[test]
+    fn body_of_an_all_day_event_gives_the_day_only() {
+        let midnight = Utc.with_ymd_and_hms(2026, 10, 2, 22, 0, 0).unwrap();
+        assert_eq!(
+            reminder_email_body("Anniversaire", midnight, true),
+            "Rappel pour « Anniversaire » prévu le 03/10/2026."
         );
     }
 
@@ -840,7 +878,7 @@ mod tests {
         );
         assert!(
             c.text
-                .contains("\n\nRappel pour « Dîner » prévu le 03/10/2026 14:30.\n\n"),
+                .contains("\n\nRappel pour « Dîner » prévu le 03/10/2026 à 16:30.\n\n"),
             "{}",
             c.text
         );
@@ -891,19 +929,20 @@ mod tests {
 
     #[test]
     fn body_title_cannot_open_a_line() {
-        let body = reminder_email_body("IRM\r\nBcc: x@example.test\n\nfaux paragraphe", at());
+        let body =
+            reminder_email_body("IRM\r\nBcc: x@example.test\n\nfaux paragraphe", at(), false);
         assert!(!body.contains(['\n', '\r']), "{body:?}");
         assert_eq!(
             body,
-            "Rappel pour « IRM Bcc: x@example.test faux paragraphe » prévu le 03/10/2026 14:30."
+            "Rappel pour « IRM Bcc: x@example.test faux paragraphe » prévu le 03/10/2026 à 16:30."
         );
     }
 
     #[test]
     fn body_title_loses_invisible_characters() {
         assert_eq!(
-            reminder_email_body("Pis\u{202e}cine\u{200b}", at()),
-            "Rappel pour « Piscine » prévu le 03/10/2026 14:30."
+            reminder_email_body("Pis\u{202e}cine\u{200b}", at(), false),
+            "Rappel pour « Piscine » prévu le 03/10/2026 à 16:30."
         );
     }
 
@@ -992,8 +1031,8 @@ mod tests {
         let long = "a".repeat(10_000);
         let expected_title = format!("{}…", "a".repeat(80));
         assert_eq!(
-            reminder_email_body(&long, at()),
-            format!("Rappel pour « {expected_title} » prévu le 03/10/2026 14:30.")
+            reminder_email_body(&long, at(), false),
+            format!("Rappel pour « {expected_title} » prévu le 03/10/2026 à 16:30.")
         );
     }
 }
