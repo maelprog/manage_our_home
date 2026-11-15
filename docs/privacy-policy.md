@@ -126,9 +126,10 @@ possibles sont :
   corps de chacun : le corps d'un rappel reprend le titre et la date de
   l'événement, le corps d'une invitation nomme le groupe et le membre qui
   invite, le corps d'un avis de propriété nomme le groupe et dit pourquoi
-  il vous revient, et le corps de l'avis de compte existant vous nomme par
-  votre nom affiché. Cet avis part quand quelqu'un — vous ou n'importe qui
-  d'autre — tente de créer un compte avec votre adresse alors qu'elle est
+  il vous revient, et le corps de l'avertissement avant suppression, celui
+  d'un avis de propriété et celui de l'avis de compte existant vous nomment
+  par votre nom affiché. L'avis de compte existant part quand quelqu'un —
+  vous ou n'importe qui d'autre — tente de créer un compte avec votre adresse alors qu'elle est
   déjà vérifiée, sauf si votre compte est désactivé ; il vous le signale,
   avec un lien vers la page « mot de passe oublié », sans que la personne
   qui a tenté l'inscription apprenne que le compte existe. Il part au plus
@@ -136,9 +137,10 @@ possibles sont :
   « Rappel d'un événement à venir ». Un titre peut être sensible (un examen
   médical, un rendez-vous chez un professionnel) : il ne figure donc pas
   dans l'objet, la ligne que la liste des messages affiche en premier. Il
-  reste en revanche dans le corps, au début de sa première ligne, si bien
-  que l'aperçu que la plupart des messageries et des notifications
-  affichent sous l'objet le montre ; et Scaleway comme votre fournisseur de
+  reste en revanche dans le corps, dans la phrase qui suit sa première
+  ligne, « Un événement approche », si bien que l'aperçu que la plupart des
+  messageries et des notifications affichent sous l'objet peut le montrer ;
+  et Scaleway comme votre fournisseur de
   messagerie le reçoivent avec le corps. Scaleway est un
   sous-traitant du responsable de traitement, inscrit à son registre des
   traitements. Le cadre contractuel qui les lie au titre de l'article 28 du
