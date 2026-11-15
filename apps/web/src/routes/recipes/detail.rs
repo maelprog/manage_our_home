@@ -83,7 +83,7 @@ pub struct DetailQuery {
     error: Option<String>,
 }
 
-fn notice_text(code: &str) -> Option<&'static str> {
+pub(super) fn notice_text(code: &str) -> Option<&'static str> {
     match code {
         "recipe_created" => Some("Recette créée."),
         "recipe_updated" => Some("Recette mise à jour."),
@@ -98,7 +98,7 @@ fn notice_text(code: &str) -> Option<&'static str> {
     }
 }
 
-fn error_text(code: &str) -> Option<&'static str> {
+pub(super) fn error_text(code: &str) -> Option<&'static str> {
     match code {
         "selection_gone" => Some(super::outcome::SELECTION_GONE),
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
@@ -290,11 +290,12 @@ fn is_plan_error(code: Option<&str>) -> bool {
 /// jour » disclosure, closed unless `open` (after an error of its form);
 /// dated, the « Quand ? » block, with « Retirer la date ». The day is one of
 /// the 366 days either side of `today` the API accepts.
-fn plan_html(
+pub(super) fn plan_html(
     id: Uuid,
     selection: Option<&RecipeSelectionResponse>,
     open: bool,
     today: NaiveDate,
+    back: &str,
 ) -> String {
     let Some(selection) = selection else {
         return String::new();
@@ -324,7 +325,7 @@ fn plan_html(
     };
     let form = format!(
         r#"<form method="post" action="/recipes/{id}/planning" class="card inline when-form">
-<input type="hidden" name="back" value="detail"/>
+<input type="hidden" name="back" value="{back}"/>
 <p class="when-state">{state}</p>
 <label>Jour (facultatif)
 <input type="date" name="planned_on" value="{value}" min="{min}" max="{max}"/></label>
@@ -340,6 +341,7 @@ fn plan_html(
             .unwrap_or_default(),
         min = (today - horizon).format("%Y-%m-%d"),
         max = (today + horizon).format("%Y-%m-%d"),
+        back = html_escape(back),
     );
     if selection.planned_on.is_some() {
         form
@@ -420,7 +422,7 @@ fn page(
         .map(|s| format!(r#"<p class="muted">Pour {}.</p>"#, servings_label(s)))
         .unwrap_or_default();
     let selection_html = selection_html(id, recipe.servings, planned.map(|s| s.servings));
-    let plan_html = plan_html(id, planned, plan_open, today_paris);
+    let plan_html = plan_html(id, planned, plan_open, today_paris, "detail");
     let time_html = time_html(recipe.duration_minutes);
     let body = format!(
         r#"<h1>{name}</h1>
@@ -691,13 +693,16 @@ mod tests {
 
     #[test]
     fn an_unplanned_recipe_has_no_day_to_choose() {
-        assert_eq!(plan_html(Uuid::from_u128(1), None, false, today()), "");
+        assert_eq!(
+            plan_html(Uuid::from_u128(1), None, false, today(), "detail"),
+            ""
+        );
     }
 
     #[test]
     fn an_undated_planned_recipe_offers_a_closed_choisir_un_jour() {
         let id = Uuid::from_u128(1);
-        let html = plan_html(id, Some(&planned(None, None)), false, today());
+        let html = plan_html(id, Some(&planned(None, None)), false, today(), "detail");
         assert!(
             html.starts_with(r#"<div class="actions"><details><summary>Choisir un jour</summary>"#),
             "{html}"
@@ -738,7 +743,7 @@ mod tests {
         );
         assert!(!html.contains("Retirer la date"), "{html}");
         // Opened again after an error of its form.
-        let html = plan_html(id, Some(&planned(None, None)), true, today());
+        let html = plan_html(id, Some(&planned(None, None)), true, today(), "detail");
         assert!(html.contains("<details open><summary>"), "{html}");
     }
 
@@ -750,6 +755,7 @@ mod tests {
             Some(&planned(Some(day(2026, 11, 19)), None)),
             false,
             today(),
+            "detail",
         );
         assert!(!html.contains("<details"), "{html}");
         assert!(
@@ -782,6 +788,7 @@ mod tests {
             Some(&planned(Some(day(2026, 11, 19)), Some("dinner"))),
             false,
             today(),
+            "detail",
         );
         assert!(
             html.contains("Prévue le <strong>jeudi 19 novembre, au dîner</strong>."),

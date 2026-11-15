@@ -23,6 +23,7 @@
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use chrono::NaiveDate;
 use manage_our_home_shared::dto::recipes::{
     MissingIngredient, PlannedSelection, RecipeList, RecipeResponse, RecipeSelectionResponse,
     RecipeSuggestion, SuggestionList,
@@ -37,9 +38,10 @@ use crate::state::{api_request_auth, AppState};
 use super::missing::{
     incomplete_banner, incomplete_count, missing_badge, missing_dialog, use_by_badge,
 };
+use super::week::{back_window, slot_from_query, week_back, week_href, window_for};
 use super::{
     deselect_form, family_context, outcome_links, plan_badge, planned_badge, planned_with_stock,
-    recipes_cookie, select_form, service_unavailable_page,
+    recipes_cookie, select_form, select_form_on, service_unavailable_page,
 };
 
 #[derive(serde::Deserialize)]
@@ -48,6 +50,11 @@ pub struct ListQuery {
     error: Option<String>,
     /// The tab (#539): `prevues`, `possibles`, or the full list.
     vue: Option<String>,
+    /// The slot of the planning an « Ajouter » came from (#813): its day
+    /// and `midi` or `soir`; either missing or unreadable, no slot.
+    #[serde(default, deserialize_with = "crate::lenient_query::lenient")]
+    date: Option<NaiveDate>,
+    repas: Option<String>,
 }
 
 fn notice_text(code: &str) -> Option<&'static str> {
@@ -164,9 +171,47 @@ fn suggestion_html(s: &RecipeSuggestion) -> String {
     )
 }
 
+/// The slot of the planning an « Ajouter » link came from (#813): its day,
+/// its meal (`lunch`, `dinner`), and the `back` of the planning's window
+/// that shows it.
+pub(super) struct Slot {
+    day: NaiveDate,
+    meal: &'static str,
+    back: String,
+}
+
+impl Slot {
+    pub(super) fn new(day: NaiveDate, meal: &'static str, today: NaiveDate) -> Slot {
+        Slot {
+            day,
+            meal,
+            back: week_back(window_for(day, today)),
+        }
+    }
+}
+
+/// The banner of the list opened from a slot: which one, and the way back.
+fn slot_banner(slot: Option<&Slot>) -> String {
+    let Some(slot) = slot else {
+        return String::new();
+    };
+    let meal = if slot.meal == "lunch" { "midi" } else { "soir" };
+    format!(
+        r#"<p class="notice">Pour le <strong>{day}, {meal}</strong> : « À réaliser » sur une recette la place dans le planning. <a href="{href}">Retour au planning</a></p>"#,
+        day = crate::routes::home::long_date_fr(slot.day),
+        href = week_href(back_window(&slot.back).flatten()),
+    )
+}
+
 /// One recipe of the full list. `planned` is its selection when it is
-/// « À réaliser », `None` when it is not.
-fn recipe_row_html(r: &RecipeResponse, planned: Option<&RecipeSelectionResponse>) -> String {
+/// « À réaliser », `None` when it is not. Opened from a slot of the
+/// planning (`slot`, #813), a recipe not planned yet is planned on it by its
+/// « À réaliser ».
+fn recipe_row_for(
+    r: &RecipeResponse,
+    planned: Option<&RecipeSelectionResponse>,
+    slot: Option<&Slot>,
+) -> String {
     let count = r.ingredients.len();
     let count_label = match count {
         0 => "aucun ingrédient".to_string(),
@@ -181,7 +226,16 @@ fn recipe_row_html(r: &RecipeResponse, planned: Option<&RecipeSelectionResponse>
             outcome = outcome_links(r.id, "list"),
             deselect = deselect_form(r.id, "list"),
         ),
-        None => select_form(r.id, r.servings, "list", "actions"),
+        None => match slot {
+            Some(slot) => select_form_on(
+                r.id,
+                r.servings,
+                &slot.back,
+                "actions",
+                (slot.day, slot.meal),
+            ),
+            None => select_form(r.id, r.servings, "list", "actions"),
+        },
     };
     format!(
         r#"<li class="list-row">
@@ -197,13 +251,15 @@ fn recipe_row_html(r: &RecipeResponse, planned: Option<&RecipeSelectionResponse>
 /// The three groups of recipes (#539), one tab each, picked by `?vue=`
 /// so that they work without JavaScript.
 #[derive(Clone, Copy, PartialEq)]
-enum Tab {
+pub(super) enum Tab {
     /// Every recipe, with the planned ones and the suggestions on top.
     All,
     /// The `planned` selections (#469).
     Planned,
     /// The recipes the stock covers entirely.
     Possible,
+    /// The planning (#813), a page of its own: `/recipes/week`.
+    Week,
 }
 
 impl Tab {
@@ -219,19 +275,23 @@ impl Tab {
 
 /// The row of tabs, each group's count beside its name, the current one in
 /// `aria-current` — the `.filters` of the stocks and notifications.
-fn tabs_html(current: Tab, planned: usize, possible: usize) -> String {
+pub(super) fn tabs_html(current: Tab, counts: Option<(usize, usize)>) -> String {
+    let count = |n: usize| counts.map(|_| format!(" · {n}")).unwrap_or_default();
+    let (planned, possible) = counts.unwrap_or_default();
+    let (planned, possible) = (count(planned), count(possible));
     let links: String = [
         (Tab::All, "/recipes", "Toutes".to_string()),
         (
             Tab::Planned,
             "/recipes?vue=prevues",
-            format!("Prévues · {planned}"),
+            format!("Prévues{planned}"),
         ),
         (
             Tab::Possible,
             "/recipes?vue=possibles",
-            format!("Possibles · {possible}"),
+            format!("Possibles{possible}"),
         ),
+        (Tab::Week, "/recipes/week", "Planning".to_string()),
     ]
     .into_iter()
     .map(|(tab, href, label)| {
@@ -320,6 +380,7 @@ fn all_tab_html(
     recipes: &[RecipeResponse],
     planned: &[RecipeSelectionResponse],
     suggestions: &[RecipeSuggestion],
+    slot: Option<&Slot>,
 ) -> String {
     let suggestions_section = if suggestions.is_empty() {
         String::new()
@@ -340,7 +401,7 @@ fn all_tab_html(
             .iter()
             .map(|r| {
                 let selection = planned.iter().find(|s| s.recipe_id == r.id);
-                recipe_row_html(r, selection)
+                recipe_row_for(r, selection, slot)
             })
             .collect::<String>();
         format!(r#"<ul class="list">{rows}</ul>"#)
@@ -358,7 +419,7 @@ fn all_tab_html(
 /// A `GET …/recipes/suggestions` (`path` carries the query). A non-200
 /// (e.g. 403) reads as no suggestion rather than leaking JSON; `Err` on a
 /// transport failure only.
-async fn fetch_suggestions(
+pub(super) async fn fetch_suggestions(
     state: &AppState,
     path: &str,
     cookie: Option<&str>,
@@ -455,16 +516,24 @@ pub async fn get(
         String::new()
     };
 
+    // Opened from an empty slot of the planning (#813), on the full list.
+    let slot = match tab {
+        Tab::All => slot_from_query(query.date, query.repas.as_deref())
+            .map(|(day, meal)| Slot::new(day, meal, crate::routes::agenda::today_paris())),
+        _ => None,
+    };
+    let slot_notice = slot_banner(slot.as_ref());
+
     let content = match tab {
         Tab::Planned => planned_tab_html(&with_stock),
         Tab::Possible => possible_tab_html(&possible),
-        Tab::All => {
+        Tab::All | Tab::Week => {
             // The ranked suggestions, on this tab only.
             let path = format!("/groups/{}/recipes/suggestions", fam.gid);
             let Ok(suggestions) = fetch_suggestions(&state, &path, cookie.as_deref()).await else {
                 return service_unavailable_page().into_response();
             };
-            all_tab_html(&recipes, &planned, &suggestions)
+            all_tab_html(&recipes, &planned, &suggestions, slot.as_ref())
         }
     };
 
@@ -477,10 +546,10 @@ pub async fn get(
 </div>
 </div>
 {notice}{error}{incomplete}
-{tabs}
+{tabs}{slot_notice}
 {content}"#,
         segment = kitchen_segment("/recipes"),
-        tabs = tabs_html(tab, planned.len(), possible.len()),
+        tabs = tabs_html(tab, Some((planned.len(), possible.len()))),
     );
     Html(shell_with_header(
         Width::Full,
@@ -496,6 +565,11 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use uuid::Uuid;
+
+    /// A row of the full list opened without a slot.
+    fn recipe_row_html(r: &RecipeResponse, planned: Option<&RecipeSelectionResponse>) -> String {
+        recipe_row_for(r, planned, None)
+    }
 
     fn recipe(id: u128, name: &str, servings: Option<i32>) -> RecipeResponse {
         RecipeResponse {
@@ -624,10 +698,10 @@ mod tests {
     #[test]
     fn the_tabs_count_the_planned_and_possible_recipes_and_mark_the_current_one() {
         assert_eq!(
-            tabs_html(Tab::All, 2, 0),
-            r#"<nav class="filters" aria-label="Groupes de recettes"><a href="/recipes" aria-current="true">Toutes</a><a href="/recipes?vue=prevues">Prévues · 2</a><a href="/recipes?vue=possibles">Possibles · 0</a></nav>"#
+            tabs_html(Tab::All, Some((2, 0))),
+            r#"<nav class="filters" aria-label="Groupes de recettes"><a href="/recipes" aria-current="true">Toutes</a><a href="/recipes?vue=prevues">Prévues · 2</a><a href="/recipes?vue=possibles">Possibles · 0</a><a href="/recipes/week">Planning</a></nav>"#
         );
-        let html = tabs_html(Tab::Possible, 0, 3);
+        let html = tabs_html(Tab::Possible, Some((0, 3)));
         assert!(
             html.contains(
                 r#"<a href="/recipes?vue=possibles" aria-current="true">Possibles · 3</a>"#
@@ -635,11 +709,89 @@ mod tests {
             "{html}"
         );
         assert_eq!(html.matches("aria-current").count(), 1, "{html}");
-        let html = tabs_html(Tab::Planned, 1, 0);
+        let html = tabs_html(Tab::Planned, Some((1, 0)));
         assert!(
             html.contains(r#"<a href="/recipes?vue=prevues" aria-current="true">Prévues · 1</a>"#),
             "{html}"
         );
+    }
+
+    #[test]
+    fn the_planning_is_the_fourth_filter_and_lit_on_its_page() {
+        let html = tabs_html(Tab::Week, Some((3, 1)));
+        assert!(
+            html.contains(r#"<a href="/recipes/week" aria-current="true">Planning</a>"#),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-current").count(), 1, "{html}");
+        assert!(
+            html.contains("Prévues · 3") && html.contains("Possibles · 1"),
+            "{html}"
+        );
+        // Counts unknown (the planning could not be read): the names alone.
+        let html = tabs_html(Tab::Week, None);
+        assert!(
+            html.contains(r#"<a href="/recipes?vue=prevues">Prévues</a>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/recipes?vue=possibles">Possibles</a>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_slot_of_the_planning_names_itself_and_rides_on_a_realiser() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let slot = Some(Slot::new(today, "dinner", today));
+        let html = slot_banner(slot.as_ref());
+        assert!(
+            html.contains("Pour le <strong>samedi 14 novembre, soir</strong>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/recipes/week">Retour au planning</a>"#),
+            "{html}"
+        );
+        assert_eq!(slot_banner(None), "");
+        // A recipe not planned: « À réaliser » carries the slot, back to
+        // the window of its day.
+        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, slot.as_ref());
+        assert!(
+            html.contains(r#"name="planned_on" value="2026-11-14""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="meal_slot" value="dinner""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="back" value="week""#), "{html}");
+        let later = Some(Slot::new(
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 30).unwrap(),
+            "lunch",
+            today,
+        ));
+        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, later.as_ref());
+        assert!(
+            html.contains(r#"name="back" value="week@2026-11-27""#),
+            "{html}"
+        );
+        let html = slot_banner(later.as_ref());
+        assert!(
+            html.contains(r#"<a href="/recipes/week?date=2026-11-27">Retour au planning</a>"#),
+            "{html}"
+        );
+        // A planned one keeps its row: placing it is « À placer »'s.
+        let html = recipe_row_for(
+            &recipe(1, "Crêpes", Some(4)),
+            Some(&selection(1, "Crêpes", Some(6))),
+            slot.as_ref(),
+        );
+        assert!(!html.contains("planned_on"), "{html}");
+        // Without a slot, the plain form.
+        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, None);
+        assert!(!html.contains("planned_on"), "{html}");
+        assert!(html.contains(r#"name="back" value="list""#), "{html}");
     }
 
     #[test]
