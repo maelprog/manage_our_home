@@ -2193,7 +2193,8 @@ async fn suggestion_scores(
 /// AC (#821): done with taste tags keeps them with the meal and changes the
 /// suggestions. « Aimé » raises the recipe itself (5 points) and, at half
 /// weight, a recipe of the same ingredient categories (2.5); a recipe of
-/// other categories is unchanged. A later « Pas aimé » on the same recipe
+/// other categories, or sharing them only through optional ingredients, is
+/// unchanged. A later « Pas aimé » on the same recipe
 /// cancels it. « Aimé » with « Pas aimé » is refused, and nothing applied;
 /// an unknown tag is refused too.
 #[sqlx::test]
@@ -2233,6 +2234,20 @@ async fn done_with_taste_tags_changes_the_suggestions(db: PgPool) {
             &format!("/groups/{group_id}/recipes"),
             json!({"name": "Riz pilaf", "ingredients": [
                 {"name": "Riz", "quantity": 200.0, "unit": "g"}
+            ]}),
+        )
+        .await,
+    )
+    .await;
+    let gateau = created_id(
+        post(
+            &router,
+            &cookie,
+            &format!("/groups/{group_id}/recipes"),
+            json!({"name": "Gâteau", "ingredients": [
+                {"name": "Farine", "quantity": 200.0, "unit": "g"},
+                {"name": "Lait", "quantity": 100.0, "unit": "ml", "is_optional": true},
+                {"name": "Œufs", "quantity": 2.0, "is_optional": true}
             ]}),
         )
         .await,
@@ -2279,6 +2294,7 @@ async fn done_with_taste_tags_changes_the_suggestions(db: PgPool) {
     assert_eq!(liked[&flan] - before[&flan], -30.0 + 5.0);
     assert_eq!(liked[&creme] - before[&creme], 2.5);
     assert_eq!(liked[&riz], before[&riz]);
+    assert_eq!(liked[&gateau], before[&gateau]);
 
     plan_again(&router, &cookie, &group_id, &flan).await;
     let done = post(
@@ -2293,4 +2309,40 @@ async fn done_with_taste_tags_changes_the_suggestions(db: PgPool) {
     assert_eq!(cancelled[&flan] - before[&flan], -30.0);
     assert_eq!(cancelled[&creme], before[&creme]);
     assert_eq!(cancelled[&riz], before[&riz]);
+}
+
+/// AC (#821): an « Aimé » counts whenever the meal was eaten, outside the
+/// variety window (28 days) too: the recipe gains its 5 points without the
+/// variety penalty.
+#[sqlx::test]
+async fn an_old_taste_verdict_still_counts(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "done-old-taste@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let flan = planned_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Flan", "ingredients": [
+            {"name": "Lait", "quantity": 500.0, "unit": "ml"}
+        ]}),
+        json!({"servings": 4}),
+    )
+    .await;
+    let before = suggestion_scores(&router, &cookie, &group_id).await;
+
+    let eaten_on = paris_day(Utc::now())
+        .checked_sub_days(chrono::Days::new(40))
+        .unwrap();
+    let done = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &flan),
+        json!({"removals": [], "eaten_on": eaten_on, "taste_tags": ["aime"]}),
+    )
+    .await;
+    assert_status(&done, StatusCode::OK);
+
+    let after = suggestion_scores(&router, &cookie, &group_id).await;
+    assert_eq!(after[&flan] - before[&flan], 5.0);
 }
