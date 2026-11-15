@@ -276,8 +276,6 @@ test.describe("Stocks — list & create", () => {
   });
 });
 
-// #401: one expiry date per article (the nearest). Dates are built in
-// Europe/Paris (`lib/dates.ts`), the day the app judges "today" against.
 test.describe("Stocks — sans JavaScript (#803)", () => {
   test.use({ javaScriptEnabled: false });
 
@@ -301,6 +299,8 @@ test.describe("Stocks — sans JavaScript (#803)", () => {
   });
 });
 
+// #401: one expiry date per article (the nearest). Dates are built in
+// Europe/Paris (`lib/dates.ts`), the day the app judges "today" against.
 test.describe("Stocks — expiry date", () => {
   test("the list shows each date with a worded status and can put the soonest first", async ({
     page,
