@@ -1,4 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
+import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
 
 // Issue #74 — "Toute cible interactive ≥ 44 px" (DESIGN.md → Espacement).
@@ -83,7 +84,32 @@ async function seed(page: Page): Promise<string[]> {
   const profileHref = await page.locator("a.member").first().getAttribute("href");
   if (!profileHref) throw new Error("no link to the seeded member's profile");
 
-  return [membersHref, profileHref, eventHref];
+  // A day of the coming week with what the day view draws under 44px (#838):
+  // two lines of the « Journée » banner in a row (events of 24 hours) and a
+  // block of half an hour, the slot of 14:30 right under it. Not today, whose
+  // line of the current time would cross a block wherever the clock stands.
+  // An event the day before and the day after: in its week, the phone lists
+  // at least two days in a row, whichever weekday it is, and a day's number
+  // stands right under the day above.
+  const day = parisDay(7);
+  const before = parisDay(6);
+  const next = parisDay(8);
+  for (const [title, starts, ends] of [
+    ["Congrès", `${day}T00:00`, `${next}T00:00`],
+    ["Séminaire", `${day}T00:00`, `${next}T00:00`],
+    ["Pharmacie", `${day}T14:00`, `${day}T14:30`],
+    ["Marché", `${before}T10:00`, `${before}T11:00`],
+    ["Piscine", `${next}T10:00`, `${next}T11:00`],
+  ]) {
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill(title);
+    await page.getByLabel("Début").fill(starts);
+    await page.getByLabel("Fin").fill(ends);
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/notice=event_created$/);
+  }
+
+  return [membersHref, profileHref, eventHref, `/agenda?view=day&date=${day}`, `/agenda?view=week&date=${day}`];
 }
 
 interface Box {
@@ -100,8 +126,10 @@ interface Box {
  * member's name as a link to their profile (`.member`, #466 — the seeded
  * message's author on /messagerie, the member list, the event's assignee),
  * every day of the phone's mini grid, a link to its day view (#675, #793),
- * every day of the month's grid, a link as tall as its week (#836), and the
- * day view's own head (#793).
+ * every day of the month's grid, a link as tall as its week (#836), the
+ * day view's own head (#793), and a day's number in the week (`.cal-day a`,
+ * #793), 44px square on a PC and 48px tall in the phone's list by its own
+ * padding (#838).
  *
  * Left out, each for a stated reason:
  * - a bare text link (`<a>` with no class): inside a sentence it is WCAG
@@ -112,14 +140,15 @@ interface Box {
  * - a checkbox with no label whose form submits the same change through a
  *   button (see below);
  * - the skip link, which is off-screen until it takes focus;
- * - the day view's targets kept at the mock-up's size (#793, arbitrage of
- *   2026-11-13, DESIGN.md → « L'agenda sur téléphone : vue jour », followed
- *   by an issue of its own): a block of the hours (`.blk`), as tall as its
- *   event lasts, a short one 26px tall; a line of the « Journée » banner
- *   (`.ad`), 32px; a day's number in the grid (`.cal-day a`), 28px square on
- *   a PC and 25px tall in the phone's list. A half hour of the hours
- *   (`.slots a`, #794) is 28px tall, half a row of 56px, and the selector
- *   above does not take it either;
+ * - three targets of the day view under 44px, « Créneau d'abord »
+ *   (arbitrage of 2026-11-14, #838; DESIGN.md → « L'agenda sur téléphone :
+ *   vue jour »): a half hour of the hours (`.slots a`, #794), 28px tall,
+ *   half a row of 56px; a line of the « Journée » banner (`.ad`), 32px; a
+ *   block of the hours (`.blk`) shorter than 44px — 26px for half an hour.
+ *   A box reaching past the line or the block would lie over a slot (the
+ *   banner's `.slot` is under its whole surface, the hours' `.slots a`
+ *   under every block), and a tap there must create, not open:
+ *   `pointsTaken` below holds that;
  * - the month's bars and « +N » (#836, `.bar`, `.plus`), drawn at the
  *   mock-up's size: one line of a title, 19px tall on a phone and 24px on a
  *   PC (26px outlined, and in a row holding an outlined one); « +N » 20px
@@ -130,7 +159,7 @@ async function undersized(page: Page): Promise<Box[]> {
   return page.evaluate((min) => {
     const out: { what: string; width: number; height: number }[] = [];
     const nodes = document.querySelectorAll<HTMLElement>(
-      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member, .mini a, .day',
+      'button, .btn, input:not([type="hidden"]), select, textarea, summary, .navlink, .chip, .links a, .member, .mini a, .day, .cal-day a',
     );
     const wide = window.matchMedia("(min-width: 861px)").matches;
     for (const node of nodes) {
@@ -165,6 +194,153 @@ async function undersized(page: Page): Promise<Box[]> {
     }
     return out;
   }, MIN);
+}
+
+/**
+ * A target grown to 44px must not take a tap from another link (#838),
+ * whether by a box that paints nothing or by its own box moved over its
+ * neighbour. On every link of the agenda's day and week views, each point
+ * of a 4px grid over the link's visible box, its first and last rows and
+ * columns of pixels included, is asked which link lies there: no other
+ * link may lie there. Two overlaps are by design: a block or a line of the
+ * « Journée » banner over a slot of #794 (`.blk`, `.ad` over `.slots a`,
+ * `.slot`; « Créneau d'abord »: the slot keeps every point nothing is
+ * drawn on), and a link of a fixed or sticky bar over the page. They pass
+ * only where the element hit, or an ancestor of it up to that block, line
+ * or bar, paints: its background within the box its `background-clip`
+ * names, or a border of a colour that is not transparent — not a box that
+ * paints nothing, nor padding outside a clipped background, nor a
+ * transparent border, even with the background showing under it. A point
+ * a rounded corner leaves out of the link, or that lies inside within a
+ * pixel and a half of the curve, is not asked.
+ */
+async function pointsTaken(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const out: string[] = [];
+    const name = (a: Element) =>
+      `a.${a.className} "${(a.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40)}"`;
+    const barOf = (a: Element) => {
+      for (let p: Element | null = a; p; p = p.parentElement) {
+        if (["fixed", "sticky"].includes(getComputedStyle(p).position)) return p;
+      }
+      return null;
+    };
+    // An alpha of zero, as the browser computes a colour: `rgba(…, 0)`,
+    // `color(… / 0)`.
+    const seen = (c: string) => c !== "transparent" && !/[,/]\s*0(\.0*)?\)$/.test(c);
+    // Whether `el` paints the point (x, y), a pixel of tolerance for a box
+    // placed to the fraction: its background, within the box its
+    // `background-clip` names, and each border of a colour of its own. A
+    // border counts by its own colour only: a transparent one paints
+    // nothing of its own, whatever background shows under it.
+    const paints = (el: Element, x: number, y: number) => {
+      const s = getComputedStyle(el);
+      const b = el.getBoundingClientRect();
+      const px = (v: string) => parseFloat(v) || 0;
+      const bw = [s.borderTopWidth, s.borderRightWidth, s.borderBottomWidth, s.borderLeftWidth].map(px);
+      const pd = [s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].map(px);
+      const inRect = (l: number, t: number, r: number, bo: number) =>
+        x >= l - 1 && x <= r + 1 && y >= t - 1 && y <= bo + 1;
+      const inset = (k: number[]) => inRect(b.left + k[3], b.top + k[0], b.right - k[1], b.bottom - k[2]);
+      const clips = s.backgroundClip.split(/\s*,\s*/);
+      const layers = s.backgroundImage !== "none" ? clips : seen(s.backgroundColor) ? clips.slice(-1) : [];
+      for (const clip of layers) {
+        if (clip === "content-box" || clip === "text" ? inset(bw.map((w, i) => w + pd[i])) : inset(bw)) return true;
+      }
+      const sides = [
+        [s.borderTopStyle, s.borderTopColor, b.left, b.top, b.right, b.top + bw[0]],
+        [s.borderRightStyle, s.borderRightColor, b.right - bw[1], b.top, b.right, b.bottom],
+        [s.borderBottomStyle, s.borderBottomColor, b.left, b.bottom - bw[2], b.right, b.bottom],
+        [s.borderLeftStyle, s.borderLeftColor, b.left, b.top, b.left + bw[3], b.bottom],
+      ] as const;
+      return sides.some(
+        ([style, color, l, t, r, bo], i) => bw[i] > 0 && !["none", "hidden"].includes(style) && seen(color) && inRect(l, t, r, bo),
+      );
+    };
+    // Whether the point is painted by `hit` or an ancestor of it up to `top`.
+    const painted = (hit: Element, x: number, y: number, top: Element) => {
+      for (let p: Element | null = hit; p; p = p.parentElement) {
+        if (paints(p, x, y)) return true;
+        if (p === top) break;
+      }
+      return false;
+    };
+    for (const link of document.querySelectorAll<HTMLElement>("a")) {
+      if (link.getClientRects().length === 0) continue;
+      link.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+      const r = link.getBoundingClientRect();
+      // What of the link can be seen: the window, cut by every scroller
+      // around it.
+      let [x0, y0, x1, y1] = [Math.max(r.left, 0), Math.max(r.top, 0), Math.min(r.right, innerWidth), Math.min(r.bottom, innerHeight)];
+      for (let p = link.parentElement; p; p = p.parentElement) {
+        if (getComputedStyle(p).overflow === "visible") continue;
+        const c = p.getBoundingClientRect();
+        [x0, y0, x1, y1] = [Math.max(x0, c.left), Math.max(y0, c.top), Math.min(x1, c.right), Math.min(y1, c.bottom)];
+      }
+      // The link's rounded corners, as the page hit-tests them: a radius in
+      // px or in % of the side, one value or two.
+      const cs = getComputedStyle(link);
+      const radii = (v: string) => {
+        const [h, w = h] = v.split(" ");
+        const len = (t: string, side: number) => (t.endsWith("%") ? (parseFloat(t) * side) / 100 : parseFloat(t) || 0);
+        return [Math.min(len(h, r.width), r.width / 2), Math.min(len(w, r.height), r.height / 2)];
+      };
+      const corners = [
+        [cs.borderTopLeftRadius, r.left, r.top, 1, 1],
+        [cs.borderTopRightRadius, r.right, r.top, -1, 1],
+        [cs.borderBottomLeftRadius, r.left, r.bottom, 1, -1],
+        [cs.borderBottomRightRadius, r.right, r.bottom, -1, -1],
+      ] as const;
+      const inShape = (x: number, y: number) => {
+        for (const [v, cx, cy, sx, sy] of corners) {
+          const [rx, ry] = radii(v);
+          if (rx < 1 || ry < 1) continue;
+          const dx = (x - (cx + sx * rx)) * sx;
+          const dy = (y - (cy + sy * ry)) * sy;
+          if (dx >= 0 || dy >= 0) continue;
+          // Out of the shape, or within a pixel and a half of its curve.
+          const near = Math.max(0, 1 - 1.5 / Math.min(rx, ry));
+          if ((dx / rx) ** 2 + (dy / ry) ** 2 > near ** 2) return false;
+        }
+        return true;
+      };
+      const takers = new Map<Element, { n: number; at: string }>();
+      let points = 0;
+      // Every 4px, then the last row or column of whole pixels: the page
+      // hit-tests whole pixels.
+      const along = (from: number, to: number) => {
+        const first = Math.ceil(from);
+        const last = Math.floor(to) - 1;
+        const at: number[] = [];
+        for (let v = first; v < last; v += 4) at.push(v);
+        if (last >= first) at.push(last);
+        return at;
+      };
+      for (const y of along(y0, y1)) {
+        for (const x of along(x0, x1)) {
+          if (!inShape(x, y)) continue;
+          points++;
+          const hit = document.elementFromPoint(x, y);
+          const other = hit?.closest("a");
+          if (!hit || !other || other === link) continue;
+          const overSlot = link.matches(".slots a, .slot") && other.matches(".blk, .ad");
+          const top = overSlot ? other : barOf(other);
+          if (top && painted(hit, x, y, top)) continue;
+          const b = hit.getBoundingClientRect();
+          const seen = takers.get(other);
+          if (seen) seen.n++;
+          else {
+            const where = `(${x}, ${y}) on ${hit.tagName.toLowerCase()}.${hit.className} at ${[b.left, b.top, b.right, b.bottom].map(Math.round).join(",")}`;
+            takers.set(other, { n: 1, at: where });
+          }
+        }
+      }
+      for (const [other, { n, at }] of takers) {
+        out.push(`${name(link)}: ${n} of ${points} points taken by ${name(other)}, first ${at}`);
+      }
+    }
+    return out;
+  });
 }
 
 const PUBLIC_PAGES = [
@@ -203,6 +379,9 @@ for (const [layout, viewport] of [
         await page.goto(path);
         for (const b of await undersized(page)) {
           failures.push(`${path}: ${b.what} ${b.width}×${b.height}`);
+        }
+        if (/^\/agenda\?view=(day|week)/.test(path)) {
+          for (const c of await pointsTaken(page)) failures.push(`${path}: ${c}`);
         }
       };
       for (const path of PUBLIC_PAGES) await visit(path);
