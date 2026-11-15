@@ -299,7 +299,16 @@ fn split_today(
 /// The avatar is a flex item of the row, centred on it: the baseline gap
 /// that lifted a photo 6–7 px above an initial in the inline avatar this
 /// row used to carry (#468) has no line to sit on here.
-fn agenda_row(occ: &OccurrenceResponse, today: NaiveDate, members: &[GroupMember]) -> String {
+///
+/// The row is an `a.list-row` (#843), the whole of it the target, 48px
+/// (--s12) tall, with the sheet's hover and focus: it leads to the
+/// occurrence's page, carrying its family when that is not `active`.
+fn agenda_row(
+    occ: &OccurrenceResponse,
+    today: NaiveDate,
+    members: &[GroupMember],
+    active: Uuid,
+) -> String {
     let e = &occ.event;
     let shown = row_assignee_ids(&e.assignee_ids, &e.created_by);
     let assignee_names: Vec<&str> = shown.iter().map(|id| author_name(members, *id)).collect();
@@ -328,7 +337,13 @@ fn agenda_row(occ: &OccurrenceResponse, today: NaiveDate, members: &[GroupMember
         assignees
     };
     format!(
-        r#"<li class="list-row"><span class="when">{when}</span><span class="what"><strong>{private}{title}</strong><span class="muted">{detail}</span></span><span class="avatar" style="color:{colour}" aria-hidden="true">{icon}</span></li>"#,
+        r#"<li><a class="list-row" href="{href}"><span class="when">{when}</span><span class="what"><strong>{private}{title}</strong><span class="muted">{detail}</span></span><span class="avatar" style="color:{colour}" aria-hidden="true">{icon}</span></a></li>"#,
+        // #843: the row is the link to its occurrence, with its family when
+        // it is not the active one — the rule of the agenda's chips.
+        href = crate::routes::agenda::occurrence_href(
+            occ,
+            (e.group_id != active).then_some(e.group_id)
+        ),
         // #621: the lock, and « Privé » before the title.
         private = crate::routes::agenda::private_mark(e.is_private),
         when = html_escape(&when_label(occ, today)),
@@ -350,8 +365,16 @@ fn card_head(title: &str, href: &str) -> String {
     )
 }
 
-fn agenda_list(rows: &[&OccurrenceResponse], today: NaiveDate, members: &[GroupMember]) -> String {
-    let rows: String = rows.iter().map(|o| agenda_row(o, today, members)).collect();
+fn agenda_list(
+    rows: &[&OccurrenceResponse],
+    today: NaiveDate,
+    members: &[GroupMember],
+    active: Uuid,
+) -> String {
+    let rows: String = rows
+        .iter()
+        .map(|o| agenda_row(o, today, members, active))
+        .collect();
     format!(r#"<ul class="list">{rows}</ul>"#)
 }
 
@@ -369,6 +392,7 @@ fn agenda_block(
     now: DateTime<Utc>,
     today: NaiveDate,
     members: &[GroupMember],
+    active: Uuid,
 ) -> String {
     let body = match occurrences {
         None => {
@@ -386,14 +410,14 @@ fn agenda_block(
                 let now_html = if now_rows.is_empty() {
                     r#"<p class="muted">Rien aujourd'hui.</p>"#.to_string()
                 } else {
-                    agenda_list(&now_rows, today, members)
+                    agenda_list(&now_rows, today, members, active)
                 };
                 let later_html = if later.is_empty() {
                     String::new()
                 } else {
                     format!(
                         "\n<h3>Ensuite</h3>\n{}",
-                        agenda_list(&later, today, members)
+                        agenda_list(&later, today, members, active)
                     )
                 };
                 format!("{now_html}{later_html}")
@@ -917,7 +941,13 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         // they acknowledge it — from the same `GET /groups` the header uses.
         ownership = ownership_notices(&groups),
         week = week_block(occurrences.as_deref(), today),
-        agenda = agenda_block(occurrences.as_deref(), chrono::Utc::now(), today, &members),
+        agenda = agenda_block(
+            occurrences.as_deref(),
+            chrono::Utc::now(),
+            today,
+            &members,
+            fam.gid,
+        ),
         grocery = grocery_tile(count_unchecked(&grocery_items), grocery_items.len()),
         expiry = expiry_tile(&expiring_this_week(&stock, today)),
         stocks = stocks_block(&low_stock_items(&stock)),
@@ -1182,7 +1212,7 @@ mod pure_logic_tests {
     /// An API failure is not "nothing planned".
     #[test]
     fn an_unreadable_agenda_is_an_error_not_an_empty_card() {
-        let html = agenda_block(None, late_afternoon(), fixture_day(), &[]);
+        let html = agenda_block(None, late_afternoon(), fixture_day(), &[], ACTIVE_FAMILY);
         assert!(!html.contains("Rien de prévu"), "{html}");
         assert!(html.contains(r#"class="notice error""#), "{html}");
         assert!(html.contains("Impossible de charger"), "{html}");
@@ -1191,7 +1221,13 @@ mod pure_logic_tests {
     /// The empty copy names the horizon it actually searched.
     #[test]
     fn an_empty_horizon_says_how_far_it_looked() {
-        let html = agenda_block(Some(&[]), late_afternoon(), fixture_day(), &[]);
+        let html = agenda_block(
+            Some(&[]),
+            late_afternoon(),
+            fixture_day(),
+            &[],
+            ACTIVE_FAMILY,
+        );
         assert!(
             html.contains(&format!(
                 "Rien de prévu dans les {DASHBOARD_AGENDA_HORIZON_DAYS} prochains jours."
@@ -1205,7 +1241,13 @@ mod pure_logic_tests {
     #[test]
     fn a_horizon_holding_only_finished_events_is_empty_not_an_error() {
         let occs = vec![occurrence_span(8, 9, "Ce matin")];
-        let html = agenda_block(Some(&occs), late_afternoon(), fixture_day(), &[]);
+        let html = agenda_block(
+            Some(&occs),
+            late_afternoon(),
+            fixture_day(),
+            &[],
+            ACTIVE_FAMILY,
+        );
         assert!(html.contains("Rien de prévu"), "{html}");
         assert!(!html.contains("notice error"), "{html}");
     }
@@ -1436,6 +1478,10 @@ mod pure_logic_tests {
 
     // -- row_assignee_ids / agenda_row (#99) -------------------------------
 
+    /// The family the fixtures' events belong to (`occurrence_between`
+    /// gives them the nil group): the active one, unless a test says not.
+    const ACTIVE_FAMILY: Uuid = Uuid::nil();
+
     fn member(user_id: Uuid, display_name: &str) -> GroupMember {
         GroupMember {
             user_id,
@@ -1481,10 +1527,13 @@ mod pure_logic_tests {
             &occurrence_assigned_to(creator, &[]),
             fixture_day(),
             &members,
+            ACTIVE_FAMILY,
         );
         assert!(html.contains("Camille"), "{html}");
         assert!(html.contains(">C</span>"), "{html}");
-        assert!(!html.contains('?'), "{html}");
+        // What the row shows, past its link's `?occ=` (#843).
+        let shown = html.split_once(r#"">"#).expect(&html).1;
+        assert!(!shown.contains('?'), "{html}");
         assert!(!html.contains("— </span>"), "{html}");
     }
 
@@ -1499,11 +1548,13 @@ mod pure_logic_tests {
             &occurrence_assigned_to(creator, &[]),
             fixture_day(),
             &members,
+            ACTIVE_FAMILY,
         );
         let explicit = agenda_row(
             &occurrence_assigned_to(creator, &[creator]),
             fixture_day(),
             &members,
+            ACTIVE_FAMILY,
         );
         assert_eq!(legacy, explicit);
     }
@@ -1519,6 +1570,7 @@ mod pure_logic_tests {
             &occurrence_assigned_to(creator, &[other]),
             fixture_day(),
             &members,
+            ACTIVE_FAMILY,
         );
         assert!(html.contains("Robin"), "{html}");
         assert!(!html.contains("Camille"), "{html}");
@@ -1532,7 +1584,7 @@ mod pure_logic_tests {
         let mut with_photo = member(robin, "Robin");
         with_photo.has_avatar = true;
         let occ = occurrence_assigned_to(robin, &[robin]);
-        let html = agenda_row(&occ, fixture_day(), &[with_photo]);
+        let html = agenda_row(&occ, fixture_day(), &[with_photo], ACTIVE_FAMILY);
         let photo = crate::app::member_photo_url(occ.event.group_id, robin);
         assert!(html.contains(&crate::app::avatar_photo(&photo)), "{html}");
         assert!(!html.contains(">R</span>"), "{html}");
@@ -1554,9 +1606,118 @@ mod pure_logic_tests {
             &occurrence_assigned_to(camille, &[robin, camille]),
             fixture_day(),
             &members,
+            ACTIVE_FAMILY,
         );
         assert!(!html.contains("<img"), "{html}");
         assert!(html.contains(">R</span>"), "{html}");
+    }
+
+    // -- a row leads to its event (#843) ----------------------------------
+
+    /// The one link of a row, and its `href`: the row is that link, so
+    /// nothing in it can be another one.
+    fn row_link(html: &str) -> &str {
+        assert_eq!(html.matches("<a ").count(), 1, "{html}");
+        let rest = html
+            .strip_prefix(r#"<li><a class="list-row" href=""#)
+            .expect(html);
+        &rest[..rest.find('"').expect(html)]
+    }
+
+    #[test]
+    fn a_row_leads_to_its_occurrence_in_the_agenda() {
+        let occ = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        let html = agenda_row(&occ, fixture_day(), &[], ACTIVE_FAMILY);
+        assert_eq!(
+            row_link(&html),
+            format!("/agenda/{}?occ=2026-09-03T18:00:00Z", occ.event.id)
+        );
+        assert!(html.ends_with("</a></li>"), "{html}");
+    }
+
+    /// An occurrence of a series is the one clicked, not the series' first:
+    /// `occ` is the occurrence's own start, in UTC.
+    #[test]
+    fn a_row_of_a_series_leads_to_that_occurrence() {
+        let mut occ = timed_at(
+            Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(),
+            "Piscine",
+        );
+        occ.event.starts_at = Utc.with_ymd_and_hms(2026, 6, 4, 18, 0, 0).unwrap();
+        occ.event.rrule = Some("FREQ=WEEKLY".to_string());
+        let html = agenda_row(&occ, fixture_day(), &[], ACTIVE_FAMILY);
+        assert_eq!(
+            row_link(&html),
+            format!("/agenda/{}?occ=2026-09-03T18:00:00Z", occ.event.id)
+        );
+    }
+
+    /// The same rule as the agenda's chips (`render_chips`): an event of
+    /// another family carries it, so that its page works in that family.
+    #[test]
+    fn a_row_of_another_family_carries_it() {
+        let other = Uuid::from_u128(42);
+        let mut occ = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        occ.event.group_id = other;
+        let html = agenda_row(&occ, fixture_day(), &[], ACTIVE_FAMILY);
+        assert_eq!(
+            row_link(&html),
+            format!(
+                "/agenda/{}?occ=2026-09-03T18:00:00Z&famille={other}",
+                occ.event.id
+            )
+        );
+    }
+
+    /// A private event leads to its page as well, the lock still inside.
+    #[test]
+    fn a_private_row_is_a_link_too() {
+        use crate::icons::{icon, Icon};
+        let mut occ = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        occ.event.is_private = true;
+        let html = agenda_row(&occ, fixture_day(), &[], ACTIVE_FAMILY);
+        assert_eq!(
+            row_link(&html),
+            format!("/agenda/{}?occ=2026-09-03T18:00:00Z", occ.event.id)
+        );
+        assert!(html.contains(icon(Icon::Lock)), "{html}");
+    }
+
+    /// A whole day's `occ` is its start as the API gives it: Paris midnight,
+    /// 22:00 UTC the day before in September.
+    #[test]
+    fn an_all_day_row_leads_to_its_occurrence() {
+        let occ = all_day_occurrence("Anniversaire");
+        let html = agenda_row(&occ, fixture_day(), &[], ACTIVE_FAMILY);
+        assert!(
+            html.contains(r#"<span class="when">Journée</span>"#),
+            "{html}"
+        );
+        assert_eq!(
+            row_link(&html),
+            format!("/agenda/{}?occ=2026-09-02T22:00:00Z", occ.event.id)
+        );
+    }
+
+    /// The card's rows link today's events and the days after alike.
+    #[test]
+    fn every_row_of_the_card_is_a_link() {
+        let now = late_afternoon();
+        let tonight = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
+        let later = timed_at(now + Duration::days(5), "Contrôle technique");
+        let html = agenda_block(
+            Some(&[later, tonight]),
+            now,
+            fixture_day(),
+            &[],
+            ACTIVE_FAMILY,
+        );
+        assert_eq!(
+            html.matches(r#"<li><a class="list-row" href="/agenda/"#)
+                .count(),
+            2,
+            "{html}"
+        );
     }
 
     // -- the mock-up's home (#524) -----------------------------------------
@@ -1722,7 +1883,13 @@ mod pure_logic_tests {
 
     #[test]
     fn the_agenda_card_is_titled_today() {
-        let html = agenda_block(Some(&[]), late_afternoon(), fixture_day(), &[]);
+        let html = agenda_block(
+            Some(&[]),
+            late_afternoon(),
+            fixture_day(),
+            &[],
+            ACTIVE_FAMILY,
+        );
         assert!(
             html.contains(r#"<h2><a href="/agenda">Aujourd'hui</a></h2>"#),
             "{html}"
@@ -1734,7 +1901,12 @@ mod pure_logic_tests {
         let camille = Uuid::from_u128(7);
         let mut occ = occurrence_assigned_to(camille, &[camille]);
         occ.event.title = "Piscine".to_string();
-        let html = agenda_row(&occ, fixture_day(), &[member(camille, "Camille")]);
+        let html = agenda_row(
+            &occ,
+            fixture_day(),
+            &[member(camille, "Camille")],
+            ACTIVE_FAMILY,
+        );
         assert!(
             html.contains(r#"<span class="when">20:00</span>"#),
             "{html}"
@@ -1756,12 +1928,12 @@ mod pure_logic_tests {
         let mut occ = occurrence_assigned_to(camille, &[camille]);
         occ.event.title = "Piscine".to_string();
         let members = [member(camille, "Camille")];
-        let shared = agenda_row(&occ, fixture_day(), &members);
+        let shared = agenda_row(&occ, fixture_day(), &members, ACTIVE_FAMILY);
         assert!(!shared.contains(icon(Icon::Lock)), "{shared}");
         assert!(!shared.contains("Privé"), "{shared}");
 
         occ.event.is_private = true;
-        let private = agenda_row(&occ, fixture_day(), &members);
+        let private = agenda_row(&occ, fixture_day(), &members, ACTIVE_FAMILY);
         assert!(private.contains(icon(Icon::Lock)), "{private}");
         let said = crate::routes::agenda::spoken(&private);
         assert!(said.contains("Privé Piscine"), "{said}");
@@ -1789,7 +1961,12 @@ mod pure_logic_tests {
         let starts = Utc.with_ymd_and_hms(2026, 9, 8, 16, 0, 0).unwrap();
         occ.occurrence_starts_at = starts;
         occ.occurrence_ends_at = starts + Duration::hours(1);
-        let html = agenda_row(&occ, fixture_day(), &[member(camille, "Camille")]);
+        let html = agenda_row(
+            &occ,
+            fixture_day(),
+            &[member(camille, "Camille")],
+            ACTIVE_FAMILY,
+        );
         assert!(
             html.contains(r#"<span class="when">mar. 08/09</span>"#),
             "{html}"
@@ -1805,7 +1982,13 @@ mod pure_logic_tests {
         let now = late_afternoon();
         let tonight = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
         let later = timed_at(now + Duration::days(5), "Contrôle technique");
-        let html = agenda_block(Some(&[later, tonight]), now, fixture_day(), &[]);
+        let html = agenda_block(
+            Some(&[later, tonight]),
+            now,
+            fixture_day(),
+            &[],
+            ACTIVE_FAMILY,
+        );
         let (head, tail) = html.split_once("<h3>Ensuite</h3>").expect(&html);
         assert!(head.contains("Dîner"), "{html}");
         assert!(tail.contains("Contrôle technique"), "{html}");
@@ -1818,7 +2001,7 @@ mod pure_logic_tests {
     fn an_empty_today_says_so_and_still_shows_what_comes_next() {
         let now = late_afternoon();
         let later = timed_at(now + Duration::days(5), "Contrôle technique");
-        let html = agenda_block(Some(&[later]), now, fixture_day(), &[]);
+        let html = agenda_block(Some(&[later]), now, fixture_day(), &[], ACTIVE_FAMILY);
         assert!(
             html.contains(r#"<p class="muted">Rien aujourd'hui.</p>"#),
             "{html}"
@@ -1831,7 +2014,13 @@ mod pure_logic_tests {
     #[test]
     fn a_today_with_nothing_after_it_has_no_ensuite_heading() {
         let tonight = timed_at(Utc.with_ymd_and_hms(2026, 9, 3, 18, 0, 0).unwrap(), "Dîner");
-        let html = agenda_block(Some(&[tonight]), late_afternoon(), fixture_day(), &[]);
+        let html = agenda_block(
+            Some(&[tonight]),
+            late_afternoon(),
+            fixture_day(),
+            &[],
+            ACTIVE_FAMILY,
+        );
         assert!(!html.contains("Ensuite"), "{html}");
         assert!(!html.contains("Rien"), "{html}");
     }
@@ -2114,13 +2303,19 @@ mod pure_logic_tests {
 
     #[test]
     fn the_agenda_title_leads_to_the_agenda() {
-        let html = agenda_block(Some(&[]), late_afternoon(), fixture_day(), &[]);
+        let html = agenda_block(
+            Some(&[]),
+            late_afternoon(),
+            fixture_day(),
+            &[],
+            ACTIVE_FAMILY,
+        );
         assert_title_leads_to(&html, "/agenda");
     }
 
     #[test]
     fn the_agenda_title_stays_a_link_when_the_agenda_is_unreadable() {
-        let html = agenda_block(None, late_afternoon(), fixture_day(), &[]);
+        let html = agenda_block(None, late_afternoon(), fixture_day(), &[], ACTIVE_FAMILY);
         assert!(html.contains(r#"class="notice error""#), "{html}");
         assert_title_leads_to(&html, "/agenda");
     }
