@@ -872,10 +872,38 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
         .await;
         assert_status(&res, StatusCode::CREATED);
     }
+    // #821: the Crepes cooked, with taste tags kept with the meal.
+    let crepes_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM recipes WHERE name = 'Crepes'")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    for (path, body) in [
+        ("selection", serde_json::json!({"servings": 4})),
+        (
+            "selection/done",
+            serde_json::json!({"removals": [], "taste_tags": ["aime", "trop_long"]}),
+        ),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/recipes/{crepes_id}/{path}"),
+            Some(&cookie),
+            Some(body),
+        )
+        .await;
+        assert!(res.status().is_success(), "{path}: {}", res.status());
+    }
 
     let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
     assert_status(&export, StatusCode::OK);
     let doc = json_body(export).await;
+    let meals = doc["meal_history"].as_array().unwrap();
+    assert_eq!(meals.len(), 1);
+    assert_eq!(
+        meals[0]["taste_tags"],
+        serde_json::json!(["trop_long", "aime"])
+    );
     let recipes = doc["recipes"].as_array().unwrap();
     let crepes = recipes.iter().find(|r| r["name"] == "Crepes").unwrap();
     assert_eq!(

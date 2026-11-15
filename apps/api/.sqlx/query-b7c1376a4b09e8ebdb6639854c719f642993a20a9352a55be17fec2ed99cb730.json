@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, group_id, recipe_id, eaten_on, created_at\n               FROM meal_history WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
+  "query": "SELECT id, group_id, recipe_id, eaten_on, created_at, taste_tags\n               FROM meal_history WHERE group_id = $1 AND created_by = $2 ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "taste_tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "meal_history",
+            "name": "taste_tags"
+          }
+        }
       }
     ],
     "parameters": {
@@ -70,8 +81,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "e37ba4ae56ca646fbd248ebe3b7d3cda351ac7316492249e014d8d08bc60fee9"
+  "hash": "b7c1376a4b09e8ebdb6639854c719f642993a20a9352a55be17fec2ed99cb730"
 }

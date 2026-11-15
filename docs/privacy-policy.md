@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-11-14.
+Dernière mise à jour : 2026-11-15.
 
 ## Qui est responsable de vos données ?
 
@@ -223,7 +223,8 @@ possibles sont :
 
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
-stock, repas récents, saison) : aucun modèle d'intelligence artificielle
+stock, repas récents, saison, avis « aimé » ou « pas aimé » donnés par le
+foyer quand une recette est faite) : aucun modèle d'intelligence artificielle
 n'est appelé, ni sur le serveur ni chez un tiers.
 
 ## Vos données quittent-elles l'Union européenne ?
