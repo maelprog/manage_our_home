@@ -1258,6 +1258,13 @@ async fn the_agenda_change_setting_is_the_caller_s_own(db: PgPool) {
         state(settings(f.owner.clone()).await),
         (json!("email"), json!(7), json!(true))
     );
+    // Without the field, an enabled setting stays enabled too.
+    let res = put(json!({"reminder_channel": "both"})).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        state(settings(f.owner.clone()).await),
+        (json!("both"), json!(7), json!(true))
+    );
 
     // The member turns theirs off: the owner's stays on.
     let res = call(
