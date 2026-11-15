@@ -62,7 +62,7 @@ async function createStockItem(page: Page, name: string, quantity: string, unit:
   await page.goto("/stocks/new");
   await page.getByLabel("Nom").fill(name);
   await page.getByLabel("Quantité").fill(quantity);
-  await page.getByLabel("Unité").fill(unit);
+  await page.getByLabel("Unité", { exact: true }).fill(unit);
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
   await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
 }
@@ -478,7 +478,7 @@ test.describe("Recipes — Prévues : manquants et priorité (#560)", () => {
     await page.goto("/stocks/new");
     await page.getByLabel("Nom").fill("Crème");
     await page.getByLabel("Quantité").fill("1");
-    await page.getByLabel("Unité").fill("pot");
+    await page.getByLabel("Unité", { exact: true }).fill("pot");
     const tomorrow = parisDay(1);
     await page.getByLabel("Date de péremption").fill(tomorrow);
     await page.getByRole("button", { name: "Ajouter l'article" }).click();

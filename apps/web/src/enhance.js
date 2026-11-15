@@ -587,6 +587,150 @@
     dialog.showModal();
   }
 
+  // `data-combo` (`stocks::new::combo_field`, #803): the ▾ beside a free
+  // field that has a datalist. Phones show a datalist only on a touch
+  // (Android) or as one types (iPhone); the ▾ shows it all, at will. The
+  // button and its list (`aria-controls`) are rendered `hidden` and empty:
+  // here the list is filled from the datalist — its one source, a value's
+  // `data-note` written beside it — and the button shown. Without
+  // JavaScript the field keeps its datalist alone. Open, the focus is on
+  // the list: ↓ ↑ Début Fin move, Entrée or Espace picks, Échap closes and
+  // gives the focus back to ▾, Tab or a click elsewhere closes. A pick fills
+  // the field, closes, and puts the focus in the field.
+  function comboOf(node) {
+    var box = closest(node, ".combo");
+    if (!box) return null;
+    var button = box.querySelector("button[data-combo]");
+    var list = button && document.getElementById(button.getAttribute("aria-controls"));
+    var input = box.querySelector("input");
+    return list && input ? { button: button, list: list, input: input } : null;
+  }
+
+  function combos() {
+    var buttons = document.querySelectorAll("button[data-combo]");
+    Array.prototype.forEach.call(buttons, function (button) {
+      var combo = comboOf(button);
+      var source = combo && combo.input.list;
+      if (!source || combo.list.children.length) return;
+      Array.prototype.forEach.call(source.options, function (option, i) {
+        var item = document.createElement("li");
+        item.id = combo.list.id + "-" + i;
+        item.setAttribute("role", "option");
+        item.setAttribute("data-value", option.value);
+        item.textContent = option.value;
+        var note = option.getAttribute("data-note");
+        if (note) {
+          // The space keeps the two words apart in the option's name.
+          item.appendChild(document.createTextNode(" "));
+          var span = document.createElement("span");
+          span.className = "muted";
+          span.textContent = note;
+          item.appendChild(span);
+        }
+        combo.list.appendChild(item);
+      });
+      combo.list.tabIndex = -1;
+      button.hidden = false;
+    });
+  }
+
+  function comboOn(combo, item) {
+    Array.prototype.forEach.call(combo.list.children, function (other) {
+      other.classList.toggle("cur", other === item);
+    });
+    if (!item) return;
+    combo.list.setAttribute("aria-activedescendant", item.id);
+    if (item.scrollIntoView) item.scrollIntoView({ block: "nearest" });
+  }
+
+  function closeCombo(combo) {
+    if (combo.list.hidden) return;
+    combo.list.hidden = true;
+    combo.button.setAttribute("aria-expanded", "false");
+    combo.list.removeAttribute("aria-activedescendant");
+  }
+
+  function closeCombos(except) {
+    var open = document.querySelectorAll('button[data-combo][aria-expanded="true"]');
+    Array.prototype.forEach.call(open, function (button) {
+      var combo = comboOf(button);
+      if (combo && combo.list !== except) closeCombo(combo);
+    });
+  }
+
+  function openCombo(combo) {
+    closeCombos(combo.list);
+    var value = combo.input.value.trim();
+    var current = null;
+    Array.prototype.forEach.call(combo.list.children, function (item) {
+      var on = item.getAttribute("data-value") === value;
+      item.setAttribute("aria-selected", on ? "true" : "false");
+      if (on) current = item;
+    });
+    combo.list.hidden = false;
+    combo.button.setAttribute("aria-expanded", "true");
+    comboOn(combo, current || combo.list.firstElementChild);
+    combo.list.focus();
+  }
+
+  function pickCombo(combo, item) {
+    combo.input.value = item.getAttribute("data-value");
+    combo.input.dispatchEvent(new Event("input", { bubbles: true }));
+    combo.input.dispatchEvent(new Event("change", { bubbles: true }));
+    closeCombo(combo);
+    combo.input.focus();
+  }
+
+  document.addEventListener("click", function (event) {
+    var button = closest(event.target, "button[data-combo]");
+    var item = closest(event.target, ".combo-list [role=option]");
+    var combo = comboOf(button || item);
+    if (button && combo) {
+      if (combo.list.hidden) openCombo(combo);
+      else closeCombo(combo);
+    } else if (item && combo) {
+      pickCombo(combo, item);
+    } else {
+      closeCombos(null);
+    }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    var target = event.target;
+    var combo = target.matches && target.matches(".combo-list") && comboOf(target);
+    if (!combo) {
+      // ↓ on a closed ▾ opens it, as a native list would.
+      combo = target.matches && target.matches("button[data-combo]") && comboOf(target);
+      if (combo && event.key === "ArrowDown" && combo.list.hidden) {
+        event.preventDefault();
+        openCombo(combo);
+      }
+      return;
+    }
+    var items = combo.list.children;
+    var at = Array.prototype.indexOf.call(items, combo.list.querySelector(".cur"));
+    var next = null;
+    if (event.key === "ArrowDown") next = items[(at + 1) % items.length];
+    else if (event.key === "ArrowUp") next = items[(at - 1 + items.length) % items.length];
+    else if (event.key === "Home") next = items[0];
+    else if (event.key === "End") next = items[items.length - 1];
+    else if ((event.key === "Enter" || event.key === " ") && at >= 0) {
+      event.preventDefault();
+      pickCombo(combo, items[at]);
+      return;
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeCombo(combo);
+      combo.button.focus();
+      return;
+    } else if (event.key === "Tab") {
+      closeCombo(combo);
+      return;
+    } else return;
+    event.preventDefault();
+    comboOn(combo, next);
+  });
+
   // `data-hidden-with-js`: the fallback of a form that sends itself
   // without it (a button: the profile's families, #751), or of what a
   // script offers otherwise (the attachments' list and its « Supprimer »,
@@ -817,6 +961,7 @@
     strengthMeters();
     bounds();
     recurringBoxes();
+    combos();
     familySelectors();
     viewers();
     try {

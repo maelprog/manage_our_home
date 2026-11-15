@@ -72,6 +72,7 @@ icon_set! {
         Scan,
         Previous,
         Next,
+        Expand,
         Plus,
         Minus,
         Send,
@@ -150,6 +151,8 @@ pub fn icon(icon: Icon) -> &'static str {
         Icon::Previous => svg!(r#"<path d="m15 18-6-6 6-6"/>"#),
         // chevron-right
         Icon::Next => svg!(r#"<path d="m9 18 6-6-6-6"/>"#),
+        // chevron-down: opens a field's list of suggestions (#803)
+        Icon::Expand => svg!(r#"<path d="m6 9 6 6 6-6"/>"#),
         // plus
         Icon::Plus => svg!(r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#),
         // minus

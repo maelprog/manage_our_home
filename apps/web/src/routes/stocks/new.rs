@@ -192,6 +192,87 @@ pub(crate) const UNITS: [&str; 10] = [
     "tranche",
 ];
 
+/// The places the category field suggests (#527).
+pub(crate) const PLACES: [&str; 3] = ["Frigo", "Placard", "Congélateur"];
+
+/// A `<datalist>` of `values`, in their order: what the browser suggests
+/// on its own, and the one source the ▾ list is built from by
+/// `enhance.js` (#803). The default unit carries `data-note`, the word the
+/// ▾ list writes beside it; the browser's own suggestions ignore it.
+pub(crate) fn datalist(id: &str, values: &[&str]) -> String {
+    let options: String = values
+        .iter()
+        .map(|v| {
+            let note = if *v == DEFAULT_UNIT {
+                r#" data-note="défaut""#
+            } else {
+                ""
+            };
+            format!(r#"<option value="{}"{note}></option>"#, html_escape(v))
+        })
+        .collect();
+    format!(r#"<datalist id="{id}">{options}</datalist>"#)
+}
+
+/// A free-text field with its suggestions (#803): the field, its datalist,
+/// and the ▾ button that opens them all as a list. The button and the
+/// (empty) list are `hidden`: `enhance.js` shows the one and fills the
+/// other from the datalist, so without JavaScript the field is what it was.
+struct Combo {
+    name: &'static str,
+    label: &'static str,
+    placeholder: &'static str,
+    list: &'static str,
+    values: &'static [&'static str],
+    button: &'static str,
+    listbox: &'static str,
+    /// Two columns: the ten units, not the three places.
+    two: bool,
+}
+
+const UNIT_COMBO: Combo = Combo {
+    name: "unit",
+    label: "Unité",
+    placeholder: "unité si vide (ex. kg, L)",
+    list: "units",
+    values: &UNITS,
+    button: "Voir les unités",
+    listbox: "Unités",
+    two: true,
+};
+
+const PLACE_COMBO: Combo = Combo {
+    name: "category",
+    label: "Catégorie",
+    placeholder: "Optionnel (ex. Frigo, Placard)",
+    list: "places",
+    values: &PLACES,
+    button: "Voir les catégories",
+    listbox: "Catégories",
+    two: false,
+};
+
+fn combo_field(c: &Combo, value: &str) -> String {
+    let Combo {
+        name,
+        label,
+        placeholder,
+        list,
+        button,
+        listbox,
+        ..
+    } = c;
+    format!(
+        r#"<div class="field"><label for="item-{name}">{label}</label>
+<div class="combo"><input type="text" id="item-{name}" name="{name}" value="{value}" placeholder="{placeholder}" list="{list}"/><button type="button" class="secondary" aria-label="{button}" aria-expanded="false" aria-controls="{list}-list" data-combo hidden>{chevron}</button><ul class="combo-list{two}" id="{list}-list" role="listbox" aria-label="{listbox}" hidden></ul></div>
+{datalist}</div>"#,
+        value = html_escape(value),
+        chevron = icon(Icon::Expand),
+        two = if c.two { " two" } else { "" },
+        datalist = datalist(list, c.values),
+    )
+}
+
 /// Renders the item form fields (shared markup, pre-filled). Used by create
 /// (empty defaults) and edit (existing values).
 pub(crate) fn form_fields(
@@ -221,16 +302,15 @@ pub(crate) fn form_fields(
     };
     // The mock-up's order (#527): name, quantity and unit side by side, the
     // place, the date, the threshold. The unit and the place stay free
-    // text; the `<datalist>`s only suggest the mock-up's values.
+    // text; the `<datalist>`s suggest the mock-up's values, and a ▾ opens
+    // them all (#803).
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
 <div class="pair">
 <label>Quantité <input type="number" name="quantity" step="any" min="0" value="{quantity}"/></label>
-<label>Unité <input type="text" name="unit" value="{unit}" placeholder="unité si vide (ex. kg, L)" list="units"/></label>
+{unit}
 </div>
-<datalist id="units">{units}</datalist>
-<label>Catégorie <input type="text" name="category" value="{category}" placeholder="Optionnel (ex. Frigo, Placard)" list="places"/></label>
-<datalist id="places"><option value="Frigo"></option><option value="Placard"></option><option value="Congélateur"></option></datalist>
+{category}
 <label>Date de péremption
 <input type="date" name="expires_on" value="{expires_on}" data-expiry-shortcuts/>{origin_note}
 <span class="muted">Optionnel. Si l'article en a plusieurs, la plus proche.</span>
@@ -239,14 +319,10 @@ pub(crate) fn form_fields(
 <input type="number" name="reorder_threshold" step="any" min="0" value="{reorder_threshold}" placeholder="Optionnel — laisser vide pour aucun seuil"/>
 <span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
 </label>"#,
-        units = UNITS
-            .iter()
-            .map(|u| format!(r#"<option value="{u}"></option>"#))
-            .collect::<String>(),
         name = html_escape(name),
-        category = html_escape(category),
+        category = combo_field(&PLACE_COMBO, category),
         quantity = html_escape(quantity),
-        unit = html_escape(unit),
+        unit = combo_field(&UNIT_COMBO, unit),
         reorder_threshold = html_escape(reorder_threshold),
         expires_on = html_escape(expires_on),
     )
@@ -905,6 +981,122 @@ mod tests {
     }
 
     #[test]
+    fn the_place_list_offers_the_three_places_in_order() {
+        assert_eq!(
+            datalist("places", &PLACES),
+            r#"<datalist id="places"><option value="Frigo"></option><option value="Placard"></option><option value="Congélateur"></option></datalist>"#
+        );
+    }
+
+    #[test]
+    fn the_unit_list_offers_every_unit_and_marks_the_default_only() {
+        let html = datalist("units", &UNITS);
+        assert_eq!(html.matches("<option ").count(), UNITS.len(), "{html}");
+        assert_eq!(html.matches("data-note=").count(), 1, "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"<option value="{DEFAULT_UNIT}" data-note="défaut"></option>"#
+            )),
+            "{html}"
+        );
+        // Every unit, in the order of the list.
+        let mut rest = html.as_str();
+        for unit in UNITS {
+            let at = rest
+                .find(&format!(r#"value="{unit}""#))
+                .unwrap_or_else(|| panic!("{unit} missing or out of order: {html}"));
+            rest = &rest[at..];
+        }
+    }
+
+    #[test]
+    fn a_list_value_is_escaped() {
+        let html = datalist("x", &[r#""><b>"#]);
+        assert!(html.contains("&quot;&gt;&lt;b&gt;"), "{html}");
+        assert!(!html.contains("<b>"), "{html}");
+    }
+
+    /// The `.combo` block of the field named `name` in `html`.
+    fn combo_of<'a>(html: &'a str, name: &str) -> &'a str {
+        let at = html
+            .find(&format!(r#"name="{name}""#))
+            .unwrap_or_else(|| panic!("{name}: {html}"));
+        let start = html[..at].rfind(r#"<div class="combo">"#).unwrap();
+        let end = start + html[start..].find("</ul></div>").unwrap();
+        &html[start..end]
+    }
+
+    #[test]
+    fn the_unit_and_the_place_each_get_a_button_that_opens_their_list() {
+        let html = form_fields("Riz", "Placard", "2", "kg", "", "", &DateOrigin::Member);
+        for (name, input_id, list, listbox, button, listbox_label) in [
+            (
+                "unit",
+                "item-unit",
+                "units",
+                "units-list",
+                "Voir les unités",
+                "Unités",
+            ),
+            (
+                "category",
+                "item-category",
+                "places",
+                "places-list",
+                "Voir les catégories",
+                "Catégories",
+            ),
+        ] {
+            let combo = combo_of(&html, name);
+            // The field stays free text, still suggesting its datalist, and
+            // its visible label names it through `for`.
+            assert!(combo.contains(&format!(r#"id="{input_id}""#)), "{combo}");
+            assert!(combo.contains(&format!(r#"list="{list}""#)), "{combo}");
+            assert!(
+                html.contains(&format!(r#"<label for="{input_id}">"#)),
+                "{html}"
+            );
+            // A plain button, not a submit, hidden until the script shows
+            // it: without JavaScript the page is what it was.
+            assert!(combo.contains(r#"<button type="button""#), "{combo}");
+            assert!(
+                combo.contains(&format!(r#"aria-label="{button}""#)),
+                "{combo}"
+            );
+            assert!(combo.contains(r#"aria-expanded="false""#), "{combo}");
+            assert!(
+                combo.contains(&format!(r#"aria-controls="{listbox}""#)),
+                "{combo}"
+            );
+            assert!(combo.contains(" data-combo hidden>"), "{combo}");
+            // What it controls is there, empty and hidden: the script fills
+            // it from the datalist, the one source of the values.
+            assert!(
+                combo.contains(&format!(
+                    r#"id="{listbox}" role="listbox" aria-label="{listbox_label}" hidden>"#
+                )),
+                "{combo}"
+            );
+            assert!(!combo.contains("<li"), "{combo}");
+            assert!(
+                html.contains(&format!(r#"<datalist id="{list}">"#)),
+                "{html}"
+            );
+        }
+        // The values typed come back into their fields.
+        assert!(combo_of(&html, "unit").contains(r#"value="kg""#));
+        assert!(combo_of(&html, "category").contains(r#"value="Placard""#));
+    }
+
+    #[test]
+    fn the_script_opens_the_lists_the_markup_asks_for() {
+        let script = crate::app::ENHANCE_SCRIPT;
+        assert!(script.contains("[data-combo]"), "data-combo");
+        assert!(script.contains("aria-expanded"));
+        assert!(script.contains("data-note"));
+    }
+
+    #[test]
     fn the_label_carries_the_pack_size() {
         assert_eq!(
             product_label(&product("Nutella", Some("400 g"))),
@@ -1069,9 +1261,11 @@ mod tests {
             ),
             "{html}"
         );
-        // Put there by the script: no button in the markup itself, which
+        // Put there by the script: no button in the date's own label, which
         // works without it.
-        assert!(!html.contains("<button"), "{html}");
+        let date = html.split("<label>Date de péremption").nth(1).unwrap();
+        let date = date.split("</label>").next().unwrap();
+        assert!(!date.contains("<button"), "{date}");
         assert!(!html.contains("+1 sem."), "{html}");
         let script = crate::app::ENHANCE_SCRIPT;
         assert!(script.contains("input[data-expiry-shortcuts]"));

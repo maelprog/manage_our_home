@@ -1052,7 +1052,31 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 /* The add sheet: quantity and unit share a line; the scan comes first, in
    the accent's dashed box, then « ou saisir » between two fine lines. */
 .pair { display: flex; gap: var(--s2x); }
-.pair > label { flex: 1; min-width: 0; }
+.pair > :is(label, .field) { flex: 1; min-width: 0; }
+/* A free field and its ▾ (#803, `stocks::new::combo_field`): the button is
+   the field's right end, --s12 wide and as tall as it; the list opens
+   under both, over what follows, from the field's datalist. enhance.js
+   shows the button and fills the list: without it, neither is drawn. The
+   chevron turns when open, at once — only colours are transitioned. */
+.combo { position: relative; display: flex; }
+.combo input { flex: 1; min-width: 0; }
+/* Only once the button shows: without JavaScript the field keeps its own
+   right edge and corners. */
+.combo:has(> button:not([hidden])) input { border-radius: var(--r-sm) 0 0 var(--r-sm); border-right-width: 0; }
+.combo button { padding: 0; color: var(--muted); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.combo:has(:focus-visible) > button { border-color: var(--accent); }
+.combo button:focus-visible { color: var(--accent); }
+.combo .secondary[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.combo [aria-expanded="true"] svg { transform: rotate(180deg); }
+/* The focus is on the list while it is open; the option it is on wears the
+   ring (`.cur`), the value the field holds the accent (`aria-selected`). */
+.combo-list { position: absolute; z-index: 2; top: calc(100% + var(--s1)); inset-inline: 0; display: grid; gap: var(--s2); margin: 0; padding: var(--s1); list-style: none; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); box-shadow: var(--shadow); outline: 2px solid transparent; }
+.combo-list.two { grid-template-columns: 1fr 1fr; }
+.combo-list li { display: flex; align-items: center; gap: var(--s2x); min-height: calc(var(--s12) - var(--s1)); padding: 0 var(--s3); border-radius: calc(var(--r-sm) - var(--s1)); cursor: pointer; }
+.combo-list li:hover { background: var(--hover); }
+.combo-list [aria-selected="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.combo-list .cur { outline: 2px solid var(--accent); outline-offset: calc(-1 * var(--s2)); }
+.combo-list .muted { margin-left: auto; font-weight: 400; }
 /* The recipe form (#539): its ingredient lines and its steps, one under
    the other. The list draws no number: each field's label says its own. An
    ingredient line is quantity, unit, the name taking what is left, the

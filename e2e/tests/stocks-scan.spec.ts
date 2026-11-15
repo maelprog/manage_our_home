@@ -138,7 +138,7 @@ test.describe("Stocks — barcode scan", () => {
     await expect(page.getByText("Produit trouvé")).toBeVisible();
     await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
     await expect(page.getByLabel("Quantité")).toHaveValue("1");
-    await expect(page.getByLabel("Unité")).toHaveValue("unité");
+    await expect(page.getByLabel("Unité", { exact: true })).toHaveValue("unité");
     await expect(page.getByText(`Code-barres associé : ${KNOWN}`)).toBeVisible();
     await expect(page.getByText("Données produits : Open Food Facts, ODbL.")).toBeVisible();
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
