@@ -320,12 +320,12 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
   .cal-cell { border-radius: var(--r-sm); background: var(--surface); }
   .cal-cell:has(.outside) { background: transparent; }
   .cal-cell.current { border-color: var(--accent); }
-  /* A day's number, a link to its day view (#793), 28px square at least as
-     the mock-up draws it: today's pill takes that size too. It takes the
-     cell's top padding and its first chip's margin, so a day of three
-     chips still fits its 6.5rem; centred in its square, the number sits
-     a few pixels further right than it did, as on the mock-up. */
-  .cal-day a { display: inline-block; min-width: calc(var(--s6) + var(--s1)); line-height: calc(var(--s6) + var(--s1)); text-align: center; }
+  /* A day's number, a link to its day view (#793), drawn 28px square as
+     the mock-up draws it: today's pill takes that size too. Its target is
+     44px square (#838), by 8px of padding all round; it takes the cell's
+     top padding and its first chip's margin, and starts at the cell's
+     edge, 4px left, so as not to reach the next day. */
+  .cal-day a { display: inline-block; min-width: calc(var(--s6) + var(--s1) + 2 * var(--s2x)); margin-left: calc(-1 * var(--s1)); padding: var(--s2x); line-height: calc(var(--s6) + var(--s1)); text-align: center; }
   .cal .cal-cell { padding-top: 0; }
   .cal-day + .chip { margin-top: 0; }
   /* A chip holds one line, as the mock-up draws it: table cells do not
@@ -739,8 +739,12 @@ progress::-moz-progress-bar { background: currentColor; }
 .cal-day.outside { color: var(--muted); }
 /* Today's cell, and the occurrence an event page was opened on. */
 .current { background: var(--accent-soft); }
-/* Today's number in the accent, as the mock-up circles it (#525). */
-.cal-cell.current .cal-day { display: inline-block; min-width: var(--s6); border-radius: var(--r-sm); background: var(--accent); color: var(--accent-fg); text-align: center; }
+/* Today's number in the accent, as the mock-up circles it (#525): the
+   pill is the link's content box (#838), its padding a target that paints
+   nothing. On a PC, 8px of padding all round, the radius 8px wider leaves
+   the pill --r-sm; on a phone, with no padding at the sides, its corners
+   are elliptic (20 × 8.5px), as the validated mock-up draws them. */
+.cal-cell.current .cal-day a { border-radius: calc(var(--r-sm) + var(--s2x)); background: var(--accent) content-box; color: var(--accent-fg); }
 /* The grid and, on a PC, the panel of the day beside it (#525) — under it
    when the column is too narrow for both. `min-width: 0` lets the table
    give way instead of pushing the column past the viewport. */
@@ -1358,8 +1362,11 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   /* `:has()` drops an empty day unaided: no document bytes. A national
      day written out (#565) is not empty. */
   .cal thead, .cal-cell:not(:has(.chip, .nat)) { display: none; }
-  .cal-cell { border-width: 0 0 1px; padding: var(--s2x) 0; }
+  /* A day's number is 48px tall (#838), its line and padding: the day's
+     own top padding passes into it. */
+  .cal-cell { border-width: 0 0 1px; padding: 0 0 var(--s2x); }
   .cal-day { font-size: var(--t-lg); }
+  .cal-day a { display: inline-block; min-width: var(--s12); padding-block: calc((var(--s12) - 1lh) / 2); }
   /* --s12 is 48px, over Espacement's 44px; flex centres the text in it. */
   .chip { display: flex; align-items: center; gap: var(--s1); min-height: var(--s12); font-size: var(--t-base); }
   /* The phone side of the one markup (`app::app_header`, #523): what only
