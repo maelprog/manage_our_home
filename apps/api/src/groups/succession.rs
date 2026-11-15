@@ -156,7 +156,9 @@ pub const OWNERSHIP_NOTICE_SUBJECT: &str = "Vous êtes désormais propriétaire 
 
 /// One pass of ownership emails: every membership stamped by
 /// [`stamp_inheritance`] whose email has not gone gets one, sent through
-/// `send(to, subject, body)` whatever the member's reminder channel, and
+/// `send(to, subject, content)` whatever the member's reminder channel —
+/// its button opens `{frontend_base_url}/groups`, its footer links the
+/// privacy policy — and
 /// `ownership_email_sent_at` is stamped only once it has gone. A refused
 /// email leaves the row to be tried again on the next pass. Each row is
 /// handled in its own transaction, locked and read again first.
@@ -165,12 +167,11 @@ pub const OWNERSHIP_NOTICE_SUBJECT: &str = "Vous êtes désormais propriétaire 
 /// any other role the pass refuses rather than find nothing to send.
 pub async fn send_ownership_notices<F, Fut>(
     pool: &sqlx::PgPool,
-    groups_url: &str,
-    privacy_policy_url: &str,
+    frontend_base_url: &str,
     send: F,
 ) -> anyhow::Result<()>
 where
-    F: Fn(String, String, String) -> Fut,
+    F: Fn(String, String, crate::email::EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     use anyhow::Context;
@@ -194,7 +195,7 @@ where
     for p in pending {
         let mut tx = crate::db::begin(pool).await?;
         let Some(row) = sqlx::query!(
-            r#"SELECT u.email, g.name, gm.ownership_inherited_reason AS "reason!"
+            r#"SELECT u.email, u.display_name, g.name, gm.ownership_inherited_reason AS "reason!"
                FROM group_members gm
                JOIN users u ON u.id = gm.user_id
                JOIN groups g ON g.id = gm.group_id
@@ -216,14 +217,18 @@ where
             tx.rollback().await?;
             continue;
         };
-        let body = manage_our_home_shared::validation::rgpd::ownership_inherited_email_body(
+        let copy = manage_our_home_shared::validation::rgpd::ownership_inherited_email_body(
+            &row.display_name,
             &row.name,
             reason,
-            groups_url,
-            privacy_policy_url,
+            &format!("{frontend_base_url}/groups"),
         );
-        if let Err(e) = send(row.email, OWNERSHIP_NOTICE_SUBJECT.to_string(), body).await {
-            // Never log the address — PII, as in `EmailSender::send`.
+        let content = crate::email::template::render_copy(
+            &copy,
+            &format!("{frontend_base_url}/privacy-policy"),
+        );
+        if let Err(e) = send(row.email, OWNERSHIP_NOTICE_SUBJECT.to_string(), content).await {
+            // Never log the address — PII, as in `EmailSender::send_html`.
             tracing::error!(error = ?e, group_id = %p.group_id, user_id = %p.user_id,
                 "ownership notice not sent");
             tx.rollback().await?;

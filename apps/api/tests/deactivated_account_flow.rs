@@ -584,11 +584,11 @@ async fn a_pending_request_suspends_the_two_year_purge_and_its_warning(db: PgPoo
     backdate(&db, warnable, "2 years -29 days", None).await;
 
     let sent = std::sync::Mutex::new(Vec::<String>::new());
-    let record = |to: String, _: String, _: String| {
+    let record = |to: String, _: String, _: manage_our_home::email::EmailContent| {
         sent.lock().unwrap().push(to);
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+    send_deactivation_notices(&db, "https://example.test", &record)
         .await
         .unwrap();
     purge_due_accounts(&db).await.unwrap();
@@ -605,7 +605,7 @@ async fn a_pending_request_suspends_the_two_year_purge_and_its_warning(db: PgPoo
         .await,
         StatusCode::NO_CONTENT
     );
-    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+    send_deactivation_notices(&db, "https://example.test", &record)
         .await
         .unwrap();
     purge_due_accounts(&db).await.unwrap();
@@ -767,11 +767,11 @@ async fn after_a_refusal_a_new_request_does_not_hold_back_an_overdue_purge(db: P
     // In its last 29 days: the warning goes despite the pending request.
     backdate(&db, holder, "2 years -29 days", None).await;
     let sent = std::sync::Mutex::new(Vec::<String>::new());
-    let record = |to: String, _: String, _: String| {
+    let record = |to: String, _: String, _: manage_our_home::email::EmailContent| {
         sent.lock().unwrap().push(to);
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+    send_deactivation_notices(&db, "https://example.test", &record)
         .await
         .unwrap();
     assert_eq!(
@@ -881,11 +881,11 @@ async fn a_late_refusal_whose_new_warning_fails_is_not_purged_for_30_days(db: Pg
     refuse(&router, &admin, holder).await;
 
     let tried = std::sync::Mutex::new(0);
-    let failing = |_: String, _: String, _: String| {
+    let failing = |_: String, _: String, _: manage_our_home::email::EmailContent| {
         *tried.lock().unwrap() += 1;
         async { Err::<(), anyhow::Error>(anyhow::anyhow!("relay refused")) }
     };
-    send_deactivation_notices(&db, "https://example.test/privacy-policy", &failing)
+    send_deactivation_notices(&db, "https://example.test", &failing)
         .await
         .unwrap();
     purge_due_accounts(&db).await.unwrap();
@@ -910,11 +910,11 @@ async fn a_refusal_between_the_warnings_and_the_purge_purges_nothing(db: PgPool)
     let holder = overdue_with_a_pending_request(&router, &db, &admin, "holder@example.test").await;
 
     let sent = std::sync::Mutex::new(Vec::<String>::new());
-    let record = |to: String, _: String, _: String| {
+    let record = |to: String, _: String, _: manage_our_home::email::EmailContent| {
         sent.lock().unwrap().push(to);
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+    send_deactivation_notices(&db, "https://example.test", &record)
         .await
         .unwrap();
     refuse(&router, &admin, holder).await;
@@ -965,11 +965,11 @@ async fn a_second_refusal_does_not_postpone_the_purge_again(db: PgPool) {
     refuse(&router, &admin, holder).await;
 
     let sent = std::sync::Mutex::new(Vec::<String>::new());
-    let record = |to: String, _: String, _: String| {
+    let record = |to: String, _: String, _: manage_our_home::email::EmailContent| {
         sent.lock().unwrap().push(to);
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+    send_deactivation_notices(&db, "https://example.test", &record)
         .await
         .unwrap();
     assert_eq!(
@@ -990,7 +990,7 @@ async fn a_second_refusal_does_not_postpone_the_purge_again(db: PgPool) {
                        AND deactivation_notice_sent_at < now() - interval '19 days'";
     assert_eq!(count(&db, unchanged, holder).await, 1);
 
-    send_deactivation_notices(&db, "https://example.test/privacy-policy", &record)
+    send_deactivation_notices(&db, "https://example.test", &record)
         .await
         .unwrap();
     purge_due_accounts(&db).await.unwrap();

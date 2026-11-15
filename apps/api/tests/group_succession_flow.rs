@@ -13,6 +13,7 @@ use manage_our_home::jobs::account_purge::purge_due_accounts;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+const BASE_URL: &str = "https://maison.example.org";
 const GROUPS_URL: &str = "https://maison.example.org/groups";
 const POLICY_URL: &str = "https://maison.example.org/privacy-policy";
 
@@ -100,13 +101,11 @@ async fn notice_of(router: &axum::Router, cookie: &str, group: Uuid) -> serde_js
 type Sent = std::sync::Mutex<Vec<(String, String, String)>>;
 
 async fn send_pass(db: &PgPool, sent: &Sent) {
-    let record = |to: String, subject: String, body: String| {
-        sent.lock().unwrap().push((to, subject, body));
+    let record = |to: String, subject: String, content: manage_our_home::email::EmailContent| {
+        sent.lock().unwrap().push((to, subject, content.text));
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_ownership_notices(db, GROUPS_URL, POLICY_URL, record)
-        .await
-        .unwrap();
+    send_ownership_notices(db, BASE_URL, record).await.unwrap();
 }
 
 /// A superadmin logged in through the real endpoints: the admin routes
@@ -212,6 +211,7 @@ async fn the_heir_of_a_purge_is_told_by_a_notice_and_once_by_email(db: PgPool) {
     assert_eq!(subject, OWNERSHIP_NOTICE_SUBJECT);
     assert!(body.contains("« Famille Martin »"), "{body}");
     assert!(body.contains(GROUPS_URL), "{body}");
+    assert!(body.contains(POLICY_URL), "{body}");
     assert!(membership(&db, group, heir).await.2);
 
     // The export carries the stamps of the membership.
@@ -254,10 +254,10 @@ async fn a_refused_ownership_email_is_tried_again(db: PgPool) {
     add_member(&db, group, heir, "standard", 60).await;
     purge_due_accounts(&db).await.unwrap();
 
-    let refuse = |_: String, _: String, _: String| async { Err(anyhow::anyhow!("relay down")) };
-    send_ownership_notices(&db, GROUPS_URL, POLICY_URL, refuse)
-        .await
-        .unwrap();
+    let refuse = |_: String, _: String, _: manage_our_home::email::EmailContent| async {
+        Err(anyhow::anyhow!("relay down"))
+    };
+    send_ownership_notices(&db, BASE_URL, refuse).await.unwrap();
     assert!(!membership(&db, group, heir).await.2);
 
     let sent = Sent::default();

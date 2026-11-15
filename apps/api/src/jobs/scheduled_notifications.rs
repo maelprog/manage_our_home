@@ -11,7 +11,7 @@ use tokio::time::interval;
 use uuid::Uuid;
 
 use crate::agenda::reminders::{refill_notifications, EventTimes};
-use crate::email::EmailSender;
+use crate::email::{template, EmailContent, EmailSender};
 use crate::jobs::single_runner::{exclusively, Job};
 use crate::notifications::{center, push, ReminderChannel};
 
@@ -49,7 +49,12 @@ const RECIPIENT_GONE: &str = "recipient account deactivated or purged";
 ///
 /// Each loop's pass runs in one process at a time (#426), see
 /// [`send_pass`]; the refill likewise.
-pub async fn run(pool: PgPool, email: EmailSender, push: Option<Arc<push::Vapid>>) {
+pub async fn run(
+    pool: PgPool,
+    email: EmailSender,
+    push: Option<Arc<push::Vapid>>,
+    frontend_base_url: String,
+) {
     let pool_for_refill = pool.clone();
     tokio::spawn(async move {
         let mut ticker = interval(StdDuration::from_secs(REFILL_POLL_INTERVAL_SECS));
@@ -68,9 +73,9 @@ pub async fn run(pool: PgPool, email: EmailSender, push: Option<Arc<push::Vapid>
     let mut ticker = interval(StdDuration::from_secs(SEND_POLL_INTERVAL_SECS));
     loop {
         ticker.tick().await;
-        let send = |to: String, subject: String, body: String| {
+        let send = |to: String, subject: String, content: EmailContent| {
             let email = email.clone();
-            async move { email.send(&to, &subject, body).await }
+            async move { email.send_html(&to, &subject, content).await }
         };
         let send_push = |endpoint: String, ttl_secs: i64| {
             let client = client.clone();
@@ -84,7 +89,7 @@ pub async fn run(pool: PgPool, email: EmailSender, push: Option<Arc<push::Vapid>
                 }
             }
         };
-        match send_pass(&pool, send, send_push).await {
+        match send_pass(&pool, &frontend_base_url, send, send_push).await {
             Ok(Some(())) => {}
             Ok(None) => tracing::debug!("reminder pass skipped: another process runs it"),
             Err(e) => tracing::error!(error = ?e, "scheduled_notifications send failed"),
@@ -102,11 +107,12 @@ pub async fn run(pool: PgPool, email: EmailSender, push: Option<Arc<push::Vapid>
 /// connection stays up, see `single_runner`.
 pub async fn send_pass<F, Fut, P, PFut>(
     pool: &PgPool,
+    frontend_base_url: &str,
     send: F,
     send_push: P,
 ) -> anyhow::Result<Option<()>>
 where
-    F: Fn(String, String, String) -> Fut,
+    F: Fn(String, String, EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
     P: Fn(String, i64) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
@@ -114,7 +120,7 @@ where
     exclusively(
         pool,
         Job::ReminderSend,
-        send_due_notifications(pool, send, send_push),
+        send_due_notifications(pool, frontend_base_url, send, send_push),
     )
     .await
 }
@@ -165,7 +171,7 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
 
 /// One pass: every due, pending notification goes to the event's creator
 /// on the channel their account chose (`users.reminder_channel`, #306) —
-/// by email through `send(to, subject, body)`, by notification through
+/// by email through `send(to, subject, content)`, by notification through
 /// `send_push(endpoint, ttl_secs)` once per subscribed device — and is
 /// then settled by [`settle`]: sent, retried (failed once
 /// `MAX_SEND_ATTEMPTS` attempts were refused), or retired at once.
@@ -208,11 +214,12 @@ async fn refill_recurring_reminders(pool: &PgPool) -> anyhow::Result<()> {
 /// the others; the pass then reports how many there were.
 pub async fn send_due_notifications<F, Fut, P, PFut>(
     pool: &PgPool,
+    frontend_base_url: &str,
     send: F,
     send_push: P,
 ) -> anyhow::Result<()>
 where
-    F: Fn(String, String, String) -> Fut,
+    F: Fn(String, String, EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
     P: Fn(String, i64) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
@@ -243,13 +250,17 @@ where
     })
     .collect();
 
+    let links = Links {
+        agenda: format!("{frontend_base_url}/agenda"),
+        privacy_policy: format!("{frontend_base_url}/privacy-policy"),
+    };
     // The reading side hands each notification over once its account was
     // read and its email sent; the pushing side takes up to
     // `MAX_CONCURRENT_REMINDERS` at a time. Both run in this one task, so
     // neither waits for the other beyond the channel's bound.
     let (handed, taken) = mpsc::channel::<Reached>(MAX_CONCURRENT_REMINDERS);
     let (unread, unpushed) = futures::join!(
-        read_all(pool, &send, due, handed),
+        read_all(pool, &links, &send, due, handed),
         push_all(pool, &send_push, taken),
     );
 
@@ -265,23 +276,30 @@ fn unsent(id: Uuid, error: &anyhow::Error) {
     tracing::error!(error = ?error, notification_id = %id, "failed to send a due reminder");
 }
 
+/// The two links of a reminder email: its button's and its footer's.
+struct Links {
+    agenda: String,
+    privacy_policy: String,
+}
+
 /// The reading side: [`reach`] each due notification in turn, and hand the
 /// ones still to push and settle over to [`push_all`]. Returns how many
 /// failed.
 async fn read_all<F, Fut>(
     pool: &PgPool,
+    links: &Links,
     send: &F,
     due: Vec<DueRow>,
     mut handed: mpsc::Sender<Reached>,
 ) -> usize
 where
-    F: Fn(String, String, String) -> Fut,
+    F: Fn(String, String, EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     let mut failed = 0;
     for row in due {
         let id = row.id;
-        match reach(pool, send, row).await {
+        match reach(pool, links, send, row).await {
             Ok(Some(reached)) => {
                 // `push_all` takes until this side hangs up.
                 if handed.send(reached).await.is_err() {
@@ -358,9 +376,14 @@ struct Reached {
 /// Reads the creator's account right before sending, retires the
 /// notification if it is gone, and sends the email if their channel
 /// includes it. `None` once retired.
-async fn reach<F, Fut>(pool: &PgPool, send: &F, row: DueRow) -> anyhow::Result<Option<Reached>>
+async fn reach<F, Fut>(
+    pool: &PgPool,
+    links: &Links,
+    send: &F,
+    row: DueRow,
+) -> anyhow::Result<Option<Reached>>
 where
-    F: Fn(String, String, String) -> Fut,
+    F: Fn(String, String, EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     let Some(recipient) = sqlx::query!(
@@ -403,9 +426,14 @@ where
     })?;
 
     let email = if channel.includes_email() {
-        let body = reminder_email_body(&row.title, row.occurrence_at);
+        let content = reminder_email(
+            &row.title,
+            row.occurrence_at,
+            &links.agenda,
+            &links.privacy_policy,
+        );
         Some(
-            send(recipient.email, REMINDER_SUBJECT.to_owned(), body)
+            send(recipient.email, REMINDER_SUBJECT.to_owned(), content)
                 .await
                 .map_err(|e| e.to_string()),
         )
@@ -619,15 +647,40 @@ async fn record_device(
 /// title goes in the body only; `docs/privacy-policy.md` records the choice.
 pub const REMINDER_SUBJECT: &str = "Rappel d'un événement à venir";
 
-/// Body of a reminder email. The title is user input travelling into a
-/// `text/plain` email, so it goes through `sanitize_email_line` first: no
-/// line break, no invisible character, and a bounded length (#269).
+/// The sentence of a reminder email that names the event. The title is user
+/// input, so it goes through `sanitize_email_line` first: no line break, no
+/// invisible character, and a bounded length (#269); the template escapes
+/// it in the HTML part.
 fn reminder_email_body(title: &str, occurrence_at: DateTime<Utc>) -> String {
     format!(
         "Rappel pour « {} » prévu le {}.",
         sanitize_email_line(title),
         occurrence_at.format("%d/%m/%Y %H:%M")
     )
+}
+
+/// A reminder email, on the shared layout (#832). Its title names no event,
+/// like its subject (#146): only the sentence of [`reminder_email_body`]
+/// does. Reminders go to the event's creator (`events.created_by`).
+pub fn reminder_email(
+    title: &str,
+    occurrence_at: DateTime<Utc>,
+    agenda_url: &str,
+    privacy_policy_url: &str,
+) -> EmailContent {
+    let sentence = reminder_email_body(title, occurrence_at);
+    template::render(&template::Template {
+        title: "Un événement approche",
+        paragraphs: &[&sentence],
+        action: ("Ouvrir l'agenda", agenda_url),
+        fine_print: &[
+            "Vous recevez ce rappel parce qu'il est programmé sur un événement que \
+                       vous avez créé. Vous pouvez le supprimer depuis la page de \
+                       l'événement.",
+        ],
+        notice: None,
+        privacy_policy_url,
+    })
 }
 
 /// Refuses a pool whose role does not bypass RLS, like the other workers
@@ -759,11 +812,80 @@ mod tests {
         assert_eq!(REMINDER_SUBJECT, "Rappel d'un événement à venir");
     }
 
+    const AGENDA: &str = "https://maison.example/agenda";
+    const PRIVACY: &str = "https://maison.example/privacy-policy";
+
+    fn reminder(title: &str) -> crate::email::EmailContent {
+        reminder_email(title, at(), AGENDA, PRIVACY)
+    }
+
     #[test]
     fn body_carries_title_and_date() {
         assert_eq!(
             reminder_email_body("Dîner", at()),
             "Rappel pour « Dîner » prévu le 03/10/2026 14:30."
+        );
+    }
+
+    /// The layout of #831: a title that names no event either, the sentence
+    /// with the event's title and date, the agenda's button, the reason the
+    /// email came.
+    #[test]
+    fn reminder_email_follows_the_shared_layout() {
+        let c = reminder("Dîner");
+        assert!(
+            c.text.starts_with("Un événement approche\n\n"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text
+                .contains("\n\nRappel pour « Dîner » prévu le 03/10/2026 14:30.\n\n"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text.contains(&format!("Ouvrir l'agenda :\n{AGENDA}\n")),
+            "{}",
+            c.text
+        );
+        assert!(c.text.contains("Vous recevez ce rappel"), "{}", c.text);
+        assert!(c.text.contains(PRIVACY), "{}", c.text);
+        assert!(c.html.contains(">Un événement approche</h1>"), "{}", c.html);
+        assert!(c.html.contains(&format!("href=\"{AGENDA}\"")), "{}", c.html);
+        assert!(c.html.contains("Rappel pour « Dîner »"), "{}", c.html);
+    }
+
+    /// #146: neither the subject nor the title of the email names the event;
+    /// the body does, once in each part.
+    #[test]
+    fn reminder_email_names_the_event_in_the_body_only() {
+        let c = reminder("IRM");
+        assert!(!REMINDER_SUBJECT.contains("IRM"));
+        let title = c.text.lines().next().unwrap();
+        assert!(!title.contains("IRM"), "{title}");
+        assert_eq!(c.text.matches("IRM").count(), 1, "{}", c.text);
+        // Once in the card; the HTML `<title>` is the email's title.
+        assert_eq!(c.html.matches("IRM").count(), 1, "{}", c.html);
+    }
+
+    /// #269 in both parts, then escaped in the HTML one.
+    #[test]
+    fn reminder_email_flattens_the_title_and_escapes_it_in_html_only() {
+        let c = reminder("<b>IRM</b> & co\r\n\r\nfaux paragraphe\u{202e}");
+        let flat = "<b>IRM</b> & co faux paragraphe";
+        assert!(
+            c.text.contains(&format!("Rappel pour « {flat} » prévu")),
+            "{}",
+            c.text
+        );
+        assert!(!c.text.contains('\u{202e}'), "{}", c.text);
+        assert!(!c.html.contains("<b>"), "{}", c.html);
+        assert!(
+            c.html
+                .contains("&lt;b&gt;IRM&lt;/b&gt; &amp; co faux paragraphe"),
+            "{}",
+            c.html
         );
     }
 

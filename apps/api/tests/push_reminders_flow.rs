@@ -597,7 +597,7 @@ async fn pass(
 ) -> (Vec<(String, String)>, Vec<(String, i64)>) {
     let emails = Mutex::new(Vec::new());
     let pushes = Mutex::new(Vec::new());
-    let send = |to: String, subject: String, _body: String| {
+    let send = |to: String, subject: String, _body: manage_our_home::email::EmailContent| {
         emails.lock().unwrap().push((to, subject));
         async { Ok::<(), anyhow::Error>(()) }
     };
@@ -606,7 +606,9 @@ async fn pass(
         pushes.lock().unwrap().push((endpoint, ttl));
         async move { outcome }
     };
-    send_due_notifications(db, send, send_push).await.unwrap();
+    send_due_notifications(db, "https://maison.example", send, send_push)
+        .await
+        .unwrap();
     (emails.into_inner().unwrap(), pushes.into_inner().unwrap())
 }
 
@@ -812,12 +814,17 @@ where
     A: Fn(String) -> AFut,
     AFut: std::future::Future<Output = PushOutcome>,
 {
-    let send = |_to: String, _subject: String, _body: String| async { Ok::<(), anyhow::Error>(()) };
+    let send = |_to: String, _subject: String, _body: manage_our_home::email::EmailContent| async {
+        Ok::<(), anyhow::Error>(())
+    };
     let send_push = |endpoint: String, _ttl: i64| answer(endpoint);
-    tokio::time::timeout(within, send_due_notifications(db, send, send_push))
-        .await
-        .expect("the pass is still waiting on a push service that never answers")
-        .unwrap();
+    tokio::time::timeout(
+        within,
+        send_due_notifications(db, "https://maison.example", send, send_push),
+    )
+    .await
+    .expect("the pass is still waiting on a push service that never answers")
+    .unwrap();
 }
 
 /// A member's push service that does not answer holds back no one else:
@@ -1023,9 +1030,11 @@ async fn a_database_error_on_one_reminder_stops_none_of_the_others(
     };
     refuse_writes_to(&db, &failing).await;
 
-    let send = |_to: String, _subject: String, _body: String| async { Ok::<(), anyhow::Error>(()) };
+    let send = |_to: String, _subject: String, _body: manage_our_home::email::EmailContent| async {
+        Ok::<(), anyhow::Error>(())
+    };
     let send_push = |_endpoint: String, _ttl: i64| async { PushOutcome::Delivered };
-    let error = send_due_notifications(&db, send, send_push)
+    let error = send_due_notifications(&db, "https://maison.example", send, send_push)
         .await
         .expect_err("the pass reports the reminders it could not see through");
 
@@ -1070,12 +1079,16 @@ async fn received(router: &axum::Router, cookie: &str, endpoint: &str) -> serde_
 
 /// One reminder pass whose pushes all get `outcome`.
 async fn pass_answering(db: &PgPool, outcome: PushOutcome) {
-    let send = |_: String, _: String, _: String| async { Ok::<(), anyhow::Error>(()) };
+    let send = |_: String, _: String, _: manage_our_home::email::EmailContent| async {
+        Ok::<(), anyhow::Error>(())
+    };
     let send_push = |_: String, _: i64| {
         let outcome = outcome.clone();
         async move { outcome }
     };
-    send_due_notifications(db, send, send_push).await.unwrap();
+    send_due_notifications(db, "https://maison.example", send, send_push)
+        .await
+        .unwrap();
 }
 
 async fn push_an_alert(db: &PgPool, member: Uuid) {

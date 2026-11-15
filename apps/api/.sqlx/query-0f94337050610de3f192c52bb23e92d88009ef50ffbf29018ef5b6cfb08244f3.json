@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT u.email, g.name, gm.ownership_inherited_reason AS \"reason!\"\n               FROM group_members gm\n               JOIN users u ON u.id = gm.user_id\n               JOIN groups g ON g.id = gm.group_id\n               WHERE gm.group_id = $1 AND gm.user_id = $2\n                 AND gm.ownership_inherited_at IS NOT NULL\n                 AND gm.ownership_email_sent_at IS NULL\n                 AND u.deleted_at IS NULL\n               FOR UPDATE OF gm",
+  "query": "SELECT u.email, u.display_name, g.name, gm.ownership_inherited_reason AS \"reason!\"\n               FROM group_members gm\n               JOIN users u ON u.id = gm.user_id\n               JOIN groups g ON g.id = gm.group_id\n               WHERE gm.group_id = $1 AND gm.user_id = $2\n                 AND gm.ownership_inherited_at IS NOT NULL\n                 AND gm.ownership_email_sent_at IS NULL\n                 AND u.deleted_at IS NULL\n               FOR UPDATE OF gm",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "reason!",
         "type_info": "Text",
         "origin": {
@@ -46,8 +57,9 @@
     "nullable": [
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "1506da4078bf7274197f28b2d3f129d3a294ff08df134caac922b6ecbe11c165"
+  "hash": "0f94337050610de3f192c52bb23e92d88009ef50ffbf29018ef5b6cfb08244f3"
 }

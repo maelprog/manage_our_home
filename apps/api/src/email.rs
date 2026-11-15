@@ -43,15 +43,15 @@ pub fn smtp_mode(allow_insecure: Option<&str>, port: Option<&str>) -> Result<Smt
     Ok(SmtpMode::Insecure { port })
 }
 
-/// An email as [`EmailSender::send`] or [`EmailSender::send_html`] was asked
-/// to send it, before any transfer encoding: what an [`Outbox`] keeps.
+/// An email as [`EmailSender::send_html`] was asked to send it, before any
+/// transfer encoding: what an [`Outbox`] keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentEmail {
     pub to: String,
     pub subject: String,
-    /// The `text/plain` part: the whole email for [`EmailSender::send`].
+    /// The `text/plain` part.
     pub body: String,
-    /// The `text/html` part, for [`EmailSender::send_html`] only.
+    /// The `text/html` part. Every email has one since #832.
     pub html: Option<String>,
 }
 
@@ -78,11 +78,6 @@ impl Outbox {
 fn greeted(display_name: &str) -> Option<String> {
     let name = sanitize_email_line(display_name);
     (!name.is_empty()).then_some(name)
-}
-
-enum Body<'a> {
-    Plain(&'a str),
-    Html(&'a EmailContent),
 }
 
 #[derive(Clone)]
@@ -118,26 +113,12 @@ impl EmailSender {
         )
     }
 
-    /// A single-part `text/plain` email. The emails not yet on the shared
-    /// layout of [`template`] still go out this way.
-    pub async fn send(&self, to: &str, subject: &str, body: String) -> Result<()> {
-        let message = self.message(to, subject, &Body::Plain(&body))?;
-        self.deliver(
-            message,
-            SentEmail {
-                to: to.to_owned(),
-                subject: subject.to_owned(),
-                body,
-                html: None,
-            },
-        )
-        .await
-    }
-
     /// A `multipart/alternative` email: the text part, then the HTML part
-    /// with the brand symbol it shows (#831).
+    /// with the brand symbol it shows (#831). Every email goes out this way
+    /// since #832: none is left as a bare `text/plain` body, which went
+    /// without a `Content-Type` and so without its charset.
     pub async fn send_html(&self, to: &str, subject: &str, content: EmailContent) -> Result<()> {
-        let message = self.message(to, subject, &Body::Html(&content))?;
+        let message = self.message(to, subject, &content)?;
         self.deliver(
             message,
             SentEmail {
@@ -163,17 +144,15 @@ impl EmailSender {
 
     /// The message as it goes to the relay; the in-memory sender builds it
     /// too, so it refuses what the relay would be refused.
-    fn message(&self, to: &str, subject: &str, body: &Body) -> Result<Message> {
-        let builder = Message::builder()
+    fn message(&self, to: &str, subject: &str, content: &EmailContent) -> Result<Message> {
+        // Text first: a client shows the last alternative it can render.
+        // The symbol rides with the HTML part, in a multipart/related the
+        // HTML refers to by `cid:`.
+        Ok(Message::builder()
             .from(self.from.clone())
             .to(to.parse()?)
-            .subject(subject);
-        Ok(match body {
-            Body::Plain(text) => builder.body(text.to_string())?,
-            // Text first: a client shows the last alternative it can render.
-            // The symbol rides with the HTML part, in a multipart/related
-            // the HTML refers to by `cid:`.
-            Body::Html(content) => builder.multipart(
+            .subject(subject)
+            .multipart(
                 MultiPart::alternative()
                     .singlepart(SinglePart::plain(content.text.clone()))
                     .multipart(
@@ -186,8 +165,7 @@ impl EmailSender {
                                 ),
                             ),
                     ),
-            )?,
-        })
+            )?)
     }
 
     /// Mailed at registration, and again on each resend, to confirm the
@@ -211,6 +189,7 @@ impl EmailSender {
                 &validity,
                 "Vous n'avez pas créé de compte ? Ignorez ce message.",
             ],
+            notice: None,
             privacy_policy_url,
         })
     }
@@ -244,6 +223,7 @@ impl EmailSender {
                 "Vous n'êtes pas à l'origine de cet ajout ? Ne suivez pas ce lien : sans \
                  confirmation, ce mot de passe ne permet pas de se connecter.",
             ],
+            notice: None,
             privacy_policy_url,
         })
     }
@@ -275,6 +255,7 @@ impl EmailSender {
                 "Vous n'avez rien demandé ? Ignorez ce message : votre mot de passe actuel \
                  reste valable.",
             ],
+            notice: None,
             privacy_policy_url,
         })
     }
@@ -302,24 +283,28 @@ impl EmailSender {
             ],
             action: ("Mot de passe oublié", forgot_password_link),
             fine_print: &["Vous n'êtes pas à l'origine de cette demande ? Ignorez ce message."],
+            notice: None,
             privacy_policy_url,
         })
     }
 
-    /// Unlike the three above, this one reaches somebody who has no account and
+    /// Unlike the four above, this one reaches somebody who has no account and
     /// never asked for anything: art. 14 RGPD, and the notice it requires,
     /// live in `manage_our_home_shared::validation::rgpd` next to the RGPD
-    /// documents' placeholders, which the body reuses (#134).
-    pub fn invitation_body(
+    /// documents' placeholders, which the body reuses (#134). Laid out by
+    /// the shared template since #832, the notice boxed after the button.
+    pub fn invitation_email(
         link: &str,
         group_name: &str,
         inviter_display_name: &str,
         privacy_policy_url: &str,
-    ) -> String {
-        manage_our_home_shared::validation::rgpd::invitation_email_body(
-            group_name,
-            inviter_display_name,
-            link,
+    ) -> EmailContent {
+        template::render_copy(
+            &manage_our_home_shared::validation::rgpd::invitation_email_body(
+                group_name,
+                inviter_display_name,
+                link,
+            ),
             privacy_policy_url,
         )
     }
@@ -333,15 +318,26 @@ mod tests {
         EmailSender::in_memory("noreply@example.test".parse().unwrap())
     }
 
+    fn content(text: &str) -> EmailContent {
+        EmailContent {
+            text: text.into(),
+            html: format!("<p>{text}</p>"),
+        }
+    }
+
     #[tokio::test]
     async fn in_memory_keeps_each_email_as_given_in_order() {
         let (email, outbox) = sender();
         email
-            .send("a@example.test", "Premier", "lien : https://x/é?t=1".into())
+            .send_html(
+                "a@example.test",
+                "Premier",
+                content("lien : https://x/é?t=1"),
+            )
             .await
             .unwrap();
         email
-            .send("b@example.test", "Second", "corps".into())
+            .send_html("b@example.test", "Second", content("corps"))
             .await
             .unwrap();
         assert_eq!(
@@ -351,13 +347,13 @@ mod tests {
                     to: "a@example.test".into(),
                     subject: "Premier".into(),
                     body: "lien : https://x/é?t=1".into(),
-                    html: None,
+                    html: Some("<p>lien : https://x/é?t=1</p>".into()),
                 },
                 SentEmail {
                     to: "b@example.test".into(),
                     subject: "Second".into(),
                     body: "corps".into(),
-                    html: None,
+                    html: Some("<p>corps</p>".into()),
                 },
             ]
         );
@@ -396,20 +392,49 @@ mod tests {
             .collect()
     }
 
+    /// Every email, the four of #832 as the auth ones of #831: their text
+    /// parts used to go out bare, with no `Content-Type` and so no charset.
     #[test]
-    fn html_email_is_multipart_alternative_text_first_then_html_with_its_inline_symbol() {
-        let (email, _) = sender();
-        let content = EmailSender::verification_email(
-            "https://maison.example/verify-email?token=abc",
-            "https://maison.example/privacy-policy",
-        );
-        let message = email
-            .message(
-                "a@example.test",
+    fn every_email_is_multipart_alternative_text_first_then_html_with_its_inline_symbol() {
+        let at = chrono::Utc::now();
+        for (subject, content) in [
+            (
                 "Vérifiez votre email",
-                &Body::Html(&content),
-            )
-            .unwrap();
+                EmailSender::verification_email("https://m.example/v?token=a", PRIVACY),
+            ),
+            (
+                "Invitation à rejoindre un groupe",
+                EmailSender::invitation_email("https://m.example/i", "G", "Alice", PRIVACY),
+            ),
+            (
+                "Rappel d'un événement à venir",
+                crate::jobs::scheduled_notifications::reminder_email(
+                    "Dîner",
+                    at,
+                    "https://m.example/agenda",
+                    PRIVACY,
+                ),
+            ),
+            (
+                "Votre compte Manage Our Home désactivé va être supprimé",
+                template::render_copy(
+                    &manage_our_home_shared::validation::rgpd::deactivation_notice_email_body(
+                        "Alice",
+                        at,
+                        at,
+                        "https://m.example/login",
+                    ),
+                    PRIVACY,
+                ),
+            ),
+        ] {
+            assert_multipart_with_symbol(subject, &content);
+        }
+    }
+
+    fn assert_multipart_with_symbol(subject: &str, content: &EmailContent) {
+        let (email, _) = sender();
+        let message = email.message("a@example.test", subject, content).unwrap();
         let raw = String::from_utf8(message.formatted()).unwrap();
         let types = content_types(&raw);
         let kinds: Vec<&str> = types.iter().map(|t| t.split(';').next().unwrap()).collect();
@@ -434,20 +459,89 @@ mod tests {
         assert!(lower.contains("content-disposition: inline"), "{raw}");
     }
 
-    /// The emails not yet on the shared layout go out as before: one part,
-    /// no HTML.
+    const PRIVACY: &str = "https://maison.example/privacy-policy";
+
+    /// Acceptance criterion of #832: every paragraph of the art. 14 notice
+    /// is in both parts — as written in the text one, its lines joined and
+    /// escaped in the HTML one.
     #[test]
-    fn plain_email_stays_a_single_part() {
-        let (email, _) = sender();
-        let message = email
-            .message("a@example.test", "Sujet", &Body::Plain("corps"))
-            .unwrap();
-        let raw = String::from_utf8(message.formatted()).unwrap();
-        assert!(content_types(&raw).is_empty(), "{raw}");
-        assert!(raw.ends_with("\r\n\r\ncorps"), "{raw}");
+    fn invitation_email_carries_the_whole_art_14_notice_in_both_parts() {
+        let link = "https://maison.example/groups/invitations/t/accept";
+        let copy = manage_our_home_shared::validation::rgpd::invitation_email_body(
+            "Famille Dupont",
+            "Alice Martin",
+            link,
+        );
+        let c = EmailSender::invitation_email(link, "Famille Dupont", "Alice Martin", PRIVACY);
+        let notice = copy.notice.as_ref().unwrap();
+        let mut paragraphs = 0;
+        for section in &notice.sections {
+            for p in &section.paragraphs {
+                assert!(c.text.contains(p.as_str()), "{p}\n---\n{}", c.text);
+                let html = template::escape_html(&p.replace('\n', " "));
+                assert!(c.html.contains(&html), "{html}\n---\n{}", c.html);
+                paragraphs += 1;
+            }
+        }
+        assert_eq!(paragraphs, 6);
+        for needle in [
+            "réclamation auprès de la CNIL",
+            "[adresse de contact — à renseigner avant la mise en ligne]",
+            "-- Ce que vous pouvez faire --",
+        ] {
+            assert!(c.text.contains(needle), "{needle}");
+        }
+        assert!(
+            c.html.contains(">Vos données (art. 14 RGPD)</p>"),
+            "{}",
+            c.html
+        );
+        assert!(
+            c.html.contains(">Ce que vous pouvez faire</p>"),
+            "{}",
+            c.html
+        );
+        assert!(c
+            .text
+            .starts_with("Vous êtes invité(e) à rejoindre « Famille Dupont »\n"));
+        assert!(
+            c.text.contains(&format!("Rejoindre le groupe :\n{link}\n")),
+            "{}",
+            c.text
+        );
+        assert!(c.html.contains(&format!("href=\"{link}\"")), "{}", c.html);
+        assert!(c.text.contains(PRIVACY), "{}", c.text);
+        assert!(
+            c.html.contains(&format!("href=\"{PRIVACY}\"")),
+            "{}",
+            c.html
+        );
     }
 
-    const PRIVACY: &str = "https://maison.example/privacy-policy";
+    /// The names of the group and of the inviter are flattened in both
+    /// parts, then escaped in the HTML one.
+    #[test]
+    fn invitation_email_flattens_and_escapes_what_members_typed() {
+        let c = EmailSender::invitation_email(
+            "https://m.example/i",
+            "<b>Famille</b>\n\n-- Ce que vous pouvez faire --",
+            "Eve & \"Cie\"\u{202E}",
+            PRIVACY,
+        );
+        assert_eq!(
+            c.text
+                .lines()
+                .filter(|l| *l == "-- Ce que vous pouvez faire --")
+                .count(),
+            1,
+            "{}",
+            c.text
+        );
+        assert!(!c.text.contains('\u{202E}'), "{}", c.text);
+        assert!(!c.html.contains("<b>"), "{}", c.html);
+        assert!(c.html.contains("&lt;b&gt;Famille&lt;/b&gt;"), "{}", c.html);
+        assert!(c.html.contains("Eve &amp; &quot;Cie&quot;"), "{}", c.html);
+    }
 
     /// Arbitrated 2026-11-15: the name was typed by whoever registered the
     /// address, before anybody proved to hold it, so the verification email
@@ -585,7 +679,7 @@ mod tests {
     async fn in_memory_refuses_what_smtp_would_refuse_and_keeps_nothing() {
         let (email, outbox) = sender();
         assert!(email
-            .send("not an address", "Sujet", "corps".into())
+            .send_html("not an address", "Sujet", content("corps"))
             .await
             .is_err());
         assert!(outbox.emails().is_empty());
@@ -596,7 +690,7 @@ mod tests {
         let (email, outbox) = sender();
         email
             .clone()
-            .send("a@example.test", "Sujet", "corps".into())
+            .send_html("a@example.test", "Sujet", content("corps"))
             .await
             .unwrap();
         assert_eq!(outbox.clone().emails().len(), 1);
