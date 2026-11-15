@@ -47,7 +47,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use uuid::Uuid;
 
 use crate::attachment_reconcile::ensure_bypasses_rls;
-use crate::email::EmailSender;
+use crate::email::{template, EmailContent, EmailSender};
 use crate::groups::succession;
 use crate::jobs::single_runner::{exclusively, Job};
 use crate::storage::Storage;
@@ -69,28 +69,25 @@ pub const DEACTIVATION_NOTICE_SUBJECT: &str =
 /// groups it deleted for being left with no member (#323) — then tells the members who became owners of a group, by this
 /// pass or since the last one (`groups::succession`).
 pub async fn run(pool: PgPool, email: EmailSender, storage: Storage, frontend_base_url: String) {
-    let privacy_policy_url = format!("{frontend_base_url}/privacy-policy");
-    let groups_url = format!("{frontend_base_url}/groups");
     let mut ticker = interval(StdDuration::from_secs(POLL_INTERVAL_SECS));
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
-        let send = |to: String, subject: String, body: String| {
+        let send = |to: String, subject: String, content: EmailContent| {
             let email = email.clone();
-            async move { email.send(&to, &subject, body).await }
+            async move { email.send_html(&to, &subject, content).await }
         };
         // One process at a time runs the three steps (#426): a replica
         // that finds another one at it skips its tick.
         let pass = async {
-            if let Err(e) = send_deactivation_notices(&pool, &privacy_policy_url, send).await {
+            if let Err(e) = send_deactivation_notices(&pool, &frontend_base_url, send).await {
                 tracing::error!(error = ?e, "deactivation notice job failed");
             }
             if let Err(e) = purge_due_accounts_and_objects(&pool, &storage).await {
                 tracing::error!(error = ?e, "account purge job failed");
             }
             if let Err(e) =
-                succession::send_ownership_notices(&pool, &groups_url, &privacy_policy_url, send)
-                    .await
+                succession::send_ownership_notices(&pool, &frontend_base_url, send).await
             {
                 tracing::error!(error = ?e, "ownership notice job failed");
             }
@@ -106,7 +103,9 @@ pub async fn run(pool: PgPool, email: EmailSender, storage: Storage, frontend_ba
 
 /// One pass of warnings: every deactivated account whose notice is due
 /// ([`deactivation_notice_due`]) gets one email, sent through `send(to,
-/// subject, body)`, and `deactivation_notice_sent_at` is stamped only once
+/// subject, content)` — its button opens `{frontend_base_url}/login`, its
+/// footer links the privacy policy — and `deactivation_notice_sent_at` is
+/// stamped only once
 /// the email has gone. A refused email leaves the account unstamped, to be
 /// tried again on the next pass; [`deactivation_purge_at`] bounds how long
 /// that can hold the purge back.
@@ -117,11 +116,11 @@ pub async fn run(pool: PgPool, email: EmailSender, storage: Storage, frontend_ba
 /// send waits for the stamp, then clears it.
 pub async fn send_deactivation_notices<F, Fut>(
     pool: &PgPool,
-    privacy_policy_url: &str,
+    frontend_base_url: &str,
     send: F,
 ) -> anyhow::Result<()>
 where
-    F: Fn(String, String, String) -> Fut,
+    F: Fn(String, String, EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
     let candidates = sqlx::query_scalar!(
@@ -139,7 +138,7 @@ where
         let mut tx = crate::db::begin(pool).await?;
         let Some(row) = sqlx::query!(
             r#"
-            SELECT email, deletion_requested_at, deactivated_at,
+            SELECT email, display_name, deletion_requested_at, deactivated_at,
                    deactivation_notice_sent_at, deleted_at, now() AS "now!",
                    EXISTS (SELECT 1 FROM account_reactivation_requests r
                            WHERE r.user_id = users.id) AS "reactivation_requested!",
@@ -167,13 +166,15 @@ where
             tx.rollback().await?;
             continue;
         };
-        let body = manage_our_home_shared::validation::rgpd::deactivation_notice_email_body(
+        let copy = manage_our_home_shared::validation::rgpd::deactivation_notice_email_body(
+            &row.display_name,
             deactivated_at,
             deactivation_purge_at(deactivated_at, Some(row.now), row.reactivation_refused_at),
-            privacy_policy_url,
+            &format!("{frontend_base_url}/login"),
         );
-        if let Err(e) = send(row.email, DEACTIVATION_NOTICE_SUBJECT.to_string(), body).await {
-            // Never log the address — PII, as in `EmailSender::send`.
+        let content = template::render_copy(&copy, &format!("{frontend_base_url}/privacy-policy"));
+        if let Err(e) = send(row.email, DEACTIVATION_NOTICE_SUBJECT.to_string(), content).await {
+            // Never log the address — PII, as in `EmailSender::send_html`.
             tracing::error!(error = ?e, %user_id, "deactivation notice not sent");
             tx.rollback().await?;
             continue;

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT email, deletion_requested_at, deactivated_at,\n                   deactivation_notice_sent_at, deleted_at, now() AS \"now!\",\n                   EXISTS (SELECT 1 FROM account_reactivation_requests r\n                           WHERE r.user_id = users.id) AS \"reactivation_requested!\",\n                   reactivation_refused_at\n            FROM users WHERE id = $1 FOR UPDATE\n            ",
+  "query": "\n            SELECT email, display_name, deletion_requested_at, deactivated_at,\n                   deactivation_notice_sent_at, deleted_at, now() AS \"now!\",\n                   EXISTS (SELECT 1 FROM account_reactivation_requests r\n                           WHERE r.user_id = users.id) AS \"reactivation_requested!\",\n                   reactivation_refused_at\n            FROM users WHERE id = $1 FOR UPDATE\n            ",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "deletion_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "deactivated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "deactivation_notice_sent_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "deleted_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -59,19 +70,19 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "now!",
         "type_info": "Timestamptz",
         "origin": "Expression"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "reactivation_requested!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "reactivation_refused_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -89,6 +100,7 @@
     },
     "nullable": [
       false,
+      false,
       true,
       true,
       true,
@@ -98,5 +110,5 @@
       true
     ]
   },
-  "hash": "d7d63f2eab7e7f37cff28034dacd59f81a172768fe425c8c957186a6e9d1da03"
+  "hash": "fc3583e83db77ee7fcaa5ccabcf94d9192430286e353a4be56b0604267521269"
 }

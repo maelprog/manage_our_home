@@ -27,6 +27,8 @@ pub const LOGO_CID: &str = "logo@mhome";
 /// inline in the HTML is dropped or mangled by most mail clients.
 pub const LOGO_PNG: &[u8] = include_bytes!("../../../web/src/brand/icon-192.png");
 
+pub use manage_our_home_shared::validation::rgpd::{EmailCopy, EmailNotice, EmailNoticeSection};
+
 /// What one email says, as plain text. Rendered by [`render`].
 pub struct Template<'a> {
     pub title: &'a str,
@@ -35,6 +37,9 @@ pub struct Template<'a> {
     pub action: (&'a str, &'a str),
     /// Smaller, muted lines after the button: validity, "not you?".
     pub fine_print: &'a [&'a str],
+    /// A boxed passage after the fine print: the information an email owes
+    /// its reader (art. 14 RGPD for the invitation, #832).
+    pub notice: Option<&'a EmailNotice>,
     pub privacy_policy_url: &'a str,
 }
 
@@ -96,6 +101,21 @@ pub fn render(t: &Template) -> EmailContent {
     }
 }
 
+/// Both parts of what `manage_our_home_shared` wrote (the emails whose text
+/// it holds next to the RGPD documents, #832).
+pub fn render_copy(copy: &EmailCopy, privacy_policy_url: &str) -> EmailContent {
+    let paragraphs: Vec<&str> = copy.paragraphs.iter().map(String::as_str).collect();
+    let fine_print: Vec<&str> = copy.fine_print.iter().map(String::as_str).collect();
+    render(&Template {
+        title: &copy.title,
+        paragraphs: &paragraphs,
+        action: (&copy.action.0, &copy.action.1),
+        fine_print: &fine_print,
+        notice: copy.notice.as_ref(),
+        privacy_policy_url,
+    })
+}
+
 fn render_text(t: &Template) -> String {
     let (label, link) = t.action;
     let mut out = format!("{}\n\n", t.title);
@@ -106,11 +126,29 @@ fn render_text(t: &Template) -> String {
     for p in t.fine_print {
         out.push_str(&format!("{p}\n\n"));
     }
+    if let Some(notice) = t.notice {
+        out.push_str(&format!("-- {} --\n\n", notice.heading));
+        for section in &notice.sections {
+            if let Some(heading) = &section.heading {
+                out.push_str(&format!("-- {heading} --\n\n"));
+            }
+            for p in &section.paragraphs {
+                out.push_str(&format!("{p}\n\n"));
+            }
+        }
+    }
+    // "-- " with its space: the signature separator of RFC 3676 §4.3.
     out.push_str(&format!(
-        "--\nManage Our Home\nPolitique de confidentialité : {}\n",
+        "-- \nManage Our Home\nPolitique de confidentialité : {}\n",
         t.privacy_policy_url
     ));
     out
+}
+
+/// `s` escaped, its hard wraps (written for the text part) joined into one
+/// line.
+fn html_line(s: &str) -> String {
+    escape_html(&s.replace('\n', " "))
 }
 
 fn render_html(t: &Template) -> String {
@@ -126,7 +164,7 @@ fn render_html(t: &Template) -> String {
     for p in t.paragraphs {
         body.push_str(&format!(
             "<p style=\"margin:0 0 14px;font-size:16px;line-height:1.55;{WRAP}\">{}</p>",
-            escape_html(p)
+            html_line(p)
         ));
     }
     // The button is a table cell, the one background every client paints;
@@ -146,8 +184,11 @@ fn render_html(t: &Template) -> String {
         body.push_str(&format!(
             "<p style=\"margin:0 0 14px;font-size:14px;line-height:1.55;color:{MUTED};{WRAP}\">\
              {}</p>",
-            escape_html(p)
+            html_line(p)
         ));
+    }
+    if let Some(notice) = t.notice {
+        body.push_str(&render_notice_html(notice));
     }
 
     format!(
@@ -181,6 +222,38 @@ fn render_html(t: &Template) -> String {
     )
 }
 
+/// The `.rgpd` box of the mock-up: a bordered cell (a `<div>` border is
+/// dropped by some clients, a table cell's is not), muted 14 px text, the
+/// heading and sub-headings in bold in the text colour.
+fn render_notice_html(notice: &EmailNotice) -> String {
+    let strong = format!("font-weight:600;color:{FG};");
+    let mut inner = format!(
+        "<p style=\"margin:0 0 10px;{strong}\">{}</p>",
+        html_line(&notice.heading)
+    );
+    for section in &notice.sections {
+        if let Some(heading) = &section.heading {
+            inner.push_str(&format!(
+                "<p style=\"margin:14px 0 6px;{strong}\">{}</p>",
+                html_line(heading)
+            ));
+        }
+        for p in &section.paragraphs {
+            inner.push_str(&format!(
+                "<p style=\"margin:0 0 10px;\">{}</p>",
+                html_line(p)
+            ));
+        }
+    }
+    format!(
+        "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" \
+         border=\"0\" style=\"margin:6px 0 16px;border-collapse:separate;\"><tr>\
+         <td style=\"border:1px solid {BORDER};border-radius:12px;padding:12px 14px;\
+         font-size:14px;line-height:1.55;color:{MUTED};text-align:left;{WRAP}\">\
+         {inner}</td></tr></table>"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,8 +267,119 @@ mod tests {
             paragraphs,
             action: ("Vérifier mon adresse", LINK),
             fine_print: &["Ce lien est valable 24 heures."],
+            notice: None,
             privacy_policy_url: PRIVACY,
         }
+    }
+
+    fn notice() -> EmailNotice {
+        EmailNotice {
+            heading: "Vos données (art. 14 RGPD)".into(),
+            sections: vec![
+                EmailNoticeSection {
+                    heading: None,
+                    paragraphs: vec!["Sans titre,\nsur deux lignes.".into()],
+                },
+                EmailNoticeSection {
+                    heading: Some("Ce que vous pouvez faire".into()),
+                    paragraphs: vec!["Premier <b>.".into(), "Second.".into()],
+                },
+            ],
+        }
+    }
+
+    /// RFC 3676 §4.3: the signature separator is "-- " with its trailing
+    /// space, alone on its line, so that clients can fold or strip what
+    /// follows.
+    #[test]
+    fn text_part_signature_separator_keeps_its_trailing_space() {
+        let c = render(&sample("T", &[]));
+        assert!(
+            c.text.contains("\n\n-- \nManage Our Home\n"),
+            "{:?}",
+            c.text
+        );
+    }
+
+    #[test]
+    fn text_part_shows_the_notice_after_the_fine_print_as_written() {
+        let n = notice();
+        let c = render(&Template {
+            notice: Some(&n),
+            ..sample("T", &["P."])
+        });
+        assert_eq!(
+            c.text,
+            "T\n\
+             \n\
+             P.\n\
+             \n\
+             Vérifier mon adresse :\n\
+             https://maison.example/verify-email?token=abc_-123\n\
+             \n\
+             Ce lien est valable 24 heures.\n\
+             \n\
+             -- Vos données (art. 14 RGPD) --\n\
+             \n\
+             Sans titre,\n\
+             sur deux lignes.\n\
+             \n\
+             -- Ce que vous pouvez faire --\n\
+             \n\
+             Premier <b>.\n\
+             \n\
+             Second.\n\
+             \n\
+             -- \n\
+             Manage Our Home\n\
+             Politique de confidentialité : https://maison.example/privacy-policy\n"
+        );
+    }
+
+    /// The box of the mock-up (`.rgpd`): bordered, muted, its heading and
+    /// sub-headings in bold in the text colour. The hard wraps of the text
+    /// part are joined into one line of HTML.
+    #[test]
+    fn html_part_boxes_the_notice_after_the_fine_print() {
+        let n = notice();
+        let h = render(&Template {
+            notice: Some(&n),
+            ..sample("T", &["P."])
+        })
+        .html;
+        assert!(h.contains(">Vos données (art. 14 RGPD)</"), "{h}");
+        assert!(h.contains(">Ce que vous pouvez faire</"), "{h}");
+        assert!(h.contains(">Sans titre, sur deux lignes.</p>"), "{h}");
+        assert!(h.contains(">Premier &lt;b&gt;.</p>"), "{h}");
+        assert!(!h.contains("<b>."), "{h}");
+        assert!(
+            h.contains(&format!("border:1px solid {BORDER};border-radius:12px")),
+            "{h}"
+        );
+        let at = |needle: &str| h.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        assert!(at("Ce lien est valable") < at("Vos données"));
+        assert!(at("Vos données") < at("Sans titre"));
+        assert!(at("Sans titre") < at("Ce que vous pouvez faire"));
+        assert!(at("Second.") < at("Politique de confidentialité</a>"));
+        // No notice, no box.
+        let plain = render(&sample("T", &["P."])).html;
+        assert!(
+            !plain.contains("border-radius:12px;padding:12px 14px"),
+            "{plain}"
+        );
+    }
+
+    /// A paragraph or fine print written with hard wraps reads as one line
+    /// of HTML too.
+    #[test]
+    fn html_part_joins_the_lines_of_a_paragraph() {
+        let h = render(&Template {
+            fine_print: &["Une\nseule ligne."],
+            ..sample("T", &["Deux\nlignes."])
+        })
+        .html;
+        assert!(h.contains(">Deux lignes.</p>"), "{h}");
+        assert!(h.contains(">Une seule ligne.</p>"), "{h}");
     }
 
     #[test]
@@ -229,7 +413,7 @@ mod tests {
              \n\
              Ce lien est valable 24 heures.\n\
              \n\
-             --\n\
+             -- \n\
              Manage Our Home\n\
              Politique de confidentialité : https://maison.example/privacy-policy\n"
         );
@@ -281,6 +465,7 @@ mod tests {
             paragraphs: &[typed],
             action: (typed, "https://maison.example/a?b=1&c=\"2\""),
             fine_print: &[typed],
+            notice: None,
             privacy_policy_url: PRIVACY,
         });
         assert!(!c.html.contains("<script"), "{}", c.html);

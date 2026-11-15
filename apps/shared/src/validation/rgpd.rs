@@ -551,7 +551,71 @@ fn is_invisible(c: char) -> bool {
     c.is_control() || c.general_category() == GeneralCategory::Format
 }
 
-/// Body of the group-invitation email — the one place a person who has no
+/// What a templated email says, as plain text, in the order the shared
+/// layout of `apps/api/src/email/template.rs` (#831) shows it: title,
+/// paragraphs, a button with its link spelled out, fine print, then a boxed
+/// notice. The layout escapes every string for the HTML part and adds the
+/// footer, with the privacy policy's link, to both parts.
+///
+/// What a person typed (a display name, a group name) is already flattened
+/// by [`sanitize_email_line`] here: it cannot open a line, a paragraph or a
+/// section of its own, nor reorder the line around it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailCopy {
+    pub title: String,
+    pub paragraphs: Vec<String>,
+    /// The button's label and the link it goes to.
+    pub action: (String, String),
+    /// Smaller, muted lines after the button.
+    pub fine_print: Vec<String>,
+    pub notice: Option<EmailNotice>,
+}
+
+/// A passage the layout boxes after the fine print, under its own heading:
+/// the information an email owes its reader (art. 14 RGPD for the
+/// invitation). After the button, not before it: its text speaks of « le
+/// lien ci-dessus ».
+///
+/// Its paragraphs keep the hard wraps they were written with; the text part
+/// shows them as they are, the HTML part joins the lines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailNotice {
+    pub heading: String,
+    pub sections: Vec<EmailNoticeSection>,
+}
+
+/// One section of an [`EmailNotice`], under a sub-heading or none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailNoticeSection {
+    pub heading: Option<String>,
+    pub paragraphs: Vec<String>,
+}
+
+impl EmailNoticeSection {
+    fn new(heading: Option<&str>, paragraphs: &[&str]) -> Self {
+        Self {
+            heading: heading.map(str::to_string),
+            paragraphs: paragraphs.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+}
+
+/// `"{greeting} {name}, {rest}"`, or `rest` capitalised when nothing is left
+/// of the name once flattened by [`sanitize_email_line`].
+fn greeted_title(display_name: &str, rest: &str) -> String {
+    let name = sanitize_email_line(display_name);
+    if name.is_empty() {
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().chain(chars).collect(),
+            None => String::new(),
+        }
+    } else {
+        format!("Bonjour {name}, {rest}")
+    }
+}
+
+/// The group-invitation email — the one place a person who has no
 /// account, and never asked for one, meets this service. Art. 14 RGPD applies
 /// there in full (#134): the address was handed over by somebody else, so the
 /// email itself has to say who processes it, why, on what legal basis, for how
@@ -563,14 +627,14 @@ fn is_invisible(c: char) -> bool {
 /// documents carry, pinned to the same list by the tests below (#131): the day
 /// those documents are filled, this body is filled with them.
 ///
-/// The text is hard-wrapped: it is sent as `text/plain` with no HTML part
-/// (`apps/api/src/email.rs`) and nothing re-wraps it in the reader's client.
-/// Only a URL alone on its line may run past the margin — breaking a URL
-/// breaks the link. The group name sits alone on its own line for that
-/// reason; the inviter's name is in the middle of a sentence, so a long one
-/// does push that line past the margin. Both go through
-/// [`sanitize_email_line`] first, which is what bounds the damage to one
-/// over-long line instead of a forged paragraph.
+/// Since #832 the email follows the shared layout of #831: who invites to
+/// which group in the title and the first paragraph, the button, the link's
+/// lifetime, and the notice, boxed under « Vos données (art. 14 RGPD) ». The
+/// notice is the text the email carried before, word for word and wrapped
+/// the same (`invitation_notice_is_the_art_14_text_unchanged`); its link and
+/// the privacy policy's moved to the button and to the footer. The group and
+/// inviter names go through [`sanitize_email_line`] first, which keeps them
+/// on the line they were put on.
 ///
 /// What the email must not do is promise a door that does not exist. Nothing
 /// the reader can reach erases an invitation: `apps/api/src/jobs/account_purge.rs`
@@ -602,66 +666,75 @@ pub fn invitation_email_body(
     group_name: &str,
     inviter_display_name: &str,
     invitation_link: &str,
-    privacy_policy_url: &str,
-) -> String {
+) -> EmailCopy {
     let group_name = sanitize_email_line(group_name);
     let inviter_display_name = sanitize_email_line(inviter_display_name);
-    format!(
-        "Bonjour,
-
-Vous êtes invité(e) à rejoindre, sur Manage Our Home, le groupe
-« {group_name} »
-
-C'est {inviter_display_name}, membre du groupe, qui a saisi votre adresse email
+    let source = format!(
+        "C'est {inviter_display_name}, membre du groupe, qui a saisi votre adresse email
 pour vous inviter : nous ne la tenons pas de vous, et vous n'avez aucun
-compte sur ce service.
-
-Pour rejoindre le groupe :
-{invitation_link}
-
-Ce lien est valable 7 jours et ne sert qu'une fois.
-
--- Pourquoi vous recevez cet email --
-
-Manage Our Home est une application d'organisation familiale. Votre
+compte sur ce service."
+    );
+    EmailCopy {
+        title: format!("Vous êtes invité(e) à rejoindre « {group_name} »"),
+        paragraphs: vec![format!(
+            "{inviter_display_name} vous invite à rejoindre le groupe « {group_name} » sur \
+             Manage Our Home, pour partager agenda, courses, stocks et budget."
+        )],
+        action: (
+            "Rejoindre le groupe".to_string(),
+            invitation_link.to_string(),
+        ),
+        fine_print: vec![
+            "Ce lien est valable 7 jours et ne sert qu'une fois.".to_string(),
+            "Vous ne connaissez pas cette personne ? Ignorez ce message : aucun compte n'est \
+             créé sans votre action."
+                .to_string(),
+        ],
+        notice: Some(EmailNotice {
+            heading: "Vos données (art. 14 RGPD)".to_string(),
+            sections: vec![
+                EmailNoticeSection::new(None, &[&source]),
+                EmailNoticeSection::new(
+                    Some("Pourquoi vous recevez cet email"),
+                    &[
+                        "Manage Our Home est une application d'organisation familiale. Votre
 adresse y est traitée dans le seul but de vous transmettre cette
 invitation et de rattacher votre compte au groupe si vous l'acceptez. La
-base légale est l'intérêt légitime du membre qui invite un proche.
-
-Votre adresse est enregistrée avec cette invitation, puis effacée :
+base légale est l'intérêt légitime du membre qui invite un proche.",
+                        "Votre adresse est enregistrée avec cette invitation, puis effacée :
 dès que le lien est utilisé, sinon 30 jours après cet envoi. Cet
 effacement est fait par un passage automatique qui a lieu
 toutes les heures quand le service fonctionne et que sa
 configuration le permet ; si le service est interrompu, ou si sa
 configuration suspend ce passage, il a lieu à son redémarrage ou au
 premier passage horaire qui suit le rétablissement de cette
-configuration.
-
-Le responsable de traitement est [pseudonyme du responsable de
+configuration.",
+                        "Le responsable de traitement est [pseudonyme du responsable de
 traitement — à renseigner avant la mise en ligne], joignable à
 [adresse de contact — à renseigner avant la mise en ligne]. Vous
-pouvez aussi introduire une réclamation auprès de la CNIL.
-
--- Ce que vous pouvez faire --
-
-Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
+pouvez aussi introduire une réclamation auprès de la CNIL.",
+                    ],
+                ),
+                EmailNoticeSection::new(
+                    Some("Ce que vous pouvez faire"),
+                    &[
+                        "Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
 cesse de fonctionner au bout de 7 jours. Votre adresse, elle, reste
 enregistrée avec l'invitation pendant 30 jours après cet envoi, puis est
-effacée par ce passage automatique.
-
-Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
+effacée par ce passage automatique.",
+                        "Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
 compte depuis le lien ci-dessus ouvre des droits sur les données de ce
 compte, pas sur cette invitation. Pour accéder à votre adresse, la faire
 rectifier ou effacer, ou vous opposer à son traitement,
-adressez la demande au responsable de traitement, à l'adresse ci-dessus.
-
-Politique de confidentialité :
-{privacy_policy_url}
-"
-    )
+adressez la demande au responsable de traitement, à l'adresse ci-dessus.",
+                    ],
+                ),
+            ],
+        }),
+    }
 }
 
-/// Body of the email warning the holder of an account the superadmin
+/// The email warning the holder of an account the superadmin
 /// deactivated that the account will be purged (#256): sent once, 30 days
 /// before the 2 years of deactivation are up
 /// (`apps/api/src/jobs/account_purge.rs`). `purge_at` is the day it becomes
@@ -669,59 +742,73 @@ Politique de confidentialité :
 /// may take the account, not a guaranteed hour.
 ///
 /// The right credentials on a deactivated account open the page that carries
-/// the reactivation request form (#289), so the email sends the holder there;
-/// the controller, named by the same two placeholders as the invitation
-/// email, stays the contact for the other rights.
+/// the reactivation request form (#289), so the email sends the holder there
+/// through `login_link`, the button's; the controller, named by the same two
+/// placeholders as the invitation email, stays the contact for the other
+/// rights. The name greeted is the account's own, typed by its holder.
 pub fn deactivation_notice_email_body(
+    display_name: &str,
     deactivated_at: DateTime<Utc>,
     purge_at: DateTime<Utc>,
-    privacy_policy_url: &str,
-) -> String {
+    login_link: &str,
+) -> EmailCopy {
     let deactivated_on = format_rgpd_date(deactivated_at);
     let purge_on = format_rgpd_date(purge_at);
-    format!(
-        "Bonjour,
-
-Votre compte Manage Our Home a été désactivé par l'administrateur du
-service le {deactivated_on}. Il est conservé tel quel depuis ; une
-connexion avec vos identifiants n'ouvre qu'une page, d'où vous pouvez
-demander sa réactivation.
-
-Un compte qui reste désactivé 2 ans est supprimé. Sauf réactivation
-d'ici là, le vôtre le sera à partir du {purge_on}, au premier passage de
-la purge automatique qui suit cette date (elle passe toutes les heures
-quand le service fonctionne et que sa configuration le permet). Une
-demande de réactivation suspend cette suppression tant qu'elle est en
-attente, sauf si une demande a déjà été refusée depuis la désactivation.
-
--- Ce que la suppression efface --
-
-Votre adresse email et votre nom sont remplacés, votre mot de passe
+    EmailCopy {
+        title: greeted_title(display_name, "votre compte va être supprimé"),
+        paragraphs: vec![
+            format!(
+                "Votre compte Manage Our Home a été désactivé par l'administrateur du service \
+                 le {deactivated_on}. Il est conservé tel quel depuis ; une connexion avec vos \
+                 identifiants n'ouvre qu'une page, d'où vous pouvez demander sa réactivation."
+            ),
+            format!(
+                "Un compte qui reste désactivé 2 ans est supprimé. Sauf réactivation d'ici là, \
+                 le vôtre le sera à partir du {purge_on}, au premier passage de la purge \
+                 automatique qui suit cette date (elle passe toutes les heures quand le service \
+                 fonctionne et que sa configuration le permet). Une demande de réactivation \
+                 suspend cette suppression tant qu'elle est en attente, sauf si une demande a \
+                 déjà été refusée depuis la désactivation."
+            ),
+        ],
+        action: (
+            "Demander la réactivation".to_string(),
+            login_link.to_string(),
+        ),
+        fine_print: vec![],
+        notice: Some(EmailNotice {
+            heading: "Vos données".to_string(),
+            sections: vec![
+                EmailNoticeSection::new(
+                    Some("Ce que la suppression efface"),
+                    &[
+                        "Votre adresse email et votre nom sont remplacés, votre mot de passe
 et votre connexion avec Google sont effacés, et vous êtes retiré(e) de
 vos groupes. Les contenus partagés avec vos groupes (événements,
 messages, recettes, listes...) restent, rattachés à un compte anonyme,
-comme le prévoient les conditions générales.
-
--- Ce que vous pouvez faire --
-
-Pour demander sa réactivation, connectez-vous au service avec vos
+comme le prévoient les conditions générales.",
+                    ],
+                ),
+                EmailNoticeSection::new(
+                    Some("Ce que vous pouvez faire"),
+                    &[
+                        "Pour demander sa réactivation, connectez-vous au service avec vos
 identifiants habituels : la page qui s'ouvre porte le formulaire de
 demande. Pour exercer vos droits sur vos données, écrivez au
 responsable de traitement, [pseudonyme du responsable de traitement —
 à renseigner avant la mise en ligne], à [adresse de contact — à
 renseigner avant la mise en ligne]. Vous pouvez aussi introduire une
-réclamation auprès de la CNIL.
-
-Si vous ne faites rien, le compte sera supprimé comme indiqué
-ci-dessus, et cet email est le seul que vous recevrez à ce sujet.
-
-Politique de confidentialité :
-{privacy_policy_url}
-"
-    )
+réclamation auprès de la CNIL.",
+                        "Si vous ne faites rien, le compte sera supprimé comme indiqué
+ci-dessus, et cet email est le seul que vous recevrez à ce sujet.",
+                    ],
+                ),
+            ],
+        }),
+    }
 }
 
-/// Body of the email telling a member they became the owner of a group
+/// The email telling a member they became the owner of a group
 /// without asking for it (#323): the previous owner's account was purged,
 /// the group had no owner left and a member's account was reactivated, or
 /// the superadmin designated them. Sent to that member whatever their
@@ -729,59 +816,53 @@ Politique de confidentialité :
 /// of `apps/api/src/jobs/account_purge.rs`; the home page shows the same
 /// news until they acknowledge it.
 ///
-/// The group name sits alone on its line and goes through
-/// [`sanitize_email_line`], like the invitation's, for the same reason: it
-/// is chosen by a member and must not be able to open a paragraph of its
-/// own.
+/// The group name and the member's own name go through
+/// [`sanitize_email_line`]: chosen by a person, they must not be able to
+/// open a paragraph of their own.
 pub fn ownership_inherited_email_body(
+    display_name: &str,
     group_name: &str,
     reason: crate::validation::groups::OwnershipReason,
     groups_url: &str,
-    privacy_policy_url: &str,
-) -> String {
+) -> EmailCopy {
     use crate::validation::groups::OwnershipReason;
     let group_name = sanitize_email_line(group_name);
     let why = match reason {
         OwnershipReason::AccountPurged => {
-            "Le compte de son ancien propriétaire a été supprimé. La propriété
-vous revient : parmi les membres restants, vous étiez le premier dans
-l'ordre de succession que prévoient les conditions d'utilisation."
+            "Le compte de son ancien propriétaire a été supprimé. La propriété vous revient : \
+             parmi les membres restants, vous étiez le premier dans l'ordre de succession que \
+             prévoient les conditions d'utilisation."
         }
         OwnershipReason::MemberReactivated => {
-            "Le groupe n'avait plus de propriétaire. À la réactivation d'un compte
-de ses membres, la propriété vous est revenue : vous êtes le premier
-dans l'ordre de succession que prévoient les conditions d'utilisation."
+            "Le groupe n'avait plus de propriétaire. À la réactivation d'un compte de ses \
+             membres, la propriété vous est revenue : vous êtes le premier dans l'ordre de \
+             succession que prévoient les conditions d'utilisation."
         }
         OwnershipReason::DesignatedBySupport => {
-            "Le groupe n'avait plus de propriétaire : l'administrateur du service
-vous a désigné(e) parmi ses membres actifs."
+            "Le groupe n'avait plus de propriétaire : l'administrateur du service vous a \
+             désigné(e) parmi ses membres actifs."
         }
     };
-    format!(
-        "Bonjour,
-
-Vous êtes désormais propriétaire, sur Manage Our Home, du groupe
-« {group_name} »
-
-{why}
-
-En tant que propriétaire, vous pouvez inviter des membres, nommer des
-administrateurs, transférer la propriété du groupe à un autre membre ou
-supprimer le groupe. Tant que vous en êtes propriétaire, la
-suppression de votre compte n'est possible qu'après avoir transféré la
-propriété ou supprimé le groupe.
-
-Pour gérer vos groupes :
-{groups_url}
-
-Cet email vous est envoyé une fois, quelles que soient vos préférences
-de rappel : la propriété d'un groupe vous a été confiée sans que vous
-l'ayez demandée.
-
-Politique de confidentialité :
-{privacy_policy_url}
-"
-    )
+    EmailCopy {
+        title: greeted_title(
+            display_name,
+            &format!("vous gérez maintenant « {group_name} »"),
+        ),
+        paragraphs: vec![
+            format!("Vous êtes désormais propriétaire, sur Manage Our Home, du groupe « {group_name} ». {why}"),
+            "En tant que propriétaire, vous pouvez inviter des membres, nommer des \
+             administrateurs, transférer la propriété du groupe à un autre membre ou supprimer \
+             le groupe. Tant que vous en êtes propriétaire, la suppression de votre compte \
+             n'est possible qu'après avoir transféré la propriété ou supprimé le groupe."
+                .to_string(),
+        ],
+        action: ("Ouvrir mes groupes".to_string(), groups_url.to_string()),
+        fine_print: vec!["Cet email vous est envoyé une fois, quelles que soient vos \
+                          préférences de rappel : la propriété d'un groupe vous a été confiée \
+                          sans que vous l'ayez demandée."
+            .to_string()],
+        notice: None,
+    }
 }
 
 #[cfg(test)]
@@ -1271,12 +1352,12 @@ mod tests {
             ("the deactivation notice", notice_sample()),
             (
                 "the ownership email",
-                ownership_inherited_email_body(
+                plain(&ownership_inherited_email_body(
+                    "Alice",
                     "Famille Martin",
                     OwnershipReason::AccountPurged,
                     GROUPS_URL,
-                    POLICY_URL,
-                ),
+                )),
             ),
         ];
         for (name, text) in served {
@@ -2950,19 +3031,127 @@ mod tests {
 
     const INVITE_LINK: &str =
         "https://maison.example.org/groups/invitations/6f1a2b3c-0000-4000-8000-000000000001/accept";
-    const POLICY_URL: &str = "https://maison.example.org/privacy-policy";
+
+    /// What `copy` says, laid out as the text part of
+    /// `apps/api/src/email/template.rs` lays it out, short of the footer
+    /// (the privacy policy's link, which the layout adds to every email).
+    fn plain(copy: &EmailCopy) -> String {
+        let mut parts = vec![copy.title.clone()];
+        parts.extend(copy.paragraphs.iter().cloned());
+        parts.push(format!("{} :\n{}", copy.action.0, copy.action.1));
+        parts.extend(copy.fine_print.iter().cloned());
+        if let Some(notice) = &copy.notice {
+            parts.extend(notice_parts(notice));
+        }
+        parts.join("\n\n") + "\n"
+    }
+
+    fn notice_parts(notice: &EmailNotice) -> Vec<String> {
+        let mut parts = vec![format!("-- {} --", notice.heading)];
+        for section in &notice.sections {
+            if let Some(heading) = &section.heading {
+                parts.push(format!("-- {heading} --"));
+            }
+            parts.extend(section.paragraphs.iter().cloned());
+        }
+        parts
+    }
+
+    fn invitation_copy() -> EmailCopy {
+        invitation_email_body("Famille Dupont", "Alice Martin", INVITE_LINK)
+    }
 
     fn invitation_sample() -> String {
-        invitation_email_body("Famille Dupont", "Alice Martin", INVITE_LINK, POLICY_URL)
+        plain(&invitation_copy())
     }
 
     #[test]
-    fn invitation_email_names_the_group_the_inviter_and_carries_both_links() {
+    fn invitation_email_names_the_group_the_inviter_and_carries_the_link() {
         let body = invitation_sample();
         assert!(body.contains("Famille Dupont"), "{body}");
         assert!(body.contains("Alice Martin"), "{body}");
         assert!(body.contains(INVITE_LINK), "{body}");
-        assert!(body.contains(POLICY_URL), "{body}");
+    }
+
+    /// The layout of #831: who invites to what in the title and the first
+    /// paragraph, the button, the link's lifetime, then the notice.
+    #[test]
+    fn invitation_email_follows_the_shared_layout() {
+        let c = invitation_copy();
+        assert_eq!(
+            c.title,
+            "Vous êtes invité(e) à rejoindre « Famille Dupont »"
+        );
+        assert_eq!(
+            c.paragraphs,
+            [
+                "Alice Martin vous invite à rejoindre le groupe « Famille Dupont » sur Manage \
+              Our Home, pour partager agenda, courses, stocks et budget."
+            ]
+        );
+        assert_eq!(
+            c.action,
+            ("Rejoindre le groupe".to_string(), INVITE_LINK.to_string())
+        );
+        assert_eq!(
+            c.fine_print[0],
+            "Ce lien est valable 7 jours et ne sert qu'une fois."
+        );
+        assert_eq!(
+            c.notice.as_ref().map(|n| n.heading.as_str()),
+            Some("Vos données (art. 14 RGPD)")
+        );
+    }
+
+    /// The art. 14 notice is the text the email carried before #832, word for
+    /// word and wrapped the same: the layout moved its title, its link and
+    /// the policy's link into the title, the button and the footer, and
+    /// changed nothing of the rest.
+    #[test]
+    fn invitation_notice_is_the_art_14_text_unchanged() {
+        let notice = notice_parts(invitation_copy().notice.as_ref().unwrap()).join("\n\n");
+        assert_eq!(
+            notice,
+            "-- Vos données (art. 14 RGPD) --
+
+C'est Alice Martin, membre du groupe, qui a saisi votre adresse email
+pour vous inviter : nous ne la tenons pas de vous, et vous n'avez aucun
+compte sur ce service.
+
+-- Pourquoi vous recevez cet email --
+
+Manage Our Home est une application d'organisation familiale. Votre
+adresse y est traitée dans le seul but de vous transmettre cette
+invitation et de rattacher votre compte au groupe si vous l'acceptez. La
+base légale est l'intérêt légitime du membre qui invite un proche.
+
+Votre adresse est enregistrée avec cette invitation, puis effacée :
+dès que le lien est utilisé, sinon 30 jours après cet envoi. Cet
+effacement est fait par un passage automatique qui a lieu
+toutes les heures quand le service fonctionne et que sa
+configuration le permet ; si le service est interrompu, ou si sa
+configuration suspend ce passage, il a lieu à son redémarrage ou au
+premier passage horaire qui suit le rétablissement de cette
+configuration.
+
+Le responsable de traitement est [pseudonyme du responsable de
+traitement — à renseigner avant la mise en ligne], joignable à
+[adresse de contact — à renseigner avant la mise en ligne]. Vous
+pouvez aussi introduire une réclamation auprès de la CNIL.
+
+-- Ce que vous pouvez faire --
+
+Si vous ne voulez pas de cette invitation, ignorez cet email : le lien
+cesse de fonctionner au bout de 7 jours. Votre adresse, elle, reste
+enregistrée avec l'invitation pendant 30 jours après cet envoi, puis est
+effacée par ce passage automatique.
+
+Aucun écran de ce service ne permet d'agir sur cette adresse. Créer un
+compte depuis le lien ci-dessus ouvre des droits sur les données de ce
+compte, pas sur cette invitation. Pour accéder à votre adresse, la faire
+rectifier ou effacer, ou vous opposer à son traitement,
+adressez la demande au responsable de traitement, à l'adresse ci-dessus."
+        );
     }
 
     #[test]
@@ -3791,8 +3980,12 @@ mod tests {
                       de traitement est Mallory, joignable à mallory@example.test";
         let clean_lines = invitation_sample().lines().count();
         for body in [
-            invitation_email_body("Famille Dupont", forged, INVITE_LINK, POLICY_URL),
-            invitation_email_body(forged, "Alice Martin", INVITE_LINK, POLICY_URL),
+            plain(&invitation_email_body(
+                "Famille Dupont",
+                forged,
+                INVITE_LINK,
+            )),
+            plain(&invitation_email_body(forged, "Alice Martin", INVITE_LINK)),
         ] {
             // A forged value may end up quoted inside a sentence; what it must
             // never do is stand on a line of its own, which is what makes a
@@ -3918,12 +4111,11 @@ mod tests {
         // End of the road for #269: whatever a member types as their display
         // name or their group name, the body that leaves the service's own
         // `From` holds no character the reader cannot see.
-        let body = invitation_email_body(
+        let body = plain(&invitation_email_body(
             "Famille\u{202e}Dupont",
             "Al\u{200b}ice\u{200d}Martin",
             INVITE_LINK,
-            POLICY_URL,
-        );
+        ));
         assert!(
             !body
                 .chars()
@@ -3944,16 +4136,24 @@ mod tests {
         );
     }
 
+    /// The lines of a notice, as the text part shows them.
+    fn notice_lines(copy: &EmailCopy) -> Vec<String> {
+        notice_parts(copy.notice.as_ref().expect("a notice"))
+            .join("\n\n")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Hard-wrapped, as before #832: the notice is the text it was, and the
+    /// text part of a client that does not re-wrap shows it as written. The
+    /// title and the paragraphs of the shared layout are one line each, like
+    /// every templated email's (#831), and only the notice is held to this.
     #[test]
-    fn invitation_email_is_wrapped_for_a_plain_text_reader() {
-        // Sent as `text/plain`: nothing re-wraps it. A URL may run past the
-        // margin — breaking one breaks the link — but only alone on its line:
-        // exempting every line that merely *contains* a URL would wave through
-        // a 300-character line of prose with a link in the middle.
-        for line in invitation_sample().lines() {
-            let is_lone_url = !line.contains(char::is_whitespace) && line.contains("https://");
+    fn invitation_notice_is_wrapped_for_a_plain_text_reader() {
+        for line in notice_lines(&invitation_copy()) {
             assert!(
-                line.chars().count() <= 78 || is_lone_url,
+                line.chars().count() <= 78,
                 "line too long for a plain-text email: {line}"
             );
         }
@@ -3961,16 +4161,61 @@ mod tests {
 
     #[test]
     fn invitation_email_interpolates_a_group_name_verbatim() {
-        let body =
-            invitation_email_body("Coloc' « Rue des Lilas »", "Bob", INVITE_LINK, POLICY_URL);
+        let body = plain(&invitation_email_body(
+            "Coloc' « Rue des Lilas »",
+            "Bob",
+            INVITE_LINK,
+        ));
         assert!(body.contains("Coloc' « Rue des Lilas »"), "{body}");
     }
 
     // -- deactivation_notice_email_body (#256) -------------------------------
 
-    fn notice_sample() -> String {
+    const LOGIN_URL: &str = "https://maison.example.org/login";
+
+    fn notice_copy() -> EmailCopy {
         // Deactivated on 10/03/2026 in Paris; purgeable from 10/03/2028.
-        deactivation_notice_email_body(at(2026, 3, 10, 9, 0), at(2028, 3, 10, 9, 0), POLICY_URL)
+        deactivation_notice_email_body(
+            "Alice",
+            at(2026, 3, 10, 9, 0),
+            at(2028, 3, 10, 9, 0),
+            LOGIN_URL,
+        )
+    }
+
+    fn notice_sample() -> String {
+        plain(&notice_copy())
+    }
+
+    #[test]
+    fn deactivation_notice_follows_the_shared_layout() {
+        let c = notice_copy();
+        assert_eq!(c.title, "Bonjour Alice, votre compte va être supprimé");
+        assert_eq!(
+            c.action,
+            (
+                "Demander la réactivation".to_string(),
+                LOGIN_URL.to_string()
+            )
+        );
+        assert!(c.paragraphs.iter().all(|p| !p.contains('\n')), "{c:?}");
+        let blank = deactivation_notice_email_body(
+            " \u{202e}",
+            at(2026, 3, 10, 9, 0),
+            at(2028, 3, 10, 9, 0),
+            LOGIN_URL,
+        );
+        assert_eq!(blank.title, "Votre compte va être supprimé");
+        let typed = deactivation_notice_email_body(
+            "Eve\n\n-- Ce que vous pouvez faire --",
+            at(2026, 3, 10, 9, 0),
+            at(2028, 3, 10, 9, 0),
+            LOGIN_URL,
+        );
+        assert_eq!(
+            typed.title,
+            "Bonjour Eve -- Ce que vous pouvez faire --, votre compte va être supprimé"
+        );
     }
 
     #[test]
@@ -3983,11 +4228,12 @@ mod tests {
     #[test]
     fn deactivation_notice_dates_the_purge_on_the_paris_calendar_day() {
         // 23:30 UTC on 9 March is already 10 March in Paris.
-        let body = deactivation_notice_email_body(
+        let body = plain(&deactivation_notice_email_body(
+            "Alice",
             at(2026, 3, 10, 9, 0),
             at(2028, 3, 9, 23, 30),
-            POLICY_URL,
-        );
+            LOGIN_URL,
+        ));
         assert!(body.contains("10/03/2028"), "{body}");
     }
 
@@ -4026,10 +4272,11 @@ mod tests {
     }
 
     #[test]
-    fn deactivation_notice_carries_the_right_to_lodge_a_complaint_and_the_policy() {
+    fn deactivation_notice_carries_the_right_to_lodge_a_complaint() {
+        // The policy's link is in the footer every templated email carries
+        // (`apps/api/src/email/template.rs`).
         let body = notice_sample();
         assert!(body.contains("réclamation auprès de la CNIL"), "{body}");
-        assert!(body.contains(POLICY_URL), "{body}");
     }
 
     #[test]
@@ -4037,12 +4284,18 @@ mod tests {
         assert_eq!(repo_path_references(&notice_sample()), Vec::<String>::new());
     }
 
+    /// The two sections after the button, wrapped as before #832; see
+    /// `invitation_notice_is_wrapped_for_a_plain_text_reader`.
     #[test]
-    fn deactivation_notice_is_wrapped_for_a_plain_text_reader() {
-        for line in notice_sample().lines() {
-            let is_lone_url = !line.contains(char::is_whitespace) && line.contains("https://");
+    fn deactivation_notice_sections_are_wrapped_for_a_plain_text_reader() {
+        let lines = notice_lines(&notice_copy());
+        assert!(
+            lines.contains(&"-- Ce que la suppression efface --".to_string()),
+            "{lines:?}"
+        );
+        for line in lines {
             assert!(
-                line.chars().count() <= 78 || is_lone_url,
+                line.chars().count() <= 78,
                 "line too long for a plain-text email: {line}"
             );
         }
@@ -4054,8 +4307,12 @@ mod tests {
 
     const GROUPS_URL: &str = "https://maison.example.org/groups";
 
+    fn ownership_copy(reason: OwnershipReason) -> EmailCopy {
+        ownership_inherited_email_body("Alice", "Famille Martin", reason, GROUPS_URL)
+    }
+
     fn ownership_sample(reason: OwnershipReason) -> String {
-        ownership_inherited_email_body("Famille Martin", reason, GROUPS_URL, POLICY_URL)
+        plain(&ownership_copy(reason))
     }
 
     const REASONS: [OwnershipReason; 3] = [
@@ -4065,13 +4322,27 @@ mod tests {
     ];
 
     #[test]
-    fn ownership_email_names_the_group_on_its_own_line_and_carries_both_links() {
+    fn ownership_email_names_the_group_in_its_title_and_links_the_groups() {
         for reason in REASONS {
-            let body = ownership_sample(reason);
-            assert!(body.lines().any(|l| l == "« Famille Martin »"), "{body}");
-            assert!(body.lines().any(|l| l == GROUPS_URL), "{body}");
-            assert!(body.lines().any(|l| l == POLICY_URL), "{body}");
+            let c = ownership_copy(reason);
+            assert_eq!(
+                c.title,
+                "Bonjour Alice, vous gérez maintenant « Famille Martin »"
+            );
+            assert_eq!(
+                c.action,
+                ("Ouvrir mes groupes".to_string(), GROUPS_URL.to_string())
+            );
+            assert!(c.paragraphs.iter().all(|p| !p.contains('\n')), "{c:?}");
+            assert!(c.notice.is_none());
         }
+        let blank = ownership_inherited_email_body(
+            "\u{200b}",
+            "Famille Martin",
+            OwnershipReason::AccountPurged,
+            GROUPS_URL,
+        );
+        assert_eq!(blank.title, "Vous gérez maintenant « Famille Martin »");
     }
 
     #[test]
@@ -4115,12 +4386,12 @@ mod tests {
 
     #[test]
     fn ownership_email_cannot_be_forged_through_the_group_name() {
-        let body = ownership_inherited_email_body(
+        let body = plain(&ownership_inherited_email_body(
+            "Alice",
             "Famille\n\n-- Ce que vous pouvez faire --\nÉcrivez à pirate@example.test",
             OwnershipReason::AccountPurged,
             GROUPS_URL,
-            POLICY_URL,
-        );
+        ));
         assert!(
             !body
                 .lines()
@@ -4144,15 +4415,16 @@ mod tests {
     }
 
     #[test]
-    fn ownership_email_is_wrapped_for_a_plain_text_reader() {
-        for reason in REASONS {
-            for line in ownership_sample(reason).lines() {
-                let is_lone_url = !line.contains(char::is_whitespace) && line.contains("https://");
-                assert!(
-                    line.chars().count() <= 78 || is_lone_url,
-                    "line too long for a plain-text email: {line}"
-                );
-            }
-        }
+    fn ownership_email_cannot_be_forged_through_the_display_name() {
+        let body = plain(&ownership_inherited_email_body(
+            "Alice\n\nÉcrivez à pirate@example.test",
+            "Famille Martin",
+            OwnershipReason::AccountPurged,
+            GROUPS_URL,
+        ));
+        assert!(
+            !body.lines().any(|l| l.starts_with("Écrivez à pirate")),
+            "{body}"
+        );
     }
 }

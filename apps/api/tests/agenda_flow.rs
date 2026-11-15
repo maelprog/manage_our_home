@@ -2206,12 +2206,19 @@ async fn renaming_an_event_leaves_its_reminders_and_they_carry_the_new_title(db:
     .await;
     assert_eq!(notifications_in(&db, event, "pending").await, before);
 
-    let send = |_: String, _: String, _: String| async { Ok::<(), anyhow::Error>(()) };
+    let send = |_: String, _: String, _: manage_our_home::email::EmailContent| async {
+        Ok::<(), anyhow::Error>(())
+    };
     let send_push =
         |_: String, _: i64| async { manage_our_home::notifications::push::PushOutcome::Delivered };
-    manage_our_home::jobs::scheduled_notifications::send_due_notifications(&db, send, send_push)
-        .await
-        .unwrap();
+    manage_our_home::jobs::scheduled_notifications::send_due_notifications(
+        &db,
+        "https://maison.example",
+        send,
+        send_push,
+    )
+    .await
+    .unwrap();
     let res = call(&router, Method::GET, "/notifications", Some(&cookie), None).await;
     assert_status(&res, StatusCode::OK);
     let body = json_body(res).await;

@@ -356,6 +356,7 @@ async fn main() -> anyhow::Result<()> {
         state.admin_db.clone(),
         email,
         state.push.clone(),
+        state.frontend_base_url.clone(),
     ));
     // On the admin pool: `stock_items` is under a forced RLS policy, and
     // the pass refuses to run without BYPASSRLS (#534).

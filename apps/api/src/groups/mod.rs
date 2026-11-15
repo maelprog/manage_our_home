@@ -823,10 +823,10 @@ pub async fn create_invitation(
         let privacy_policy_url = format!("{}/privacy-policy", state.frontend_base_url);
         if let Err(e) = state
             .email
-            .send(
+            .send_html(
                 email,
                 "Invitation à rejoindre un groupe",
-                crate::email::EmailSender::invitation_body(
+                crate::email::EmailSender::invitation_email(
                     &link,
                     &group_name,
                     &inviter_display_name,

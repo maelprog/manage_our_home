@@ -730,14 +730,14 @@ async fn the_purge_warning_goes_once_to_the_deactivated_account(db: PgPool) {
     deactivate_since(&db, leaving, "2 years -29 days", None).await;
 
     let sent = std::sync::Mutex::new(Vec::<(String, String, String)>::new());
-    let record = |to: String, subject: String, body: String| {
-        sent.lock().unwrap().push((to, subject, body));
+    let record = |to: String, subject: String, content: manage_our_home::email::EmailContent| {
+        sent.lock().unwrap().push((to, subject, content.text));
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_deactivation_notices(&db, POLICY_URL, &record)
+    send_deactivation_notices(&db, BASE_URL, &record)
         .await
         .unwrap();
-    send_deactivation_notices(&db, POLICY_URL, &record)
+    send_deactivation_notices(&db, BASE_URL, &record)
         .await
         .unwrap();
 
@@ -761,8 +761,10 @@ async fn the_purge_warning_goes_once_to_the_deactivated_account(db: PgPool) {
     // The relay refuses: nothing is stamped, the next pass tries again.
     let refused = insert_user(&db, "refused@example.test", None).await;
     deactivate_since(&db, refused, "2 years -29 days", None).await;
-    let refuse = |_: String, _: String, _: String| async { Err(anyhow::anyhow!("relay down")) };
-    send_deactivation_notices(&db, POLICY_URL, refuse)
+    let refuse = |_: String, _: String, _: manage_our_home::email::EmailContent| async {
+        Err(anyhow::anyhow!("relay down"))
+    };
+    send_deactivation_notices(&db, BASE_URL, refuse)
         .await
         .unwrap();
     let noticed: bool = sqlx::query_scalar(
@@ -775,6 +777,7 @@ async fn the_purge_warning_goes_once_to_the_deactivated_account(db: PgPool) {
     assert!(!noticed);
 }
 
+const BASE_URL: &str = "https://maison.example.org";
 const POLICY_URL: &str = "https://maison.example.org/privacy-policy";
 
 /// #323 (controller's decision of 2026-10-04): a group whose only member

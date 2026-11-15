@@ -106,11 +106,13 @@ async fn no_push(_endpoint: String, _ttl_secs: i64) -> PushOutcome {
 /// One pass, recording every email instead of sending it.
 async fn pass(db: &PgPool) -> Vec<(String, String)> {
     let sent = Mutex::new(Vec::<(String, String)>::new());
-    let record = |to: String, subject: String, _body: String| {
+    let record = |to: String, subject: String, _body: manage_our_home::email::EmailContent| {
         sent.lock().unwrap().push((to, subject));
         async { Ok::<(), anyhow::Error>(()) }
     };
-    send_due_notifications(db, &record, no_push).await.unwrap();
+    send_due_notifications(db, "https://maison.example", &record, no_push)
+        .await
+        .unwrap();
     sent.into_inner().unwrap()
 }
 
@@ -225,11 +227,11 @@ async fn the_pass_refuses_a_role_that_does_not_bypass_rls(db: PgPool) {
     let (role, app_db) = prescribed_role_pool(&db).await;
 
     let sent = Mutex::new(Vec::<String>::new());
-    let record = |to: String, _subject: String, _body: String| {
+    let record = |to: String, _subject: String, _body: manage_our_home::email::EmailContent| {
         sent.lock().unwrap().push(to);
         async { Ok::<(), anyhow::Error>(()) }
     };
-    let result = send_due_notifications(&app_db, &record, no_push).await;
+    let result = send_due_notifications(&app_db, "https://maison.example", &record, no_push).await;
     drop_prescribed_role(&db, app_db, &role).await;
 
     // The whole chain names this pass's tables, not another guard's.
@@ -257,7 +259,7 @@ async fn a_creator_deactivated_during_the_pass_gets_no_reminder(db: PgPool) {
     // Whichever creator is sent to first, the other is deactivated before
     // the pass reaches its reminder.
     let sent = Mutex::new(Vec::<String>::new());
-    let record = |to: String, _subject: String, _body: String| {
+    let record = |to: String, _subject: String, _body: manage_our_home::email::EmailContent| {
         let other = if to == "first@example.test" {
             second
         } else {
@@ -273,7 +275,9 @@ async fn a_creator_deactivated_during_the_pass_gets_no_reminder(db: PgPool) {
             Ok::<(), anyhow::Error>(())
         }
     };
-    send_due_notifications(&db, &record, no_push).await.unwrap();
+    send_due_notifications(&db, "https://maison.example", &record, no_push)
+        .await
+        .unwrap();
     let sent = sent.into_inner().unwrap();
 
     assert_eq!(sent.len(), 1, "{sent:?}");

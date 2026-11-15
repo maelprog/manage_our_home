@@ -215,7 +215,7 @@ async fn due_reminder(db: &PgPool, by: Uuid, starts_at: DateTime<Utc>) -> (Uuid,
 /// One reminder pass; every email answers `email_ok`, every push is
 /// delivered.
 async fn pass(db: &PgPool, email_ok: bool) {
-    let send = move |_to: String, _subject: String, _body: String| async move {
+    let send = move |_to: String, _subject: String, _body: manage_our_home::email::EmailContent| async move {
         if email_ok {
             Ok(())
         } else {
@@ -223,7 +223,9 @@ async fn pass(db: &PgPool, email_ok: bool) {
         }
     };
     let send_push = |_endpoint: String, _ttl: i64| async { PushOutcome::Delivered };
-    send_due_notifications(db, send, send_push).await.unwrap();
+    send_due_notifications(db, "https://maison.example", send, send_push)
+        .await
+        .unwrap();
 }
 
 /// The acceptance criterion: a member on notifications with no device

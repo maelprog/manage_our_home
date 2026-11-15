@@ -112,7 +112,7 @@ async fn a_reminder_pass_started_during_another_sends_nothing(db: PgPool) {
     let entered = Notify::new();
     let gate = Semaphore::new(0);
 
-    let held = |to: String, _subject: String, _body: String| {
+    let held = |to: String, _subject: String, _body: manage_our_home::email::EmailContent| {
         emails.lock().unwrap().push(to);
         entered.notify_one();
         let gate = &gate;
@@ -121,17 +121,20 @@ async fn a_reminder_pass_started_during_another_sends_nothing(db: PgPool) {
             Ok::<(), anyhow::Error>(())
         }
     };
-    let free = |to: String, _subject: String, _body: String| {
+    let free = |to: String, _subject: String, _body: manage_our_home::email::EmailContent| {
         emails.lock().unwrap().push(to);
         async { Ok::<(), anyhow::Error>(()) }
     };
 
-    let (first, second) = tokio::join!(send_pass(&db, held, no_push), async {
-        entered.notified().await;
-        let second = send_pass(&db, free, no_push).await;
-        gate.add_permits(MEMBERS.len());
-        second
-    });
+    let (first, second) = tokio::join!(
+        send_pass(&db, "https://maison.example", held, no_push),
+        async {
+            entered.notified().await;
+            let second = send_pass(&db, "https://maison.example", free, no_push).await;
+            gate.add_permits(MEMBERS.len());
+            second
+        }
+    );
 
     assert_eq!(first.unwrap(), Some(()));
     assert_eq!(second.unwrap(), None, "the second pass ran");
@@ -145,7 +148,7 @@ async fn a_reminder_pass_started_during_another_sends_nothing(db: PgPool) {
 async fn two_reminder_loops_on_one_database_send_each_reminder_once(db: PgPool) {
     let ids = three_due_reminders(&db).await;
     let emails = Mutex::new(Vec::new());
-    let send = |to: String, _subject: String, _body: String| {
+    let send = |to: String, _subject: String, _body: manage_our_home::email::EmailContent| {
         emails.lock().unwrap().push(to);
         // Long enough for both loops' first passes to read the due rows
         // before either marks one: at 20 ms, the time each takes to open
@@ -158,7 +161,9 @@ async fn two_reminder_loops_on_one_database_send_each_reminder_once(db: PgPool) 
     };
     let replica = || async {
         for _ in 0..5 {
-            send_pass(&db, send, no_push).await.unwrap();
+            send_pass(&db, "https://maison.example", send, no_push)
+                .await
+                .unwrap();
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     };
