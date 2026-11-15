@@ -62,6 +62,7 @@ pub(crate) fn draft_form(draft: &RecipeDraft) -> RecipeForm {
             name: i.name.clone(),
             months: String::new(),
             optional: false,
+            quantity_was: None,
         })
         .collect();
     RecipeForm {

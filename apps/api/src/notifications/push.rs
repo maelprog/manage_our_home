@@ -221,6 +221,8 @@ pub enum PushKind {
     BudgetAlert,
     /// The daily recap of the items nearing their expiry date (#566).
     StockExpiry,
+    /// A change to an agenda event another member made (#848).
+    AgendaChange,
 }
 
 impl PushKind {
@@ -229,6 +231,7 @@ impl PushKind {
             PushKind::AgendaReminder => "agenda_reminder",
             PushKind::BudgetAlert => "budget_alert",
             PushKind::StockExpiry => "stock_expiry",
+            PushKind::AgendaChange => "agenda_change",
         }
     }
 
@@ -237,6 +240,7 @@ impl PushKind {
             PushKind::AgendaReminder,
             PushKind::BudgetAlert,
             PushKind::StockExpiry,
+            PushKind::AgendaChange,
         ]
         .into_iter()
         .find(|kind| kind.as_str() == raw)
@@ -951,6 +955,7 @@ mod tests {
     const R: PushKind = PushKind::AgendaReminder;
     const A: PushKind = PushKind::BudgetAlert;
     const S: PushKind = PushKind::StockExpiry;
+    const C: PushKind = PushKind::AgendaChange;
 
     fn pushed(kinds: &[PushKind]) -> Pending {
         kinds.iter().fold(Pending::default(), |p, &k| {
@@ -974,7 +979,8 @@ mod tests {
         assert_eq!(R.as_str(), "agenda_reminder");
         assert_eq!(A.as_str(), "budget_alert");
         assert_eq!(S.as_str(), "stock_expiry");
-        for kind in [R, A, S] {
+        assert_eq!(C.as_str(), "agenda_change");
+        for kind in [R, A, S, C] {
             assert_eq!(PushKind::parse(kind.as_str()), Some(kind));
             let only = PendingKind::Only(kind);
             assert_eq!(PendingKind::parse(only.as_str()), Some(only));
@@ -1006,6 +1012,30 @@ mod tests {
         assert_eq!(drained, Pending::default());
         let again = pending_after_push(drained, A, t0(), 3600);
         assert_eq!(shown(again, 1, t0()), [Some(A)]);
+    }
+
+    /// A change to the agenda (#848) is a kind of its own, never taken for
+    /// the reminder of an event: pending alone it shows itself, pending
+    /// with a reminder or any other kind the device shows neither, and it
+    /// is read back from its column as it was written.
+    #[test]
+    fn an_agenda_change_is_a_kind_of_its_own() {
+        assert_eq!(shown(pushed(&[C, C]), 2, t0()), [Some(C), Some(C)]);
+        for other in [R, A, S] {
+            assert_eq!(shown(pushed(&[C, other]), 2, t0()), [None, None]);
+            assert_eq!(shown(pushed(&[other, C]), 2, t0()), [None, None]);
+        }
+        let change = pushed(&[C]);
+        assert_eq!(
+            Pending::from_columns(Some("agenda_change"), change.count, change.until),
+            change
+        );
+        let drained = pending_on_receipt(pushed(&[C, R]), t0()).1;
+        let drained = pending_on_receipt(drained, t0()).1;
+        assert_eq!(
+            shown(pending_after_push(drained, C, t0(), 60), 1, t0()),
+            [Some(C)]
+        );
     }
 
     /// Read back from its columns. A kind the code does not know (the
