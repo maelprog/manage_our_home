@@ -25,7 +25,7 @@ use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 /// The value of `notifications.kind`, as the `CHECK` of migration 0036
-/// spells it.
+/// spells it (extended by 0037 and 0060).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     AgendaReminder,
@@ -34,16 +34,21 @@ pub enum Kind {
     Invitation,
     GroceryItem,
     BudgetAlert,
+    /// An agenda event a member sees was added, changed, deleted or
+    /// imported by another member (#848). Not a reminder coming due: that
+    /// is [`Kind::AgendaReminder`].
+    AgendaChange,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::AgendaReminder,
         Kind::StockExpiry,
         Kind::Message,
         Kind::Invitation,
         Kind::GroceryItem,
         Kind::BudgetAlert,
+        Kind::AgendaChange,
     ];
 
     pub fn parse(value: &str) -> Option<Self> {
@@ -58,6 +63,7 @@ impl Kind {
             Kind::Invitation => "invitation",
             Kind::GroceryItem => "grocery_item",
             Kind::BudgetAlert => "budget_alert",
+            Kind::AgendaChange => "agenda_change",
         }
     }
 }
@@ -488,7 +494,7 @@ mod tests {
     use chrono::TimeZone;
 
     #[test]
-    fn the_six_kinds_round_trip() {
+    fn the_seven_kinds_round_trip() {
         for (text, kind) in [
             ("agenda_reminder", Kind::AgendaReminder),
             ("stock_expiry", Kind::StockExpiry),
@@ -496,11 +502,12 @@ mod tests {
             ("invitation", Kind::Invitation),
             ("grocery_item", Kind::GroceryItem),
             ("budget_alert", Kind::BudgetAlert),
+            ("agenda_change", Kind::AgendaChange),
         ] {
             assert_eq!(Kind::parse(text), Some(kind));
             assert_eq!(kind.as_str(), text);
         }
-        assert_eq!(Kind::ALL.len(), 6);
+        assert_eq!(Kind::ALL.len(), 7);
     }
 
     #[test]

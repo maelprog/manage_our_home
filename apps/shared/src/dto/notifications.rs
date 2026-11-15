@@ -53,7 +53,7 @@ pub struct NotificationResponse {
     /// recipient is invited into, of which they are not a member yet.
     pub group_id: uuid::Uuid,
     /// `agenda_reminder`, `stock_expiry`, `message`, `invitation`,
-    /// `grocery_item` or `budget_alert` (#536).
+    /// `grocery_item`, `budget_alert` (#536) or `agenda_change` (#848).
     pub kind: String,
     /// The event, stock item, message, invitation or grocery item it is
     /// about, per `kind`; for a budget alert, the category whose cap was
