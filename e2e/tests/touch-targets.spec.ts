@@ -202,22 +202,66 @@ async function undersized(page: Page): Promise<Box[]> {
  * neighbour. On every link of the agenda's day and week views, each point
  * of a 4px grid over the link's visible box, its first and last rows and
  * columns of pixels included, is asked which link lies there: it must be
- * this link. Two overlaps are by design, and pass when the point lies
- * inside the box of the element hit — what that link draws, not a box
- * that paints nothing: a block or a line of the « Journée » banner over a
- * slot of #794 (`.blk`, `.ad` over `.slots a`, `.slot`; « Créneau
- * d'abord »: the slot keeps every point nothing is drawn on), and a link
- * of a fixed or sticky bar over the page. A point a rounded corner leaves
- * out of the link is not the link's, and is not asked.
+ * this link. Two overlaps are by design: a block or a line of the
+ * « Journée » banner over a slot of #794 (`.blk`, `.ad` over `.slots a`,
+ * `.slot`; « Créneau d'abord »: the slot keeps every point nothing is
+ * drawn on), and a link of a fixed or sticky bar over the page. They pass
+ * only where the element hit, or an ancestor of it up to that block, line
+ * or bar, paints: its background within the box its `background-clip`
+ * names, or a border of a colour that is not transparent — not a box that
+ * paints nothing, nor padding outside a clipped background, nor a
+ * transparent border, even with the background showing under it. A point
+ * a rounded corner leaves out of the link, or that lies inside within a
+ * pixel and a half of the curve, is not asked.
  */
 async function pointsTaken(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const out: string[] = [];
     const name = (a: Element) =>
       `a.${a.className} "${(a.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 40)}"`;
-    const onBar = (a: Element) => {
+    const barOf = (a: Element) => {
       for (let p: Element | null = a; p; p = p.parentElement) {
-        if (["fixed", "sticky"].includes(getComputedStyle(p).position)) return true;
+        if (["fixed", "sticky"].includes(getComputedStyle(p).position)) return p;
+      }
+      return null;
+    };
+    // An alpha of zero, as the browser computes a colour: `rgba(…, 0)`,
+    // `color(… / 0)`.
+    const seen = (c: string) => c !== "transparent" && !/[,/]\s*0(\.0*)?\)$/.test(c);
+    // Whether `el` paints the point (x, y), a pixel of tolerance for a box
+    // placed to the fraction: its background, within the box its
+    // `background-clip` names, and each border of a colour of its own. A
+    // border counts by its own colour only: a transparent one paints
+    // nothing of its own, whatever background shows under it.
+    const paints = (el: Element, x: number, y: number) => {
+      const s = getComputedStyle(el);
+      const b = el.getBoundingClientRect();
+      const px = (v: string) => parseFloat(v) || 0;
+      const bw = [s.borderTopWidth, s.borderRightWidth, s.borderBottomWidth, s.borderLeftWidth].map(px);
+      const pd = [s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].map(px);
+      const inRect = (l: number, t: number, r: number, bo: number) =>
+        x >= l - 1 && x <= r + 1 && y >= t - 1 && y <= bo + 1;
+      const inset = (k: number[]) => inRect(b.left + k[3], b.top + k[0], b.right - k[1], b.bottom - k[2]);
+      const clips = s.backgroundClip.split(/\s*,\s*/);
+      const layers = s.backgroundImage !== "none" ? clips : seen(s.backgroundColor) ? clips.slice(-1) : [];
+      for (const clip of layers) {
+        if (clip === "content-box" || clip === "text" ? inset(bw.map((w, i) => w + pd[i])) : inset(bw)) return true;
+      }
+      const sides = [
+        [s.borderTopStyle, s.borderTopColor, b.left, b.top, b.right, b.top + bw[0]],
+        [s.borderRightStyle, s.borderRightColor, b.right - bw[1], b.top, b.right, b.bottom],
+        [s.borderBottomStyle, s.borderBottomColor, b.left, b.bottom - bw[2], b.right, b.bottom],
+        [s.borderLeftStyle, s.borderLeftColor, b.left, b.top, b.left + bw[3], b.bottom],
+      ] as const;
+      return sides.some(
+        ([style, color, l, t, r, bo], i) => bw[i] > 0 && !["none", "hidden"].includes(style) && seen(color) && inRect(l, t, r, bo),
+      );
+    };
+    // Whether the point is painted by `hit` or an ancestor of it up to `top`.
+    const painted = (hit: Element, x: number, y: number, top: Element) => {
+      for (let p: Element | null = hit; p; p = p.parentElement) {
+        if (paints(p, x, y)) return true;
+        if (p === top) break;
       }
       return false;
     };
@@ -279,11 +323,10 @@ async function pointsTaken(page: Page): Promise<string[]> {
           const hit = document.elementFromPoint(x, y);
           const other = hit?.closest("a");
           if (!hit || !other || other === link) continue;
-          const b = hit.getBoundingClientRect();
-          // A pixel of tolerance, for a box placed to the fraction.
-          const drawn = x >= b.left - 1 && x <= b.right + 1 && y >= b.top - 1 && y <= b.bottom + 1;
           const overSlot = link.matches(".slots a, .slot") && other.matches(".blk, .ad");
-          if (drawn && (overSlot || onBar(other))) continue;
+          const top = overSlot ? other : barOf(other);
+          if (top && painted(hit, x, y, top)) continue;
+          const b = hit.getBoundingClientRect();
           const seen = takers.get(other);
           if (seen) seen.n++;
           else {
