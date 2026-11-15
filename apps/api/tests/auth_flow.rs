@@ -3791,6 +3791,21 @@ async fn the_set_password_email_carries_a_link_that_verifies_the_account(db: PgP
         "no-password@example.test",
         "http://localhost:5173/verify-email?token=",
     );
+    // #831, arbitrated 2026-11-15: the account exists already — the email
+    // welcomes nobody and says what was added.
+    let mail = outbox.emails().pop().unwrap();
+    assert_eq!(mail.subject, "Vérifiez votre email");
+    assert!(
+        mail.body
+            .starts_with("Bonjour Google Only, confirmez votre adresse\n"),
+        "{}",
+        mail.body
+    );
+    let html = mail.html.as_deref().expect("an HTML part");
+    for welcome in ["Bienvenue", "activer votre compte", "créé de compte"] {
+        assert!(!mail.body.contains(welcome), "{welcome}: {}", mail.body);
+        assert!(!html.contains(welcome), "{welcome}: {html}");
+    }
     let verify = call(
         &router,
         Method::GET,

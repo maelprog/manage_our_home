@@ -1059,7 +1059,11 @@ pub async fn set_password(
         .send_html(
             &auth.email,
             "Vérifiez votre email",
-            crate::email::EmailSender::verification_email(&link, &privacy_policy_url(&state)),
+            crate::email::EmailSender::password_added_email(
+                &auth.display_name,
+                &link,
+                &privacy_policy_url(&state),
+            ),
         )
         .await
     {

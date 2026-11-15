@@ -215,6 +215,39 @@ impl EmailSender {
         })
     }
 
+    /// Mailed when a signed-in account that had no password adds one: the
+    /// password opens no session until the address is confirmed again. The
+    /// name is the account's, shown to its signed-in holder.
+    pub fn password_added_email(
+        display_name: &str,
+        link: &str,
+        privacy_policy_url: &str,
+    ) -> EmailContent {
+        let title = match greeted(display_name) {
+            Some(name) => format!("Bonjour {name}, confirmez votre adresse"),
+            None => "Confirmez votre adresse".to_owned(),
+        };
+        let validity = format!(
+            "Ce lien est valable {} et ne sert qu'une fois.",
+            hours(crate::auth::EMAIL_VERIFICATION_TTL_HOURS)
+        );
+        template::render(&Template {
+            title: &title,
+            paragraphs: &[
+                "Vous avez ajouté un mot de passe à votre compte Manage Our Home. Confirmez \
+                 que cette adresse est bien la vôtre pour pouvoir vous connecter avec ce mot \
+                 de passe.",
+            ],
+            action: ("Vérifier mon adresse", link),
+            fine_print: &[
+                &validity,
+                "Vous n'êtes pas à l'origine de cet ajout ? Ne suivez pas ce lien : sans \
+                 confirmation, ce mot de passe ne permet pas de se connecter.",
+            ],
+            privacy_policy_url,
+        })
+    }
+
     /// Mailed by the forgotten-password form to a live account.
     pub fn password_reset_email(
         display_name: &str,
@@ -432,6 +465,38 @@ mod tests {
         assert!(c.html.contains(">Bienvenue !</h1>"), "{}", c.html);
     }
 
+    /// Arbitrated 2026-11-15: adding a password to an account that already
+    /// exists is no account creation — no welcome, no "you did not create
+    /// an account?".
+    #[test]
+    fn password_added_email_confirms_the_address_without_welcoming_anybody() {
+        let link = "https://maison.example/verify-email?token=abc";
+        let c = EmailSender::password_added_email("Alice", link, PRIVACY);
+        assert!(
+            c.text
+                .starts_with("Bonjour Alice, confirmez votre adresse\n"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text.contains("Vous avez ajouté un mot de passe"),
+            "{}",
+            c.text
+        );
+        assert!(c.text.contains("valable 24 heures"), "{}", c.text);
+        assert!(c.text.contains(&format!("\n{link}\n")), "{}", c.text);
+        assert!(c.html.contains(&format!("href=\"{link}\"")), "{}", c.html);
+        for welcome in ["Bienvenue", "activer votre compte", "créé de compte"] {
+            assert!(!c.text.contains(welcome), "{welcome}: {}", c.text);
+            assert!(!c.html.contains(welcome), "{welcome}: {}", c.html);
+        }
+        let blank = EmailSender::password_added_email(" \u{202E}", link, PRIVACY);
+        assert!(
+            blank.text.starts_with("Confirmez votre adresse\n"),
+            "{}",
+            blank.text
+        );
+    }
 
     #[test]
     fn password_reset_email_greets_recalls_the_request_and_says_how_long_the_link_lasts() {
@@ -482,6 +547,7 @@ mod tests {
         let flat = "<script>\"x\" & Cie</script> Cliquez ici";
         let escaped = "&lt;script&gt;&quot;x&quot; &amp; Cie&lt;/script&gt; Cliquez ici";
         for c in [
+            EmailSender::password_added_email(typed, "https://m.example/v?token=a", PRIVACY),
             EmailSender::password_reset_email(typed, "https://m.example/r#token=a", PRIVACY),
             EmailSender::account_exists_email(typed, "https://m.example/f", PRIVACY),
         ] {
