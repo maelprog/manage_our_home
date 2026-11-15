@@ -299,6 +299,8 @@ mod tests {
                 recipe_name: name.into(),
                 status: "planned".into(),
                 servings: Some(4),
+                planned_on: None,
+                meal_slot: None,
                 created_by: Uuid::from_u128(200),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),

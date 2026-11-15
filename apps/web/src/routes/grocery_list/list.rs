@@ -987,6 +987,8 @@ mod tests {
             recipe_name: name.to_string(),
             status: "planned".to_string(),
             servings: None,
+            planned_on: None,
+            meal_slot: None,
             created_by: Uuid::from_u128(2),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

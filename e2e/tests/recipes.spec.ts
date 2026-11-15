@@ -265,6 +265,78 @@ test.describe("Recipes — à réaliser (#470)", () => {
   });
 });
 
+// #812: the day and the meal of a planned recipe, set, changed and removed
+// from its page without JavaScript, by a member who did not plan it.
+test.describe("Recipes — jour et repas d'une recette planifiée (#812)", () => {
+  test("another member dates the recipe, changes its meal, then removes the day", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-rcwhenowner", "When Owner");
+    await createGroup(page, "Famille Quand");
+    const href = await createInvitationLink(page, "Famille Quand");
+    await createRecipe(page, { name: "Gratin du jeudi", ingredients: "Pomme de terre | 4 | pièce" });
+    await page.getByRole("button", { name: "À réaliser" }).click();
+    await expect(page).toHaveURL(/\?notice=recipe_selected$/);
+
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-rcwhenmember", "When Member");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    await openRecipeDetail(member, "Gratin du jeudi");
+
+    // Undated: the form waits in a closed « Choisir un jour ».
+    const form = member.locator("form.when-form");
+    await expect(form).toBeHidden();
+    await expect(member.getByRole("button", { name: "Retirer la date" })).toHaveCount(0);
+    await member.getByText("Choisir un jour").click();
+    await expect(form.getByText("Pas encore de jour choisi.")).toBeVisible();
+
+    // A meal without a day is refused, and the form opens again on it.
+    await form.getByRole("radio", { name: "Midi" }).check();
+    await form.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(member).toHaveURL(/\?error=meal_without_day$/);
+    await expect(member.getByText("Choisissez un jour pour préciser le repas.")).toBeVisible();
+    await expect(form).toBeVisible();
+
+    const day = parisDay(3);
+    const [, mm, dd] = day.split("-");
+    await form.getByLabel("Jour (facultatif)").fill(day);
+    await form.getByRole("radio", { name: "Soir" }).check();
+    await form.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(member).toHaveURL(/\?notice=plan_saved$/);
+    await expect(member.getByText("Jour et repas enregistrés.")).toBeVisible();
+    await expect(form.locator(".when-state")).toContainText("au dîner");
+    await expect(form.getByLabel("Jour (facultatif)")).toHaveValue(day);
+    await expect(form.getByRole("radio", { name: "Soir" })).toBeChecked();
+
+    // The list says the day and the meal, in « Prévues » and « Toutes ».
+    await member.goto("/recipes?vue=prevues");
+    await expect(member.locator(".badge.accent", { hasText: `${dd}/${mm} · soir` })).toBeVisible();
+    await member.goto("/recipes");
+    await expect(member.locator(".badge.accent", { hasText: `${dd}/${mm} · soir` })).toBeVisible();
+
+    // The meal changes; the day stays.
+    await openRecipeDetail(member, "Gratin du jeudi");
+    await form.getByRole("radio", { name: "Midi" }).check();
+    await form.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(member).toHaveURL(/\?notice=plan_saved$/);
+    await expect(form.locator(".when-state")).toContainText("au déjeuner");
+    await expect(form.getByLabel("Jour (facultatif)")).toHaveValue(day);
+
+    // « Retirer la date » takes the day and the meal, the recipe stays planned.
+    await form.getByRole("button", { name: "Retirer la date" }).click();
+    await expect(member).toHaveURL(/\?notice=plan_cleared$/);
+    await expect(member.getByText("Date retirée : la recette reste à réaliser.")).toBeVisible();
+    await expect(member.getByRole("button", { name: "Retirer", exact: true })).toBeVisible();
+    await expect(form).toBeHidden();
+    await member.goto("/recipes?vue=prevues");
+    await expect(member.locator(".badge.accent")).toHaveCount(0);
+    await context.close();
+  });
+});
+
 // #539: the recipes in three tabs, each a link (`?vue=`), no JavaScript.
 test.describe("Recipes — Toutes, Prévues, Possibles (#539)", () => {
   test("a planned recipe is in « Prévues »; once its ingredients are stocked, in « Possibles »", async ({

@@ -2,7 +2,8 @@
 //! markers), its time and numbered steps (#539), the last-cooked state, plus the log-a-meal action
 //! and the delete action; full edit lives in `edit.rs`. The « À réaliser » /
 //! « Retirer » forms (#470) plan the recipe for the next grocery list, open
-//! to any member like the selection API.
+//! to any member like the selection API; a planned recipe's day and meal
+//! (#812) are set, changed and removed there too, by any member as well.
 //!
 //! Permission bar: the log-a-meal form renders for **any** family member
 //! (feeding the shared variety history); the edit link and delete button
@@ -22,7 +23,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::NaiveDate;
 use manage_our_home_shared::dto::recipes::{
-    IngredientResponse, LogMealRequest, MealHistoryList, RecipeResponse,
+    IngredientResponse, LogMealRequest, MealHistoryList, RecipeResponse, RecipeSelectionResponse,
 };
 use uuid::Uuid;
 
@@ -91,6 +92,8 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "recipe_deselected" => Some("Recette retirée des recettes à réaliser."),
         "recipe_done" => Some(super::outcome::DONE_NOTICE),
         "recipe_abandoned" => Some(super::outcome::ABANDONED_NOTICE),
+        "plan_saved" => Some("Jour et repas enregistrés."),
+        "plan_cleared" => Some("Date retirée : la recette reste à réaliser."),
         _ => None,
     }
 }
@@ -101,6 +104,9 @@ fn error_text(code: &str) -> Option<&'static str> {
         "forbidden" => Some("Vous n'avez pas les droits nécessaires pour cette action."),
         "unavailable" => Some("Service momentanément indisponible, merci de réessayer."),
         "invalid_servings" => Some("Le nombre de personnes doit être un nombre entier de 1 à 50."),
+        "meal_without_day" => Some("Choisissez un jour pour préciser le repas."),
+        "invalid_planned_on" => Some("Le jour doit tomber à 366 jours au plus d'aujourd'hui."),
+        "invalid_meal_slot" => Some("Le repas se choisit entre midi et soir."),
         _ => None,
     }
 }
@@ -206,7 +212,7 @@ pub async fn get(
     let planned = all_planned
         .iter()
         .find(|p| p.selection.recipe_id == recipe_id)
-        .map(|p| p.selection.servings);
+        .map(|p| &p.selection);
     // Marked done, the recipe took from the stock (#560): the planned ones
     // it left incomplete are told, with the way to « Prévues ».
     let incomplete = if after_stock_change(query.notice.as_deref()) {
@@ -232,6 +238,7 @@ pub async fn get(
         &recipe,
         last,
         planned,
+        is_plan_error(query.error.as_deref()),
         can_edit,
         &format!("{notice_html}{incomplete}{error_html}"),
     ))
@@ -258,13 +265,102 @@ fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> 
     }
 }
 
+/// When a dated recipe is to be cooked (#812), as its « Quand ? » block
+/// says it: "jeudi 19 novembre, au dîner".
+fn plan_sentence(planned_on: NaiveDate, meal_slot: Option<&str>) -> String {
+    let meal = match meal_slot {
+        Some("lunch") => ", au déjeuner",
+        Some("dinner") => ", au dîner",
+        _ => "",
+    };
+    format!("{}{meal}", crate::routes::home::long_date_fr(planned_on))
+}
+
+/// The errors of the « Quand ? » form (#812), after which the page opens
+/// it again.
+fn is_plan_error(code: Option<&str>) -> bool {
+    matches!(
+        code,
+        Some("meal_without_day" | "invalid_planned_on" | "invalid_meal_slot")
+    )
+}
+
+/// The day and the meal of a planned recipe (#812), the selection being
+/// `planned`; nothing for a recipe that is not. Undated, a « Choisir un
+/// jour » disclosure, closed unless `open` (after an error of its form);
+/// dated, the « Quand ? » block, with « Retirer la date ». The day is one of
+/// the 366 days either side of `today` the API accepts.
+fn plan_html(
+    id: Uuid,
+    selection: Option<&RecipeSelectionResponse>,
+    open: bool,
+    today: NaiveDate,
+) -> String {
+    let Some(selection) = selection else {
+        return String::new();
+    };
+    let horizon = chrono::Duration::days(366);
+    let meal = selection.meal_slot.as_deref().unwrap_or_default();
+    let radios: String = [("", "Non précisé"), ("lunch", "Midi"), ("dinner", "Soir")]
+        .into_iter()
+        .map(|(value, label)| {
+            let checked = if value == meal { " checked" } else { "" };
+            format!(
+                r#"<label class="field inline pick"><input type="radio" name="meal_slot" value="{value}"{checked}/>{label}</label>"#
+            )
+        })
+        .collect();
+    let (state, clear) = match selection.planned_on {
+        Some(day) => (
+            format!(
+                "Prévue le <strong>{}</strong>.",
+                plan_sentence(day, Some(meal))
+            ),
+            format!(
+                r#"<button type="submit" class="secondary" formaction="/recipes/{id}/planning/clear" formnovalidate>Retirer la date</button>"#
+            ),
+        ),
+        None => ("Pas encore de jour choisi.".to_string(), String::new()),
+    };
+    let form = format!(
+        r#"<form method="post" action="/recipes/{id}/planning" class="card inline when-form">
+<input type="hidden" name="back" value="detail"/>
+<p class="when-state">{state}</p>
+<label>Jour (facultatif)
+<input type="date" name="planned_on" value="{value}" min="{min}" max="{max}"/></label>
+<fieldset class="picks"><legend>Repas (facultatif)</legend>
+{radios}
+</fieldset>
+<button type="submit" data-busy-label="Enregistrement…">Enregistrer</button>
+{clear}
+</form>"#,
+        value = selection
+            .planned_on
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default(),
+        min = (today - horizon).format("%Y-%m-%d"),
+        max = (today + horizon).format("%Y-%m-%d"),
+    );
+    if selection.planned_on.is_some() {
+        form
+    } else {
+        let open = if open { " open" } else { "" };
+        format!(
+            r#"<div class="actions"><details{open}><summary>Choisir un jour</summary>{form}</details></div>"#
+        )
+    }
+}
+
 /// The recipe's page. `banners` are the ones of the URL's `?notice=` and
 /// `?error=`, and the planned recipes left incomplete in between (#560).
+/// `planned` is the recipe's planned selection; `plan_open` opens its
+/// « Choisir un jour » again after an error of that form (#812).
 fn page(
     header: &str,
     recipe: &RecipeResponse,
     last_eaten: Option<NaiveDate>,
-    planned: Option<Option<i32>>,
+    planned: Option<&RecipeSelectionResponse>,
+    plan_open: bool,
     can_edit: bool,
     banners: &str,
 ) -> String {
@@ -295,9 +391,8 @@ fn page(
     // the date defaults to today in Paris, the day the pages judge dates
     // in, and can be backdated. A field left empty is dated by apps/api,
     // on the same Paris day (#608).
-    let today = crate::routes::agenda::today_paris()
-        .format("%Y-%m-%d")
-        .to_string();
+    let today_paris = crate::routes::agenda::today_paris();
+    let today = today_paris.format("%Y-%m-%d").to_string();
     let log_form = format!(
         r#"<form method="post" action="/recipes/{id}/log" class="card inline">
 <label>Date du repas
@@ -324,7 +419,8 @@ fn page(
         .servings
         .map(|s| format!(r#"<p class="muted">Pour {}.</p>"#, servings_label(s)))
         .unwrap_or_default();
-    let selection_html = selection_html(id, recipe.servings, planned);
+    let selection_html = selection_html(id, recipe.servings, planned.map(|s| s.servings));
+    let plan_html = plan_html(id, planned, plan_open, today_paris);
     let time_html = time_html(recipe.duration_minutes);
     let body = format!(
         r#"<h1>{name}</h1>
@@ -332,6 +428,7 @@ fn page(
 {time_html}
 {banners}
 {selection_html}
+{plan_html}
 <h2>Ingrédients</h2>
 {servings_html}
 {ingredients_html}
@@ -552,5 +649,175 @@ mod tests {
             r#"<p class="muted">Temps : 1 h 30.</p>"#
         );
         assert_eq!(time_html(None), "");
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    fn planned(planned_on: Option<NaiveDate>, meal_slot: Option<&str>) -> RecipeSelectionResponse {
+        RecipeSelectionResponse {
+            id: Uuid::from_u128(2),
+            recipe_id: Uuid::from_u128(1),
+            recipe_name: "Gratin".into(),
+            status: "planned".into(),
+            servings: Some(4),
+            planned_on,
+            meal_slot: meal_slot.map(str::to_string),
+            created_by: Uuid::from_u128(3),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    const TODAY: (i32, u32, u32) = (2026, 11, 15);
+
+    fn today() -> NaiveDate {
+        day(TODAY.0, TODAY.1, TODAY.2)
+    }
+
+    #[test]
+    fn the_plan_sentence_names_the_weekday_the_day_and_the_meal() {
+        assert_eq!(plan_sentence(day(2026, 11, 19), None), "jeudi 19 novembre");
+        assert_eq!(
+            plan_sentence(day(2026, 11, 19), Some("dinner")),
+            "jeudi 19 novembre, au dîner"
+        );
+        assert_eq!(
+            plan_sentence(day(2026, 12, 1), Some("lunch")),
+            "mardi 1er décembre, au déjeuner"
+        );
+    }
+
+    #[test]
+    fn an_unplanned_recipe_has_no_day_to_choose() {
+        assert_eq!(plan_html(Uuid::from_u128(1), None, false, today()), "");
+    }
+
+    #[test]
+    fn an_undated_planned_recipe_offers_a_closed_choisir_un_jour() {
+        let id = Uuid::from_u128(1);
+        let html = plan_html(id, Some(&planned(None, None)), false, today());
+        assert!(
+            html.starts_with(r#"<div class="actions"><details><summary>Choisir un jour</summary>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<form method="post" action="/recipes/{id}/planning" class="card inline when-form">"#
+            )),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="back" value="detail""#), "{html}");
+        assert!(
+            html.contains(r#"<p class="when-state">Pas encore de jour choisi.</p>"#),
+            "{html}"
+        );
+        // The 366 days either side of today, as the API takes them.
+        assert!(
+            html.contains(
+                r#"<input type="date" name="planned_on" value="" min="2025-11-14" max="2027-11-16"/>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="meal_slot" value="" checked/>Non précisé"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="meal_slot" value="lunch"/>Midi"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="meal_slot" value="dinner"/>Soir"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("<legend>Repas (facultatif)</legend>"),
+            "{html}"
+        );
+        assert!(!html.contains("Retirer la date"), "{html}");
+        // Opened again after an error of its form.
+        let html = plan_html(id, Some(&planned(None, None)), true, today());
+        assert!(html.contains("<details open><summary>"), "{html}");
+    }
+
+    #[test]
+    fn a_dated_planned_recipe_shows_quand_and_retirer_la_date() {
+        let id = Uuid::from_u128(1);
+        let html = plan_html(
+            id,
+            Some(&planned(Some(day(2026, 11, 19)), None)),
+            false,
+            today(),
+        );
+        assert!(!html.contains("<details"), "{html}");
+        assert!(
+            html.contains(
+                r#"<p class="when-state">Prévue le <strong>jeudi 19 novembre</strong>.</p>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"name="planned_on" value="2026-11-19""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="meal_slot" value="" checked/>Non précisé"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<button type="submit" class="secondary" formaction="/recipes/{id}/planning/clear" formnovalidate>Retirer la date</button>"#
+            )),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_dated_planned_recipe_with_its_meal_has_it_ticked() {
+        let id = Uuid::from_u128(1);
+        let html = plan_html(
+            id,
+            Some(&planned(Some(day(2026, 11, 19)), Some("dinner"))),
+            false,
+            today(),
+        );
+        assert!(
+            html.contains("Prévue le <strong>jeudi 19 novembre, au dîner</strong>."),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="meal_slot" value="dinner" checked/>Soir"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="radio" name="meal_slot" value=""/>Non précisé"#),
+            "{html}"
+        );
+        assert!(html.contains("Retirer la date</button>"), "{html}");
+    }
+
+    #[test]
+    fn the_plan_banners_are_said_and_its_errors_reopen_the_form() {
+        assert_eq!(
+            notice_text("plan_saved"),
+            Some("Jour et repas enregistrés.")
+        );
+        assert_eq!(
+            notice_text("plan_cleared"),
+            Some("Date retirée : la recette reste à réaliser.")
+        );
+        assert_eq!(
+            error_text("meal_without_day"),
+            Some("Choisissez un jour pour préciser le repas.")
+        );
+        assert!(error_text("invalid_planned_on").is_some());
+        assert!(error_text("invalid_meal_slot").is_some());
+        assert!(is_plan_error(Some("meal_without_day")));
+        assert!(is_plan_error(Some("invalid_planned_on")));
+        assert!(is_plan_error(Some("invalid_meal_slot")));
+        assert!(!is_plan_error(Some("unavailable")));
+        assert!(!is_plan_error(None));
     }
 }
