@@ -686,8 +686,7 @@ pub fn reminder_email(
         action: ("Ouvrir l'agenda", agenda_url),
         fine_print: &[
             "Vous recevez ce rappel parce qu'il est programmé sur un événement que \
-                       vous avez créé. Vous pouvez le supprimer depuis la page de \
-                       l'événement.",
+                       vous avez créé.",
         ],
         notice: None,
         privacy_policy_url,
@@ -892,6 +891,23 @@ mod tests {
         assert!(c.html.contains(">Un événement approche</h1>"), "{}", c.html);
         assert!(c.html.contains(&format!("href=\"{AGENDA}\"")), "{}", c.html);
         assert!(c.html.contains("Rappel pour « Dîner »"), "{}", c.html);
+    }
+
+    /// The event page cannot list or delete its reminders (v1, see
+    /// `apps/web/src/routes/agenda/detail.rs`): the email promises nothing
+    /// of the kind.
+    #[test]
+    fn reminder_email_promises_no_way_to_delete_the_reminder() {
+        let c = reminder("Dîner");
+        let line = "Vous recevez ce rappel parce qu'il est programmé sur un événement \
+                    que vous avez créé.";
+        for (part, line) in [
+            (&c.text, line.to_string()),
+            (&c.html, line.replace('\'', "&#39;")),
+        ] {
+            assert!(part.contains(&line), "{part}");
+            assert!(!part.contains("supprimer"), "{part}");
+        }
     }
 
     /// #146: neither the subject nor the title of the email names the event;
