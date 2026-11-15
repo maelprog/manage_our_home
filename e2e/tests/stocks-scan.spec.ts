@@ -1,4 +1,7 @@
-import { expect, Page, test } from "@playwright/test";
+import { chromium, expect, Page, test } from "@playwright/test";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
@@ -17,6 +20,9 @@ import { fetchVerificationToken } from "../lib/db";
 // Issue #782: the lookup writes in apps/api (the Open Food Facts cache, the
 // throttle's counters), so it runs on a POST only; `?scan=` on a GET only
 // puts the code back in the field.
+// Issue #807: « Scanner en direct » reads the camera's preview in the page.
+// Chromium's fake camera plays a video of a code drawn here; the headless
+// Linux build has no `BarcodeDetector`, so the vendored zxing-wasm reads it.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -60,9 +66,9 @@ function png(width: number, height: number, pixel: (x: number, y: number) => num
   ]);
 }
 
-/** A photo of an EAN-13: start guard, six digits in the L/G parity the
- *  first digit sets, centre guard, six in R, end guard, quiet zones. */
-function ean13Photo(digits: string): Buffer {
+/** The modules of an EAN-13: start guard, six digits in the L/G parity the
+ *  first digit sets, centre guard, six in R, end guard ("1" = a bar). */
+function ean13Bits(digits: string): string {
   const L = ["0001101", "0011001", "0010011", "0111101", "0100011", "0110001", "0101111", "0111011", "0110111", "0001011"];
   const G = ["0100111", "0110011", "0011011", "0100001", "0011101", "0111001", "0000101", "0010001", "0001001", "0010111"];
   const R = ["1110010", "1100110", "1101100", "1000010", "1011100", "1001110", "1010000", "1000100", "1001000", "1110100"];
@@ -73,6 +79,12 @@ function ean13Photo(digits: string): Buffer {
   bits += "01010";
   for (let i = 7; i <= 12; i++) bits += R[d[i]];
   bits += "101";
+  return bits;
+}
+
+/** A photo of an EAN-13, with its quiet zones. */
+function ean13Photo(digits: string): Buffer {
+  const bits = ean13Bits(digits);
   const module = 4;
   const quiet = 15 * module;
   return png(bits.length * module + 2 * quiet, 240, (x, y) => {
@@ -83,6 +95,33 @@ function ean13Photo(digits: string): Buffer {
 }
 
 const BLANK_PHOTO = png(640, 480, () => 255);
+
+/** A Y4M video (4:2:0, one frame, which Chromium loops) of an EAN-13 in
+ *  the middle of a white 640 × 480 picture: the fake camera's file. */
+function ean13Video(digits: string): string {
+  const bits = ean13Bits(digits);
+  const [width, height, module] = [640, 480, 4];
+  const left = (width - bits.length * module) / 2;
+  const luma = Buffer.alloc(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const bar = Math.floor((x - left) / module);
+      const dark = y >= 140 && y < 340 && x >= left && bar < bits.length && bits[bar] === "1";
+      luma[y * width + x] = dark ? 16 : 235;
+    }
+  }
+  const chroma = Buffer.alloc((width / 2) * (height / 2) * 2, 128);
+  const file = join(tmpdir(), `e2e-ean13-${digits}.y4m`);
+  writeFileSync(
+    file,
+    Buffer.concat([
+      Buffer.from(`YUV4MPEG2 W${width} H${height} F10:1 Ip A1:1 C420jpeg\nFRAME\n`, "ascii"),
+      luma,
+      chroma,
+    ]),
+  );
+  return file;
+}
 
 async function registerAndLogin(page: Page, prefix: string): Promise<void> {
   const email = uniqueEmail(prefix);
@@ -301,6 +340,10 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await registerAndLogin(page, "e2e-scan-nojs");
     await createGroup(page, "Famille Sans JS");
 
+    // No live scan without its script (#807): the block stays `hidden`.
+    await page.goto("/stocks/new");
+    await expect(page.getByRole("button", { name: "Scanner en direct" })).toBeHidden();
+
     // The photo, sent by its button.
     await page.goto("/stocks/new");
     await page.getByLabel("Photographier le code").setInputFiles({
@@ -354,5 +397,131 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
     await page.getByRole("link", { name: /Yaourt nature/ }).click();
     await expect(page.getByText("Péremption : 01/02/2027")).toBeVisible();
+  });
+});
+
+test.describe("Stocks — live scan with a camera showing a code", () => {
+  // Chromium's fake camera is a launch argument: a browser of this test's
+  // own, rather than `test.use({ launchOptions })`, which would need a
+  // worker of its own.
+  test("a code in front of the camera fills the form with no other press, and the camera stops", async ({
+    browserName,
+  }, testInfo) => {
+    test.skip(browserName !== "chromium", "Chromium's fake camera");
+    const browser = await chromium.launch({
+      channel: testInfo.project.use.channel,
+      args: [
+        "--use-fake-ui-for-media-stream",
+        "--use-fake-device-for-media-stream",
+        `--use-file-for-fake-video-capture=${ean13Video(KNOWN)}`,
+      ],
+    });
+    const { baseURL, contextOptions, ignoreHTTPSErrors } = testInfo.project.use;
+    const context = await browser.newContext({
+      ...contextOptions,
+      baseURL,
+      ignoreHTTPSErrors,
+      permissions: ["camera"],
+    });
+    const page = await context.newPage();
+    try {
+      await liveScanOfAKnownCode(page);
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
+async function liveScanOfAKnownCode(page: Page): Promise<void> {
+  await registerAndLogin(page, "e2e-live-scan");
+  await createGroup(page, "Famille Direct");
+
+  // Every track stopped leaves a mark that outlives the page.
+  await page.addInitScript(() => {
+    const stop = MediaStreamTrack.prototype.stop;
+    MediaStreamTrack.prototype.stop = function () {
+      sessionStorage.setItem("tracks-stopped", String(Number(sessionStorage.getItem("tracks-stopped") ?? 0) + 1));
+      return stop.call(this);
+    };
+  });
+  await page.goto("/stocks/new");
+  // The decoder, instantiated from its fingerprinted address (#806).
+  const wasm = page.waitForResponse((r) => /\/assets\/zxing-reader-[0-9a-f]{16}\.wasm$/.test(r.url()));
+  await page.getByRole("button", { name: "Scanner en direct" }).click();
+  const decoder = await wasm;
+  expect(decoder.status()).toBe(200);
+  expect(decoder.headers()["content-type"]).toBe("application/wasm");
+
+  await expect(page).toHaveURL(/\/stocks\/new\/scan$/, { timeout: 15_000 });
+  await expect(page.getByText("Produit trouvé")).toBeVisible();
+  await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner");
+  await expect(page.getByText(`Code-barres associé : ${KNOWN}`)).toBeVisible();
+  expect(Number(await page.evaluate(() => sessionStorage.getItem("tracks-stopped")))).toBeGreaterThan(0);
+}
+
+test.describe("Stocks — live scan, refused or stopped", () => {
+  test("a refused camera says so, and the photo and the typed code stay", async ({ page }) => {
+    await registerAndLogin(page, "e2e-live-refused");
+    await createGroup(page, "Famille Refus");
+
+    await page.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = () =>
+        Promise.reject(new DOMException("refused", "NotAllowedError"));
+    });
+    await page.goto("/stocks/new");
+    await page.getByRole("button", { name: "Scanner en direct" }).click();
+    const alert = page.getByRole("alert").filter({ hasText: "Caméra bloquée." });
+    await expect(alert).toBeVisible({ timeout: 15_000 });
+    await expect(alert.getByRole("button", { name: "Réessayer" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Scanner en direct" })).toBeHidden();
+    await expect(page.getByLabel("Photographier le code")).toBeVisible();
+    await expect(page.getByLabel("Code-barres")).toBeVisible();
+    await expect(page).toHaveURL(/\/stocks\/new$/);
+  });
+
+  test("Arrêter or Escape stops the camera and gives the focus back", async ({ page }) => {
+    await registerAndLogin(page, "e2e-live-stop");
+    await createGroup(page, "Famille Arrêt");
+
+    // A camera that shows a white page: nothing to read.
+    await page.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 320;
+        canvas.height = 240;
+        const context = canvas.getContext("2d")!;
+        context.fillStyle = "white";
+        context.fillRect(0, 0, 320, 240);
+        const stream = canvas.captureStream(5);
+        (window as unknown as { lastStream: MediaStream }).lastStream = stream;
+        return Promise.resolve(stream);
+      };
+    });
+    await page.goto("/stocks/new");
+    const start = page.getByRole("button", { name: "Scanner en direct" });
+    const stop = page.getByRole("button", { name: "Arrêter" });
+    const ended = () =>
+      page.evaluate(() =>
+        (window as unknown as { lastStream: MediaStream }).lastStream
+          .getTracks()
+          .every((t) => t.readyState === "ended"),
+      );
+
+    await start.click();
+    await expect(page.locator("[data-live-status]")).toHaveText("Placez le code-barres dans le cadre.", { timeout: 15_000 });
+    await expect(page.getByLabel("Aperçu de la caméra")).toBeVisible();
+    await expect(stop).toBeFocused();
+    await stop.click();
+    await expect(start).toBeFocused();
+    await expect(page.getByLabel("Aperçu de la caméra")).toBeHidden();
+    expect(await ended()).toBe(true);
+
+    await start.click();
+    await expect(stop).toBeFocused();
+    await expect(page.locator("[data-live-status]")).toHaveText("Placez le code-barres dans le cadre.");
+    await page.keyboard.press("Escape");
+    await expect(start).toBeFocused();
+    await expect(page.getByLabel("Aperçu de la caméra")).toBeHidden();
+    expect(await ended()).toBe(true);
   });
 });
