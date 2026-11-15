@@ -1,5 +1,6 @@
 //! A member's reminder channel and their subscribed devices (#306), and
-//! the hour of their daily expiry recap (#700).
+//! the hour of their daily expiry recap (#700), and whether they are told
+//! of the agenda changes (#850).
 //!
 //! Account-level, like `/account/export`: no group, and every query
 //! filters on the caller's own id. `push_subscriptions` and `users` are
@@ -35,7 +36,7 @@ pub async fn get_settings(
     auth: AuthUser,
 ) -> AppResult<Json<NotificationSettings>> {
     let row = sqlx::query!(
-        r#"SELECT u.reminder_channel, u.expiry_digest_hour,
+        r#"SELECT u.reminder_channel, u.expiry_digest_hour, u.notify_agenda_changes,
                   (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS "subscriptions!"
            FROM users u WHERE u.id = $1"#,
         auth.user_id
@@ -47,6 +48,7 @@ pub async fn get_settings(
         push_subscriptions: row.subscriptions,
         vapid_public_key: state.push.as_ref().map(|v| v.public_key().to_string()),
         expiry_digest_hour: row.expiry_digest_hour,
+        notify_agenda_changes: row.notify_agenda_changes,
     }))
 }
 
@@ -82,11 +84,13 @@ pub async fn update_settings(
         .transpose()?;
     sqlx::query!(
         r#"UPDATE users SET reminder_channel = $2,
-                  expiry_digest_hour = COALESCE($3, expiry_digest_hour)
+                  expiry_digest_hour = COALESCE($3, expiry_digest_hour),
+                  notify_agenda_changes = COALESCE($4, notify_agenda_changes)
            WHERE id = $1"#,
         auth.user_id,
         channel.as_str(),
         digest_hour,
+        body.notify_agenda_changes,
     )
     .execute(&state.db)
     .await?;
