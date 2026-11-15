@@ -11,7 +11,8 @@
 //! Open Food Facts cache and the throttle's counters, hence a `POST` here
 //! too, #782) and offers, in order:
 //! the "Déjà en stock" screen when an article of the family carries the code
-//! (its "+1" is the quantity adjustment any member may make, and a button
+//! (its "+1" — one pack, « +400 g », when Open Food Facts' size is in the
+//! article's unit, #807 — is the quantity adjustment any member may make, and a button
 //! creates another article anyway, without the code); otherwise the form,
 //! pre-filled from Open Food Facts when the product is known, with the code
 //! in a hidden field; a weighing label, an unknown product or a nameless
@@ -60,6 +61,7 @@ use manage_our_home_shared::validation::stocks::{
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
+use crate::assets::{Script, Vendored};
 use crate::icons::{icon, icon_link, Icon};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -434,16 +436,45 @@ pub(crate) fn date_to_propose(
 /// goes through its category taxonomy (#406).
 pub(crate) const OFF_ATTRIBUTION: &str = r#"<p class="muted">Données produits : <a href="https://world.openfoodfacts.org">Open Food Facts</a>, <a href="https://opendatacommons.org/licenses/odbl/1-0/">ODbL</a>.</p>"#;
 
+/// « Scanner en direct » (#807): reads the camera's preview on the device and
+/// sends the « Code-barres » form with the first code it reads. Loaded by
+/// `scan_block`, right after the block it drives (`assets::Script::LiveScan`).
+pub(crate) const LIVE_SCAN_SCRIPT: &str = include_str!("../../live-scan.js");
+
 /// The barcode block above the form, two plain forms that need no
 /// JavaScript: the photo of the barcode (`capture="environment"` opens the
 /// rear camera on a phone; `data-submit-on-change` sends it as soon as it is
 /// taken where `enhance.js` runs, and the button sends it elsewhere), and
 /// the "Code-barres" field, for the digits typed by hand — a `POST`, since
 /// the lookup writes in apps/api (#782).
+///
+/// Above them, « Scanner en direct » (#807, mock-up validated on
+/// 2026-11-14): `hidden`, and revealed by `LIVE_SCAN_SCRIPT` where
+/// `getUserMedia` exists. Its preview, its one `role="status"` region, its
+/// « Arrêter » and its two notices (camera refused, scan not started) are
+/// written here, hidden, for the script to show: the copy stays in one
+/// place, and nothing of it is seen without the script. The reader is the
+/// browser's `BarcodeDetector`, else the vendored one, whose two addresses
+/// the block carries.
 fn scan_block(scan_value: &str) -> String {
     format!(
         r#"<div class="scan">
 <p><strong>{icon} Scanner le code-barres</strong><br/><span class="muted">Remplit le nom et propose une date de péremption.</span></p>
+<div class="live" data-live-scan data-reader="{reader}" data-reader-wasm="{wasm}" hidden>
+<button type="button" class="live-btn" data-live-start>{camera} Scanner en direct</button>
+<p class="muted" data-live-hint>Visez le code avec la caméra arrière : la lecture se fait sur votre appareil, l'image n'est pas envoyée.</p>
+<div class="cam" data-live-viewer hidden>
+<video muted playsinline aria-label="Aperçu de la caméra"></video>
+<div class="reticle" aria-hidden="true"></div>
+<p class="overlay" data-live-wait hidden><span class="spin" aria-hidden="true"></span> En attente de la caméra…</p>
+</div>
+<p class="status" role="status" aria-live="polite" data-live-status><span data-icon="scan" hidden>{scan_icon}</span><span data-icon="ok" hidden>{check}</span><span data-live-text></span></p>
+<button type="button" class="secondary stop" data-live-stop hidden>{close} Arrêter</button>
+<div class="notice error" role="alert" data-live-denied hidden><p><strong>Caméra bloquée.</strong> Autorisez-la dans les réglages du navigateur pour ce site, puis réessayez. Sinon, photographiez le code ou saisissez-le ci-dessous.</p>
+<button type="button" class="secondary" data-live-start>Réessayer</button></div>
+<div class="notice warning" role="alert" data-live-failed hidden><p><strong>Le scan en direct n'a pas démarré.</strong> Aucune caméra utilisable, ou une autre application l'occupe. Photographiez le code ou saisissez-le ci-dessous.</p>
+<button type="button" class="secondary" data-live-start>Réessayer</button></div>
+</div>
 <form method="post" action="/stocks/new/photo" enctype="multipart/form-data" class="card inline">
 <label>Photographier le code <input type="file" name="photo" accept="image/*" capture="environment" required data-submit-on-change/></label>
 <button type="submit" class="secondary">Scanner</button>
@@ -453,9 +484,17 @@ fn scan_block(scan_value: &str) -> String {
 <button type="submit" class="secondary">Chercher le produit</button>
 </form>
 <p class="muted">La photo est lue sur le serveur puis oubliée : elle n'est ni conservée ni transmise.</p>
-</div>"#,
+</div>
+{script}"#,
         icon = icon(Icon::Scan),
+        reader = Vendored::BarcodeReaderScript.href(),
+        wasm = Vendored::BarcodeReaderWasm.href(),
+        camera = icon(Icon::Camera),
+        scan_icon = icon(Icon::Scan),
+        check = icon(Icon::Check),
+        close = icon(Icon::Close),
         scan = html_escape(scan_value),
+        script = Script::LiveScan.tag(),
     )
 }
 
@@ -562,9 +601,33 @@ fn page(
     shell_with_header(Width::Form, "Ajouter un produit", &fam.header, &body)
 }
 
+/// What scanning an article already in stock adds to it, and the button's
+/// label: one pack — its size as Open Food Facts gives it, « 400 g » on
+/// an article counted in grams — when that size is read in the article's
+/// own unit (any case; no conversion is guessed, a kilogram article does
+/// not take 0,4), else one of the article's unit, « +1 » (arbitrage of
+/// 2026-11-15, #807: « +1 » on 400 g made 401 g).
+pub(crate) fn rescan_increment(unit: &str, pack_size: Option<&str>) -> (f64, String) {
+    match pack_size.and_then(parse_pack_size) {
+        Some(pack) if pack.unit.eq_ignore_ascii_case(unit.trim()) => (
+            pack.quantity,
+            format!("+{}", format_quantity(pack.quantity, unit)),
+        ),
+        _ => (1.0, "+1".to_string()),
+    }
+}
+
+/// The quantity « +1 » or « +400 g » posts: `quantity + step`, which `f64`
+/// does not keep exact (2,2 L + 1,1 L is 3.3000000000000003), rounded to the
+/// thousandths `format_quantity` writes.
+fn rescanned_quantity(quantity: f64, step: f64) -> String {
+    fmt_num(((quantity + step) * 1000.0).round() / 1000.0)
+}
+
 /// "Déjà en stock" (#402): the family's article carrying the scanned code,
 /// with "+1" — the quantity adjustment any member may make, through the
-/// detail page's own route — and a way to create another article anyway,
+/// detail page's own route; one pack, « +400 g », when `pack_size` is read
+/// in the article's unit (`rescan_increment`, #807) — and a way to create another article anyway,
 /// which scans `raw`, the string as it came, again (a GS1 code's date then
 /// reaches that form too) — by a `POST`, as every scan (#782). The date a
 /// GS1 code carried is proposed when it comes sooner (`date_to_propose`,
@@ -575,6 +638,7 @@ fn already_in_stock_page(
     raw: &str,
     proposal: Option<NaiveDate>,
     may_edit: bool,
+    pack_size: Option<&str>,
 ) -> String {
     let proposal_html = match proposal {
         None => String::new(),
@@ -609,12 +673,13 @@ fn already_in_stock_page(
         }
     };
     let id = item.id;
+    let (step, label) = rescan_increment(&item.unit, pack_size);
     let body = format!(
         r#"<h1>Déjà en stock</h1>
 <p>Déjà en stock : <strong>{name}</strong> ({qty})</p>
 <form method="post" action="/stocks/{id}/adjust" class="actions">
 <input type="hidden" name="quantity" value="{next}"/>
-<button type="submit">+1</button>
+<button type="submit">{label}</button>
 </form>{proposal_html}
 <form method="post" action="/stocks/new/scan" class="actions">
 <input type="hidden" name="scan" value="{raw}"/>
@@ -627,7 +692,8 @@ fn already_in_stock_page(
 </div>"#,
         name = html_escape(&item.name),
         qty = html_escape(&format_quantity(item.quantity, &item.unit)),
-        next = html_escape(&fmt_num(item.quantity + 1.0)),
+        next = html_escape(&rescanned_quantity(item.quantity, step)),
+        label = html_escape(&label),
         raw = html_escape(raw),
     );
     shell_with_header(Width::Form, "Déjà en stock", header, &body)
@@ -779,6 +845,7 @@ async fn scanned(
             raw,
             proposal,
             may_edit,
+            scan.existing_pack_size.as_deref(),
         ))
         .into_response();
     }
@@ -1228,6 +1295,7 @@ mod tests {
             weighed: false,
             product: None,
             existing_item_id: None,
+            existing_pack_size: None,
             expires_on,
             expires_on_source: source,
             expires_on_category: category.map(Into::into),
@@ -1488,6 +1556,7 @@ mod tests {
             "3017620422003",
             Some(day(2027, 1, 31)),
             true,
+            None,
         );
         assert!(html.contains("31/01/2027"), "{html}");
         assert!(html.contains("01/03/2027"), "{html}");
@@ -1509,6 +1578,7 @@ mod tests {
             "3017620422003",
             Some(day(2027, 1, 31)),
             false,
+            None,
         );
         assert!(html.contains("31/01/2027"), "{html}");
         assert!(!html.contains("/edit?expires_on="), "{html}");
@@ -1524,6 +1594,7 @@ mod tests {
             "010301762042200310LOT\u{1d}17270131",
             None,
             true,
+            None,
         );
         assert!(
             html.contains(r#"<form method="post" action="/stocks/new/scan""#),
@@ -1545,9 +1616,215 @@ mod tests {
         );
         assert!(!html.contains("?scan="), "{html}");
         // Escaped like any value put back in the page.
-        let html = already_in_stock_page("", &item(None), r#""><b>"#, None, true);
+        let html = already_in_stock_page("", &item(None), r#""><b>"#, None, true, None);
         assert!(
             html.contains(r#"name="scan" value="&quot;&gt;&lt;b&gt;""#),
+            "{html}"
+        );
+    }
+
+    /// The live scan's part of the barcode block: from its opening tag to
+    /// the photo form, which follows it.
+    fn live_part(html: &str) -> &str {
+        let start = html
+            .find(r#"<div class="live""#)
+            .expect("no live scan block");
+        let end = html
+            .find(r#"<form method="post" action="/stocks/new/photo""#)
+            .unwrap();
+        assert!(start < end, "the live scan comes before the photo: {html}");
+        &html[start..end]
+    }
+
+    #[test]
+    fn the_live_scan_is_hidden_until_its_script_reveals_it() {
+        // Without JavaScript, or without `getUserMedia`, the block is
+        // today's: the script lifts `hidden` (mock-up, state 8).
+        let html = scan_block("");
+        let live = live_part(&html);
+        let opening = &live[..live.find('>').unwrap() + 1];
+        assert!(opening.contains(" hidden"), "{opening}");
+        assert!(opening.contains("data-live-scan"), "{opening}");
+        // The script follows the block it drives.
+        assert!(html.trim_end().ends_with(&Script::LiveScan.tag()), "{html}");
+        // The photo, the typed code and their note are still there.
+        assert!(html.contains("Photographier le code"), "{html}");
+        assert!(html
+            .contains(r#"<button type="submit" class="secondary">Chercher le produit</button>"#));
+        assert!(html.contains("La photo est lue sur le serveur puis oubliée"));
+    }
+
+    #[test]
+    fn the_live_scan_points_at_the_vendored_reader() {
+        let html = scan_block("");
+        let live = live_part(&html);
+        assert!(
+            live.contains(&format!(
+                r#"data-reader="{}""#,
+                Vendored::BarcodeReaderScript.href()
+            )),
+            "{live}"
+        );
+        assert!(
+            live.contains(&format!(
+                r#"data-reader-wasm="{}""#,
+                Vendored::BarcodeReaderWasm.href()
+            )),
+            "{live}"
+        );
+    }
+
+    #[test]
+    fn the_live_scan_is_named_announced_and_closable() {
+        let html = scan_block("");
+        let live = live_part(&html);
+        // A button named by its text, its icon hidden from assistive tech.
+        assert!(
+            live.contains(&format!(
+                r#"<button type="button" class="live-btn" data-live-start>{} Scanner en direct</button>"#,
+                icon(Icon::Camera)
+            )),
+            "{live}"
+        );
+        assert!(
+            live.contains("la lecture se fait sur votre appareil, l'image n'est pas envoyée"),
+            "{live}"
+        );
+        assert!(
+            live.contains(r#"<video muted playsinline aria-label="Aperçu de la caméra"></video>"#),
+            "{live}"
+        );
+        // One polite live region for progress and result, errors as alerts.
+        assert_eq!(
+            live.matches(r#"role="status" aria-live="polite""#).count(),
+            1,
+            "{live}"
+        );
+        assert_eq!(live.matches(r#"role="status""#).count(), 1, "{live}");
+        assert_eq!(live.matches(r#"role="alert""#).count(), 2, "{live}");
+        assert!(live.contains("<strong>Caméra bloquée.</strong>"), "{live}");
+        assert!(
+            live.contains("<strong>Le scan en direct n'a pas démarré.</strong>"),
+            "{live}"
+        );
+        assert_eq!(live.matches(">Réessayer</button>").count(), 2, "{live}");
+        assert!(live.contains(" Arrêter</button>"), "{live}");
+        // What only the script shows starts hidden.
+        for hook in [
+            "data-live-viewer",
+            "data-live-stop",
+            "data-live-denied",
+            "data-live-failed",
+            "data-live-wait",
+        ] {
+            let at = live
+                .find(hook)
+                .unwrap_or_else(|| panic!("no {hook}: {live}"));
+            let tag_end = at + live[at..].find('>').unwrap();
+            assert!(
+                live[at..tag_end].contains(" hidden"),
+                "{hook} is shown: {live}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_hook_the_live_scan_script_reads_is_in_the_markup() {
+        let html = scan_block("");
+        let mut hooks = 0;
+        for piece in LIVE_SCAN_SCRIPT.split("[data-live-").skip(1) {
+            let name = &piece[..piece.find(']').unwrap()];
+            assert!(
+                html.contains(&format!("data-live-{name}")),
+                "data-live-{name}: {html}"
+            );
+            hooks += 1;
+        }
+        assert!(hooks >= 8, "{hooks}");
+        for name in ["data-reader", "data-reader-wasm"] {
+            assert!(LIVE_SCAN_SCRIPT.contains(&format!(r#""{name}""#)), "{name}");
+        }
+        // The code goes through the « Code-barres » form, the same POST.
+        assert!(LIVE_SCAN_SCRIPT.contains(r#"form[action="/stocks/new/scan"]"#));
+        assert!(LIVE_SCAN_SCRIPT.contains(r#"input[name="scan"]"#));
+    }
+
+    #[test]
+    fn a_rescan_adds_one_pack_when_its_size_is_in_the_articles_unit() {
+        // Arbitrage of 2026-11-15 (#807): « 400 g » scanned again on an
+        // article of 400 g makes 800 g, not 401 g.
+        assert_eq!(
+            rescan_increment("g", Some("400 g")),
+            (400.0, "+400 g".to_string())
+        );
+        assert_eq!(
+            rescan_increment("g", Some("4 x 125 g")),
+            (500.0, "+500 g".to_string())
+        );
+        assert_eq!(
+            rescan_increment("L", Some("1,5 L")),
+            (1.5, "+1,5 L".to_string())
+        );
+        // The unit written in another case is the same unit, shown as the
+        // article writes it.
+        assert_eq!(
+            rescan_increment("mL", Some("250 ml")),
+            (250.0, "+250 mL".to_string())
+        );
+    }
+
+    #[test]
+    fn a_rescan_posts_the_sum_rounded_to_thousandths() {
+        // 2,2 L + 1,1 L posted « 3.3000000000000003 » (#807).
+        assert_eq!(rescanned_quantity(2.2, 1.1), "3.3");
+        assert_eq!(rescanned_quantity(0.1, 0.2), "0.3");
+        assert_eq!(rescanned_quantity(400.0, 400.0), "800");
+        assert_eq!(rescanned_quantity(1.0, 1.5), "2.5");
+        assert_eq!(rescanned_quantity(0.125, 0.25), "0.375");
+    }
+
+    #[test]
+    fn a_rescan_adds_one_when_the_pack_size_does_not_fit_the_unit() {
+        // No size known (never cached, or none on the record).
+        assert_eq!(rescan_increment("g", None), (1.0, "+1".to_string()));
+        // A size in another unit: no conversion is guessed.
+        assert_eq!(
+            rescan_increment("kg", Some("400 g")),
+            (1.0, "+1".to_string())
+        );
+        assert_eq!(
+            rescan_increment("unité", Some("400 g")),
+            (1.0, "+1".to_string())
+        );
+        // A size that is not read as a quantity.
+        assert_eq!(
+            rescan_increment("tranches", Some("6 tranches")),
+            (1.0, "+1".to_string())
+        );
+    }
+
+    #[test]
+    fn already_in_stock_adds_the_pack_size_it_names() {
+        let mut item = item(None);
+        item.quantity = 400.0;
+        item.unit = "g".into();
+        let html = already_in_stock_page("", &item, "3017620422003", None, true, Some("400 g"));
+        assert!(
+            html.contains(r#"<input type="hidden" name="quantity" value="800"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<button type="submit">+400 g</button>"#),
+            "{html}"
+        );
+        // Without a size that fits, one of the article's unit, as before.
+        let html = already_in_stock_page("", &item, "3017620422003", None, true, None);
+        assert!(
+            html.contains(r#"<input type="hidden" name="quantity" value="401"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<button type="submit">+1</button>"#),
             "{html}"
         );
     }
@@ -1555,7 +1832,7 @@ mod tests {
     #[test]
     fn already_in_stock_writes_the_quantity_as_the_list_does() {
         // Two in the default unit: the bare number, as on the list (#527).
-        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
+        let html = already_in_stock_page("", &item(None), "3017620422003", None, true, None);
         assert!(
             html.contains("Déjà en stock : <strong>Nutella</strong> (2)</p>"),
             "{html}"
@@ -1564,7 +1841,7 @@ mod tests {
 
     #[test]
     fn without_a_proposal_the_page_says_nothing_of_a_date() {
-        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
+        let html = already_in_stock_page("", &item(None), "3017620422003", None, true, None);
         assert!(!html.contains("lue sur le code"), "{html}");
         assert!(!html.contains("/edit?expires_on="), "{html}");
     }
@@ -1664,8 +1941,9 @@ mod tests {
         assert!(!html.contains(r#"method="get""#), "{html}");
         assert!(html.contains(r#"name="scan""#), "{html}");
         assert!(html.contains(r#"value="3017620422003""#), "{html}");
-        // No script of its own.
-        assert!(!html.contains("<script"), "{html}");
+        // No script but the live scan's (#807), which the forms do not need.
+        assert_eq!(html.matches("<script").count(), 1, "{html}");
+        assert!(html.contains(&Script::LiveScan.tag()), "{html}");
     }
 
     #[test]

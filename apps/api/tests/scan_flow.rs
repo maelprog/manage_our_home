@@ -670,6 +670,40 @@ async fn an_article_already_in_stock_gets_no_category_date(db: PgPool) {
     assert!(body["expires_on_source"].is_null(), "{body}");
 }
 
+#[sqlx::test]
+async fn a_code_already_in_stock_brings_its_cached_pack_size(db: PgPool) {
+    let (router, hits) = router_with_off(db.clone()).await;
+    let cookie = register_verify_login(&router, &db, "scan-pack-size@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+
+    // Never scanned: the code is in stock, the cache knows nothing of it.
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Nutella", "quantity": 400.0, "unit": "g", "barcode": NUTELLA})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let body = json_body(scan(&router, &cookie, &group_id, NUTELLA).await).await;
+    assert!(body["existing_item_id"].is_string(), "{body}");
+    assert!(body["existing_pack_size"].is_null(), "{body}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "no product asked for");
+
+    // Once another family's scan has cached the record, the size comes
+    // with the article already in stock — still without asking.
+    let other_group = create_group(&router, &cookie).await;
+    let elsewhere = json_body(scan(&router, &cookie, &other_group, NUTELLA).await).await;
+    assert_eq!(elsewhere["product"]["quantity"], "400 g", "{elsewhere}");
+    assert!(elsewhere["existing_pack_size"].is_null(), "{elsewhere}");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let body = json_body(scan(&router, &cookie, &group_id, NUTELLA).await).await;
+    assert_eq!(body["existing_pack_size"], "400 g", "{body}");
+    assert!(body["product"].is_null(), "{body}");
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "the cache answered");
+}
+
 /// A valid EAN-13 the stub does not know, one per `i`: `400` and `i` on
 /// nine digits, then the check digit.
 fn unknown_ean13(i: usize) -> String {

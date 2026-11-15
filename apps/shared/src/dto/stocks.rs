@@ -197,6 +197,13 @@ pub struct ScanResult {
     /// The family's article that already carries this code: a rescan adds
     /// to it rather than creating a second one.
     pub existing_item_id: Option<Uuid>,
+    /// The product's pack size as Open Food Facts writes it (« 400 g », the
+    /// text of `ScannedProduct::quantity`), when `existing_item_id` is
+    /// `Some` and the product's record is in the cache — fresh or not:
+    /// Open Food Facts is not asked for a code already in stock. The page
+    /// adds that much to the article rather than one (#807).
+    #[serde(default)]
+    pub existing_pack_size: Option<String>,
     /// The date proposed for the article, in this order: the one a GS1 2D
     /// code carries (#403) — its expiry date `(17)`, else its best-before
     /// date `(15)`; else, when `product` is known, the scan's day (Paris)

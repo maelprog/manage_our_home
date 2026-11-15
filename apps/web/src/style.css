@@ -1093,6 +1093,33 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .scan .icon { color: var(--accent); }
 .or { display: flex; align-items: center; gap: var(--s3); margin: var(--s4) 0; color: var(--muted); font-size: var(--t-sm); }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+/* « Scanner en direct » (#807): the button, then the camera's preview in
+   its place — a sighting frame, its corners in --accent, --success once a
+   code is read. The mock-up's sweep line stands still: the sheet's one
+   animation is the busy wheel, which the waiting `.spin` borrows. In the
+   scanning state, « Arrêter » sits on the preview's corner: the button
+   and the hint are hidden then, so the block's top is the preview's. */
+.live { position: relative; display: flex; flex-direction: column; gap: var(--s3); }
+.live > * { margin: 0; }
+.live button .icon { color: inherit; }
+.live-btn { width: 100%; }
+.live .notice button { margin-top: var(--s2x); }
+.live[data-state="scanning"] .stop { position: absolute; top: var(--s2x); right: var(--s2x); }
+.cam { position: relative; aspect-ratio: 4 / 3; overflow: hidden; display: grid; place-items: center; background: var(--hover); border: 1px solid var(--border); border-radius: var(--r-md); }
+.cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.reticle { position: relative; width: 78%; height: 42%; border-radius: var(--r-sm); box-shadow: 0 0 0 2px var(--bg); }
+/* Four corners out of one border: the mask keeps 22px of each. */
+.reticle::before { content: ""; position: absolute; inset: 0; border: 3px solid var(--accent); border-radius: inherit; mask: conic-gradient(at 22px 22px, transparent 75%, currentColor 0) 0 0 / calc(100% - 22px) calc(100% - 22px); }
+.reticle::after { content: ""; position: absolute; top: 50%; left: var(--s2x); right: var(--s2x); border-top: 2px solid var(--accent); }
+.cam.ok .reticle::before { border-color: var(--success); }
+.cam.ok .reticle::after { display: none; }
+.overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); font-size: var(--t-sm); }
+.status { display: flex; align-items: center; gap: var(--s2x); min-height: var(--s6); font-size: var(--t-sm); }
+/* Before the camera, after it, or while the reader loads, the region holds
+   nothing to see — at most words for a screen reader: out of the flow, it
+   leaves no band and is still announced. */
+.live:not([data-state]) > .status { position: absolute; min-height: 0; }
+.status.ok, .status.ok .icon { color: var(--success); font-weight: 600; }
 /* The day and the meal of a planned recipe (#812): a `.card.inline` whose
    meals are `.picks` in a fieldset, which draws no box of its own here, its
    legend the size of a field's label; the line that says the day takes the
@@ -1303,6 +1330,7 @@ input[name="no_expiry"] { accent-color: var(--accent); width: 1.25rem; height: 1
    measured, in every variant and both themes. Frozen, not hidden, under
    reduced motion (below). */
 button[aria-busy="true"] { cursor: progress; }
+.spin,
 button[aria-busy="true"]::before {
   content: "";
   display: inline-block;
@@ -1443,7 +1471,7 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
    still says the form is on its way. */
 @media (prefers-reduced-motion: reduce) {
   :root { --dur: 0s; }
-  button[aria-busy="true"]::before { animation: none; }
+  .spin, button[aria-busy="true"]::before { animation: none; }
 }
 /* Forced colours drop `box-shadow`, and with it the school holiday's band
    (#565): a top border of the same width, which they repaint instead of

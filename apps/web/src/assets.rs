@@ -197,6 +197,8 @@ async fn serve_stylesheet() -> Response {
 /// - `LocalReminders`: every page of the Android app, in the head (#668).
 /// - `GoogleSignIn`: `/login` and `/register` in the Android app only,
 ///   right after the button it drives (#670).
+/// - `LiveScan`: the barcode block of `/stocks/new`, right after it (#807);
+///   it loads the vendored reader (`Vendored`) itself, when it needs it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Script {
     Enhance,
@@ -205,16 +207,18 @@ pub enum Script {
     Push,
     LocalReminders,
     GoogleSignIn,
+    LiveScan,
 }
 
 impl Script {
-    pub const ALL: [Script; 6] = [
+    pub const ALL: [Script; 7] = [
         Script::Enhance,
         Script::ResetPassword,
         Script::MessagerieLive,
         Script::Push,
         Script::LocalReminders,
         Script::GoogleSignIn,
+        Script::LiveScan,
     ];
 
     fn stem(self) -> &'static str {
@@ -225,6 +229,7 @@ impl Script {
             Script::Push => "push",
             Script::LocalReminders => "local-reminders",
             Script::GoogleSignIn => "google-sign-in",
+            Script::LiveScan => "live-scan",
         }
     }
 
@@ -237,6 +242,7 @@ impl Script {
             Script::Push => crate::routes::account::notifications::PUSH_SCRIPT,
             Script::LocalReminders => crate::routes::account::notifications::LOCAL_REMINDERS_SCRIPT,
             Script::GoogleSignIn => crate::routes::auth::GOOGLE_SIGN_IN_SCRIPT,
+            Script::LiveScan => crate::routes::stocks::new::LIVE_SCAN_SCRIPT,
         }
     }
 
@@ -291,12 +297,15 @@ async fn serve_script(script: Script) -> Response {
 /// - `BarcodeReaderWasm`: the decoder it instantiates
 ///   (`dist/reader/zxing_reader.wasm`). The script fetches it from jsDelivr
 ///   unless told otherwise: the page that loads it has to point
-///   `prepareZXingModule`'s `locateFile` at `BarcodeReaderWasm.href()`.
+///   `prepareZXingModule`'s `locateFile` at `BarcodeReaderWasm.href()` —
+///   which `Script::LiveScan` does, reading it off the barcode block.
 ///   The CSP (`default-src 'self'`, `infra/Caddyfile`) refuses the CDN
 ///   anyway; `WebAssembly.instantiate` needs its `'wasm-unsafe-eval'`, and
 ///   `instantiateStreaming` the `application/wasm` type served here.
 ///
-/// Neither is loaded by any page yet: #807 is the one that will.
+/// Both are loaded by `Script::LiveScan` on `/stocks/new` (#807), only when
+/// « Scanner en direct » is pressed and the browser has no
+/// `BarcodeDetector` reading EAN-13.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Vendored {
     BarcodeReaderScript,

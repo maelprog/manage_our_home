@@ -78,6 +78,14 @@ pub async fn scan_stock_item(
         product_for(&state, &code).await?
     };
 
+    // ...but what one pack weighs, if a scan ever cached it: the page adds
+    // that rather than one (#807). The cache only, fresh or not — the size
+    // of a product hardly changes, and Open Food Facts stays unasked.
+    let existing_pack_size = match existing_item_id {
+        Some(_) => cached_pack_size(&state, &code).await?,
+        None => None,
+    };
+
     let categories_tags = product
         .as_ref()
         .map(|p| p.categories_tags.as_slice())
@@ -89,10 +97,24 @@ pub async fn scan_stock_item(
         weighed,
         product,
         existing_item_id,
+        existing_pack_size,
         expires_on: proposed.as_ref().map(|p| p.on),
         expires_on_source: proposed.as_ref().map(|p| p.source),
         expires_on_category: proposed.and_then(|p| p.category).map(str::to_string),
     }))
+}
+
+/// The pack size the cache holds for `code`, whatever its age, without
+/// asking Open Food Facts. The query is `product_for`'s, word for word, so
+/// that both share one entry of the offline query cache (`.sqlx`).
+async fn cached_pack_size(state: &AppState, code: &str) -> AppResult<Option<String>> {
+    let cached = sqlx::query!(
+        "SELECT name, quantity, categories_tags, fetched_at FROM off_products WHERE code = $1",
+        code,
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(cached.and_then(|row| row.quantity))
 }
 
 /// The product behind `code`: from the cache while it is fresh, else from
