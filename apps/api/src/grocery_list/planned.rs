@@ -14,6 +14,11 @@
 use std::collections::HashSet;
 
 use manage_our_home_shared::validation::grocery_list::normalize_unit;
+// Shared with the recipe edit form (#845), which scales the quantities of a
+// recipe whose number of people changes the same way.
+pub(crate) use manage_our_home_shared::validation::recipes::{
+    scale_quantity, without_binary_noise,
+};
 use uuid::Uuid;
 
 /// One required ingredient of a planned recipe, with the two numbers of
@@ -41,35 +46,9 @@ pub(crate) struct PlannedLine {
     pub unit: Option<String>,
 }
 
-/// Drops the binary noise of a computed quantity, without rounding it
-/// (decision of 2026-10-25): `0.1 + 0.2` reads `0.3`, not
-/// `0.30000000000000004`, while `0.125 + 0.0625` keeps its `0.1875` and
-/// `200 × 5 / 3` reads `333.333333333`. It keeps twelve significant digits:
-/// nothing bounds the digits of a quantity (`DOUBLE PRECISION`), so one
-/// typed with more loses its last ones (`1.23456789012345` reads
-/// `1.23456789012`), but a non-zero quantity never becomes 0.
-pub(crate) fn without_binary_noise(q: f64) -> f64 {
-    format!("{q:.11e}").parse().unwrap_or(q)
-}
-
 /// A sum of quantities, without its binary noise.
 fn add_quantities(a: f64, b: f64) -> f64 {
     without_binary_noise(a + b)
-}
-
-/// `quantity × target / base`, not rounded, only without its binary noise;
-/// the quantity as written when it, the base or the target is missing.
-pub(crate) fn scale_quantity(
-    quantity: Option<f64>,
-    base: Option<i32>,
-    target: Option<i32>,
-) -> Option<f64> {
-    match (quantity, base, target) {
-        (Some(q), Some(b), Some(t)) if b > 0 => {
-            Some(without_binary_noise(q * f64::from(t) / f64::from(b)))
-        }
-        _ => quantity,
-    }
 }
 
 /// Two units name the same one when they match once trimmed, whatever the
@@ -274,57 +253,6 @@ mod tests {
             quantity,
             unit: unit.map(Into::into),
         }
-    }
-
-    // -- scale_quantity ------------------------------------------------------
-
-    #[test]
-    fn scales_to_the_selection_against_the_recipe_base() {
-        assert_eq!(scale_quantity(Some(200.0), Some(4), Some(6)), Some(300.0));
-        assert_eq!(scale_quantity(Some(3.0), Some(4), Some(2)), Some(1.5));
-        assert_eq!(scale_quantity(Some(500.0), Some(4), Some(4)), Some(500.0));
-    }
-
-    #[test]
-    fn a_scaled_quantity_is_not_rounded() {
-        // Decision of 2026-10-25: no rounding, 200 g × 5 / 3 keeps its digits.
-        assert_eq!(
-            scale_quantity(Some(200.0), Some(3), Some(5)),
-            Some(333.333333333)
-        );
-        assert_eq!(
-            scale_quantity(Some(1.0), Some(3), Some(5)),
-            Some(1.66666666667)
-        );
-    }
-
-    #[test]
-    fn a_small_scaled_quantity_keeps_every_digit() {
-        // Neither the hundredth nor two significant digits.
-        assert_eq!(scale_quantity(Some(0.0075), Some(2), Some(2)), Some(0.0075));
-        assert_eq!(scale_quantity(Some(0.005), Some(4), Some(4)), Some(0.005));
-        assert_eq!(
-            scale_quantity(Some(0.01), Some(3), Some(1)),
-            Some(0.00333333333333)
-        );
-        // 0.004 kg for 4, cooked for 1: 0.001 kg, not « 0 kg ».
-        assert_eq!(scale_quantity(Some(0.004), Some(4), Some(1)), Some(0.001));
-        // A written 0 stays 0.
-        assert_eq!(scale_quantity(Some(0.0), Some(4), Some(1)), Some(0.0));
-    }
-
-    #[test]
-    fn a_scaled_quantity_carries_no_binary_noise() {
-        // 0.1 × 3 is 0.30000000000000004 in f64.
-        assert_eq!(scale_quantity(Some(0.1), Some(1), Some(3)), Some(0.3));
-    }
-
-    #[test]
-    fn without_a_base_or_a_target_the_quantity_is_taken_as_written() {
-        assert_eq!(scale_quantity(Some(200.0), None, Some(6)), Some(200.0));
-        assert_eq!(scale_quantity(Some(200.0), Some(4), None), Some(200.0));
-        assert_eq!(scale_quantity(Some(0.125), None, None), Some(0.125));
-        assert_eq!(scale_quantity(None, Some(4), Some(6)), None);
     }
 
     // -- plan_lines ----------------------------------------------------------
