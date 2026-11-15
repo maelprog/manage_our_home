@@ -131,7 +131,7 @@ async function createLowStockItem(page: Page, name: string): Promise<void> {
   await page.goto("/stocks/new");
   await page.getByLabel("Nom").fill(name);
   await page.getByLabel("Quantité").fill("0");
-  await page.getByLabel("Unité").fill("kg");
+  await page.getByLabel("Unité", { exact: true }).fill("kg");
   await page.getByLabel("Seuil de réappro").fill("2");
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
 }
@@ -495,7 +495,7 @@ async function seedTheTiles(page: Page): Promise<void> {
   await page.goto("/stocks/new");
   await page.getByLabel("Nom").fill("Crème fraîche");
   await page.getByLabel("Quantité").fill("1");
-  await page.getByLabel("Unité").fill("pot");
+  await page.getByLabel("Unité", { exact: true }).fill("pot");
   await page.getByLabel("Date de péremption").fill(isoDay(2));
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
   await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);

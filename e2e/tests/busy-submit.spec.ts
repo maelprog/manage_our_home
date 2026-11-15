@@ -367,7 +367,7 @@ test("an icon button: it keeps its size and its name, the wheel alone in its box
   await page.goto("/stocks/new");
   await page.getByLabel("Nom").fill("Riz");
   await page.getByLabel("Quantité").fill("2");
-  await page.getByLabel("Unité").fill("kg");
+  await page.getByLabel("Unité", { exact: true }).fill("kg");
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
   await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
   const plus = await sendIconButton(page, "Ajouter 1 à Riz", /\/stocks\/[0-9a-f-]+\/adjust$/);

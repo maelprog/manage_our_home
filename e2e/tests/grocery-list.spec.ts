@@ -69,7 +69,7 @@ async function createStockItem(
   await page.goto("/stocks/new");
   await page.getByLabel("Nom").fill(name);
   await page.getByLabel("Quantité").fill(quantity);
-  await page.getByLabel("Unité").fill(unit);
+  await page.getByLabel("Unité", { exact: true }).fill(unit);
   if (threshold !== undefined) await page.getByLabel("Seuil de réappro").fill(threshold);
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
   await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
@@ -521,7 +521,7 @@ test.describe("Grocery list — reception (#472)", () => {
     await page.goto("/stocks/new");
     await page.getByLabel("Nom").fill("Lait");
     await page.getByLabel("Quantité").fill("1");
-    await page.getByLabel("Unité").fill("L");
+    await page.getByLabel("Unité", { exact: true }).fill("L");
     await page.getByLabel("Date de péremption").fill(stockDate);
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);

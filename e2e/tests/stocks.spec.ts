@@ -76,8 +76,8 @@ async function createItem(page: Page, opts: ItemOpts): Promise<void> {
   await page.goto("/stocks/new");
   await page.getByLabel("Nom").fill(opts.name);
   await page.getByLabel("Quantité").fill(opts.quantity);
-  await page.getByLabel("Unité").fill(opts.unit);
-  if (opts.category) await page.getByLabel("Catégorie").fill(opts.category);
+  await page.getByLabel("Unité", { exact: true }).fill(opts.unit);
+  if (opts.category) await page.getByLabel("Catégorie", { exact: true }).fill(opts.category);
   if (opts.threshold !== undefined) await page.getByLabel("Seuil de réappro").fill(opts.threshold);
   if (opts.expiresOn !== undefined) await page.getByLabel("Date de péremption").fill(opts.expiresOn);
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
@@ -177,7 +177,7 @@ test.describe("Stocks — list & create", () => {
     // Bypass the browser's `required` by removing the attribute, so the
     // server-side shared validation is what rejects it.
     await page.getByLabel("Nom").evaluate((el) => el.removeAttribute("required"));
-    await page.getByLabel("Unité").fill("kg");
+    await page.getByLabel("Unité", { exact: true }).fill("kg");
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page.getByText("Le nom est obligatoire.")).toBeVisible();
   });
@@ -191,6 +191,81 @@ test.describe("Stocks — list & create", () => {
     await expect(page.getByText("Quantité : 6", { exact: true })).toBeVisible();
   });
 
+  // #803: a ▾ beside the unit and the place opens all their values, on a
+  // phone as on a PC, by touch, pointer or keyboard; the fields stay free.
+  test("the ▾ of the unit and the place opens their lists, by pointer and by keyboard", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-stcombo", "Combo User");
+    await createGroup(page, "Famille Placards");
+    await page.goto("/stocks/new");
+    const unit = page.getByLabel("Unité", { exact: true });
+    const place = page.getByLabel("Catégorie", { exact: true });
+    const units = page.getByRole("button", { name: "Voir les unités" });
+    const places = page.getByRole("button", { name: "Voir les catégories" });
+    const unitList = page.getByRole("listbox", { name: "Unités" });
+    const placeList = page.getByRole("listbox", { name: "Catégories" });
+    await expect(units).toHaveAttribute("aria-expanded", "false");
+    await expect(unitList).toBeHidden();
+
+    // Pointer: every unit, the default named so; a pick fills the field.
+    await units.click();
+    await expect(units).toHaveAttribute("aria-expanded", "true");
+    await expect(unitList.getByRole("option")).toHaveCount(10);
+    await expect(unitList.getByRole("option", { name: "unité défaut" })).toBeVisible();
+    await unitList.getByRole("option", { name: "kg", exact: true }).click();
+    await expect(unit).toHaveValue("kg");
+    await expect(unitList).toBeHidden();
+    await expect(units).toHaveAttribute("aria-expanded", "false");
+    // Reopened, the value held is the selected option.
+    await units.click();
+    await expect(unitList.getByRole("option", { name: "kg", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    // ▾ again closes it; the open list lies over the place's ▾.
+    await units.click();
+    await expect(unitList).toBeHidden();
+    await places.click();
+    await expect(placeList.getByRole("option")).toHaveText(["Frigo", "Placard", "Congélateur"]);
+    // Opening the other list closes this one; a click elsewhere, both.
+    await units.click();
+    await expect(placeList).toBeHidden();
+    await expect(unitList).toBeVisible();
+    await page.getByLabel("Nom").click();
+    await expect(unitList).toBeHidden();
+
+    // Keyboard: Enter opens on the first value, ↓ moves, Enter picks.
+    await places.focus();
+    await page.keyboard.press("Enter");
+    await expect(places).toHaveAttribute("aria-expanded", "true");
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(place).toHaveValue("Placard");
+    await expect(placeList).toBeHidden();
+    await expect(place).toBeFocused();
+    // Space opens too; Escape closes and leaves the focus on ▾.
+    await places.focus();
+    await page.keyboard.press(" ");
+    await expect(placeList).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(placeList).toBeHidden();
+    await expect(places).toHaveAttribute("aria-expanded", "false");
+    await expect(places).toBeFocused();
+    // The field stays free text.
+    await place.fill("Cave");
+    await page.getByLabel("Nom").fill("Confiture");
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+
+    // The edit form carries the same ▾.
+    await openItemDetail(page, "Confiture");
+    await page.getByRole("link", { name: "Modifier l'article" }).click();
+    await expect(page.getByLabel("Catégorie", { exact: true })).toHaveValue("Cave");
+    await page.getByRole("button", { name: "Voir les catégories" }).click();
+    await expect(page.getByRole("listbox", { name: "Catégories" })).toBeVisible();
+  });
+
   test("unknown item id shows the not-found page", async ({ page }) => {
     await registerAndLogin(page, "e2e-st404", "Stock 404");
     await createGroup(page, "Famille 404");
@@ -201,6 +276,22 @@ test.describe("Stocks — list & create", () => {
 
 // #401: one expiry date per article (the nearest). Dates are built in
 // Europe/Paris (`lib/dates.ts`), the day the app judges "today" against.
+test.describe("Stocks — sans JavaScript (#803)", () => {
+  test.use({ javaScriptEnabled: false });
+
+  test("the unit and the place keep their datalist alone", async ({ page }) => {
+    await registerAndLogin(page, "e2e-stnojs", "No Script User");
+    await createGroup(page, "Famille Sans Script");
+    await page.goto("/stocks/new");
+    await expect(page.getByLabel("Unité", { exact: true })).toHaveAttribute("list", "units");
+    await expect(page.getByLabel("Catégorie", { exact: true })).toHaveAttribute("list", "places");
+    const buttons = page.locator("button[data-combo]");
+    await expect(buttons).toHaveCount(2);
+    await expect(buttons.first()).toBeHidden();
+    await expect(buttons.last()).toBeHidden();
+  });
+});
+
 test.describe("Stocks — expiry date", () => {
   test("the list shows each date with a worded status and can put the soonest first", async ({
     page,
