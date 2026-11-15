@@ -14,22 +14,30 @@ use crate::recipes::dietary_filter::{
     allergy_warning, excluded, household_equipment, reader_dislikes, visible_allergies,
     AllergyWarning, HardFilter, Ingredient,
 };
+use crate::recipes::taste::{taste_score, Rated, TasteTag};
 use crate::recipes::taxonomy::{taxonomy, TagId, Taxonomy};
 use crate::stocks::items::today;
 use crate::AppState;
 
 /// Rule-based suggestion algorithm (architecture.md: "a concrete v1 rule,
-/// not ML"). Scores each family recipe on three inputs named in idea.md:
+/// not ML"). Scores each family recipe on three inputs named in idea.md,
+/// and a fourth, the household's taste (#821):
 ///
 /// 1. **Stock match** — how many of the recipe's required (non-optional)
 ///    ingredients are currently in stock. Dominant term (0-100 points):
 ///    lets the family cook what they already have.
 /// 2. **Variety** — a flat penalty if the recipe was logged in
-///    `meal_history` within the last 14 days, so the same meal doesn't get
-///    resuggested right after being eaten.
+///    `meal_history` within the last [`VARIETY_WINDOW_DAYS`] (28 since
+///    #821, 14 before), so the same meal doesn't get resuggested right
+///    after being eaten.
 /// 3. **Season** — a small bonus per ingredient whose `seasonal_months`
 ///    includes the current month, nudging suggestions toward what's in
 ///    season without overriding the stock-match term.
+/// 4. **Taste** — the « Aimé » / « Pas aimé » given when a recipe was
+///    marked done, on the recipe and, weaker, on the recipes sharing its
+///    ingredient categories ([`taste_score`]), bounded by
+///    [`crate::recipes::taste::TASTE_MAX`] (15). Without such tags the
+///    term is 0 and the score is the three others'.
 ///
 /// Ingredient/stock matching goes through Open Food Facts' category
 /// taxonomy (#406, `recipes::taxonomy`): an article covers an ingredient
@@ -44,8 +52,8 @@ use crate::AppState;
 /// keeps out what the reader may not be proposed: their dislikes, the
 /// equipment the household lacks and, unless `avoid_allergens=false`, the
 /// allergies they may see. It changes no score of what it keeps.
-const VARIETY_WINDOW_DAYS: i64 = 14;
-const RECENCY_PENALTY: f64 = 30.0;
+pub(crate) const VARIETY_WINDOW_DAYS: i64 = 28;
+pub(crate) const RECENCY_PENALTY: f64 = 30.0;
 const SEASONAL_BONUS: f64 = 5.0;
 
 struct RecipeRow {
@@ -206,6 +214,28 @@ pub(crate) async fn score_recipes(
     .collect();
     let recent_meals: HashMap<Uuid, NaiveDate> = recent_meals.into_iter().collect();
 
+    // Every meal's verdict, whenever it was eaten: « Aimé » minus « Pas
+    // aimé », per recipe (#821).
+    let verdicts: Vec<(Uuid, i64)> = sqlx::query!(
+        r#"
+        SELECT recipe_id,
+               COUNT(*) FILTER (WHERE $2::text = ANY(taste_tags))
+                 - COUNT(*) FILTER (WHERE $3::text = ANY(taste_tags)) AS "net!"
+        FROM meal_history
+        WHERE group_id = $1
+        GROUP BY recipe_id
+        "#,
+        group_id,
+        TasteTag::Aime.as_str(),
+        TasteTag::PasAime.as_str(),
+    )
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .filter(|r| r.net != 0)
+    .map(|r| (r.recipe_id, r.net))
+    .collect();
+
     let allergies = visible_allergies(tx, group_id, reader).await?;
     let dislikes = reader_dislikes(tx, reader).await?;
     let equipment = household_equipment(tx, group_id).await?;
@@ -223,6 +253,31 @@ pub(crate) async fn score_recipes(
             .or_default()
             .push(ing);
     }
+
+    // A recipe's ingredient categories, for the taste term: the canonical
+    // tag of each required ingredient the taxonomy knows.
+    let categories: HashMap<Uuid, HashSet<TagId>> = recipe_rows
+        .iter()
+        .map(|recipe| {
+            let tags = ingredients_by_recipe
+                .get(&recipe.id)
+                .into_iter()
+                .flatten()
+                .filter(|i| !i.is_optional)
+                .filter_map(|i| taxonomy.canonical_ingredient(&i.name))
+                .collect();
+            (recipe.id, tags)
+        })
+        .collect();
+    let no_categories = HashSet::new();
+    let rated: Vec<Rated<'_, TagId>> = verdicts
+        .iter()
+        .map(|&(recipe_id, net)| Rated {
+            recipe_id,
+            net,
+            categories: categories.get(&recipe_id).unwrap_or(&no_categories),
+        })
+        .collect();
 
     // The month of today in Paris, like the variety window: on the first
     // day of a month, the UTC month is still the previous one until 1–2 a.m.
@@ -280,8 +335,15 @@ pub(crate) async fn score_recipes(
                 .count() as f64
                 * SEASONAL_BONUS;
 
+            let taste = taste_score(
+                recipe.id,
+                categories.get(&recipe.id).unwrap_or(&no_categories),
+                &rated,
+            );
+
             let score = match_ratio * 100.0 - if recently_eaten { RECENCY_PENALTY } else { 0.0 }
-                + seasonal_bonus;
+                + seasonal_bonus
+                + taste;
 
             Some(RecipeSuggestion {
                 recipe_id: recipe.id,

@@ -394,7 +394,7 @@ pub async fn export_account(
             .extend(export::nest_ingredients(recipes_json, ingredients));
 
         let meals = sqlx::query!(
-            r#"SELECT id, group_id, recipe_id, eaten_on, created_at
+            r#"SELECT id, group_id, recipe_id, eaten_on, created_at, taste_tags
                FROM meal_history WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -405,6 +405,7 @@ pub async fn export_account(
             json!({
                 "id": m.id, "group_id": m.group_id, "recipe_id": m.recipe_id,
                 "eaten_on": m.eaten_on, "created_at": m.created_at,
+                "taste_tags": m.taste_tags,
             })
         }));
 

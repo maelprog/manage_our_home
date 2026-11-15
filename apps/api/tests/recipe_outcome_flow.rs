@@ -2163,3 +2163,186 @@ async fn done_removes_a_line_it_empties_without_a_threshold(db: PgPool) {
     );
     assert_eq!(meals(&router, &owner, &group_id).await, 1);
 }
+
+/// The suggestions' scores, by recipe id.
+async fn suggestion_scores(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+) -> std::collections::HashMap<String, f64> {
+    let res = get(
+        router,
+        cookie,
+        &format!("/groups/{group_id}/recipes/suggestions"),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["recipe_id"].as_str().unwrap().to_string(),
+                s["score"].as_f64().unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// AC (#821): done with taste tags keeps them with the meal and changes the
+/// suggestions. « Aimé » raises the recipe itself (5 points) and, at half
+/// weight, a recipe of the same ingredient categories (2.5); a recipe of
+/// other categories, or sharing them only through optional ingredients, is
+/// unchanged. A later « Pas aimé » on the same recipe
+/// cancels it. « Aimé » with « Pas aimé » is refused, and nothing applied;
+/// an unknown tag is refused too.
+#[sqlx::test]
+async fn done_with_taste_tags_changes_the_suggestions(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "done-taste@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+
+    let flan = planned_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Flan", "ingredients": [
+            {"name": "Lait", "quantity": 500.0, "unit": "ml"},
+            {"name": "Œufs", "quantity": 4.0}
+        ]}),
+        json!({"servings": 4}),
+    )
+    .await;
+    let creme = created_id(
+        post(
+            &router,
+            &cookie,
+            &format!("/groups/{group_id}/recipes"),
+            json!({"name": "Crème renversée", "ingredients": [
+                {"name": "lait", "quantity": 1.0, "unit": "l"},
+                {"name": "oeuf", "quantity": 6.0}
+            ]}),
+        )
+        .await,
+    )
+    .await;
+    let riz = created_id(
+        post(
+            &router,
+            &cookie,
+            &format!("/groups/{group_id}/recipes"),
+            json!({"name": "Riz pilaf", "ingredients": [
+                {"name": "Riz", "quantity": 200.0, "unit": "g"}
+            ]}),
+        )
+        .await,
+    )
+    .await;
+    let gateau = created_id(
+        post(
+            &router,
+            &cookie,
+            &format!("/groups/{group_id}/recipes"),
+            json!({"name": "Gâteau", "ingredients": [
+                {"name": "Farine", "quantity": 200.0, "unit": "g"},
+                {"name": "Lait", "quantity": 100.0, "unit": "ml", "is_optional": true},
+                {"name": "Œufs", "quantity": 2.0, "is_optional": true}
+            ]}),
+        )
+        .await,
+    )
+    .await;
+    let before = suggestion_scores(&router, &cookie, &group_id).await;
+
+    for tags in [json!(["aime", "pas_aime"]), json!(["delicieux"])] {
+        let refused = post(
+            &router,
+            &cookie,
+            &done_path(&group_id, &flan),
+            json!({"removals": [], "taste_tags": tags}),
+        )
+        .await;
+        assert!(
+            refused.status().is_client_error(),
+            "{tags} must be refused, got {}",
+            refused.status()
+        );
+        if tags[0] == "aime" {
+            assert_status(&refused, StatusCode::BAD_REQUEST);
+            assert_eq!(json_body(refused).await["error"], "conflicting_taste_tags");
+        }
+    }
+    assert_eq!(meals(&router, &cookie, &group_id).await, 0);
+    assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
+
+    let done = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &flan),
+        json!({"removals": [], "taste_tags": ["trop_long", "aime", "aime"]}),
+    )
+    .await;
+    assert_status(&done, StatusCode::OK);
+    assert_eq!(
+        json_body(done).await["meal"]["taste_tags"],
+        json!(["trop_long", "aime"])
+    );
+
+    let liked = suggestion_scores(&router, &cookie, &group_id).await;
+    // The flan was just eaten: the variety penalty (30), and its « Aimé ».
+    assert_eq!(liked[&flan] - before[&flan], -30.0 + 5.0);
+    assert_eq!(liked[&creme] - before[&creme], 2.5);
+    assert_eq!(liked[&riz], before[&riz]);
+    assert_eq!(liked[&gateau], before[&gateau]);
+
+    plan_again(&router, &cookie, &group_id, &flan).await;
+    let done = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &flan),
+        json!({"removals": [], "taste_tags": ["pas_aime"]}),
+    )
+    .await;
+    assert_status(&done, StatusCode::OK);
+    let cancelled = suggestion_scores(&router, &cookie, &group_id).await;
+    assert_eq!(cancelled[&flan] - before[&flan], -30.0);
+    assert_eq!(cancelled[&creme], before[&creme]);
+    assert_eq!(cancelled[&riz], before[&riz]);
+}
+
+/// AC (#821): an « Aimé » counts whenever the meal was eaten, outside the
+/// variety window (28 days) too: the recipe gains its 5 points without the
+/// variety penalty.
+#[sqlx::test]
+async fn an_old_taste_verdict_still_counts(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "done-old-taste@example.test").await;
+    let group_id = create_group(&router, &cookie).await;
+    let flan = planned_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Flan", "ingredients": [
+            {"name": "Lait", "quantity": 500.0, "unit": "ml"}
+        ]}),
+        json!({"servings": 4}),
+    )
+    .await;
+    let before = suggestion_scores(&router, &cookie, &group_id).await;
+
+    let eaten_on = paris_day(Utc::now())
+        .checked_sub_days(chrono::Days::new(40))
+        .unwrap();
+    let done = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &flan),
+        json!({"removals": [], "eaten_on": eaten_on, "taste_tags": ["aime"]}),
+    )
+    .await;
+    assert_status(&done, StatusCode::OK);
+
+    let after = suggestion_scores(&router, &cookie, &group_id).await;
+    assert_eq!(after[&flan] - before[&flan], 5.0);
+}
