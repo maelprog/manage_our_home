@@ -207,6 +207,8 @@ test.describe("Stocks — list & create", () => {
     const placeList = page.getByRole("listbox", { name: "Catégories" });
     await expect(units).toHaveAttribute("aria-expanded", "false");
     await expect(unitList).toBeHidden();
+    // With the button shown, the field opens onto it.
+    await expect(unit).toHaveCSS("border-right-width", "0px");
 
     // Pointer: every unit, the default named so; a pick fills the field.
     await units.click();
@@ -289,6 +291,13 @@ test.describe("Stocks — sans JavaScript (#803)", () => {
     await expect(buttons).toHaveCount(2);
     await expect(buttons.first()).toBeHidden();
     await expect(buttons.last()).toBeHidden();
+    // Each field keeps its whole border: no open right edge for a button
+    // that is not there.
+    for (const name of ["Unité", "Catégorie"]) {
+      const field = page.getByLabel(name, { exact: true });
+      await expect(field).toHaveCSS("border-right-width", "1px");
+      await expect(field).toHaveCSS("border-top-right-radius", "12px");
+    }
   });
 });
 

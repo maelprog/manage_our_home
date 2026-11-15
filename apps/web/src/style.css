@@ -1059,7 +1059,10 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
    shows the button and fills the list: without it, neither is drawn. The
    chevron turns when open, at once — only colours are transitioned. */
 .combo { position: relative; display: flex; }
-.combo input { flex: 1; min-width: 0; border-radius: var(--r-sm) 0 0 var(--r-sm); border-right-width: 0; }
+.combo input { flex: 1; min-width: 0; }
+/* Only once the button shows: without JavaScript the field keeps its own
+   right edge and corners. */
+.combo:has(> button:not([hidden])) input { border-radius: var(--r-sm) 0 0 var(--r-sm); border-right-width: 0; }
 .combo button { padding: 0; color: var(--muted); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
 .combo:has(:focus-visible) > button { border-color: var(--accent); }
 .combo .secondary[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
