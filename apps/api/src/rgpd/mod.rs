@@ -54,7 +54,8 @@ pub async fn export_account(
     let profile = sqlx::query!(
         r#"SELECT id, email, email_verified, display_name, created_at, age_declared_at,
                   terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,
-                  expiry_digest_hour, avatar_key, (password_hash IS NOT NULL) AS "has_password!"
+                  expiry_digest_hour, notify_agenda_changes, avatar_key,
+                  (password_hash IS NOT NULL) AS "has_password!"
            FROM users WHERE id = $1"#,
         auth.user_id
     )
@@ -83,6 +84,9 @@ pub async fn export_account(
         "reminder_channel": profile.reminder_channel,
         // #700: the Paris hour of their daily expiry recap, 0 to 23.
         "expiry_digest_hour": profile.expiry_digest_hour,
+        // #848: whether they are told when another member changes the
+        // agenda.
+        "notify_agenda_changes": profile.notify_agenda_changes,
     });
     // #467: the profile photo, as the attachments below: its type and a
     // presigned GET. No `avatar_key` field, though the key is in the

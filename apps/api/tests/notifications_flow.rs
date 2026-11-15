@@ -1105,6 +1105,80 @@ async fn the_list_pages_newest_first_and_filters_by_kind(db: PgPool) {
     }
 }
 
+// -- the agenda changes (#848) ------------------------------------------------
+
+/// A change to the agenda is a kind of notification and of push the schema
+/// takes (migration 0060), listed and filtered as the others; a kind it
+/// does not know is still refused, in both columns.
+#[sqlx::test]
+async fn an_agenda_change_is_a_kind_the_schema_takes(db: PgPool) {
+    let f = family(&db).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let change = insert(&db, owner, &f.group, "agenda_change", 1).await;
+    insert(&db, owner, &f.group, "agenda_reminder", 2).await;
+    let changes = list(&f.router, &f.owner, "?kind=agenda_change").await;
+    assert_eq!(ids(&changes), [change]);
+    assert_eq!(changes["notifications"][0]["kind"], "agenda_change");
+
+    let refused = sqlx::query(
+        "INSERT INTO notifications (user_id, group_id, kind, body)
+         VALUES ($1, $2::uuid, 'agenda_changed', 'Texte.')",
+    )
+    .bind(owner)
+    .bind(&f.group)
+    .execute(&db)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        refused.as_database_error().unwrap().constraint(),
+        Some("notifications_kind_check")
+    );
+
+    sqlx::query(
+        "INSERT INTO push_subscriptions (user_id, endpoint, pending_push_kind, pending_pushes)
+         VALUES ($1, 'https://fcm.googleapis.com/fcm/send/agenda-change', 'agenda_change', 1)",
+    )
+    .bind(owner)
+    .execute(&db)
+    .await
+    .unwrap();
+    let refused = sqlx::query("UPDATE push_subscriptions SET pending_push_kind = 'agenda'")
+        .execute(&db)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.as_database_error().unwrap().constraint(),
+        Some("push_subscriptions_pending_push_kind_check")
+    );
+}
+
+/// Every account is told of the agenda changes unless it says otherwise:
+/// the setting is on for an account just made, and can be turned off.
+#[sqlx::test]
+async fn an_account_is_told_of_the_agenda_changes_by_default(db: PgPool) {
+    family(&db).await;
+    let on: Vec<bool> = sqlx::query_scalar("SELECT notify_agenda_changes FROM users")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(on, [true, true]);
+    sqlx::query("UPDATE users SET notify_agenda_changes = false WHERE email = $1")
+        .bind("member@example.test")
+        .execute(&db)
+        .await
+        .unwrap();
+    let off: bool = sqlx::query_scalar("SELECT notify_agenda_changes FROM users WHERE email = $1")
+        .bind("member@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert!(!off);
+    let refused = sqlx::query("UPDATE users SET notify_agenda_changes = NULL")
+        .execute(&db)
+        .await;
+    assert!(refused.is_err());
+}
+
 /// `+` in an RFC 3339 offset would read as a space in a query string.
 fn urlencoding(value: &str) -> String {
     value.replace('+', "%2B").replace(':', "%3A")

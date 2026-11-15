@@ -149,9 +149,11 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     // and an export that handed back one under another's name would still
     // match. Move each to an instant of its own before exporting.
     // #700: the recap's hour is a setting held about the person; moved off
-    // its default of 9 so that the export shows the value on file.
+    // its default of 9 so that the export shows the value on file. #848:
+    // the agenda-change setting likewise, off its default of true.
     sqlx::query(
-        "UPDATE users SET expiry_digest_hour = 18 WHERE email = 'export-owner@example.test'",
+        "UPDATE users SET expiry_digest_hour = 18, notify_agenda_changes = false
+         WHERE email = 'export-owner@example.test'",
     )
     .execute(&db)
     .await
@@ -184,6 +186,7 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
 
     assert_eq!(doc["profile"]["email"], "export-owner@example.test");
     assert_eq!(doc["profile"]["expiry_digest_hour"], 18);
+    assert_eq!(doc["profile"]["notify_agenda_changes"], false);
     // #137, #317: the art. 8 GDPR age declaration is data held about the
     // person, so art. 15 hands it back — the very instant on file, not just a
     // non-null field.
