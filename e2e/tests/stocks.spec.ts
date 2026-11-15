@@ -311,6 +311,23 @@ test.describe("Stocks — sans JavaScript (#803)", () => {
     await openItemDetail(page, "Sel");
     await expect(page.getByText("Aucune date de péremption.")).toBeVisible();
   });
+
+  // #804: the same on the edit form — checked, the article's date is cleared
+  // although the field still sends it.
+  test("« Pas de date de péremption » checked on the edit form clears the date", async ({ page }) => {
+    await registerAndLogin(page, "e2e-stnoexpeditnojs", "No Expiry Edit No Script");
+    await createGroup(page, "Famille Sans Date Édition");
+    await createItem(page, { name: "Farine", quantity: "1", unit: "kg", expiresOn: parisDay(10) });
+    await openItemDetail(page, "Farine");
+    await page.getByRole("link", { name: "Modifier l'article" }).click();
+    await expect(page.getByLabel(/^Date de péremption/)).toHaveValue(parisDay(10));
+    const box = page.getByRole("checkbox", { name: "Pas de date de péremption" });
+    await expect(box).not.toBeChecked();
+    await box.check();
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Article mis à jour.")).toBeVisible();
+    await expect(page.getByText("Aucune date de péremption.")).toBeVisible();
+  });
 });
 
 // #401: one expiry date per article (the nearest). Dates are built in
