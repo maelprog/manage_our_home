@@ -1,9 +1,15 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use lettre::message::Mailbox;
+use lettre::message::header::ContentType;
+use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use manage_our_home_shared::validation::rgpd::sanitize_email_line;
+
+pub mod template;
+
+pub use template::EmailContent;
+use template::{hours, Template};
 
 /// How `main.rs` should build the SMTP transport, decided from the
 /// `SMTP_ALLOW_INSECURE` / `SMTP_PORT` env vars.
@@ -37,13 +43,16 @@ pub fn smtp_mode(allow_insecure: Option<&str>, port: Option<&str>) -> Result<Smt
     Ok(SmtpMode::Insecure { port })
 }
 
-/// An email as [`EmailSender::send`] was asked to send it, before any
-/// transfer encoding: what an [`Outbox`] keeps.
+/// An email as [`EmailSender::send`] or [`EmailSender::send_html`] was asked
+/// to send it, before any transfer encoding: what an [`Outbox`] keeps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentEmail {
     pub to: String,
     pub subject: String,
+    /// The `text/plain` part: the whole email for [`EmailSender::send`].
     pub body: String,
+    /// The `text/html` part, for [`EmailSender::send_html`] only.
+    pub html: Option<String>,
 }
 
 /// The emails an [`EmailSender::in_memory`] sender was given, in order.
@@ -60,6 +69,20 @@ impl Outbox {
     fn push(&self, email: SentEmail) {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).push(email);
     }
+}
+
+/// The name to greet, as a person typed it: flattened by
+/// `sanitize_email_line` like every name an email carries, so that it cannot
+/// open a paragraph of its own or reorder the line around it. `None` when
+/// nothing is left of it. The HTML part escapes it on top of that.
+fn greeted(display_name: &str) -> Option<String> {
+    let name = sanitize_email_line(display_name);
+    (!name.is_empty()).then_some(name)
+}
+
+enum Body<'a> {
+    Plain(&'a str),
+    Html(&'a EmailContent),
 }
 
 #[derive(Clone)]
@@ -95,55 +118,162 @@ impl EmailSender {
         )
     }
 
+    /// A single-part `text/plain` email. The emails not yet on the shared
+    /// layout of [`template`] still go out this way.
     pub async fn send(&self, to: &str, subject: &str, body: String) -> Result<()> {
-        let message = Message::builder()
-            .from(self.from.clone())
-            .to(to.parse()?)
-            .subject(subject)
-            .body(body.clone())?;
+        let message = self.message(to, subject, &Body::Plain(&body))?;
+        self.deliver(
+            message,
+            SentEmail {
+                to: to.to_owned(),
+                subject: subject.to_owned(),
+                body,
+                html: None,
+            },
+        )
+        .await
+    }
+
+    /// A `multipart/alternative` email: the text part, then the HTML part
+    /// with the brand symbol it shows (#831).
+    pub async fn send_html(&self, to: &str, subject: &str, content: EmailContent) -> Result<()> {
+        let message = self.message(to, subject, &Body::Html(&content))?;
+        self.deliver(
+            message,
+            SentEmail {
+                to: to.to_owned(),
+                subject: subject.to_owned(),
+                body: content.text,
+                html: Some(content.html),
+            },
+        )
+        .await
+    }
+
+    async fn deliver(&self, message: Message, kept: SentEmail) -> Result<()> {
         // Never log recipient/body content — PII (AC #3 analog for email).
         match &self.transport {
             Transport::Smtp(transport) => {
                 transport.send(message).await?;
             }
-            Transport::Memory(outbox) => outbox.push(SentEmail {
-                to: to.to_owned(),
-                subject: subject.to_owned(),
-                body,
-            }),
+            Transport::Memory(outbox) => outbox.push(kept),
         }
         Ok(())
     }
 
-    pub fn verification_email_body(link: &str) -> String {
-        format!("Cliquez sur ce lien pour vérifier votre email (valide 24h) : {link}")
+    /// The message as it goes to the relay; the in-memory sender builds it
+    /// too, so it refuses what the relay would be refused.
+    fn message(&self, to: &str, subject: &str, body: &Body) -> Result<Message> {
+        let builder = Message::builder()
+            .from(self.from.clone())
+            .to(to.parse()?)
+            .subject(subject);
+        Ok(match body {
+            Body::Plain(text) => builder.body(text.to_string())?,
+            // Text first: a client shows the last alternative it can render.
+            // The symbol rides with the HTML part, in a multipart/related
+            // the HTML refers to by `cid:`.
+            Body::Html(content) => builder.multipart(
+                MultiPart::alternative()
+                    .singlepart(SinglePart::plain(content.text.clone()))
+                    .multipart(
+                        MultiPart::related()
+                            .singlepart(SinglePart::html(content.html.clone()))
+                            .singlepart(
+                                Attachment::new_inline(template::LOGO_CID.to_owned()).body(
+                                    template::LOGO_PNG.to_vec(),
+                                    ContentType::parse("image/png")?,
+                                ),
+                            ),
+                    ),
+            )?,
+        })
     }
 
-    pub fn password_reset_body(link: &str) -> String {
-        format!("Cliquez sur ce lien pour réinitialiser votre mot de passe (valide 1 h) : {link}")
+    /// Mailed at registration, and again on each resend, to confirm the
+    /// address.
+    pub fn verification_email(
+        display_name: &str,
+        link: &str,
+        privacy_policy_url: &str,
+    ) -> EmailContent {
+        let title = match greeted(display_name) {
+            Some(name) => format!("Bienvenue, {name} !"),
+            None => "Bienvenue !".to_owned(),
+        };
+        let validity = format!(
+            "Ce lien est valable {} et ne sert qu'une fois.",
+            hours(crate::auth::EMAIL_VERIFICATION_TTL_HOURS)
+        );
+        template::render(&Template {
+            title: &title,
+            paragraphs: &[
+                "Plus qu'une étape : confirmez que cette adresse est bien la vôtre \
+                 pour activer votre compte Manage Our Home.",
+            ],
+            action: ("Vérifier mon adresse", link),
+            fine_print: &[
+                &validity,
+                "Vous n'avez pas créé de compte ? Ignorez ce message.",
+            ],
+            privacy_policy_url,
+        })
+    }
+
+    /// Mailed by the forgotten-password form to a live account.
+    pub fn password_reset_email(
+        display_name: &str,
+        link: &str,
+        privacy_policy_url: &str,
+    ) -> EmailContent {
+        let title = match greeted(display_name) {
+            Some(name) => format!("Bonjour {name}, choisissez un nouveau mot de passe"),
+            None => "Choisissez un nouveau mot de passe".to_owned(),
+        };
+        // `reset_password` revokes every session of the account.
+        let validity = format!(
+            "Ce lien est valable {} et ne sert qu'une fois. Une fois le mot de passe changé, \
+             vos autres sessions sont fermées.",
+            hours(crate::auth::PASSWORD_RESET_TTL_HOURS)
+        );
+        template::render(&Template {
+            title: &title,
+            paragraphs: &["Vous avez demandé à réinitialiser le mot de passe de votre compte."],
+            action: ("Choisir un nouveau mot de passe", link),
+            fine_print: &[
+                &validity,
+                "Vous n'avez rien demandé ? Ignorez ce message : votre mot de passe actuel \
+                 reste valable.",
+            ],
+            privacy_policy_url,
+        })
     }
 
     /// Sent when somebody registers an address that already belongs to a
     /// verified account (#460): the registration answers as for a new
     /// address, and only the holder of the mailbox learns that the account
-    /// exists. The display name was typed by a person, so it goes through
-    /// `sanitize_email_line` like every name an email carries: it cannot
-    /// open a paragraph of its own. The link is alone on its line.
-    pub fn account_exists_body(display_name: &str, forgot_password_link: &str) -> String {
-        let display_name = sanitize_email_line(display_name);
-        format!(
-            "Bonjour {display_name},
-
-Quelqu'un, peut-être vous, a demandé à créer un compte Manage Our Home
-avec cette adresse email. Vous en avez déjà un : aucun nouveau compte n'a
-été créé et le vôtre n'a pas changé.
-
-Si vous avez oublié votre mot de passe, vous pouvez en choisir un nouveau :
-{forgot_password_link}
-
-Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet
-email."
-        )
+    /// exists.
+    pub fn account_exists_email(
+        display_name: &str,
+        forgot_password_link: &str,
+        privacy_policy_url: &str,
+    ) -> EmailContent {
+        let title = match greeted(display_name) {
+            Some(name) => format!("Bonjour {name}, vous avez déjà un compte"),
+            None => "Vous avez déjà un compte".to_owned(),
+        };
+        template::render(&Template {
+            title: &title,
+            paragraphs: &[
+                "Quelqu'un, peut-être vous, a demandé à créer un compte Manage Our Home avec \
+                 cette adresse. Vous en avez déjà un : aucun nouveau compte n'a été créé et le \
+                 vôtre n'a pas changé.",
+                "Si vous avez oublié votre mot de passe, vous pouvez en choisir un nouveau.",
+            ],
+            action: ("Mot de passe oublié", forgot_password_link),
+            fine_print: &["Vous n'êtes pas à l'origine de cette demande ? Ignorez ce message."],
+            privacy_policy_url,
+        })
     }
 
     /// Unlike the three above, this one reaches somebody who has no account and
@@ -191,13 +321,200 @@ mod tests {
                     to: "a@example.test".into(),
                     subject: "Premier".into(),
                     body: "lien : https://x/é?t=1".into(),
+                    html: None,
                 },
                 SentEmail {
                     to: "b@example.test".into(),
                     subject: "Second".into(),
                     body: "corps".into(),
+                    html: None,
                 },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_keeps_both_parts_of_an_html_email() {
+        let (email, outbox) = sender();
+        let content = EmailContent {
+            text: "texte".into(),
+            html: "<p>html</p>".into(),
+        };
+        email
+            .send_html("a@example.test", "Sujet", content)
+            .await
+            .unwrap();
+        assert_eq!(
+            outbox.emails(),
+            vec![SentEmail {
+                to: "a@example.test".into(),
+                subject: "Sujet".into(),
+                body: "texte".into(),
+                html: Some("<p>html</p>".into()),
+            }]
+        );
+    }
+
+    /// Every `Content-Type` of the raw message, in order, lowercased.
+    fn content_types(raw: &str) -> Vec<String> {
+        raw.lines()
+            .filter_map(|l| {
+                l.to_ascii_lowercase()
+                    .strip_prefix("content-type: ")
+                    .map(str::to_owned)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn html_email_is_multipart_alternative_text_first_then_html_with_its_inline_symbol() {
+        let (email, _) = sender();
+        let content = EmailSender::verification_email(
+            "Alice",
+            "https://maison.example/verify-email?token=abc",
+            "https://maison.example/privacy-policy",
+        );
+        let message = email
+            .message(
+                "a@example.test",
+                "Vérifiez votre email",
+                &Body::Html(&content),
+            )
+            .unwrap();
+        let raw = String::from_utf8(message.formatted()).unwrap();
+        let types = content_types(&raw);
+        let kinds: Vec<&str> = types.iter().map(|t| t.split(';').next().unwrap()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "multipart/alternative",
+                "text/plain",
+                "multipart/related",
+                "text/html",
+                "image/png",
+            ],
+            "{raw}"
+        );
+        assert!(types[1].contains("charset=utf-8"), "{raw}");
+        assert!(types[3].contains("charset=utf-8"), "{raw}");
+        let lower = raw.to_ascii_lowercase();
+        assert!(
+            lower.contains(&format!("content-id: <{}>", template::LOGO_CID)),
+            "{raw}"
+        );
+        assert!(lower.contains("content-disposition: inline"), "{raw}");
+    }
+
+    /// The emails not yet on the shared layout go out as before: one part,
+    /// no HTML.
+    #[test]
+    fn plain_email_stays_a_single_part() {
+        let (email, _) = sender();
+        let message = email
+            .message("a@example.test", "Sujet", &Body::Plain("corps"))
+            .unwrap();
+        let raw = String::from_utf8(message.formatted()).unwrap();
+        assert!(content_types(&raw).is_empty(), "{raw}");
+        assert!(raw.ends_with("\r\n\r\ncorps"), "{raw}");
+    }
+
+    const PRIVACY: &str = "https://maison.example/privacy-policy";
+
+    #[test]
+    fn verification_email_greets_recalls_the_request_and_says_how_long_the_link_lasts() {
+        let link = "https://maison.example/verify-email?token=abc";
+        let c = EmailSender::verification_email("Alice", link, PRIVACY);
+        assert!(c.text.starts_with("Bienvenue, Alice !\n"), "{}", c.text);
+        assert!(c.text.contains("confirmez que cette adresse"), "{}", c.text);
+        assert!(c.text.contains("valable 24 heures"), "{}", c.text);
+        assert!(c.text.contains("ne sert qu'une fois"), "{}", c.text);
+        assert!(c.text.contains("Ignorez ce message"), "{}", c.text);
+        assert!(c.text.contains(&format!("\n{link}\n")), "{}", c.text);
+        assert!(c.text.contains(PRIVACY), "{}", c.text);
+        assert!(c.html.contains(&format!("href=\"{link}\"")), "{}", c.html);
+        assert!(c.html.contains(">Bienvenue, Alice !</h1>"), "{}", c.html);
+    }
+
+    #[test]
+    fn password_reset_email_greets_recalls_the_request_and_says_how_long_the_link_lasts() {
+        let link = "https://maison.example/reset-password#token=abc";
+        let c = EmailSender::password_reset_email("Alice", link, PRIVACY);
+        assert!(
+            c.text
+                .starts_with("Bonjour Alice, choisissez un nouveau mot de passe\n"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text.contains("Vous avez demandé à réinitialiser"),
+            "{}",
+            c.text
+        );
+        assert!(c.text.contains("valable 1 heure "), "{}", c.text);
+        assert!(c.text.contains("Ignorez ce message"), "{}", c.text);
+        assert!(c.text.contains(&format!("\n{link}\n")), "{}", c.text);
+        assert!(c.html.contains(&format!("href=\"{link}\"")), "{}", c.html);
+    }
+
+    #[test]
+    fn account_exists_email_greets_the_holder_and_links_the_forgotten_password_page() {
+        let link = "https://maison.example/forgot-password";
+        let c = EmailSender::account_exists_email("Alice", link, PRIVACY);
+        assert!(
+            c.text
+                .starts_with("Bonjour Alice, vous avez déjà un compte\n"),
+            "{}",
+            c.text
+        );
+        assert!(c.text.contains("aucun nouveau compte"), "{}", c.text);
+        assert!(c.text.contains("Ignorez ce message"), "{}", c.text);
+        assert!(
+            c.text.contains(&format!("\n{link}\n")),
+            "the link sits alone on its line: {}",
+            c.text
+        );
+        assert!(c.html.contains(&format!("href=\"{link}\"")), "{}", c.html);
+    }
+
+    /// What a person typed reaches both parts flattened by
+    /// `sanitize_email_line`, then escaped in the HTML one only.
+    #[test]
+    fn auth_emails_flatten_the_display_name_and_escape_it_in_html_only() {
+        let typed = "<script>\"x\" & Cie</script>\n\nCliquez ici\u{202E}";
+        let flat = "<script>\"x\" & Cie</script> Cliquez ici";
+        let escaped = "&lt;script&gt;&quot;x&quot; &amp; Cie&lt;/script&gt; Cliquez ici";
+        for c in [
+            EmailSender::verification_email(typed, "https://m.example/v?token=a", PRIVACY),
+            EmailSender::password_reset_email(typed, "https://m.example/r#token=a", PRIVACY),
+            EmailSender::account_exists_email(typed, "https://m.example/f", PRIVACY),
+        ] {
+            let first = c.text.lines().next().unwrap();
+            assert!(first.contains(flat), "{first}");
+            assert!(!c.text.contains('\u{202E}'), "{}", c.text);
+            assert!(!c.html.contains('\u{202E}'), "{}", c.html);
+            assert!(c.html.contains(escaped), "{}", c.html);
+            assert!(!c.html.contains("<script"), "{}", c.html);
+        }
+    }
+
+    /// No name to greet (nothing left once flattened): the title reads
+    /// without one.
+    #[test]
+    fn auth_emails_without_a_name_greet_nobody() {
+        let blank = " \n\u{202E}";
+        let v = EmailSender::verification_email(blank, "https://m.example/v", PRIVACY);
+        assert!(v.text.starts_with("Bienvenue !\n"), "{}", v.text);
+        let r = EmailSender::password_reset_email(blank, "https://m.example/r", PRIVACY);
+        assert!(
+            r.text.starts_with("Choisissez un nouveau mot de passe\n"),
+            "{}",
+            r.text
+        );
+        let e = EmailSender::account_exists_email(blank, "https://m.example/f", PRIVACY);
+        assert!(
+            e.text.starts_with("Vous avez déjà un compte\n"),
+            "{}",
+            e.text
         );
     }
 
@@ -220,28 +537,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outbox.clone().emails().len(), 1);
-    }
-
-    #[test]
-    fn account_exists_body_greets_the_holder_and_links_the_forgotten_password_page() {
-        let body =
-            EmailSender::account_exists_body("Alice", "https://maison.example/forgot-password");
-        assert!(body.starts_with("Bonjour Alice,\n"), "{body}");
-        assert!(
-            body.contains("\nhttps://maison.example/forgot-password\n"),
-            "the link sits alone on its line: {body}"
-        );
-    }
-
-    #[test]
-    fn account_exists_body_flattens_the_display_name() {
-        let body = EmailSender::account_exists_body(
-            "Alice\n\nCliquez ici : https://evil.example\u{202E}",
-            "https://maison.example/forgot-password",
-        );
-        let first = body.lines().next().unwrap();
-        assert_eq!(first, "Bonjour Alice Cliquez ici : https://evil.example,");
-        assert!(!body.contains('\u{202E}'));
     }
 
     #[test]

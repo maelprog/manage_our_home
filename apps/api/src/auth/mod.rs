@@ -207,7 +207,7 @@ async fn register_valid(state: &AppState, body: &RegisterRequest) -> AppResult<(
             create_account(state, body, &password_hash).await?;
         }
         (RegisterAction::ResendVerification, Some(user)) => {
-            issue_verification(state, user.id, &body.email).await?;
+            issue_verification(state, user.id, &body.email, &user.display_name).await?;
         }
         (RegisterAction::NotifyExisting, Some(user)) => {
             notify_existing(state, &body.email, &user.display_name).await;
@@ -250,10 +250,19 @@ async fn notify_existing(state: &AppState, email: &str, display_name: &str) {
         state,
         email,
         "Vous avez déjà un compte",
-        crate::email::EmailSender::account_exists_body(display_name, &link),
+        crate::email::EmailSender::account_exists_email(
+            display_name,
+            &link,
+            &privacy_policy_url(state),
+        ),
         "account-exists",
     )
     .await;
+}
+
+/// The page the footer of every email links (#831).
+fn privacy_policy_url(state: &AppState) -> String {
+    format!("{}/privacy-policy", state.frontend_base_url)
 }
 
 /// Sends one email of the routes under the response floor (#571), within
@@ -264,12 +273,12 @@ async fn send_within_deadline(
     state: &AppState,
     to: &str,
     subject: &str,
-    body: String,
+    content: crate::email::EmailContent,
     what: &'static str,
 ) {
     match tokio::time::timeout(
         state.auth_response_floor.smtp_timeout,
-        state.email.send(to, subject, body),
+        state.email.send_html(to, subject, content),
     )
     .await
     {
@@ -324,13 +333,13 @@ async fn create_account(
     .await?;
     tx.commit().await?;
 
-    send_verification_email(state, &body.email, token.value()).await;
+    send_verification_email(state, &body.email, &body.display_name, token.value()).await;
     Ok(())
 }
 
 /// Mails the verification link. Best-effort: a refused email is logged, and
 /// the request it serves answers as if it had left.
-async fn send_verification_email(state: &AppState, email: &str, token: &str) {
+async fn send_verification_email(state: &AppState, email: &str, display_name: &str, token: &str) {
     // Lands on apps/web's /verify-email page (which consumes the token via
     // this API's GET /auth/verify-email), not on the API endpoint itself:
     // that one answers an empty 200 or a bare 410, nothing a person can
@@ -340,7 +349,11 @@ async fn send_verification_email(state: &AppState, email: &str, token: &str) {
         state,
         email,
         "Vérifiez votre email",
-        crate::email::EmailSender::verification_email_body(&link),
+        crate::email::EmailSender::verification_email(
+            display_name,
+            &link,
+            &privacy_policy_url(state),
+        ),
         "verification",
     )
     .await;
@@ -722,7 +735,8 @@ async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
         return Ok(());
     }
     if let Some(user) = sqlx::query!(
-        "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
+        "SELECT id, display_name FROM users
+         WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
         email
     )
     .fetch_optional(&state.db)
@@ -750,7 +764,11 @@ async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
             state,
             email,
             "Réinitialisation de mot de passe",
-            crate::email::EmailSender::password_reset_body(&link),
+            crate::email::EmailSender::password_reset_email(
+                &user.display_name,
+                &link,
+                &privacy_policy_url(state),
+            ),
             "password reset",
         )
         .await;
@@ -798,7 +816,8 @@ async fn resend_verification_to(state: &AppState, email: &str) -> AppResult<()> 
         return Ok(());
     }
     let Some(user) = sqlx::query!(
-        "SELECT id FROM users WHERE email = $1 AND email_verified = false AND deleted_at IS NULL
+        "SELECT id, display_name FROM users
+         WHERE email = $1 AND email_verified = false AND deleted_at IS NULL
            AND deactivated_at IS NULL",
         email
     )
@@ -808,14 +827,19 @@ async fn resend_verification_to(state: &AppState, email: &str) -> AppResult<()> 
         return Ok(());
     };
 
-    issue_verification(state, user.id, email).await
+    issue_verification(state, user.id, email, &user.display_name).await
 }
 
 /// Issues a fresh verification token to an unverified account and mails it,
 /// unless one was issued within `VERIFICATION_RESEND_COOLDOWN_SECS`: then it
 /// does nothing at all. Shared by `resend_verification` and by `register`
 /// when the address belongs to an unverified account (#460).
-async fn issue_verification(state: &AppState, user_id: Uuid, email: &str) -> AppResult<()> {
+async fn issue_verification(
+    state: &AppState,
+    user_id: Uuid,
+    email: &str,
+    display_name: &str,
+) -> AppResult<()> {
     let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
     // Cooldown, invalidation and issuance happen atomically in one
     // statement: the new token is inserted (and old ones consumed) only
@@ -852,7 +876,7 @@ async fn issue_verification(state: &AppState, user_id: Uuid, email: &str) -> App
     .await?;
 
     if issued.is_some() {
-        send_verification_email(state, email, token.value()).await;
+        send_verification_email(state, email, display_name, token.value()).await;
     }
     Ok(())
 }
@@ -1042,10 +1066,14 @@ pub async fn set_password(
     );
     if let Err(e) = state
         .email
-        .send(
+        .send_html(
             &auth.email,
             "Vérifiez votre email",
-            crate::email::EmailSender::verification_email_body(&link),
+            crate::email::EmailSender::verification_email(
+                &auth.display_name,
+                &link,
+                &privacy_policy_url(&state),
+            ),
         )
         .await
     {
