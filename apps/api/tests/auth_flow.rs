@@ -3629,6 +3629,36 @@ fn assert_two_part_auth_email(
     token
 }
 
+/// #831: a verification link sent again — by a new registration of the
+/// unverified address, or by the resend route — names the account as
+/// stored, never the name the new registration typed.
+#[sqlx::test]
+async fn a_resent_verification_email_names_the_stored_account(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "twice@example.test";
+    register_with(&router, email, "twice-password1", "First").await;
+    age_verification_tokens(&db, email, 600).await;
+    let again = register_with(&router, email, "other-password1", "Intruder").await;
+    assert_status(&again, StatusCode::CREATED);
+    age_verification_tokens(&db, email, 600).await;
+    let resend = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": email})),
+    )
+    .await;
+    assert_status(&resend, StatusCode::OK);
+
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), 3, "registration, re-registration, resend");
+    for mail in &emails[1..] {
+        assert!(mail.body.starts_with("Bienvenue, First !\n"), "{}", mail.body);
+        assert!(!mail.body.contains("Intruder"), "{}", mail.body);
+    }
+}
+
 /// #831: the three emails of the auth routes — verification, password reset
 /// and "account exists" — go out in two parts, with the same link in each,
 /// and the name a person typed escaped in the HTML one.
