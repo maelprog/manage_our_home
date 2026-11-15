@@ -24,6 +24,10 @@ pub struct NotificationSettings {
     /// The Paris hour, 0 to 23, of the daily recap of the stock items
     /// nearing their expiry date (`users.expiry_digest_hour`, #700).
     pub expiry_digest_hour: i16,
+    /// Whether this account is told when another member adds, changes,
+    /// deletes or imports an event it sees (`users.notify_agenda_changes`,
+    /// #848): on by default.
+    pub notify_agenda_changes: bool,
 }
 
 /// `PUT /account/notifications`.
@@ -34,6 +38,10 @@ pub struct UpdateNotificationSettings {
     /// The recap's hour, 0 to 23 (#700); left as it is when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expiry_digest_hour: Option<i64>,
+    /// Whether to be told of the agenda changes (#850); left as it is
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_agenda_changes: Option<bool>,
 }
 
 /// `POST /account/push-subscriptions`: the endpoint of the browser's

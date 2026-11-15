@@ -586,6 +586,7 @@ pub async fn post(
             serde_json::to_value(UpdateNotificationSettings {
                 reminder_channel: form.reminder_channel,
                 expiry_digest_hour: digest_hour,
+                notify_agenda_changes: None,
             })
             .unwrap(),
         ),
@@ -670,6 +671,7 @@ mod tests {
             push_subscriptions: devices,
             vapid_public_key: Some("BKey-_0".into()),
             expiry_digest_hour: 9,
+            notify_agenda_changes: true,
         }
     }
 
