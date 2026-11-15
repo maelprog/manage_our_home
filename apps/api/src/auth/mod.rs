@@ -250,10 +250,19 @@ async fn notify_existing(state: &AppState, email: &str, display_name: &str) {
         state,
         email,
         "Vous avez déjà un compte",
-        crate::email::EmailSender::account_exists_body(display_name, &link),
+        crate::email::EmailSender::account_exists_email(
+            display_name,
+            &link,
+            &privacy_policy_url(state),
+        ),
         "account-exists",
     )
     .await;
+}
+
+/// The page the footer of every email links (#831).
+fn privacy_policy_url(state: &AppState) -> String {
+    format!("{}/privacy-policy", state.frontend_base_url)
 }
 
 /// Sends one email of the routes under the response floor (#571), within
@@ -264,12 +273,12 @@ async fn send_within_deadline(
     state: &AppState,
     to: &str,
     subject: &str,
-    body: String,
+    content: crate::email::EmailContent,
     what: &'static str,
 ) {
     match tokio::time::timeout(
         state.auth_response_floor.smtp_timeout,
-        state.email.send(to, subject, body),
+        state.email.send_html(to, subject, content),
     )
     .await
     {
@@ -340,7 +349,7 @@ async fn send_verification_email(state: &AppState, email: &str, token: &str) {
         state,
         email,
         "Vérifiez votre email",
-        crate::email::EmailSender::verification_email_body(&link),
+        crate::email::EmailSender::verification_email(&link, &privacy_policy_url(state)),
         "verification",
     )
     .await;
@@ -722,7 +731,8 @@ async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
         return Ok(());
     }
     if let Some(user) = sqlx::query!(
-        "SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
+        "SELECT id, display_name, email_verified FROM users
+         WHERE email = $1 AND deleted_at IS NULL AND deactivated_at IS NULL",
         email
     )
     .fetch_optional(&state.db)
@@ -746,11 +756,23 @@ async fn mail_password_reset(state: &AppState, email: &str) -> AppResult<()> {
         // password to this API's /auth/password/reset), not on the API
         // endpoint itself (POST-only — a GET there would 405).
         let link = password_reset_link(&state.frontend_base_url, token.value());
+        // #831: until the address is verified, the name on the account was
+        // typed by whoever registered it, not necessarily by the holder of
+        // this mailbox: greet nobody rather than relay it.
+        let greeted = if user.email_verified {
+            user.display_name.as_str()
+        } else {
+            ""
+        };
         send_within_deadline(
             state,
             email,
             "Réinitialisation de mot de passe",
-            crate::email::EmailSender::password_reset_body(&link),
+            crate::email::EmailSender::password_reset_email(
+                greeted,
+                &link,
+                &privacy_policy_url(state),
+            ),
             "password reset",
         )
         .await;
@@ -1042,10 +1064,14 @@ pub async fn set_password(
     );
     if let Err(e) = state
         .email
-        .send(
+        .send_html(
             &auth.email,
             "Vérifiez votre email",
-            crate::email::EmailSender::verification_email_body(&link),
+            crate::email::EmailSender::password_added_email(
+                &auth.display_name,
+                &link,
+                &privacy_policy_url(&state),
+            ),
         )
         .await
     {

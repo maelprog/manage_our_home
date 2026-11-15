@@ -3595,6 +3595,197 @@ async fn the_reset_email_carries_a_link_that_resets_the_password(db: PgPool) {
     assert_status(&login, StatusCode::OK);
 }
 
+/// The latest email to `to`, checked as #831 has every auth email: an HTML
+/// part next to the text one, the link `prefix…` identical in both, the
+/// display name `typed` intact in the text and escaped in the HTML — or no
+/// name at all when `typed` is `None` — and a subject `subject` that names
+/// nobody. Returns the link's token.
+fn assert_two_part_auth_email(
+    outbox: &manage_our_home::email::Outbox,
+    to: &str,
+    subject: &str,
+    prefix: &str,
+    typed: Option<&str>,
+) -> String {
+    let emails = outbox.emails();
+    let mail = emails.iter().rev().find(|e| e.to == to).unwrap();
+    assert_eq!(mail.subject, subject);
+    assert!(!mail.subject.contains("Eve"), "{}", mail.subject);
+    let html = mail.html.as_deref().expect("an HTML part");
+    let token = common::mailed_token(outbox, to, prefix);
+    let link = format!("{prefix}{token}");
+    assert!(mail.body.contains(&format!("\n{link}\n")), "{}", mail.body);
+    assert!(html.contains(&format!("href=\"{link}\"")), "{html}");
+    assert!(html.contains(&format!(">{link}</a>")), "{html}");
+    match typed {
+        Some(typed) => {
+            assert!(mail.body.contains(typed), "{}", mail.body);
+            assert!(
+                html.contains("Eve &lt;script&gt;&quot;x&quot; &amp; Cie"),
+                "{html}"
+            );
+        }
+        None => {
+            assert!(!mail.body.contains("Eve"), "{}", mail.body);
+            assert!(!html.contains("Eve"), "{html}");
+        }
+    }
+    assert!(!html.contains("<script"), "{html}");
+    assert!(
+        html.contains("http://localhost:5173/privacy-policy"),
+        "{html}"
+    );
+    token
+}
+
+/// #831: a verification link sent again — by a new registration of the
+/// unverified address, or by the resend route — names nobody: neither the
+/// account's name nor the one the new registration typed, both typed
+/// before anybody proved to hold the address (arbitrated 2026-11-15).
+#[sqlx::test]
+async fn a_resent_verification_email_names_nobody(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "twice@example.test";
+    register_with(&router, email, "twice-password1", "First").await;
+    age_verification_tokens(&db, email, 600).await;
+    let again = register_with(&router, email, "other-password1", "Intruder").await;
+    assert_status(&again, StatusCode::CREATED);
+    age_verification_tokens(&db, email, 600).await;
+    let resend = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": email})),
+    )
+    .await;
+    assert_status(&resend, StatusCode::OK);
+
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), 3, "registration, re-registration, resend");
+    for mail in &emails {
+        assert!(mail.body.starts_with("Bienvenue !\n"), "{}", mail.body);
+        let html = mail.html.as_deref().expect("an HTML part");
+        for name in ["First", "Intruder"] {
+            assert!(!mail.body.contains(name), "{}", mail.body);
+            assert!(!html.contains(name), "{html}");
+        }
+    }
+}
+
+/// #831: anybody can register somebody else's address under a name of
+/// their choosing and then ask for a reset link: until the address is
+/// verified, the reset email greets nobody, so that name never reaches the
+/// mailbox's holder (arbitrated 2026-11-15).
+#[sqlx::test]
+async fn a_reset_email_to_an_unverified_account_names_nobody(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "victim@example.test";
+    let trap = format!("Support urgent appelez le 0800 {}", "X".repeat(200));
+    let registered = register_with(&router, email, "trap-password1", &trap).await;
+    assert_status(&registered, StatusCode::CREATED);
+    let forgot = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": email})),
+    )
+    .await;
+    assert_status(&forgot, StatusCode::OK);
+
+    let emails = outbox.emails();
+    let mail = emails.last().unwrap();
+    assert_eq!(mail.subject, "Réinitialisation de mot de passe");
+    assert!(
+        mail.body
+            .starts_with("Choisissez un nouveau mot de passe\n"),
+        "{}",
+        mail.body
+    );
+    let html = mail.html.as_deref().expect("an HTML part");
+    for part in [mail.body.as_str(), html] {
+        assert!(!part.contains("Support urgent"), "{part}");
+        assert!(!part.contains("XXXX"), "{part}");
+    }
+    common::mailed_token(
+        &outbox,
+        email,
+        "http://localhost:5173/reset-password#token=",
+    );
+}
+
+/// #831: the three emails of the auth routes — verification, password reset
+/// and "account exists" — go out in two parts, with the same link in each,
+/// and the name a person typed escaped in the HTML one.
+#[sqlx::test]
+async fn auth_emails_carry_the_same_link_in_both_parts_and_escape_the_name(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "eve@example.test";
+    let typed = "Eve <script>\"x\" & Cie";
+    let registered = register_with(&router, email, "eve-password1", typed).await;
+    assert_status(&registered, StatusCode::CREATED);
+    let token = assert_two_part_auth_email(
+        &outbox,
+        email,
+        "Vérifiez votre email",
+        "http://localhost:5173/verify-email?token=",
+        None,
+    );
+    let verify = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={token}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&verify, StatusCode::OK);
+
+    let forgot = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": email})),
+    )
+    .await;
+    assert_status(&forgot, StatusCode::OK);
+    assert_two_part_auth_email(
+        &outbox,
+        email,
+        "Réinitialisation de mot de passe",
+        "http://localhost:5173/reset-password#token=",
+        Some(typed),
+    );
+
+    let again = register_with(&router, email, "other-password1", "Other").await;
+    assert_status(&again, StatusCode::CREATED);
+    let emails = outbox.emails();
+    let notice = emails.last().unwrap();
+    assert_eq!(notice.subject, "Vous avez déjà un compte");
+    assert!(
+        notice
+            .body
+            .starts_with(&format!("Bonjour {typed}, vous avez déjà un compte\n")),
+        "the account's own name, not the one just typed: {}",
+        notice.body
+    );
+    let html = notice.html.as_deref().expect("an HTML part");
+    let link = "http://localhost:5173/forgot-password";
+    assert!(
+        notice.body.contains(&format!("\n{link}\n")),
+        "{}",
+        notice.body
+    );
+    assert!(html.contains(&format!("href=\"{link}\"")), "{html}");
+    assert!(
+        html.contains("Eve &lt;script&gt;&quot;x&quot; &amp; Cie"),
+        "{html}"
+    );
+    assert!(!html.contains("<script"), "{html}");
+}
+
 /// #364: adding a password to an account that had none mails a
 /// verification link; that link verifies the account, and the password
 /// then opens a session.
@@ -3642,6 +3833,21 @@ async fn the_set_password_email_carries_a_link_that_verifies_the_account(db: PgP
         "no-password@example.test",
         "http://localhost:5173/verify-email?token=",
     );
+    // #831, arbitrated 2026-11-15: the account exists already — the email
+    // welcomes nobody and says what was added.
+    let mail = outbox.emails().pop().unwrap();
+    assert_eq!(mail.subject, "Vérifiez votre email");
+    assert!(
+        mail.body
+            .starts_with("Bonjour Google Only, confirmez votre adresse\n"),
+        "{}",
+        mail.body
+    );
+    let html = mail.html.as_deref().expect("an HTML part");
+    for welcome in ["Bienvenue", "activer votre compte", "créé de compte"] {
+        assert!(!mail.body.contains(welcome), "{welcome}: {}", mail.body);
+        assert!(!html.contains(welcome), "{welcome}: {html}");
+    }
     let verify = call(
         &router,
         Method::GET,
@@ -4013,7 +4219,8 @@ async fn registering_a_verified_address_mails_the_holder_and_issues_no_token(db:
     assert_eq!(mail.to, email);
     assert_eq!(mail.subject, "Vous avez déjà un compte");
     assert!(
-        mail.body.starts_with("Bonjour Known Injected line,\n"),
+        mail.body
+            .starts_with("Bonjour Known Injected line, vous avez déjà un compte\n"),
         "{}",
         mail.body
     );
