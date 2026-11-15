@@ -1093,6 +1093,13 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .scan .icon { color: var(--accent); }
 .or { display: flex; align-items: center; gap: var(--s3); margin: var(--s4) 0; color: var(--muted); font-size: var(--t-sm); }
 .or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+/* The day and the meal of a planned recipe (#812): a `.card.inline` whose
+   meals are `.picks` in a fieldset, which draws no box of its own here, its
+   legend the size of a field's label; the line that says the day takes the
+   whole row, above the fields. */
+.when-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.when-form legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
+.when-form .when-state { flex: 1 0 100%; }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and

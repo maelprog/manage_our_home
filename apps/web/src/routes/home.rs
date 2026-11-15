@@ -466,7 +466,7 @@ fn week_block(occurrences: Option<&[OccurrenceResponse]>, today: NaiveDate) -> S
 /// The date over the greeting, lower case as French writes it — the sheet
 /// sets it in capitals (`.eyebrow`): "mercredi 28 octobre", "dimanche 1er
 /// novembre".
-fn long_date_fr(day: NaiveDate) -> String {
+pub(crate) fn long_date_fr(day: NaiveDate) -> String {
     const WEEKDAYS: [&str; 7] = [
         "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
     ];

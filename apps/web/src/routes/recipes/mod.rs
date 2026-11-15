@@ -26,11 +26,13 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
+use chrono::NaiveDate;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::dto::recipes::{
     PlannedSelection, PlannedSelectionList, RecipeSelectionResponse, SelectRecipeRequest,
+    UpdateSelectionRequest,
 };
 use manage_our_home_shared::validation::recipes::{parse_servings, servings_label, SERVINGS_MAX};
 use uuid::Uuid;
@@ -38,6 +40,7 @@ use uuid::Uuid;
 use crate::app::{html_escape, shell, Width};
 use crate::family::{active_group_id_from_headers, resolve_active_group};
 use crate::layout::CurrentUser;
+use crate::routes::agenda::calendar::short_weekday;
 use crate::routes::groups::{cookie_of, header_with_groups};
 use crate::state::{api_request_auth, AppState};
 
@@ -192,6 +195,173 @@ pub(crate) fn planned_badge(servings: Option<i32>) -> String {
         .map(|s| format!(" · {}", servings_label(s)))
         .unwrap_or_default();
     format!(r#"<span class="badge">À réaliser{people}</span>"#)
+}
+
+// -- the day and the meal (#812) --------------------------------------------
+
+/// A meal (#811) as a planned recipe says it: `lunch` midi, `dinner` soir.
+pub(crate) fn meal_word(slot: &str) -> Option<&'static str> {
+    match slot {
+        "lunch" => Some("midi"),
+        "dinner" => Some("soir"),
+        _ => None,
+    }
+}
+
+/// The `PATCH …/selection` body of the « Quand ? » form (#812): the day
+/// (`AAAA-MM-JJ`, empty to remove it) and the meal (`lunch`, `dinner`, empty
+/// to remove it), both always sent. A meal without a day is
+/// `meal_without_day`, which the API would refuse too; a day that is not a
+/// date `invalid_planned_on`, a meal of neither kind `invalid_meal_slot`.
+pub(crate) fn plan_request(
+    planned_on: &str,
+    meal_slot: &str,
+) -> Result<UpdateSelectionRequest, &'static str> {
+    let day = match planned_on.trim() {
+        "" => None,
+        text => {
+            Some(NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| "invalid_planned_on")?)
+        }
+    };
+    let meal = match meal_slot.trim() {
+        "" => None,
+        slot if meal_word(slot).is_some() => Some(slot.to_string()),
+        _ => return Err("invalid_meal_slot"),
+    };
+    if meal.is_some() && day.is_none() {
+        return Err("meal_without_day");
+    }
+    Ok(UpdateSelectionRequest {
+        servings: None,
+        planned_on: Some(day),
+        meal_slot: Some(meal),
+    })
+}
+
+/// The pastille of a dated recipe in the list (#812): "jeu. 19/11 · midi",
+/// "sam. 21/11" without a meal; nothing for a recipe without a day.
+pub(crate) fn plan_badge(planned_on: Option<NaiveDate>, meal_slot: Option<&str>) -> String {
+    let Some(day) = planned_on else {
+        return String::new();
+    };
+    let meal = meal_slot
+        .and_then(meal_word)
+        .map(|m| format!(" · {m}"))
+        .unwrap_or_default();
+    format!(
+        r#"<span class="badge accent">{weekday} {date}{meal}</span>"#,
+        weekday = short_weekday(day),
+        date = day.format("%d/%m"),
+    )
+}
+
+#[derive(serde::Deserialize)]
+pub struct PlanForm {
+    #[serde(default)]
+    planned_on: String,
+    #[serde(default)]
+    meal_slot: String,
+    #[serde(default)]
+    back: String,
+}
+
+/// `POST /recipes/:id/planning` (#812): sets, changes or removes the day
+/// and the meal of the recipe's planned selection (`PATCH …/selection`).
+/// Any member may, as for its number of people.
+pub async fn plan(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(recipe_id): Path<Uuid>,
+    Form(form): Form<PlanForm>,
+) -> Response {
+    let back = form.back.as_str();
+    let request = match plan_request(&form.planned_on, &form.meal_slot) {
+        Ok(request) => request,
+        Err(code) => {
+            return Redirect::to(&back_with(back, recipe_id, &format!("error={code}")))
+                .into_response()
+        }
+    };
+    patch_plan(me, state, headers, recipe_id, back, request, "plan_saved").await
+}
+
+#[derive(serde::Deserialize)]
+pub struct ClearPlanForm {
+    #[serde(default)]
+    back: String,
+}
+
+/// `POST /recipes/:id/planning/clear` (#812): « Retirer la date », the
+/// day and the meal together; the recipe stays planned.
+pub async fn clear_plan(
+    CurrentUser(me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(recipe_id): Path<Uuid>,
+    Form(form): Form<ClearPlanForm>,
+) -> Response {
+    let request = UpdateSelectionRequest {
+        servings: None,
+        planned_on: Some(None),
+        meal_slot: Some(None),
+    };
+    patch_plan(
+        me,
+        state,
+        headers,
+        recipe_id,
+        &form.back,
+        request,
+        "plan_cleared",
+    )
+    .await
+}
+
+/// The `PATCH …/selection` of [`plan`] and [`clear_plan`], then back to
+/// the page with `notice` or the API's refusal. A selection gone in
+/// between (404, another member was quicker) is `selection_gone`.
+async fn patch_plan(
+    me: MeResponse,
+    state: AppState,
+    headers: HeaderMap,
+    recipe_id: Uuid,
+    back: &str,
+    request: UpdateSelectionRequest,
+    notice: &str,
+) -> Response {
+    let Some(fam) = family_context(&state, &headers, &me, &back_path(back, recipe_id)).await else {
+        return Redirect::to("/groups/new").into_response();
+    };
+    let cookie = recipes_cookie(&headers);
+    let result = api_request_auth(
+        &state,
+        reqwest::Method::PATCH,
+        &format!("/groups/{}/recipes/{}/selection", fam.gid, recipe_id),
+        cookie.as_deref(),
+        Some(serde_json::to_value(&request).unwrap()),
+    )
+    .await;
+    let target = match result {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            back_with(back, recipe_id, &format!("notice={notice}"))
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
+            let code = match resp.body.get("error").and_then(|e| e.as_str()) {
+                Some("invalid_meal_slot") => "invalid_meal_slot",
+                _ => "invalid_planned_on",
+            };
+            back_with(back, recipe_id, &format!("error={code}"))
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+            back_with(back, recipe_id, "error=selection_gone")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
+            back_with(back, recipe_id, "error=forbidden")
+        }
+        Ok(_) | Err(_) => back_with(back, recipe_id, "error=unavailable"),
+    };
+    Redirect::to(&target).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -433,6 +603,83 @@ mod tests {
         assert_eq!(
             planned_badge(None),
             r#"<span class="badge">À réaliser</span>"#
+        );
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn the_meals_are_midi_and_soir() {
+        assert_eq!(meal_word("lunch"), Some("midi"));
+        assert_eq!(meal_word("dinner"), Some("soir"));
+        assert_eq!(meal_word("brunch"), None);
+        assert_eq!(meal_word(""), None);
+    }
+
+    #[test]
+    fn the_plan_form_sends_the_day_and_the_meal_or_their_removal() {
+        let r = plan_request("2026-11-19", "dinner").unwrap();
+        assert_eq!(r.servings, None);
+        assert_eq!(r.planned_on, Some(Some(day(2026, 11, 19))));
+        assert_eq!(r.meal_slot, Some(Some("dinner".to_string())));
+        // A day without a meal removes the meal.
+        let r = plan_request(" 2026-11-19 ", "").unwrap();
+        assert_eq!(r.planned_on, Some(Some(day(2026, 11, 19))));
+        assert_eq!(r.meal_slot, Some(None));
+        // Nothing removes both, and the number of people is not sent.
+        let r = plan_request("", "").unwrap();
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            serde_json::json!({"planned_on": null, "meal_slot": null})
+        );
+        assert_eq!(
+            serde_json::to_value(plan_request("2026-11-19", "lunch").unwrap()).unwrap(),
+            serde_json::json!({"planned_on": "2026-11-19", "meal_slot": "lunch"})
+        );
+    }
+
+    #[test]
+    fn the_plan_form_refuses_a_meal_without_a_day_and_what_is_not_a_date() {
+        assert_eq!(plan_request("", "lunch").unwrap_err(), "meal_without_day");
+        assert_eq!(
+            plan_request("  ", "dinner").unwrap_err(),
+            "meal_without_day"
+        );
+        assert_eq!(
+            plan_request("19/11/2026", "").unwrap_err(),
+            "invalid_planned_on"
+        );
+        assert_eq!(
+            plan_request("2026-02-30", "").unwrap_err(),
+            "invalid_planned_on"
+        );
+        assert_eq!(
+            plan_request("2026-11-19", "brunch").unwrap_err(),
+            "invalid_meal_slot"
+        );
+    }
+
+    #[test]
+    fn the_plan_badge_names_the_day_and_the_meal_only_when_dated() {
+        assert_eq!(plan_badge(None, None), "");
+        assert_eq!(
+            plan_badge(Some(day(2026, 11, 19)), Some("lunch")),
+            r#"<span class="badge accent">jeu. 19/11 · midi</span>"#
+        );
+        assert_eq!(
+            plan_badge(Some(day(2026, 11, 21)), None),
+            r#"<span class="badge accent">sam. 21/11</span>"#
+        );
+        assert_eq!(
+            plan_badge(Some(day(2026, 11, 20)), Some("dinner")),
+            r#"<span class="badge accent">ven. 20/11 · soir</span>"#
+        );
+        // A meal the page does not know is not shown.
+        assert_eq!(
+            plan_badge(Some(day(2026, 11, 21)), Some("brunch")),
+            r#"<span class="badge accent">sam. 21/11</span>"#
         );
     }
 }
