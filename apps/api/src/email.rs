@@ -191,22 +191,17 @@ impl EmailSender {
     }
 
     /// Mailed at registration, and again on each resend, to confirm the
-    /// address.
-    pub fn verification_email(
-        display_name: &str,
-        link: &str,
-        privacy_policy_url: &str,
-    ) -> EmailContent {
-        let title = match greeted(display_name) {
-            Some(name) => format!("Bienvenue, {name} !"),
-            None => "Bienvenue !".to_owned(),
-        };
+    /// address. It greets nobody: the account's name was typed by whoever
+    /// registered the address, before anybody proved to hold it, and the
+    /// email must not carry it to the mailbox (arbitrated 2026-11-15).
+    pub fn verification_email(link: &str, privacy_policy_url: &str) -> EmailContent {
+        let title = "Bienvenue !";
         let validity = format!(
             "Ce lien est valable {} et ne sert qu'une fois.",
             hours(crate::auth::EMAIL_VERIFICATION_TTL_HOURS)
         );
         template::render(&Template {
-            title: &title,
+            title,
             paragraphs: &[
                 "Plus qu'une étape : confirmez que cette adresse est bien la vôtre \
                  pour activer votre compte Manage Our Home.",
@@ -370,7 +365,6 @@ mod tests {
     fn html_email_is_multipart_alternative_text_first_then_html_with_its_inline_symbol() {
         let (email, _) = sender();
         let content = EmailSender::verification_email(
-            "Alice",
             "https://maison.example/verify-email?token=abc",
             "https://maison.example/privacy-policy",
         );
@@ -420,11 +414,14 @@ mod tests {
 
     const PRIVACY: &str = "https://maison.example/privacy-policy";
 
+    /// Arbitrated 2026-11-15: the name was typed by whoever registered the
+    /// address, before anybody proved to hold it, so the verification email
+    /// greets nobody.
     #[test]
-    fn verification_email_greets_recalls_the_request_and_says_how_long_the_link_lasts() {
+    fn verification_email_greets_nobody_recalls_the_request_and_says_how_long_the_link_lasts() {
         let link = "https://maison.example/verify-email?token=abc";
-        let c = EmailSender::verification_email("Alice", link, PRIVACY);
-        assert!(c.text.starts_with("Bienvenue, Alice !\n"), "{}", c.text);
+        let c = EmailSender::verification_email(link, PRIVACY);
+        assert!(c.text.starts_with("Bienvenue !\n"), "{}", c.text);
         assert!(c.text.contains("confirmez que cette adresse"), "{}", c.text);
         assert!(c.text.contains("valable 24 heures"), "{}", c.text);
         assert!(c.text.contains("ne sert qu'une fois"), "{}", c.text);
@@ -432,8 +429,9 @@ mod tests {
         assert!(c.text.contains(&format!("\n{link}\n")), "{}", c.text);
         assert!(c.text.contains(PRIVACY), "{}", c.text);
         assert!(c.html.contains(&format!("href=\"{link}\"")), "{}", c.html);
-        assert!(c.html.contains(">Bienvenue, Alice !</h1>"), "{}", c.html);
+        assert!(c.html.contains(">Bienvenue !</h1>"), "{}", c.html);
     }
+
 
     #[test]
     fn password_reset_email_greets_recalls_the_request_and_says_how_long_the_link_lasts() {
@@ -484,7 +482,6 @@ mod tests {
         let flat = "<script>\"x\" & Cie</script> Cliquez ici";
         let escaped = "&lt;script&gt;&quot;x&quot; &amp; Cie&lt;/script&gt; Cliquez ici";
         for c in [
-            EmailSender::verification_email(typed, "https://m.example/v?token=a", PRIVACY),
             EmailSender::password_reset_email(typed, "https://m.example/r#token=a", PRIVACY),
             EmailSender::account_exists_email(typed, "https://m.example/f", PRIVACY),
         ] {
@@ -502,8 +499,6 @@ mod tests {
     #[test]
     fn auth_emails_without_a_name_greet_nobody() {
         let blank = " \n\u{202E}";
-        let v = EmailSender::verification_email(blank, "https://m.example/v", PRIVACY);
-        assert!(v.text.starts_with("Bienvenue !\n"), "{}", v.text);
         let r = EmailSender::password_reset_email(blank, "https://m.example/r", PRIVACY);
         assert!(
             r.text.starts_with("Choisissez un nouveau mot de passe\n"),

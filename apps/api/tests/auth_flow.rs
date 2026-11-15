@@ -3597,14 +3597,15 @@ async fn the_reset_email_carries_a_link_that_resets_the_password(db: PgPool) {
 
 /// The latest email to `to`, checked as #831 has every auth email: an HTML
 /// part next to the text one, the link `prefix…` identical in both, the
-/// display name `typed` intact in the text and escaped in the HTML, and a
-/// subject `subject` that names nobody. Returns the link's token.
+/// display name `typed` intact in the text and escaped in the HTML — or no
+/// name at all when `typed` is `None` — and a subject `subject` that names
+/// nobody. Returns the link's token.
 fn assert_two_part_auth_email(
     outbox: &manage_our_home::email::Outbox,
     to: &str,
     subject: &str,
     prefix: &str,
-    typed: &str,
+    typed: Option<&str>,
 ) -> String {
     let emails = outbox.emails();
     let mail = emails.iter().rev().find(|e| e.to == to).unwrap();
@@ -3616,11 +3617,19 @@ fn assert_two_part_auth_email(
     assert!(mail.body.contains(&format!("\n{link}\n")), "{}", mail.body);
     assert!(html.contains(&format!("href=\"{link}\"")), "{html}");
     assert!(html.contains(&format!(">{link}</a>")), "{html}");
-    assert!(mail.body.contains(typed), "{}", mail.body);
-    assert!(
-        html.contains("Eve &lt;script&gt;&quot;x&quot; &amp; Cie"),
-        "{html}"
-    );
+    match typed {
+        Some(typed) => {
+            assert!(mail.body.contains(typed), "{}", mail.body);
+            assert!(
+                html.contains("Eve &lt;script&gt;&quot;x&quot; &amp; Cie"),
+                "{html}"
+            );
+        }
+        None => {
+            assert!(!mail.body.contains("Eve"), "{}", mail.body);
+            assert!(!html.contains("Eve"), "{html}");
+        }
+    }
     assert!(!html.contains("<script"), "{html}");
     assert!(
         html.contains("http://localhost:5173/privacy-policy"),
@@ -3630,10 +3639,11 @@ fn assert_two_part_auth_email(
 }
 
 /// #831: a verification link sent again — by a new registration of the
-/// unverified address, or by the resend route — names the account as
-/// stored, never the name the new registration typed.
+/// unverified address, or by the resend route — names nobody: neither the
+/// account's name nor the one the new registration typed, both typed
+/// before anybody proved to hold the address (arbitrated 2026-11-15).
 #[sqlx::test]
-async fn a_resent_verification_email_names_the_stored_account(db: PgPool) {
+async fn a_resent_verification_email_names_nobody(db: PgPool) {
     let (router, outbox) = common::test_router_with_outbox(db.clone());
     let email = "twice@example.test";
     register_with(&router, email, "twice-password1", "First").await;
@@ -3653,9 +3663,13 @@ async fn a_resent_verification_email_names_the_stored_account(db: PgPool) {
 
     let emails = outbox.emails();
     assert_eq!(emails.len(), 3, "registration, re-registration, resend");
-    for mail in &emails[1..] {
-        assert!(mail.body.starts_with("Bienvenue, First !\n"), "{}", mail.body);
-        assert!(!mail.body.contains("Intruder"), "{}", mail.body);
+    for mail in &emails {
+        assert!(mail.body.starts_with("Bienvenue !\n"), "{}", mail.body);
+        let html = mail.html.as_deref().expect("an HTML part");
+        for name in ["First", "Intruder"] {
+            assert!(!mail.body.contains(name), "{}", mail.body);
+            assert!(!html.contains(name), "{html}");
+        }
     }
 }
 
@@ -3674,7 +3688,7 @@ async fn auth_emails_carry_the_same_link_in_both_parts_and_escape_the_name(db: P
         email,
         "Vérifiez votre email",
         "http://localhost:5173/verify-email?token=",
-        typed,
+        None,
     );
     let verify = call(
         &router,
@@ -3700,7 +3714,7 @@ async fn auth_emails_carry_the_same_link_in_both_parts_and_escape_the_name(db: P
         email,
         "Réinitialisation de mot de passe",
         "http://localhost:5173/reset-password#token=",
-        typed,
+        Some(typed),
     );
 
     let again = register_with(&router, email, "other-password1", "Other").await;
