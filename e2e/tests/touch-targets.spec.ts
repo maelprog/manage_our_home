@@ -201,8 +201,8 @@ async function undersized(page: Page): Promise<Box[]> {
  * whether by a box that paints nothing or by its own box moved over its
  * neighbour. On every link of the agenda's day and week views, each point
  * of a 4px grid over the link's visible box, its first and last rows and
- * columns of pixels included, is asked which link lies there: it must be
- * this link. Two overlaps are by design: a block or a line of the
+ * columns of pixels included, is asked which link lies there: no other
+ * link may lie there. Two overlaps are by design: a block or a line of the
  * « Journée » banner over a slot of #794 (`.blk`, `.ad` over `.slots a`,
  * `.slot`; « Créneau d'abord »: the slot keeps every point nothing is
  * drawn on), and a link of a fixed or sticky bar over the page. They pass
