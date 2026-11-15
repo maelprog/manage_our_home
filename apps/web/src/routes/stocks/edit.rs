@@ -5,6 +5,8 @@
 //! `?expires_on=YYYY-MM-DD` pre-fills the date with the one a GS1 code
 //! carried (#403, "Déjà en stock"): shown, marked as read on the code, and
 //! saved only if the member submits the form.
+//! An article without a date opens with "Pas de date de péremption"
+//! checked (#804); checked, the date is cleared whatever the field holds.
 //! A blank category, threshold or expiry date *clears* it (sent as `Some(None)` per the
 //! backend's double-`Option` PATCH contract). Success (200) → PRG
 //! `/stocks/:id?notice=item_updated`.
@@ -13,6 +15,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
+use chrono::NaiveDate;
 use manage_our_home_shared::dto::stocks::{StockItemResponse, UpdateStockItemRequest};
 use manage_our_home_shared::validation::stocks::{normalize_unit, validate_item_form};
 use uuid::Uuid;
@@ -22,8 +25,8 @@ use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
 use super::new::{
-    error_message, form_error_code, form_fields, parse_expires_on, parse_quantity, parse_threshold,
-    DateOrigin, ItemForm,
+    chosen_expires_on, error_message, form_error_code, form_fields, parse_expires_on,
+    parse_quantity, parse_threshold, DateOrigin, ItemForm,
 };
 use super::{
     can_modify, family_context, forbidden_page, item_not_found_page, service_unavailable_page,
@@ -42,6 +45,7 @@ fn page(header: &str, id: Uuid, name: &str, form: &ItemForm, error: Option<&str>
         &form.reorder_threshold,
         &form.expires_on,
         &form.expires_on_origin,
+        form.no_expiry.is_some(),
     );
     let body = format!(
         r#"<h1>Modifier — {name_esc}</h1>
@@ -83,6 +87,36 @@ async fn fetch_item(
     }
 }
 
+/// The edit form of `item`, with the date a scan proposes (`proposed`) in
+/// place of its own.
+fn edit_form(item: &StockItemResponse, proposed: Option<NaiveDate>) -> ItemForm {
+    ItemForm {
+        name: item.name.clone(),
+        category: item.category.clone().unwrap_or_default(),
+        quantity: super::fmt_num(item.quantity),
+        unit: item.unit.clone(),
+        reorder_threshold: item
+            .reorder_threshold
+            .map(super::fmt_num)
+            .unwrap_or_default(),
+        expires_on: proposed
+            .or(item.expires_on)
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_default(),
+        // The edit form neither shows nor sends the code (#402): a PATCH
+        // leaves it as it is.
+        barcode: String::new(),
+        expires_on_origin: if proposed.is_some() {
+            DateOrigin::Code
+        } else {
+            DateOrigin::Member
+        },
+        // An article without a date opens with "Pas de date de péremption"
+        // checked (#804), unless a scan proposes one.
+        no_expiry: (proposed.is_none() && item.expires_on.is_none()).then(|| "1".to_string()),
+    }
+}
+
 #[derive(serde::Deserialize, Default)]
 pub struct EditQuery {
     /// The date a GS1 code carried, proposed from "Déjà en stock" (#403).
@@ -117,28 +151,7 @@ pub async fn get(
         .expires_on
         .as_deref()
         .and_then(|d| parse_expires_on(d).ok().flatten());
-    let form = ItemForm {
-        name: item.name.clone(),
-        category: item.category.clone().unwrap_or_default(),
-        quantity: super::fmt_num(item.quantity),
-        unit: item.unit.clone(),
-        reorder_threshold: item
-            .reorder_threshold
-            .map(super::fmt_num)
-            .unwrap_or_default(),
-        expires_on: proposed
-            .or(item.expires_on)
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_default(),
-        // The edit form neither shows nor sends the code (#402): a PATCH
-        // leaves it as it is.
-        barcode: String::new(),
-        expires_on_origin: if proposed.is_some() {
-            DateOrigin::Code
-        } else {
-            DateOrigin::Member
-        },
-    };
+    let form = edit_form(&item, proposed);
     Html(page(&fam.header, item_id, &item.name, &form, None)).into_response()
 }
 
@@ -171,7 +184,7 @@ pub async fn post(
     let Ok(reorder_threshold) = parse_threshold(&form.reorder_threshold) else {
         return render_error("reorder_threshold_must_be_non_negative");
     };
-    let Ok(expires_on) = parse_expires_on(&form.expires_on) else {
+    let Ok(expires_on) = chosen_expires_on(form.no_expiry.is_some(), &form.expires_on) else {
         return render_error("invalid_expires_on");
     };
     if let Err(e) = validate_item_form(&form.name, quantity, reorder_threshold) {
@@ -222,5 +235,52 @@ pub async fn post(
             render_error(code)
         }
         Ok(_) | Err(_) => render_error("unavailable"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(expires_on: Option<NaiveDate>) -> StockItemResponse {
+        serde_json::from_value(serde_json::json!({
+            "id": Uuid::from_u128(5),
+            "group_id": Uuid::nil(),
+            "name": "Sel fin",
+            "category": "Placard",
+            "quantity": 1.0,
+            "unit": "kg",
+            "reorder_threshold": null,
+            "low_stock": false,
+            "created_by": Uuid::from_u128(7),
+            "created_at": "2026-10-01T10:00:00Z",
+            "updated_at": "2026-10-01T10:00:00Z",
+            "expires_on": expires_on,
+            "expiry_status": "unknown",
+        }))
+        .unwrap()
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn an_article_without_a_date_opens_with_the_box_checked() {
+        let form = edit_form(&item(None), None);
+        assert!(form.no_expiry.is_some());
+        assert_eq!(form.expires_on, "");
+    }
+
+    #[test]
+    fn an_article_with_a_date_or_a_proposed_one_opens_unchecked() {
+        let dated = edit_form(&item(Some(day(2027, 3, 1))), None);
+        assert!(dated.no_expiry.is_none());
+        assert_eq!(dated.expires_on, "2027-03-01");
+        // A date read on a code (#403) is proposed for the member to save.
+        let proposed = edit_form(&item(None), Some(day(2027, 1, 31)));
+        assert!(proposed.no_expiry.is_none());
+        assert_eq!(proposed.expires_on, "2027-01-31");
+        assert_eq!(proposed.expires_on_origin, DateOrigin::Code);
     }
 }

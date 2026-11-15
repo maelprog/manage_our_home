@@ -836,6 +836,7 @@
         var button = document.createElement("button");
         button.type = "button";
         button.className = "secondary sm";
+        button.setAttribute("data-expiry-shortcut", "");
         button.textContent = shortcut[0];
         button.addEventListener("click", function () {
           field.value = later(new Date(), shortcut[1], shortcut[2]);
@@ -844,7 +845,39 @@
       });
       // After the label, not in it: a label holds one control.
       (closest(field, "label") || field).insertAdjacentElement("afterend", group);
+      noExpiry(field, group);
     });
+  }
+
+  // "Pas de date de péremption" (#804): checked, the date field is emptied
+  // and disabled, its shortcuts too, and the note saying where a proposed
+  // date came from is hidden; unchecked, the field gets back the date it
+  // held. The server ignores the field when the box is checked, so the
+  // script only shows what will be saved.
+  function noExpiry(field, group) {
+    var box = field.form && field.form.querySelector('input[name="no_expiry"]');
+    if (!box) return;
+    var label = closest(field, "label");
+    var notes = label ? label.querySelectorAll("[data-expiry-note]") : [];
+    var buttons = group.querySelectorAll("button");
+    var kept = "";
+    function sync() {
+      if (box.checked) {
+        kept = field.value || kept;
+        field.value = "";
+      } else if (kept) {
+        field.value = kept;
+      }
+      field.disabled = box.checked;
+      Array.prototype.forEach.call(buttons, function (button) {
+        button.disabled = box.checked;
+      });
+      Array.prototype.forEach.call(notes, function (note) {
+        note.hidden = box.checked;
+      });
+    }
+    box.addEventListener("change", sync);
+    sync();
   }
 
   function later(today, days, months) {
