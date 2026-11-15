@@ -115,6 +115,10 @@ pub fn normalize_unit(raw: &str) -> String {
     }
 }
 
+/// The metric symbols, in lower case: never a plural in `format_quantity`,
+/// the only units `parse_pack_size` reads.
+const METRIC_SYMBOLS: [&str; 7] = ["g", "kg", "mg", "l", "cl", "ml", "dl"];
+
 /// A quantity and its unit as the stock list reads them (#527): « 2
 /// paquets », « 250 g », « 1,5 L », and the bare number for
 /// `DEFAULT_UNIT` (« 3 », not « 3 unités »).
@@ -142,8 +146,7 @@ pub fn format_quantity(quantity: f64, unit: &str) -> String {
     if unit.is_empty() || article_key(unit) == DEFAULT_UNIT {
         return number;
     }
-    const SYMBOLS: [&str; 7] = ["g", "kg", "mg", "l", "cl", "ml", "dl"];
-    let invariant = SYMBOLS.contains(&article_key(unit).as_str()) || unit.ends_with('.');
+    let invariant = METRIC_SYMBOLS.contains(&article_key(unit).as_str()) || unit.ends_with('.');
     if invariant || quantity < 2.0 {
         return format!("{number} {unit}");
     }
@@ -180,6 +183,80 @@ pub fn format_quantity(quantity: f64, unit: &str) -> String {
         format!("{first}{}", mark("s"))
     };
     format!("{number} {plural}{rest}")
+}
+
+/// A pack size read from Open Food Facts' `quantity` text (#805): the
+/// amount and the unit the stock form is pre-filled with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackSize {
+    pub quantity: f64,
+    pub unit: String,
+}
+
+/// Reads an Open Food Facts pack size (`quantity`, free text) as an amount
+/// and a unit (#805): « 500 g », « 500g », « 1,5 L », and a multipack
+/// multiplied out (« 2 x 75 g » is 150 g; `x`, `X` or `×`).
+///
+/// - The unit is a metric symbol (`METRIC_SYMBOLS`, in any case), written
+///   one way: `L` for the litre, the others in lower case — a value
+///   `normalize_unit` keeps as it is.
+/// - The decimals take a comma or a point; the amount is rounded to three
+///   decimals, like `format_quantity` writes it.
+/// - A trailing estimated sign (`℮`) is dropped.
+/// - Anything else is not read (`None`): a count of named things (« 6
+///   tranches », « 12 oeufs » — no conversion to guess), other text before
+///   or after the size, an amount of zero or above `MAX_QUANTITY`. The
+///   caller then keeps the text as it is.
+pub fn parse_pack_size(raw: &str) -> Option<PackSize> {
+    let text = raw.trim();
+    let text = text.strip_suffix('℮').unwrap_or(text).trim_end();
+    let (first, rest) = leading_number(text)?;
+    let rest = rest.trim_start();
+    let (quantity, rest) = match rest.strip_prefix(['x', 'X', '×']) {
+        Some(after) => {
+            let (each, rest) = leading_number(after.trim_start())?;
+            (first * each, rest.trim_start())
+        }
+        None => (first, rest),
+    };
+    let unit = article_key(rest);
+    if !METRIC_SYMBOLS.contains(&unit.as_str()) {
+        return None;
+    }
+    let quantity = (quantity * 1000.0).round() / 1000.0;
+    if !(quantity > 0.0 && quantity <= MAX_QUANTITY) {
+        return None;
+    }
+    let unit = if unit == "l" { "L".to_string() } else { unit };
+    Some(PackSize { quantity, unit })
+}
+
+/// The number `text` starts with — digits, then at most one comma or point
+/// followed by digits — and what comes after it.
+fn leading_number(text: &str) -> Option<(f64, &str)> {
+    let int_end = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    if int_end == 0 {
+        return None;
+    }
+    let mut end = int_end;
+    if let Some(after) = text[int_end..].strip_prefix([',', '.']) {
+        let decimals = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if decimals == 0 {
+            return None;
+        }
+        end = int_end + 1 + decimals;
+    }
+    let (number, rest) = text.split_at(end);
+    // A second separator (« 1,2,3 ») is never a number.
+    if rest.starts_with([',', '.']) {
+        return None;
+    }
+    let value = number.replace(',', ".").parse::<f64>().ok()?;
+    Some((value, rest))
 }
 
 /// Mirror of the backend's derived `low_stock` flag
@@ -773,5 +850,117 @@ mod tests {
         assert_eq!(format_quantity(0.125, "kg"), "0,125 kg");
         assert_eq!(format_quantity(2.0004, "kg"), "2 kg");
         assert_eq!(format_quantity(1250.0, "g"), "1250 g");
+    }
+
+    // -- parse_pack_size (#805) ----------------------------------------------
+
+    fn pack(quantity: f64, unit: &str) -> Option<PackSize> {
+        Some(PackSize {
+            quantity,
+            unit: unit.to_string(),
+        })
+    }
+
+    #[test]
+    fn the_issue_cases_read_as_an_amount_and_a_unit() {
+        let cases: [(&str, Option<PackSize>); 9] = [
+            ("500g", pack(500.0, "g")),
+            ("500 g", pack(500.0, "g")),
+            ("2x75g", pack(150.0, "g")),
+            ("2 x 75 g", pack(150.0, "g")),
+            ("1,5 L", pack(1.5, "L")),
+            ("33 cl", pack(33.0, "cl")),
+            ("12 oeufs", None),
+            ("", None),
+            ("Paquet familial", None),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(parse_pack_size(raw), expected, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_count_of_named_things_is_not_read() {
+        for raw in ["6 tranches", "4 pots", "12", "g", "   "] {
+            assert_eq!(parse_pack_size(raw), None, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn every_metric_symbol_is_read_and_written_one_way() {
+        let cases = [
+            ("250 G", "g"),
+            ("1 kg", "kg"),
+            ("1 KG", "kg"),
+            ("300 mg", "mg"),
+            ("1 l", "L"),
+            ("1L", "L"),
+            ("25 cL", "cl"),
+            ("750 ml", "ml"),
+            ("5 dl", "dl"),
+        ];
+        for (raw, unit) in cases {
+            assert_eq!(
+                parse_pack_size(raw).map(|p| p.unit),
+                Some(unit.to_string()),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unit_read_is_one_normalize_unit_keeps() {
+        for raw in ["500 g", "1,5 L", "33 cl", "2 x 75 g", "1 kg"] {
+            let unit = parse_pack_size(raw).unwrap().unit;
+            assert_eq!(normalize_unit(&unit), unit, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn decimals_take_a_comma_or_a_point_and_spaces_around_are_dropped() {
+        assert_eq!(parse_pack_size(" 1.5 L "), pack(1.5, "L"));
+        assert_eq!(parse_pack_size("0,25 kg"), pack(0.25, "kg"));
+    }
+
+    #[test]
+    fn the_estimated_sign_after_the_size_is_dropped() {
+        assert_eq!(parse_pack_size("500 g ℮"), pack(500.0, "g"));
+        assert_eq!(parse_pack_size("1L℮"), pack(1.0, "L"));
+    }
+
+    #[test]
+    fn a_multipack_multiplies_whatever_its_sign() {
+        assert_eq!(parse_pack_size("4 X 125 g"), pack(500.0, "g"));
+        assert_eq!(parse_pack_size("6 × 1,5 L"), pack(9.0, "L"));
+        // Rounded to three decimals, like the list writes it.
+        assert_eq!(parse_pack_size("3 x 0,1 l"), pack(0.3, "L"));
+    }
+
+    #[test]
+    fn a_size_with_other_text_around_it_is_not_read() {
+        for raw in [
+            "500 g e",
+            "env. 500 g",
+            "500 g (2 x 250 g)",
+            "2 x 75",
+            "x 75 g",
+            "500 g 2",
+        ] {
+            assert_eq!(parse_pack_size(raw), None, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_or_out_of_bound_size_is_not_read() {
+        for raw in [
+            "0 g",
+            "0 x 75 g",
+            "2 x 0 g",
+            "2000000000 g",
+            "1,2,3 g",
+            "-5 g",
+        ] {
+            assert_eq!(parse_pack_size(raw), None, "{raw:?}");
+        }
     }
 }
