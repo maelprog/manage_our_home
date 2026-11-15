@@ -114,4 +114,39 @@ test.describe("Back after opening a notification", () => {
     await expect(entry(page, "Notifications (1 non lue)")).toBeVisible();
     expect(await page.evaluate(() => sessionStorage.getItem("e2e-restored"))).toBe("stocks");
   });
+
+  test("a page shown after the last opening comes back from the cache untouched", async ({ page }) => {
+    await twoUnread(page);
+    await page.goto("/notifications");
+    await page.getByRole("button", { name: /Sam a écrit/ }).click();
+    await expect(page).toHaveURL("/messagerie");
+
+    // Shown after the opening: nothing of it is stale.
+    await page.goto("/stocks");
+    await expect(entry(page, "Notifications (1 non lue)")).toBeVisible();
+    await page.evaluate(() => {
+      const w = window as unknown as { kept?: boolean; restored?: boolean };
+      w.kept = true;
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) w.restored = true;
+      });
+    });
+
+    await page.goto("/agenda");
+    await page.goBack({ waitUntil: "commit" });
+    await expect(page).toHaveURL("/stocks");
+    // Restored from the back/forward cache, and not reloaded: the
+    // document is the one left, its `window` with it.
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { restored?: boolean }).restored))
+      .toBe(true);
+    // A reload asked at `pageshow` would have come by now and taken both.
+    await page.waitForTimeout(1000);
+    expect(
+      await page.evaluate(() => {
+        const w = window as unknown as { kept?: boolean; restored?: boolean };
+        return w.kept === true && w.restored === true;
+      }),
+    ).toBe(true);
+  });
 });
