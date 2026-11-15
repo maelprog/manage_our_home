@@ -471,6 +471,35 @@
     });
   });
 
+  // A notification opened (#861) is read from then on, and the count every
+  // page's navigation wears goes down — but a page the back button brings
+  // out of the back/forward cache comes back as it was left, that count
+  // and the list of `/notifications` the old ones. Such a page, shown
+  // before the last notification was opened in this tab, is fetched again.
+  // `/notifications` itself is also sent `no-store`, for the browsers that
+  // keep no such cache and would take it from their HTTP cache instead.
+  // The time of the opening is kept in sessionStorage, which can be missing
+  // or refuse writes: the page then simply comes back as it was.
+  var NOTIFICATION_OPENED = "notification-opened";
+  var shownAt = Date.now();
+
+  document.addEventListener("submit", function (event) {
+    var action = event.target.getAttribute && event.target.getAttribute("action");
+    if (!action || !/^\/notifications\/[^/]+\/open$/.test(action)) return;
+    try {
+      sessionStorage.setItem(NOTIFICATION_OPENED, String(Date.now()));
+    } catch (e) {}
+  });
+
+  window.addEventListener("pageshow", function (event) {
+    if (!event.persisted) return;
+    var opened = 0;
+    try {
+      opened = Number(sessionStorage.getItem(NOTIFICATION_OPENED)) || 0;
+    } catch (e) {}
+    if (opened >= shownAt && document.querySelector('a[href="/notifications"]')) location.reload();
+  });
+
   document.addEventListener("change", function (event) {
     var input = event.target;
     if (!input.hasAttribute) return;
