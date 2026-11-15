@@ -136,9 +136,10 @@ test.describe("Stocks — barcode scan", () => {
     });
     await expect(page).toHaveURL(/\/stocks\/new\/photo$/);
     await expect(page.getByText("Produit trouvé")).toBeVisible();
-    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
-    await expect(page.getByLabel("Quantité")).toHaveValue("1");
-    await expect(page.getByLabel("Unité", { exact: true })).toHaveValue("unité");
+    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner");
+    // The pack size, « 400 g », read as the quantity and the unit (#805).
+    await expect(page.getByLabel("Quantité")).toHaveValue("400");
+    await expect(page.getByLabel("Unité", { exact: true })).toHaveValue("g");
     await expect(page.getByText(`Code-barres associé : ${KNOWN}`)).toBeVisible();
     await expect(page.getByText("Données produits : Open Food Facts, ODbL.")).toBeVisible();
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
@@ -147,15 +148,16 @@ test.describe("Stocks — barcode scan", () => {
     // The same code again: the article already in stock, and "+1".
     await scan(page, KNOWN);
     await expect(page.getByRole("heading", { name: "Déjà en stock" })).toBeVisible();
-    await expect(page.getByText("Déjà en stock : Pâte à tartiner (400 g) (1)")).toBeVisible();
+    await expect(page.getByText("Déjà en stock : Pâte à tartiner (400 g)")).toBeVisible();
     await page.getByRole("button", { name: "+1" }).click();
     await expect(page).toHaveURL(/\/stocks\/[0-9a-f-]+\?notice=quantity_adjusted$/);
-    await expect(page.getByText("Quantité : 2", { exact: true })).toBeVisible();
+    // "+1" adds one of the article's unit: here one gram.
+    await expect(page.getByText("Quantité : 401 g", { exact: true })).toBeVisible();
 
     // "Créer quand même un autre article": the form, without the code.
     await scan(page, KNOWN);
     await page.getByRole("button", { name: "Créer quand même un autre article" }).click();
-    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
+    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner");
     await expect(page.getByText("Cet article ne portera pas le code-barres")).toBeVisible();
     await expect(page.getByText("Code-barres associé")).toHaveCount(0);
   });
@@ -184,7 +186,7 @@ test.describe("Stocks — barcode scan", () => {
       buffer: ean13Photo(KNOWN),
     });
     await expect(page).toHaveURL(/\/stocks\/new\/photo$/);
-    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
+    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner");
 
     // Or the digits, typed: the scan runs on them.
     await page.goto("/stocks/new?photo=unreadable");
@@ -214,7 +216,7 @@ test.describe("Stocks — barcode scan", () => {
     const gs1 = (yymmdd: string) => `010301762042200310LOT-42\u001d17${yymmdd}`;
     await scan(page, gs1("270131"));
     await expect(page.getByText("Produit trouvé")).toBeVisible();
-    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
+    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner");
     await expect(page.getByText(`Code-barres associé : ${KNOWN}`)).toBeVisible();
     await expect(page.getByLabel(/^Date de péremption/)).toHaveValue("2027-01-31");
     await expect(page.getByText("Lue sur le code")).toBeVisible();
@@ -306,7 +308,7 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
       buffer: ean13Photo(KNOWN),
     });
     await page.getByRole("button", { name: "Scanner" }).click();
-    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
+    await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner");
 
     // The digits, typed, for a product the stand-in does not know.
     await page.goto("/stocks/new");

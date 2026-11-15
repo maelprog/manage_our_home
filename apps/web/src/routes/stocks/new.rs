@@ -54,7 +54,8 @@ use manage_our_home_shared::dto::stocks::{
     StockItemResponse,
 };
 use manage_our_home_shared::validation::stocks::{
-    format_quantity, normalize_unit, validate_item_form, ItemFormError, DEFAULT_UNIT,
+    format_quantity, normalize_unit, parse_pack_size, validate_item_form, ItemFormError,
+    DEFAULT_UNIT,
 };
 use uuid::Uuid;
 
@@ -357,7 +358,8 @@ pub(crate) fn form_fields(
     )
 }
 
-/// The article name the form is pre-filled with: the product's name, with
+/// The article name the form is pre-filled with when the pack size is not
+/// read as a quantity (`prefilled_form`): the product's name, with
 /// its pack size in parentheses when Open Food Facts gives one and the name
 /// does not already carry it — two sizes of a product are two codes, so two
 /// articles, which the name alone would not tell apart.
@@ -370,10 +372,13 @@ pub(crate) fn product_label(product: &ScannedProduct) -> String {
     }
 }
 
-/// What a scan pre-fills: the product's label (`product_label`), one unit
-/// in hand, the code in the hidden field unless `with_code` is false
+/// What a scan pre-fills: the product's name with its pack size as the
+/// quantity and the unit when `parse_pack_size` reads it (#805: « 500 g »
+/// is 500 g), else the product's label (`product_label`) and one unit in
+/// hand; the code in the hidden field unless `with_code` is false
 /// ("créer quand même un autre article": one article per code), and the
 /// date the scan proposes (`proposed_date`), with where it comes from.
+/// Every value lands in an editable field.
 pub(crate) fn prefilled_form(
     code: &str,
     product: Option<&ScannedProduct>,
@@ -384,10 +389,21 @@ pub(crate) fn prefilled_form(
         Some((on, origin)) => (on.format("%Y-%m-%d").to_string(), origin),
         None => Default::default(),
     };
+    let pack = product.and_then(|p| p.quantity.as_deref().and_then(parse_pack_size));
+    let (name, quantity, unit) = match (product, pack) {
+        // `fmt_num` writes a point: the value an `<input type="number">`
+        // takes.
+        (Some(p), Some(pack)) => (p.name.clone(), fmt_num(pack.quantity), pack.unit),
+        (p, _) => (
+            p.map(product_label).unwrap_or_default(),
+            "1".to_string(),
+            DEFAULT_UNIT.to_string(),
+        ),
+    };
     ItemForm {
-        name: product.map(product_label).unwrap_or_default(),
-        quantity: "1".to_string(),
-        unit: DEFAULT_UNIT.to_string(),
+        name,
+        quantity,
+        unit,
         barcode: if with_code {
             code.to_string()
         } else {
@@ -1162,16 +1178,16 @@ mod tests {
     }
 
     #[test]
-    fn a_known_product_prefills_name_one_unit_and_the_code() {
+    fn a_known_product_prefills_name_pack_size_and_the_code() {
         let form = prefilled_form(
             "3017620422003",
             Some(&product("Nutella", Some("400 g"))),
             true,
             None,
         );
-        assert_eq!(form.name, "Nutella (400 g)");
-        assert_eq!(form.quantity, "1");
-        assert_eq!(form.unit, "unité");
+        assert_eq!(form.name, "Nutella");
+        assert_eq!(form.quantity, "400");
+        assert_eq!(form.unit, "g");
         assert_eq!(form.barcode, "3017620422003");
         assert_eq!(form.category, "");
         assert_eq!(form.expires_on, "");
@@ -1551,6 +1567,55 @@ mod tests {
         let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
         assert!(!html.contains("lue sur le code"), "{html}");
         assert!(!html.contains("/edit?expires_on="), "{html}");
+    }
+
+    #[test]
+    fn a_read_pack_size_goes_to_the_quantity_and_the_unit_not_the_name() {
+        for (size, quantity, unit) in [
+            ("500 g", "500", "g"),
+            ("2 x 75 g", "150", "g"),
+            ("1,5 L", "1.5", "L"),
+            ("33 cl", "33", "cl"),
+        ] {
+            let form = prefilled_form("1", Some(&product("Penne rigate", Some(size))), true, None);
+            assert_eq!(form.name, "Penne rigate", "{size}");
+            // A point: the value of an `<input type="number">`.
+            assert_eq!(form.quantity, quantity, "{size}");
+            assert_eq!(form.unit, unit, "{size}");
+            assert_eq!(normalize_unit(&form.unit), form.unit, "{size}");
+            // The fields stay editable: the values go into the form.
+            let html = form_fields(
+                &form.name,
+                &form.category,
+                &form.quantity,
+                &form.unit,
+                &form.reorder_threshold,
+                &form.expires_on,
+                &form.expires_on_origin,
+                false,
+            );
+            assert!(
+                html.contains(&format!(
+                    r#"name="quantity" step="any" min="0" value="{quantity}""#
+                )),
+                "{size}"
+            );
+            assert!(html.contains(&format!(r#"value="{unit}""#)), "{size}");
+        }
+    }
+
+    #[test]
+    fn an_unread_pack_size_stays_in_the_name_with_one_unit() {
+        for size in ["6 tranches", "12 oeufs", "Paquet familial"] {
+            let form = prefilled_form("1", Some(&product("Jambon", Some(size))), true, None);
+            assert_eq!(form.name, format!("Jambon ({size})"));
+            assert_eq!(form.quantity, "1");
+            assert_eq!(form.unit, "unité");
+        }
+        let form = prefilled_form("1", Some(&product("Jambon", None)), true, None);
+        assert_eq!(form.name, "Jambon");
+        assert_eq!(form.quantity, "1");
+        assert_eq!(form.unit, "unité");
     }
 
     #[test]
