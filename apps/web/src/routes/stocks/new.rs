@@ -37,6 +37,12 @@
 //! field also gets "+3 j", "+1 sem." and "+1 mois" shortcuts, put there by
 //! `app::ENHANCE_SCRIPT` (`data-expiry-shortcuts`) and counted from the
 //! browser's day: without JavaScript the field is typed by hand.
+//!
+//! "Pas de date de péremption" (#804), under the date, says none is wanted:
+//! checked, the server saves no date, whatever the field holds, and
+//! `app::ENHANCE_SCRIPT` empties and disables the field and its shortcuts
+//! (unchecked, the field gets back the date it held). Without JavaScript
+//! the box works the same, the server ignoring the field.
 
 use axum::extract::{Multipart, Query, State};
 use axum::http::HeaderMap;
@@ -83,6 +89,10 @@ pub struct ItemForm {
     /// form; empty for an article entered without one.
     #[serde(default)]
     pub barcode: String,
+    /// "Pas de date de péremption" (#804): present when checked, and then
+    /// `expires_on` is ignored (`chosen_expires_on`).
+    #[serde(default)]
+    pub no_expiry: Option<String>,
     /// Where `expires_on` comes from when the member did not type it: the
     /// field says so. Never sent by the browser.
     #[serde(skip)]
@@ -174,6 +184,18 @@ pub(crate) fn parse_expires_on(s: &str) -> Result<Option<NaiveDate>, ()> {
         NaiveDate::parse_from_str(t, "%Y-%m-%d")
             .map(Some)
             .map_err(|_| ())
+    }
+}
+
+/// The date to save: none when "Pas de date de péremption" is checked,
+/// whatever the field holds — typed, proposed by a scan, even unreadable
+/// (#804) — else the field's (`parse_expires_on`). The box wins: the script
+/// empties the field, but without it the field is sent as it was.
+pub(crate) fn chosen_expires_on(no_expiry: bool, typed: &str) -> Result<Option<NaiveDate>, ()> {
+    if no_expiry {
+        Ok(None)
+    } else {
+        parse_expires_on(typed)
     }
 }
 
@@ -275,6 +297,7 @@ fn combo_field(c: &Combo, value: &str) -> String {
 
 /// Renders the item form fields (shared markup, pre-filled). Used by create
 /// (empty defaults) and edit (existing values).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn form_fields(
     name: &str,
     category: &str,
@@ -283,12 +306,16 @@ pub(crate) fn form_fields(
     reorder_threshold: &str,
     expires_on: &str,
     expires_on_origin: &DateOrigin,
+    no_expiry: bool,
 ) -> String {
-    // Next to the field, so the member checks it before saving.
+    // Next to the field, so the member checks it before saving; none when
+    // no date is wanted (#804), and `data-expiry-note` lets the script hide
+    // it when the box gets checked.
     let origin_note = match expires_on_origin {
+        _ if no_expiry => String::new(),
         DateOrigin::Member => String::new(),
         DateOrigin::Code => {
-            "\n<span class=\"muted\">Lue sur le code : vérifiez-la, vous pouvez la corriger.</span>"
+            "\n<span class=\"muted\" data-expiry-note>Lue sur le code : vérifiez-la, vous pouvez la corriger.</span>"
                 .to_string()
         }
         DateOrigin::Category(label) => {
@@ -297,7 +324,7 @@ pub(crate) fn form_fields(
             } else {
                 format!("« {} »", html_escape(label))
             };
-            format!("\n<span class=\"muted\">Proposée d'après la catégorie {category} : vérifiez-la, vous pouvez la corriger.</span>")
+            format!("\n<span class=\"muted\" data-expiry-note>Proposée d'après la catégorie {category} : vérifiez-la, vous pouvez la corriger.</span>")
         }
     };
     // The mock-up's order (#527): name, quantity and unit side by side, the
@@ -315,6 +342,7 @@ pub(crate) fn form_fields(
 <input type="date" name="expires_on" value="{expires_on}" data-expiry-shortcuts/>{origin_note}
 <span class="muted">Optionnel. Si l'article en a plusieurs, la plus proche.</span>
 </label>
+<label class="field inline"><input type="checkbox" name="no_expiry" value="1"{checked}/> Pas de date de péremption</label>
 <label>Seuil de réappro
 <input type="number" name="reorder_threshold" step="any" min="0" value="{reorder_threshold}" placeholder="Optionnel — laisser vide pour aucun seuil"/>
 <span class="muted">En dessous ou à ce niveau, l'article est signalé « stock bas ». Partagé au niveau de la famille.</span>
@@ -325,6 +353,7 @@ pub(crate) fn form_fields(
         unit = combo_field(&UNIT_COMBO, unit),
         reorder_threshold = html_escape(reorder_threshold),
         expires_on = html_escape(expires_on),
+        checked = if no_expiry { " checked" } else { "" },
     )
 }
 
@@ -482,6 +511,7 @@ fn page(
         &form.reorder_threshold,
         &form.expires_on,
         &form.expires_on_origin,
+        form.no_expiry.is_some(),
     );
     let barcode_html = if form.barcode.is_empty() {
         String::new()
@@ -895,7 +925,7 @@ pub async fn post(
     let Ok(reorder_threshold) = parse_threshold(&form.reorder_threshold) else {
         return render_error("reorder_threshold_must_be_non_negative");
     };
-    let Ok(expires_on) = parse_expires_on(&form.expires_on) else {
+    let Ok(expires_on) = chosen_expires_on(form.no_expiry.is_some(), &form.expires_on) else {
         return render_error("invalid_expires_on");
     };
 
@@ -1028,7 +1058,16 @@ mod tests {
 
     #[test]
     fn the_unit_and_the_place_each_get_a_button_that_opens_their_list() {
-        let html = form_fields("Riz", "Placard", "2", "kg", "", "", &DateOrigin::Member);
+        let html = form_fields(
+            "Riz",
+            "Placard",
+            "2",
+            "kg",
+            "",
+            "",
+            &DateOrigin::Member,
+            false,
+        );
         for (name, input_id, list, listbox, button, listbox_label) in [
             (
                 "unit",
@@ -1216,6 +1255,7 @@ mod tests {
             "",
             &form.expires_on,
             &form.expires_on_origin,
+            false,
         );
         let label = html.split("<label>Date de péremption").nth(1).unwrap();
         let label = label.split("</label>").next().unwrap();
@@ -1234,6 +1274,7 @@ mod tests {
             "",
             "2026-10-29",
             &DateOrigin::Category(String::new()),
+            false,
         );
         assert!(
             unnamed.contains("Proposée d'après la catégorie du produit"),
@@ -1248,13 +1289,14 @@ mod tests {
             "",
             "2026-10-29",
             &DateOrigin::Category("<b>".into()),
+            false,
         );
         assert!(hostile.contains("« &lt;b&gt; »"), "{hostile}");
     }
 
     #[test]
     fn the_date_field_asks_for_its_shortcuts_without_carrying_them() {
-        let html = form_fields("", "", "", "", "", "", &DateOrigin::Member);
+        let html = form_fields("", "", "", "", "", "", &DateOrigin::Member, false);
         assert!(
             html.contains(
                 r#"<input type="date" name="expires_on" value="" data-expiry-shortcuts/>"#
@@ -1284,6 +1326,7 @@ mod tests {
             "",
             "2027-01-31",
             &DateOrigin::Code,
+            false,
         );
         assert!(read.contains(r#"value="2027-01-31""#), "{read}");
         // The mention sits in the date's own label, next to the field.
@@ -1298,8 +1341,95 @@ mod tests {
             "",
             "2027-01-31",
             &DateOrigin::Member,
+            false,
         );
         assert!(!typed.contains("Lue sur le code"), "{typed}");
+    }
+
+    #[test]
+    fn no_expiry_drops_whatever_date_came_with_it() {
+        // Checked: no date, whatever the field held — typed, proposed by
+        // the scan, or unreadable (#804).
+        assert_eq!(chosen_expires_on(true, "2027-01-31"), Ok(None));
+        assert_eq!(chosen_expires_on(true, ""), Ok(None));
+        assert_eq!(chosen_expires_on(true, "31/01/2027"), Ok(None));
+        // Unchecked: the field as before.
+        assert_eq!(
+            chosen_expires_on(false, "2027-01-31"),
+            Ok(Some(day(2027, 1, 31)))
+        );
+        assert_eq!(chosen_expires_on(false, " "), Ok(None));
+        assert_eq!(chosen_expires_on(false, "31/01/2027"), Err(()));
+    }
+
+    /// The `<label>` of the date in `html`.
+    fn date_label(html: &str) -> &str {
+        let label = html.split("<label>Date de péremption").nth(1).unwrap();
+        label.split("</label>").next().unwrap()
+    }
+
+    const NO_EXPIRY_BOX: &str =
+        r#"<label class="field inline"><input type="checkbox" name="no_expiry" value="1""#;
+
+    #[test]
+    fn the_no_expiry_box_sits_between_the_date_and_the_threshold() {
+        let html = form_fields("", "", "", "", "", "", &DateOrigin::Member, false);
+        let at = html.find(NO_EXPIRY_BOX).expect(&html);
+        assert!(
+            html[..at].contains("Date de péremption"),
+            "after the date: {html}"
+        );
+        assert!(
+            html[at..].contains("Seuil de réappro"),
+            "before the threshold: {html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "{NO_EXPIRY_BOX}/> Pas de date de péremption</label>"
+            )),
+            "unchecked: {html}"
+        );
+    }
+
+    #[test]
+    fn a_checked_box_comes_back_checked_with_the_field_still_usable() {
+        let html = form_fields(
+            "",
+            "",
+            "",
+            "",
+            "",
+            "2026-10-29",
+            &DateOrigin::Category("Yaourts".into()),
+            true,
+        );
+        assert!(
+            html.contains(&format!(
+                "{NO_EXPIRY_BOX} checked/> Pas de date de péremption</label>"
+            )),
+            "{html}"
+        );
+        // The script disables the field; the server does not, so that
+        // without JavaScript unchecking the box gives the field back.
+        let label = date_label(&html);
+        assert!(!label.contains("disabled"), "{label}");
+        assert!(label.contains(r#"value="2026-10-29""#), "{label}");
+        // No date is proposed when none is wanted (arbitrage of 2026-11-13).
+        assert!(!label.contains("Proposée d'après"), "{label}");
+    }
+
+    #[test]
+    fn the_script_can_hide_the_origin_of_the_date() {
+        for origin in [DateOrigin::Code, DateOrigin::Category("Yaourts".into())] {
+            let html = form_fields("", "", "", "", "", "2026-10-29", &origin, false);
+            assert!(
+                date_label(&html).contains(r#"<span class="muted" data-expiry-note>"#),
+                "{html}"
+            );
+        }
+        let script = crate::app::ENHANCE_SCRIPT;
+        assert!(script.contains(r#"input[name="no_expiry"]"#));
+        assert!(script.contains("[data-expiry-note]"));
     }
 
     #[test]

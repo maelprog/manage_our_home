@@ -522,7 +522,7 @@ test.describe("Grocery list — reception (#472)", () => {
     await page.getByLabel("Nom").fill("Lait");
     await page.getByLabel("Quantité").fill("1");
     await page.getByLabel("Unité", { exact: true }).fill("L");
-    await page.getByLabel("Date de péremption").fill(stockDate);
+    await page.getByLabel(/^Date de péremption/).fill(stockDate);
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
 

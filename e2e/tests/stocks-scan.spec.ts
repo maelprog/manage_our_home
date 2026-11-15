@@ -216,10 +216,10 @@ test.describe("Stocks — barcode scan", () => {
     await expect(page.getByText("Produit trouvé")).toBeVisible();
     await expect(page.getByLabel("Nom")).toHaveValue("Pâte à tartiner (400 g)");
     await expect(page.getByText(`Code-barres associé : ${KNOWN}`)).toBeVisible();
-    await expect(page.getByLabel("Date de péremption")).toHaveValue("2027-01-31");
+    await expect(page.getByLabel(/^Date de péremption/)).toHaveValue("2027-01-31");
     await expect(page.getByText("Lue sur le code")).toBeVisible();
     // The member may correct it before saving.
-    await page.getByLabel("Date de péremption").fill("2027-01-30");
+    await page.getByLabel(/^Date de péremption/).fill("2027-01-30");
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
 
@@ -233,7 +233,7 @@ test.describe("Stocks — barcode scan", () => {
     ).toBeVisible();
     await page.getByRole("link", { name: "Mettre cette date sur l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\/[0-9a-f-]+\/edit\?expires_on=2027-01-15$/);
-    await expect(page.getByLabel("Date de péremption")).toHaveValue("2027-01-15");
+    await expect(page.getByLabel(/^Date de péremption/)).toHaveValue("2027-01-15");
     await expect(page.getByText("Lue sur le code")).toBeVisible();
     await page.getByRole("button", { name: "Enregistrer" }).click();
     await expect(page.getByText("Article mis à jour.")).toBeVisible();
@@ -248,7 +248,7 @@ test.describe("Stocks — barcode scan", () => {
     await scan(page, YOGURT);
     await expect(page.getByText("Produit trouvé")).toBeVisible();
     await expect(page.getByLabel("Nom")).toHaveValue("Yaourt nature");
-    await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(21));
+    await expect(page.getByLabel(/^Date de péremption/)).toHaveValue(parisDay(21));
     await expect(page.getByText("Proposée d'après la catégorie « Yaourts »")).toBeVisible();
 
     // "+1 sem." counts from the browser's own day.
@@ -259,7 +259,7 @@ test.describe("Stocks — barcode scan", () => {
       return `${later.getFullYear()}-${pad(later.getMonth() + 1)}-${pad(later.getDate())}`;
     });
     await page.getByRole("button", { name: "+1 sem." }).click();
-    await expect(page.getByLabel("Date de péremption")).toHaveValue(inAWeek);
+    await expect(page.getByLabel(/^Date de péremption/)).toHaveValue(inAWeek);
     // Nothing is written until the form is sent.
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
@@ -333,7 +333,7 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     // A known category: the date is proposed, with its mention, and no
     // shortcut is put next to it.
     await scan(page, YOGURT);
-    await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(21));
+    await expect(page.getByLabel(/^Date de péremption/)).toHaveValue(parisDay(21));
     await expect(page.getByText("Proposée d'après la catégorie « Yaourts »")).toBeVisible();
     await expect(page.getByRole("button", { name: "+1 sem." })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "+3 j" })).toHaveCount(0);
@@ -346,7 +346,7 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await stock.close();
 
     // The member types another date by hand; it is the one saved.
-    await page.getByLabel("Date de péremption").fill("2027-02-01");
+    await page.getByLabel(/^Date de péremption/).fill("2027-02-01");
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
     await page.getByRole("link", { name: /Yaourt nature/ }).click();
