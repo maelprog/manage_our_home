@@ -1,6 +1,6 @@
 //! Pure, dependency-light logic for the Recipes screens (front epic F5,
 //! issue #20), shared by `apps/web`'s SSR pages. Written test-first per
-//! `.claude/CLAUDE.md`'s TDD process. Three concerns live here so the UI and
+//! `.claude/CLAUDE.md`'s TDD process. Several concerns live here, so that the UI and
 //! the fixed backend (`apps/api/src/recipes/`) can never drift:
 //!
 //! - `validate_recipe_name` mirrors the backend's create/update `name`
@@ -12,6 +12,10 @@
 //!   month) so the first error the form surfaces is the one a forged request
 //!   would hit; `ingredient_fields` pre-fills the edit form. `steps_of` /
 //!   `join_steps` do the same for the numbered steps.
+//! - `scale_quantity` scales a quantity between two numbers of people,
+//!   for the grocery list and the cooked recipe (`apps/api`) as for the
+//!   edit form, whose `rescale_untouched` scales the quantities left as
+//!   they were when the recipe's number of people changes (#845).
 //! - `stock_summary` turns a suggestion's matched/total required-ingredient
 //!   counts into the human badge the suggestion view shows *instead of* the
 //!   raw internal `score` (which the UI never renders).
@@ -92,6 +96,10 @@ pub struct IngredientFields {
     pub name: String,
     pub months: String,
     pub optional: bool,
+    /// The quantity the line was saved with, as the edit form first showed
+    /// it (#845); `None` on a line the form adds. Tells a quantity typed
+    /// over from one left as it was ([`rescale_untouched`]).
+    pub quantity_was: Option<String>,
 }
 
 impl IngredientFields {
@@ -160,22 +168,55 @@ fn fmt_qty(n: f64) -> String {
 }
 
 /// Stored ingredients → the lines pre-filling the edit form, seasonal
-/// months included. [`parse_ingredient_fields`] reads them back unchanged.
+/// months included, each quantity also kept as the one it was saved with.
+/// [`parse_ingredient_fields`] reads them back unchanged.
 pub fn ingredient_fields(ingredients: &[IngredientResponse]) -> Vec<IngredientFields> {
     ingredients
         .iter()
-        .map(|i| IngredientFields {
-            quantity: i.quantity.map(fmt_qty).unwrap_or_default(),
-            unit: i.unit.clone().unwrap_or_default(),
-            name: i.name.clone(),
-            months: i
-                .seasonal_months
-                .as_ref()
-                .map(|m| m.iter().map(i32::to_string).collect::<Vec<_>>().join(","))
-                .unwrap_or_default(),
-            optional: i.is_optional,
+        .map(|i| {
+            let quantity = i.quantity.map(fmt_qty).unwrap_or_default();
+            IngredientFields {
+                quantity_was: Some(quantity.clone()),
+                quantity,
+                unit: i.unit.clone().unwrap_or_default(),
+                name: i.name.clone(),
+                months: i
+                    .seasonal_months
+                    .as_ref()
+                    .map(|m| m.iter().map(i32::to_string).collect::<Vec<_>>().join(","))
+                    .unwrap_or_default(),
+                optional: i.is_optional,
+            }
         })
         .collect()
+}
+
+/// The quantities of an edited recipe whose number of people changes from
+/// `servings_was` to `servings` (#845): each one left as it was saved is
+/// scaled by `servings / servings_was` ([`scale_quantity`]), a quantity
+/// typed over or on a new line is taken as typed. Nothing changes when
+/// either number is missing or they are equal. `lines` are the form's lines
+/// and `ingredients` what [`parse_ingredient_fields`] read from them: one
+/// per line that is not blank, in order.
+pub fn rescale_untouched(
+    lines: &[IngredientFields],
+    ingredients: &mut [IngredientInput],
+    servings_was: Option<i32>,
+    servings: Option<i32>,
+) {
+    if servings_was == servings {
+        return;
+    }
+    let lines = lines.iter().filter(|l| !l.is_blank());
+    for (line, ingredient) in lines.zip(ingredients.iter_mut()) {
+        let untouched = line
+            .quantity_was
+            .as_deref()
+            .is_some_and(|was| was.trim() == line.quantity.trim());
+        if untouched {
+            ingredient.quantity = scale_quantity(ingredient.quantity, servings_was, servings);
+        }
+    }
 }
 
 /// The numbered steps of a recipe: the lines of its instructions, trimmed,
@@ -289,10 +330,87 @@ pub fn duration_label(minutes: i32) -> String {
     }
 }
 
+/// Drops the binary noise of a computed quantity, without rounding it
+/// (decision of 2026-10-25): `0.1 + 0.2` reads `0.3`, not
+/// `0.30000000000000004`, while `0.125 + 0.0625` keeps its `0.1875` and
+/// `200 × 5 / 3` reads `333.333333333`. It keeps twelve significant digits:
+/// nothing bounds the digits of a quantity (`DOUBLE PRECISION`), so one
+/// typed with more loses its last ones (`1.23456789012345` reads
+/// `1.23456789012`), but a non-zero quantity never becomes 0.
+pub fn without_binary_noise(q: f64) -> f64 {
+    format!("{q:.11e}").parse().unwrap_or(q)
+}
+
+/// `quantity × target / base`, not rounded, only without its binary noise;
+/// the quantity as written when it, the base or the target is missing.
+pub fn scale_quantity(
+    quantity: Option<f64>,
+    base: Option<i32>,
+    target: Option<i32>,
+) -> Option<f64> {
+    match (quantity, base, target) {
+        (Some(q), Some(b), Some(t)) if b > 0 => {
+            Some(without_binary_noise(q * f64::from(t) / f64::from(b)))
+        }
+        _ => quantity,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    // -- scale_quantity ------------------------------------------------------
+
+    #[test]
+    fn scales_to_the_selection_against_the_recipe_base() {
+        assert_eq!(scale_quantity(Some(200.0), Some(4), Some(6)), Some(300.0));
+        assert_eq!(scale_quantity(Some(3.0), Some(4), Some(2)), Some(1.5));
+        assert_eq!(scale_quantity(Some(500.0), Some(4), Some(4)), Some(500.0));
+    }
+
+    #[test]
+    fn a_scaled_quantity_is_not_rounded() {
+        // Decision of 2026-10-25: no rounding, 200 g × 5 / 3 keeps its digits.
+        assert_eq!(
+            scale_quantity(Some(200.0), Some(3), Some(5)),
+            Some(333.333333333)
+        );
+        assert_eq!(
+            scale_quantity(Some(1.0), Some(3), Some(5)),
+            Some(1.66666666667)
+        );
+    }
+
+    #[test]
+    fn a_small_scaled_quantity_keeps_every_digit() {
+        // Neither the hundredth nor two significant digits.
+        assert_eq!(scale_quantity(Some(0.0075), Some(2), Some(2)), Some(0.0075));
+        assert_eq!(scale_quantity(Some(0.005), Some(4), Some(4)), Some(0.005));
+        assert_eq!(
+            scale_quantity(Some(0.01), Some(3), Some(1)),
+            Some(0.00333333333333)
+        );
+        // 0.004 kg for 4, cooked for 1: 0.001 kg, not « 0 kg ».
+        assert_eq!(scale_quantity(Some(0.004), Some(4), Some(1)), Some(0.001));
+        // A written 0 stays 0.
+        assert_eq!(scale_quantity(Some(0.0), Some(4), Some(1)), Some(0.0));
+    }
+
+    #[test]
+    fn a_scaled_quantity_carries_no_binary_noise() {
+        // 0.1 × 3 is 0.30000000000000004 in f64.
+        assert_eq!(scale_quantity(Some(0.1), Some(1), Some(3)), Some(0.3));
+    }
+
+    #[test]
+    fn without_a_base_or_a_target_the_quantity_is_taken_as_written() {
+        assert_eq!(scale_quantity(Some(200.0), None, Some(6)), Some(200.0));
+        assert_eq!(scale_quantity(Some(200.0), Some(4), None), Some(200.0));
+        assert_eq!(scale_quantity(Some(0.125), None, None), Some(0.125));
+        assert_eq!(scale_quantity(None, Some(4), Some(6)), None);
+    }
 
     // -- parse_servings ------------------------------------------------------
 
@@ -352,6 +470,7 @@ mod tests {
             name: name.into(),
             months: months.into(),
             optional,
+            quantity_was: None,
         }
     }
 
@@ -475,8 +594,14 @@ mod tests {
                 resp("Lait", Some(0.5), None, false, None),
             ]),
             vec![
-                fields("4", "pièce", "Tomate", "6,7,8", true),
-                fields("0.5", "", "Lait", "", false),
+                IngredientFields {
+                    quantity_was: Some("4".into()),
+                    ..fields("4", "pièce", "Tomate", "6,7,8", true)
+                },
+                IngredientFields {
+                    quantity_was: Some("0.5".into()),
+                    ..fields("0.5", "", "Lait", "", false)
+                },
             ]
         );
     }
@@ -507,6 +632,122 @@ mod tests {
             })
             .collect();
         assert_eq!(reparsed, expected);
+    }
+
+    // -- rescale_untouched ---------------------------------------------------
+
+    /// A line of the edit form: `quantity` as typed, `was` as saved.
+    fn edited(quantity: &str, was: Option<&str>, name: &str) -> IngredientFields {
+        IngredientFields {
+            quantity_was: was.map(Into::into),
+            ..fields(quantity, "g", name, "", false)
+        }
+    }
+
+    /// The form's lines rescaled from `was` to `now` people: the quantity of
+    /// each ingredient sent.
+    fn rescaled(
+        lines: &[IngredientFields],
+        was: Option<i32>,
+        now: Option<i32>,
+    ) -> Vec<Option<f64>> {
+        let mut ingredients = parse_ingredient_fields(lines).unwrap();
+        rescale_untouched(lines, &mut ingredients, was, now);
+        ingredients.iter().map(|i| i.quantity).collect()
+    }
+
+    #[test]
+    fn more_people_scale_the_quantities_left_as_they_were() {
+        let lines = [
+            edited("200", Some("200"), "Farine"),
+            edited("3", Some("3"), "Œufs"),
+        ];
+        assert_eq!(rescaled(&lines, Some(4), Some(8)), [Some(400.0), Some(6.0)]);
+    }
+
+    #[test]
+    fn a_quantity_typed_over_is_taken_as_typed() {
+        let lines = [
+            edited("350", Some("200"), "Farine"),
+            edited("3", Some("3"), "Œufs"),
+            // Added on the edit form: typed for the new number of people.
+            edited("100", None, "Sucre"),
+        ];
+        assert_eq!(
+            rescaled(&lines, Some(4), Some(8)),
+            [Some(350.0), Some(6.0), Some(100.0)]
+        );
+    }
+
+    #[test]
+    fn an_ingredient_without_a_quantity_stays_without() {
+        let lines = [
+            edited("", Some(""), "Sel"),
+            edited("200", Some("200"), "Farine"),
+        ];
+        assert_eq!(rescaled(&lines, Some(4), Some(8)), [None, Some(400.0)]);
+    }
+
+    #[test]
+    fn without_a_number_of_people_before_or_after_nothing_scales() {
+        let lines = [edited("200", Some("200"), "Farine")];
+        assert_eq!(rescaled(&lines, None, Some(8)), [Some(200.0)]);
+        assert_eq!(rescaled(&lines, Some(4), None), [Some(200.0)]);
+        assert_eq!(rescaled(&lines, None, None), [Some(200.0)]);
+        assert_eq!(rescaled(&lines, Some(4), Some(4)), [Some(200.0)]);
+    }
+
+    #[test]
+    fn fewer_people_scale_down_without_rounding_or_binary_noise() {
+        let lines = [
+            edited("200", Some("200"), "Farine"),
+            edited("1", Some("1"), "Œuf"),
+            edited("0,1", Some("0,1"), "Levure"),
+        ];
+        // 200 × 3 / 4, 1 × 3 / 4; 0.1 × 3 / 1 is 0.30000000000000004 in f64.
+        assert_eq!(
+            rescaled(&lines, Some(4), Some(3)),
+            [Some(150.0), Some(0.75), Some(0.075)]
+        );
+        assert_eq!(rescaled(&lines[2..], Some(1), Some(3)), [Some(0.3)]);
+        assert_eq!(
+            rescaled(&lines[..1], Some(3), Some(5)),
+            [Some(333.333333333)]
+        );
+    }
+
+    #[test]
+    fn a_fractional_quantity_scales_as_a_fraction() {
+        let lines = [
+            edited("0.5", Some("0.5"), "Lait"),
+            edited("1.25", Some("1.25"), "Beurre"),
+        ];
+        assert_eq!(
+            rescaled(&lines, Some(2), Some(3)),
+            [Some(0.75), Some(1.875)]
+        );
+    }
+
+    #[test]
+    fn blank_lines_do_not_shift_the_quantities() {
+        let blank = fields("", "", "", "", false);
+        let lines = [
+            blank.clone(),
+            edited("350", Some("200"), "Farine"),
+            blank,
+            edited("3", Some("3"), "Œufs"),
+        ];
+        assert_eq!(rescaled(&lines, Some(4), Some(8)), [Some(350.0), Some(6.0)]);
+    }
+
+    #[test]
+    fn the_edit_form_keeps_each_quantity_as_it_was_saved() {
+        let lines = ingredient_fields(&[
+            resp("Farine", Some(200.0), Some("g"), false, None),
+            resp("Sel", None, None, false, None),
+        ]);
+        assert_eq!(lines[0].quantity_was.as_deref(), Some("200"));
+        assert_eq!(lines[1].quantity_was.as_deref(), Some(""));
     }
 
     // -- steps ---------------------------------------------------------------

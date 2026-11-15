@@ -42,6 +42,10 @@ pub struct RecipeForm {
     /// The number of people the recipe is written for (#470); blank when
     /// it does not say. Parsed by `parse_servings`.
     pub servings: String,
+    /// The number of people the recipe was saved with, as the edit form
+    /// first showed it (#845): changing « Personnes » scales the quantities
+    /// left as they were (`rescale_untouched`). `None` on the create form.
+    pub servings_was: Option<String>,
     /// How long it takes, in minutes (#539); blank when it does not say.
     /// Parsed by `parse_duration`.
     pub duration: String,
@@ -91,6 +95,7 @@ pub(crate) fn read_form(pairs: &[(String, String)]) -> (RecipeForm, Intent) {
         match key.as_str() {
             "name" => form.name = value.clone(),
             "servings" => form.servings = value.clone(),
+            "servings_was" => form.servings_was = Some(value.clone()),
             "duration" => form.duration = value.clone(),
             "source_url" => form.source_url = value.clone(),
             "more" => intent = Intent::MoreLines,
@@ -110,6 +115,7 @@ pub(crate) fn read_form(pairs: &[(String, String)]) -> (RecipeForm, Intent) {
                         let line = lines.entry(n).or_default();
                         match field {
                             "qty" => line.quantity = value.clone(),
+                            "qty_was" => line.quantity_was = Some(value.clone()),
                             "unit" => line.unit = value.clone(),
                             "ing" => line.name = value.clone(),
                             "months" => line.months = value.clone(),
@@ -198,9 +204,20 @@ pub(crate) fn form_fields(form: &RecipeForm) -> String {
 fn ingredient_line(n: usize, line: &IngredientFields) -> String {
     let of_line = format!(r#"<span class="sr-only"> (ligne {n})</span>"#);
     let checked = if line.optional { " checked" } else { "" };
+    // On the edit form, the quantity as saved rides along (#845).
+    let quantity_was = line
+        .quantity_was
+        .as_deref()
+        .map(|was| {
+            format!(
+                r#"<input type="hidden" name="qty_was.{n}" value="{}"/>"#,
+                html_escape(was)
+            )
+        })
+        .unwrap_or_default();
     format!(
         r#"<li class="line">
-<label>Quantité{of_line} <input type="text" inputmode="decimal" name="qty.{n}" value="{quantity}"/></label>
+<label>Quantité{of_line} <input type="text" inputmode="decimal" name="qty.{n}" value="{quantity}"/></label>{quantity_was}
 <label>Unité{of_line} <input type="text" name="unit.{n}" value="{unit}"/></label>
 <label class="what">Ingrédient{of_line} <input type="text" name="ing.{n}" value="{name}"/></label>
 <label>Saison{of_line} <input type="text" inputmode="numeric" name="months.{n}" value="{months}" placeholder="6,7,8"/></label>
@@ -237,17 +254,29 @@ fn fields_with(form: &RecipeForm, blank_lines: usize, blank_steps: usize) -> Str
             )
         })
         .collect();
+    // The edit form (#845): the number of people as saved rides along, and
+    // the help says what changing it does.
+    let (servings_was, rescales) = match &form.servings_was {
+        Some(was) => (
+            format!(
+                r#"<input type="hidden" name="servings_was" value="{}"/>"#,
+                html_escape(was)
+            ),
+            " Changer les personnes recalcule les quantités que vous n'avez pas modifiées.",
+        ),
+        None => (String::new(), ""),
+    };
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
 <div class="pair">
 <label>Personnes
 <input type="number" name="servings" min="1" max="{SERVINGS_MAX}" step="1" value="{servings}" placeholder="Optionnel"/>
-</label>
+</label>{servings_was}
 <label>Temps (minutes)
 <input type="number" name="duration" min="1" max="{DURATION_MAX}" step="1" value="{duration}" placeholder="Optionnel"/>
 </label>
 </div>
-<p class="muted">Personnes : pour combien les quantités sont écrites. La liste de courses les recalcule pour les personnes indiquées en mettant la recette « À réaliser ».</p>
+<p class="muted">Personnes : pour combien les quantités sont écrites. La liste de courses les recalcule pour les personnes indiquées en mettant la recette « À réaliser ».{rescales}</p>
 <fieldset class="card">
 <legend>Ingrédients</legend>
 <p class="muted">Seul l'ingrédient est obligatoire. Saison : les mois, en numéros séparés par des virgules (1 à 12). Un ingrédient facultatif n'est pas compté pour savoir si la recette se fait avec le stock. Une ligne laissée vide est ignorée.</p>
@@ -457,6 +486,7 @@ mod tests {
             name: name.into(),
             months: months.into(),
             optional,
+            quantity_was: None,
         }
     }
 
