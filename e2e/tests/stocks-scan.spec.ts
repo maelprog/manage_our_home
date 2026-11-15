@@ -469,10 +469,16 @@ test.describe("Stocks — live scan, refused or stopped", () => {
         Promise.reject(new DOMException("refused", "NotAllowedError"));
     });
     await page.goto("/stocks/new");
+    // The empty status region leaves no band under the button.
+    const status = page.locator("[data-live-status]");
+    const height = async () => (await status.boundingBox())?.height ?? 0;
+    await expect(page.getByRole("button", { name: "Scanner en direct" })).toBeVisible();
+    expect(await height()).toBe(0);
     await page.getByRole("button", { name: "Scanner en direct" }).click();
     const alert = page.getByRole("alert").filter({ hasText: "Caméra bloquée." });
     await expect(alert).toBeVisible({ timeout: 15_000 });
     await expect(alert.getByRole("button", { name: "Réessayer" })).toBeVisible();
+    expect(await height()).toBe(0);
     await expect(page.getByRole("button", { name: "Scanner en direct" })).toBeHidden();
     await expect(page.getByLabel("Photographier le code")).toBeVisible();
     await expect(page.getByLabel("Code-barres")).toBeVisible();
@@ -507,7 +513,19 @@ test.describe("Stocks — live scan, refused or stopped", () => {
           .every((t) => t.readyState === "ended"),
       );
 
+    // While the reader loads, the status region leaves no band.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route(/\/assets\/zxing-reader-[0-9a-f]{16}\.wasm$/, async (route) => {
+      await held;
+      await route.continue();
+    });
     await start.click();
+    const loading = page.locator(".live-btn");
+    await expect(loading).toHaveAttribute("aria-busy", "true");
+    await expect(loading).toHaveText("Préparation du lecteur…");
+    expect((await page.locator("[data-live-status]").boundingBox())?.height ?? 0).toBe(0);
+    release();
     await expect(page.locator("[data-live-status]")).toHaveText("Placez le code-barres dans le cadre.", { timeout: 15_000 });
     await expect(page.getByLabel("Aperçu de la caméra")).toBeVisible();
     await expect(stop).toBeFocused();

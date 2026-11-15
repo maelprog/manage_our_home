@@ -1115,6 +1115,10 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .cam.ok .reticle::after { display: none; }
 .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); font-size: var(--t-sm); }
 .status { display: flex; align-items: center; gap: var(--s2x); min-height: var(--s6); font-size: var(--t-sm); }
+/* Before the camera, after it, or while the reader loads, the region holds
+   nothing to see — at most words for a screen reader: out of the flow, it
+   leaves no band and is still announced. */
+.live:not([data-state]) > .status { position: absolute; min-height: 0; }
 .status.ok, .status.ok .icon { color: var(--success); font-weight: 600; }
 /* The day and the meal of a planned recipe (#812): a `.card.inline` whose
    meals are `.picks` in a fieldset, which draws no box of its own here, its
