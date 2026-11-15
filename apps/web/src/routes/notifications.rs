@@ -390,13 +390,26 @@ pub async fn get(
         query.error.as_deref(),
         today_paris(),
     );
-    Html(shell_with_header(
+    never_stored(shell_with_header(
         Width::Full,
         "Notifications",
         &header,
         &body,
     ))
-    .into_response()
+}
+
+/// The page as it goes out, marked `no-store` (#861): the back button,
+/// after an entry was opened, would otherwise bring the list back from the
+/// browser's cache as it was, the entry still unread and the count of the
+/// navigation still the old one. Not stored, it is fetched again. The
+/// back/forward cache, which may keep such a page all the same, is
+/// `enhance.js`'s (`pageshow`).
+fn never_stored(html: String) -> Response {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Html(html),
+    )
+        .into_response()
 }
 
 /// `POST /notifications/read` — « Tout marquer comme lu ».
@@ -493,6 +506,26 @@ mod tests {
     // 2026-10-30 is a Friday; Paris is UTC+1 from 2026-10-25.
     fn friday() -> NaiveDate {
         day(2026, 10, 30)
+    }
+
+    #[tokio::test]
+    async fn the_page_is_never_stored_so_the_back_button_fetches_it_again() {
+        // #861: an entry opened then left with « précédent » must not come
+        // back from the browser's cache still unread.
+        let resp = never_stored("<p>liste</p>".to_string());
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            resp.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
+        assert!(resp.headers()[axum::http::header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"<p>liste</p>");
     }
 
     #[test]

@@ -326,6 +326,37 @@ export async function seedSchoolHoliday(period: {
   }
 }
 
+/**
+ * Writes an unread `message` notification for `email` in `groupName`
+ * (#534's `notifications` table), as apps/api does when someone else posts
+ * a message: the suite would otherwise need a second account and its
+ * message, or the reminders' worker, which passes once a minute.
+ */
+export async function seedMessageNotification(
+  email: string,
+  groupName: string,
+  body: string,
+): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `INSERT INTO notifications (user_id, group_id, kind, body)
+       SELECT u.id, g.id, 'message', $3
+         FROM users u
+         JOIN group_members m ON m.user_id = u.id
+         JOIN groups g ON g.id = m.group_id
+        WHERE u.email = $1 AND g.name = $2`,
+      [email, groupName, body],
+    );
+    if (rowCount !== 1) {
+      throw new Error(`could not notify ${email} in ${groupName}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 function requireDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {
