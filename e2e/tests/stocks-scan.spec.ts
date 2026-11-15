@@ -145,14 +145,15 @@ test.describe("Stocks — barcode scan", () => {
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
 
-    // The same code again: the article already in stock, and "+1".
+    // The same code again: the article already in stock, and one more
+    // pack, « +400 g » — the size Open Food Facts gave, from the cache the
+    // first scan filled (#807), not one gram.
     await scan(page, KNOWN);
     await expect(page.getByRole("heading", { name: "Déjà en stock" })).toBeVisible();
     await expect(page.getByText("Déjà en stock : Pâte à tartiner (400 g)")).toBeVisible();
-    await page.getByRole("button", { name: "+1" }).click();
+    await page.getByRole("button", { name: "+400 g" }).click();
     await expect(page).toHaveURL(/\/stocks\/[0-9a-f-]+\?notice=quantity_adjusted$/);
-    // "+1" adds one of the article's unit: here one gram.
-    await expect(page.getByText("Quantité : 401 g", { exact: true })).toBeVisible();
+    await expect(page.getByText("Quantité : 800 g", { exact: true })).toBeVisible();
 
     // "Créer quand même un autre article": the form, without the code.
     await scan(page, KNOWN);

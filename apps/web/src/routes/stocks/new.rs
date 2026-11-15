@@ -11,7 +11,8 @@
 //! Open Food Facts cache and the throttle's counters, hence a `POST` here
 //! too, #782) and offers, in order:
 //! the "Déjà en stock" screen when an article of the family carries the code
-//! (its "+1" is the quantity adjustment any member may make, and a button
+//! (its "+1" — one pack, « +400 g », when Open Food Facts' size is in the
+//! article's unit, #807 — is the quantity adjustment any member may make, and a button
 //! creates another article anyway, without the code); otherwise the form,
 //! pre-filled from Open Food Facts when the product is known, with the code
 //! in a hidden field; a weighing label, an unknown product or a nameless
@@ -562,9 +563,26 @@ fn page(
     shell_with_header(Width::Form, "Ajouter un produit", &fam.header, &body)
 }
 
+/// What scanning an article already in stock adds to it, and the button's
+/// label: one pack — its size as Open Food Facts gives it, « 400 g » on
+/// an article counted in grams — when that size is read in the article's
+/// own unit (any case; no conversion is guessed, a kilogram article does
+/// not take 0,4), else one of the article's unit, « +1 » (arbitrage of
+/// 2026-11-15, #807: « +1 » on 400 g made 401 g).
+pub(crate) fn rescan_increment(unit: &str, pack_size: Option<&str>) -> (f64, String) {
+    match pack_size.and_then(parse_pack_size) {
+        Some(pack) if pack.unit.eq_ignore_ascii_case(unit.trim()) => (
+            pack.quantity,
+            format!("+{}", format_quantity(pack.quantity, unit)),
+        ),
+        _ => (1.0, "+1".to_string()),
+    }
+}
+
 /// "Déjà en stock" (#402): the family's article carrying the scanned code,
 /// with "+1" — the quantity adjustment any member may make, through the
-/// detail page's own route — and a way to create another article anyway,
+/// detail page's own route; one pack, « +400 g », when `pack_size` is read
+/// in the article's unit (`rescan_increment`, #807) — and a way to create another article anyway,
 /// which scans `raw`, the string as it came, again (a GS1 code's date then
 /// reaches that form too) — by a `POST`, as every scan (#782). The date a
 /// GS1 code carried is proposed when it comes sooner (`date_to_propose`,
@@ -575,6 +593,7 @@ fn already_in_stock_page(
     raw: &str,
     proposal: Option<NaiveDate>,
     may_edit: bool,
+    pack_size: Option<&str>,
 ) -> String {
     let proposal_html = match proposal {
         None => String::new(),
@@ -609,12 +628,13 @@ fn already_in_stock_page(
         }
     };
     let id = item.id;
+    let (step, label) = rescan_increment(&item.unit, pack_size);
     let body = format!(
         r#"<h1>Déjà en stock</h1>
 <p>Déjà en stock : <strong>{name}</strong> ({qty})</p>
 <form method="post" action="/stocks/{id}/adjust" class="actions">
 <input type="hidden" name="quantity" value="{next}"/>
-<button type="submit">+1</button>
+<button type="submit">{label}</button>
 </form>{proposal_html}
 <form method="post" action="/stocks/new/scan" class="actions">
 <input type="hidden" name="scan" value="{raw}"/>
@@ -627,7 +647,8 @@ fn already_in_stock_page(
 </div>"#,
         name = html_escape(&item.name),
         qty = html_escape(&format_quantity(item.quantity, &item.unit)),
-        next = html_escape(&fmt_num(item.quantity + 1.0)),
+        next = html_escape(&fmt_num(item.quantity + step)),
+        label = html_escape(&label),
         raw = html_escape(raw),
     );
     shell_with_header(Width::Form, "Déjà en stock", header, &body)
@@ -779,6 +800,7 @@ async fn scanned(
             raw,
             proposal,
             may_edit,
+            scan.existing_pack_size.as_deref(),
         ))
         .into_response();
     }
@@ -1228,6 +1250,7 @@ mod tests {
             weighed: false,
             product: None,
             existing_item_id: None,
+            existing_pack_size: None,
             expires_on,
             expires_on_source: source,
             expires_on_category: category.map(Into::into),
@@ -1488,6 +1511,7 @@ mod tests {
             "3017620422003",
             Some(day(2027, 1, 31)),
             true,
+            None,
         );
         assert!(html.contains("31/01/2027"), "{html}");
         assert!(html.contains("01/03/2027"), "{html}");
@@ -1509,6 +1533,7 @@ mod tests {
             "3017620422003",
             Some(day(2027, 1, 31)),
             false,
+            None,
         );
         assert!(html.contains("31/01/2027"), "{html}");
         assert!(!html.contains("/edit?expires_on="), "{html}");
@@ -1524,6 +1549,7 @@ mod tests {
             "010301762042200310LOT\u{1d}17270131",
             None,
             true,
+            None,
         );
         assert!(
             html.contains(r#"<form method="post" action="/stocks/new/scan""#),
@@ -1545,7 +1571,7 @@ mod tests {
         );
         assert!(!html.contains("?scan="), "{html}");
         // Escaped like any value put back in the page.
-        let html = already_in_stock_page("", &item(None), r#""><b>"#, None, true);
+        let html = already_in_stock_page("", &item(None), r#""><b>"#, None, true, None);
         assert!(
             html.contains(r#"name="scan" value="&quot;&gt;&lt;b&gt;""#),
             "{html}"
@@ -1553,9 +1579,52 @@ mod tests {
     }
 
     #[test]
+    fn a_rescan_adds_one_pack_when_its_size_is_in_the_articles_unit() {
+        // Arbitrage of 2026-11-15 (#807): « 400 g » scanned again on an
+        // article of 400 g makes 800 g, not 401 g.
+        assert_eq!(rescan_increment("g", Some("400 g")), (400.0, "+400 g".to_string()));
+        assert_eq!(rescan_increment("g", Some("4 x 125 g")), (500.0, "+500 g".to_string()));
+        assert_eq!(rescan_increment("L", Some("1,5 L")), (1.5, "+1,5 L".to_string()));
+        // The unit written in another case is the same unit, shown as the
+        // article writes it.
+        assert_eq!(rescan_increment("mL", Some("250 ml")), (250.0, "+250 mL".to_string()));
+    }
+
+    #[test]
+    fn a_rescan_adds_one_when_the_pack_size_does_not_fit_the_unit() {
+        // No size known (never cached, or none on the record).
+        assert_eq!(rescan_increment("g", None), (1.0, "+1".to_string()));
+        // A size in another unit: no conversion is guessed.
+        assert_eq!(rescan_increment("kg", Some("400 g")), (1.0, "+1".to_string()));
+        assert_eq!(rescan_increment("unité", Some("400 g")), (1.0, "+1".to_string()));
+        // A size that is not read as a quantity.
+        assert_eq!(rescan_increment("tranches", Some("6 tranches")), (1.0, "+1".to_string()));
+    }
+
+    #[test]
+    fn already_in_stock_adds_the_pack_size_it_names() {
+        let mut item = item(None);
+        item.quantity = 400.0;
+        item.unit = "g".into();
+        let html = already_in_stock_page("", &item, "3017620422003", None, true, Some("400 g"));
+        assert!(
+            html.contains(r#"<input type="hidden" name="quantity" value="800"/>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<button type="submit">+400 g</button>"#), "{html}");
+        // Without a size that fits, one of the article's unit, as before.
+        let html = already_in_stock_page("", &item, "3017620422003", None, true, None);
+        assert!(
+            html.contains(r#"<input type="hidden" name="quantity" value="401"/>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<button type="submit">+1</button>"#), "{html}");
+    }
+
+    #[test]
     fn already_in_stock_writes_the_quantity_as_the_list_does() {
         // Two in the default unit: the bare number, as on the list (#527).
-        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
+        let html = already_in_stock_page("", &item(None), "3017620422003", None, true, None);
         assert!(
             html.contains("Déjà en stock : <strong>Nutella</strong> (2)</p>"),
             "{html}"
@@ -1564,7 +1633,7 @@ mod tests {
 
     #[test]
     fn without_a_proposal_the_page_says_nothing_of_a_date() {
-        let html = already_in_stock_page("", &item(None), "3017620422003", None, true);
+        let html = already_in_stock_page("", &item(None), "3017620422003", None, true, None);
         assert!(!html.contains("lue sur le code"), "{html}");
         assert!(!html.contains("/edit?expires_on="), "{html}");
     }
