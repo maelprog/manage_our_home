@@ -62,14 +62,18 @@
     statusText.textContent = text;
   }
 
+  // `aria-disabled` and not `disabled`: a disabled button drops the focus
+  // to the page's body. It takes it instead, from « Réessayer » too, which
+  // is hidden by then; the click handler ignores it while it is busy.
   function busy(on) {
     if (on) {
       start.setAttribute("aria-busy", "true");
-      start.disabled = true;
+      start.setAttribute("aria-disabled", "true");
       start.textContent = "Préparation du lecteur…";
+      start.focus();
     } else {
       start.removeAttribute("aria-busy");
-      start.disabled = false;
+      start.removeAttribute("aria-disabled");
       start.innerHTML = startLabel;
     }
   }
@@ -103,11 +107,14 @@
     if (focus) start.focus();
   }
 
+  // The button pressed is hidden: the focus goes to the notice's own
+  // « Réessayer », after the alert has said what happened.
   function fail(notice) {
     idle(false);
     show(start, false);
     show(hint, false);
     show(notice, true);
+    notice.querySelector("[data-live-start]").focus();
   }
 
   // The reader: the browser's, when it reads the codes asked for, else the
@@ -283,7 +290,9 @@
   }
 
   root.addEventListener("click", function (event) {
-    if (event.target.closest("[data-live-start]")) begin();
+    if (event.target.closest("[data-live-start]")) {
+      if (!start.hasAttribute("aria-busy")) begin();
+    }
     else if (event.target.closest("[data-live-stop]")) idle(true);
   });
 
