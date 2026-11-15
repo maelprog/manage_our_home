@@ -70,7 +70,8 @@ async function twoUnread(page: Page): Promise<void> {
 test.describe("Back after opening a notification", () => {
   test("the list comes back with the entry read and the count down", async ({ page }) => {
     await twoUnread(page);
-    await page.goto("/notifications");
+    const res = await page.goto("/notifications");
+    expect(res!.headers()["cache-control"]).toBe("no-store");
     await expect(entry(page, "Notifications (2 non lues)")).toBeVisible();
     const sam = page.getByRole("button", { name: /Sam a écrit/ });
     await expect(sam).toContainText("Non lue");
