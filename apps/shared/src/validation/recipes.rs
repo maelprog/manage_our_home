@@ -666,6 +666,19 @@ mod tests {
     }
 
     #[test]
+    fn spaces_around_a_quantity_left_as_it_was_do_not_make_it_typed_over() {
+        let lines = [edited(" 200 ", Some("200"), "Farine")];
+        assert_eq!(rescaled(&lines, Some(4), Some(8)), [Some(400.0)]);
+    }
+
+    #[test]
+    fn the_same_value_typed_another_way_is_taken_as_typed() {
+        // « 200,0 » over « 200 »: typed over, so sent as typed.
+        let lines = [edited("200,0", Some("200"), "Farine")];
+        assert_eq!(rescaled(&lines, Some(4), Some(8)), [Some(200.0)]);
+    }
+
+    #[test]
     fn a_quantity_typed_over_is_taken_as_typed() {
         let lines = [
             edited("350", Some("200"), "Farine"),
