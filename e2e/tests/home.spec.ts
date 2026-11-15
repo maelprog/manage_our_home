@@ -496,7 +496,7 @@ async function seedTheTiles(page: Page): Promise<void> {
   await page.getByLabel("Nom").fill("Crème fraîche");
   await page.getByLabel("Quantité").fill("1");
   await page.getByLabel("Unité", { exact: true }).fill("pot");
-  await page.getByLabel("Date de péremption").fill(isoDay(2));
+  await page.getByLabel(/^Date de péremption/).fill(isoDay(2));
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
   await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
 }

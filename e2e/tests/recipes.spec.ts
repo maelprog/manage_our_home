@@ -480,7 +480,7 @@ test.describe("Recipes — Prévues : manquants et priorité (#560)", () => {
     await page.getByLabel("Quantité").fill("1");
     await page.getByLabel("Unité", { exact: true }).fill("pot");
     const tomorrow = parisDay(1);
-    await page.getByLabel("Date de péremption").fill(tomorrow);
+    await page.getByLabel(/^Date de péremption/).fill(tomorrow);
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
     await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
     // The undated one planned first.

@@ -79,7 +79,7 @@ async function createItem(page: Page, opts: ItemOpts): Promise<void> {
   await page.getByLabel("Unité", { exact: true }).fill(opts.unit);
   if (opts.category) await page.getByLabel("Catégorie", { exact: true }).fill(opts.category);
   if (opts.threshold !== undefined) await page.getByLabel("Seuil de réappro").fill(opts.threshold);
-  if (opts.expiresOn !== undefined) await page.getByLabel("Date de péremption").fill(opts.expiresOn);
+  if (opts.expiresOn !== undefined) await page.getByLabel(/^Date de péremption/).fill(opts.expiresOn);
   await page.getByRole("button", { name: "Ajouter l'article" }).click();
   await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
   await expect(page.getByText("Article créé.")).toBeVisible();
@@ -297,6 +297,20 @@ test.describe("Stocks — sans JavaScript (#803)", () => {
       await expect(field).toHaveCSS("border-top-right-radius", "12px");
     }
   });
+
+  // #804: the server wins — a date sent with the box checked is not saved.
+  test("« Pas de date de péremption » checked drops the date typed beside it", async ({ page }) => {
+    await registerAndLogin(page, "e2e-stnoexpnojs", "No Expiry No Script");
+    await createGroup(page, "Famille Sans Date");
+    await page.goto("/stocks/new");
+    await page.getByLabel("Nom").fill("Sel");
+    await page.getByLabel(/^Date de péremption/).fill(parisDay(10));
+    await page.getByRole("checkbox", { name: "Pas de date de péremption" }).check();
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+    await openItemDetail(page, "Sel");
+    await expect(page.getByText("Aucune date de péremption.")).toBeVisible();
+  });
 });
 
 // #401: one expiry date per article (the nearest). Dates are built in
@@ -344,18 +358,58 @@ test.describe("Stocks — expiry date", () => {
     await expect(page.getByText("À consommer bientôt")).toHaveCount(0);
 
     await page.getByRole("link", { name: "Modifier l'article" }).click();
-    await expect(page.getByLabel("Date de péremption")).toHaveValue(parisDay(20));
-    await page.getByLabel("Date de péremption").fill(parisDay(0));
+    await expect(page.getByLabel(/^Date de péremption/)).toHaveValue(parisDay(20));
+    await page.getByLabel(/^Date de péremption/).fill(parisDay(0));
     await page.getByRole("button", { name: "Enregistrer" }).click();
     await expect(page.getByText("Article mis à jour.")).toBeVisible();
     await expect(page.getByText(`Péremption : ${frDate(parisDay(0))}`)).toBeVisible();
     await expect(page.getByText("À consommer bientôt")).toBeVisible();
 
     await page.getByRole("link", { name: "Modifier l'article" }).click();
-    await page.getByLabel("Date de péremption").fill("");
+    await page.getByLabel(/^Date de péremption/).fill("");
     await page.getByRole("button", { name: "Enregistrer" }).click();
     await expect(page.getByText("Article mis à jour.")).toBeVisible();
     await expect(page.getByText("Aucune date de péremption.")).toBeVisible();
+  });
+
+  // #804: the box empties and disables the field and its shortcuts, gives
+  // the date back when unchecked, and comes checked on an article without.
+  test("« Pas de date de péremption » empties the field and comes back checked", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-stnoexp", "No Expiry User");
+    await createGroup(page, "Famille Sans Péremption");
+    await page.goto("/stocks/new");
+    await page.getByLabel("Nom").fill("Sel fin");
+    const date = page.getByLabel(/^Date de péremption/);
+    const box = page.getByRole("checkbox", { name: "Pas de date de péremption" });
+    const shortcut = page.getByRole("button", { name: "+3 j" });
+    await expect(box).not.toBeChecked();
+    await date.fill(parisDay(10));
+
+    await box.check();
+    await expect(date).toHaveValue("");
+    await expect(date).toBeDisabled();
+    await expect(shortcut).toBeDisabled();
+    await box.uncheck();
+    await expect(date).toHaveValue(parisDay(10));
+    await expect(date).toBeEnabled();
+    await expect(shortcut).toBeEnabled();
+
+    await box.check();
+    await page.getByRole("button", { name: "Ajouter l'article" }).click();
+    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+    await openItemDetail(page, "Sel fin");
+    await expect(page.getByText("Aucune date de péremption.")).toBeVisible();
+
+    await page.getByRole("link", { name: "Modifier l'article" }).click();
+    await expect(box).toBeChecked();
+    await expect(date).toBeDisabled();
+    await box.uncheck();
+    await date.fill(parisDay(20));
+    await page.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page.getByText("Article mis à jour.")).toBeVisible();
+    await expect(page.getByText(`Péremption : ${frDate(parisDay(20))}`)).toBeVisible();
   });
 
   // #564: the Stocks entry counts what is past or close to its date, on
