@@ -1065,6 +1065,7 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .combo:has(> button:not([hidden])) input { border-radius: var(--r-sm) 0 0 var(--r-sm); border-right-width: 0; }
 .combo button { padding: 0; color: var(--muted); border-radius: 0 var(--r-sm) var(--r-sm) 0; }
 .combo:has(:focus-visible) > button { border-color: var(--accent); }
+.combo button:focus-visible { color: var(--accent); }
 .combo .secondary[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .combo [aria-expanded="true"] svg { transform: rotate(180deg); }
 /* The focus is on the list while it is open; the option it is on wears the
