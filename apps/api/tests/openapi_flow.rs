@@ -133,6 +133,24 @@ fn behind_secure_cookies_the_scheme_names_the_host_prefixed_cookie() {
     );
 }
 
+/// The agenda-change setting (#850) is in both shapes of
+/// `/account/notifications`: always in what `GET` answers, optional in
+/// what `PUT` takes.
+#[test]
+fn the_notification_settings_document_the_agenda_change_setting() {
+    let json = serde_json::to_value(openapi(false)).unwrap();
+    let schemas = &json["components"]["schemas"];
+    let required = |schema: &str| -> Vec<String> {
+        serde_json::from_value(schemas[schema]["required"].clone()).unwrap_or_default()
+    };
+    let read = &schemas["NotificationSettings"]["properties"]["notify_agenda_changes"];
+    assert_eq!(read["type"], "boolean", "{read}");
+    assert!(required("NotificationSettings").contains(&"notify_agenda_changes".to_string()));
+    let write = &schemas["UpdateNotificationSettings"]["properties"]["notify_agenda_changes"];
+    assert!(!write.is_null());
+    assert!(!required("UpdateNotificationSettings").contains(&"notify_agenda_changes".to_string()));
+}
+
 #[sqlx::test]
 async fn on_swagger_ui_is_served_from_the_binary_with_relative_urls(db: PgPool) {
     let router = docs_router(db);

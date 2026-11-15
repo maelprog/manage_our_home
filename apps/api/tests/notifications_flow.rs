@@ -1179,6 +1179,106 @@ async fn an_account_is_told_of_the_agenda_changes_by_default(db: PgPool) {
     assert!(refused.is_err());
 }
 
+/// The agenda-change setting is read and written by
+/// `/account/notifications` (#850): on by default, turned off and on
+/// again without touching the channel nor the recap's hour, left as it is
+/// by a request without it, anything but a boolean refused — and only the
+/// caller's own account is changed.
+#[sqlx::test]
+async fn the_agenda_change_setting_is_the_caller_s_own(db: PgPool) {
+    let f = family(&db).await;
+    let settings = |cookie: String| {
+        let router = f.router.clone();
+        async move {
+            let res = call(
+                &router,
+                Method::GET,
+                "/account/notifications",
+                Some(&cookie),
+                None,
+            )
+            .await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await
+        }
+    };
+    let put = |body: Value| {
+        let (router, cookie) = (f.router.clone(), f.owner.clone());
+        async move {
+            call(
+                &router,
+                Method::PUT,
+                "/account/notifications",
+                Some(&cookie),
+                Some(body),
+            )
+            .await
+        }
+    };
+    let state = |s: Value| {
+        (
+            s["reminder_channel"].clone(),
+            s["expiry_digest_hour"].clone(),
+            s["notify_agenda_changes"].clone(),
+        )
+    };
+    assert_eq!(
+        settings(f.owner.clone()).await["notify_agenda_changes"],
+        true
+    );
+    set_digest_hour(&db, "owner@example.test", 18).await;
+
+    let res = put(json!({"reminder_channel": "both", "notify_agenda_changes": false})).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        state(settings(f.owner.clone()).await),
+        (json!("both"), json!(18), json!(false))
+    );
+
+    // Without the field, the setting stays as it is.
+    let res = put(json!({"reminder_channel": "email", "expiry_digest_hour": 7})).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        state(settings(f.owner.clone()).await),
+        (json!("email"), json!(7), json!(false))
+    );
+
+    for wrong in [json!("no"), json!(0)] {
+        let res = put(json!({"reminder_channel": "email", "notify_agenda_changes": wrong})).await;
+        assert!(res.status().is_client_error(), "{wrong}: {}", res.status());
+    }
+    assert_eq!(
+        settings(f.owner.clone()).await["notify_agenda_changes"],
+        false
+    );
+
+    let res = put(json!({"reminder_channel": "email", "notify_agenda_changes": true})).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        state(settings(f.owner.clone()).await),
+        (json!("email"), json!(7), json!(true))
+    );
+
+    // The member turns theirs off: the owner's stays on.
+    let res = call(
+        &f.router,
+        Method::PUT,
+        "/account/notifications",
+        Some(&f.member),
+        Some(json!({"reminder_channel": "push", "notify_agenda_changes": false})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        settings(f.member.clone()).await["notify_agenda_changes"],
+        false
+    );
+    assert_eq!(
+        settings(f.owner.clone()).await["notify_agenda_changes"],
+        true
+    );
+}
+
 /// `+` in an RFC 3339 offset would read as a space in a query string.
 fn urlencoding(value: &str) -> String {
     value.replace('+', "%2B").replace(':', "%3A")

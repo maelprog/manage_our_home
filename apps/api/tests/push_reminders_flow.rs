@@ -86,8 +86,8 @@ async fn subscribe(router: &axum::Router, cookie: &str, endpoint: &str) -> Statu
 
 // -- the member's settings ----------------------------------------------------
 
-/// A new account starts on notifications, with no device, and is handed
-/// the key a browser subscribes with.
+/// A new account starts on notifications, with no device, told of the
+/// agenda changes (#850), and is handed the key a browser subscribes with.
 #[sqlx::test]
 async fn a_new_account_starts_on_notifications_without_a_device(db: PgPool) {
     let router = test_router(db.clone());
@@ -96,6 +96,7 @@ async fn a_new_account_starts_on_notifications_without_a_device(db: PgPool) {
     let s = settings(&router, &cookie).await;
     assert_eq!(s["reminder_channel"], "push");
     assert_eq!(s["push_subscriptions"], 0);
+    assert_eq!(s["notify_agenda_changes"], true);
     let key = s["vapid_public_key"].as_str().unwrap();
     // An uncompressed P-256 point: 65 bytes, 87 characters of base64url.
     assert_eq!(key.len(), 87, "{key}");
