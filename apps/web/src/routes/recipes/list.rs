@@ -16,6 +16,9 @@
 //! « Faite », « Abandonner » and « Retirer », and the generation of the
 //! grocery list; « Possibles » the recipes whose every required ingredient
 //! is in stock (`?possible=true` on the suggestions endpoint).
+//!
+//! Since #812 a planned recipe that has a day shows it, with its meal, in
+//! « Prévues » and « Toutes » (`plan_badge`); one without shows nothing more.
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -35,7 +38,7 @@ use super::missing::{
     incomplete_banner, incomplete_count, missing_badge, missing_dialog, use_by_badge,
 };
 use super::{
-    deselect_form, family_context, outcome_links, planned_badge, planned_with_stock,
+    deselect_form, family_context, outcome_links, plan_badge, planned_badge, planned_with_stock,
     recipes_cookie, select_form, service_unavailable_page,
 };
 
@@ -161,10 +164,9 @@ fn suggestion_html(s: &RecipeSuggestion) -> String {
     )
 }
 
-/// One recipe of the full list. `planned` is its selection's number of
-/// people when it is « À réaliser » (`Some(None)`: the selection does not
-/// say), `None` when it is not.
-fn recipe_row_html(r: &RecipeResponse, planned: Option<Option<i32>>) -> String {
+/// One recipe of the full list. `planned` is its selection when it is
+/// « À réaliser », `None` when it is not.
+fn recipe_row_html(r: &RecipeResponse, planned: Option<&RecipeSelectionResponse>) -> String {
     let count = r.ingredients.len();
     let count_label = match count {
         0 => "aucun ingrédient".to_string(),
@@ -172,9 +174,10 @@ fn recipe_row_html(r: &RecipeResponse, planned: Option<Option<i32>>) -> String {
         n => format!("{n} ingrédients"),
     };
     let selection = match planned {
-        Some(servings) => format!(
-            r#"<span class="actions">{badge}{outcome}{deselect}</span>"#,
-            badge = planned_badge(servings),
+        Some(s) => format!(
+            r#"<span class="actions">{badge}{plan}{outcome}{deselect}</span>"#,
+            badge = planned_badge(s.servings),
+            plan = plan_badge(s.planned_on, s.meal_slot.as_deref()),
             outcome = outcome_links(r.id, "list"),
             deselect = deselect_form(r.id, "list"),
         ),
@@ -262,12 +265,16 @@ fn planned_tab_html(planned: &[PlannedSelection]) -> String {
                 .unwrap_or_default();
             format!(
                 r#"<li class="list-row">
-<span><a href="/recipes/{id}"><strong>{name}</strong></a>{use_by}{missing}</span>
+<span><a href="/recipes/{id}"><strong>{name}</strong></a>{plan}{use_by}{missing}</span>
 {people}
 <span class="actions">{outcome}{deselect}</span>{dialog}
 </li>"#,
                 id = s.recipe_id,
                 name = html_escape(&s.recipe_name),
+                plan = match plan_badge(s.planned_on, s.meal_slot.as_deref()) {
+                    badge if badge.is_empty() => badge,
+                    badge => format!(" {badge}"),
+                },
                 use_by = p
                     .use_by
                     .zip(p.days_left)
@@ -333,7 +340,7 @@ fn all_tab_html(
             .iter()
             .map(|r| {
                 let selection = planned.iter().find(|s| s.recipe_id == r.id);
-                recipe_row_html(r, selection.map(|s| s.servings))
+                recipe_row_html(r, selection)
             })
             .collect::<String>();
         format!(r#"<ul class="list">{rows}</ul>"#)
@@ -522,6 +529,8 @@ mod tests {
             recipe_name: name.into(),
             status: "planned".into(),
             servings,
+            planned_on: None,
+            meal_slot: None,
             created_by: Uuid::from_u128(200),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -544,7 +553,10 @@ mod tests {
 
     #[test]
     fn a_planned_recipe_shows_its_badge_and_retirer() {
-        let html = recipe_row_html(&recipe(1, "Crêpes", Some(4)), Some(Some(6)));
+        let html = recipe_row_html(
+            &recipe(1, "Crêpes", Some(4)),
+            Some(&selection(1, "Crêpes", Some(6))),
+        );
         let id = Uuid::from_u128(1);
         assert!(html.contains("À réaliser · 6 personnes"), "{html}");
         assert!(
@@ -774,5 +786,74 @@ mod tests {
         let html = planned_section(&[]);
         assert!(html.contains(r#"id="a-realiser""#), "{html}");
         assert!(html.contains("Aucune recette à réaliser."), "{html}");
+    }
+
+    fn dated(
+        mut s: RecipeSelectionResponse,
+        planned_on: (i32, u32, u32),
+        meal_slot: Option<&str>,
+    ) -> RecipeSelectionResponse {
+        s.planned_on = chrono::NaiveDate::from_ymd_opt(planned_on.0, planned_on.1, planned_on.2);
+        s.meal_slot = meal_slot.map(str::to_string);
+        s
+    }
+
+    #[test]
+    fn the_full_list_shows_the_day_and_the_meal_of_a_dated_recipe() {
+        let r = recipe(1, "Crêpes", Some(4));
+        // Without a day, nothing more than before (#812).
+        let html = recipe_row_html(&r, Some(&selection(1, "Crêpes", Some(6))));
+        assert!(!html.contains("badge accent"), "{html}");
+        let html = recipe_row_html(
+            &r,
+            Some(&dated(
+                selection(1, "Crêpes", Some(6)),
+                (2026, 11, 21),
+                None,
+            )),
+        );
+        assert!(
+            html.contains(
+                r#"<span class="badge">À réaliser · 6 personnes</span><span class="badge accent">sam. 21/11</span>"#
+            ),
+            "{html}"
+        );
+        let html = recipe_row_html(
+            &r,
+            Some(&dated(
+                selection(1, "Crêpes", Some(6)),
+                (2026, 11, 19),
+                Some("lunch"),
+            )),
+        );
+        assert!(
+            html.contains(r#"<span class="badge accent">jeu. 19/11 · midi</span>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_planned_tab_shows_the_day_and_the_meal_after_the_name() {
+        let id = Uuid::from_u128(1);
+        let html = planned_tab_html(&[with_stock(dated(
+            selection(1, "Crêpes", Some(6)),
+            (2026, 11, 19),
+            Some("lunch"),
+        ))]);
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/recipes/{id}"><strong>Crêpes</strong></a> <span class="badge accent">jeu. 19/11 · midi</span>"#
+            )),
+            "{html}"
+        );
+        let html = planned_tab_html(&[with_stock(dated(
+            selection(1, "Crêpes", Some(6)),
+            (2026, 11, 21),
+            None,
+        ))]);
+        assert!(
+            html.contains(r#"</a> <span class="badge accent">sam. 21/11</span>"#),
+            "{html}"
+        );
     }
 }

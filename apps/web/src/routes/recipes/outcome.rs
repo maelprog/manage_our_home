@@ -1875,6 +1875,8 @@ mod tests {
             recipe_name: name.into(),
             status: "planned".into(),
             servings: Some(4),
+            planned_on: None,
+            meal_slot: None,
             created_by: id(902),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

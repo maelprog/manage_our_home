@@ -249,11 +249,19 @@ pub struct SelectRecipeRequest {
 }
 
 /// `PATCH /groups/:id/recipes/:recipe_id/selection` request body (#469).
-/// Mirrors `UpdateSelectionRequest`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Mirrors `UpdateSelectionRequest`. Each field is left as it is when
+/// omitted (`None`); `planned_on` and `meal_slot` (#811) are removed by
+/// `Some(None)`, sent as `null`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateSelectionRequest {
-    pub servings: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub servings: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planned_on: Option<Option<NaiveDate>>,
+    /// `lunch` or `dinner`, only with a `planned_on`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meal_slot: Option<Option<String>>,
 }
 
 /// One recipe selection (#469). Mirrors `SelectionResponse`. `status` is
@@ -267,6 +275,12 @@ pub struct RecipeSelectionResponse {
     pub recipe_name: String,
     pub status: String,
     pub servings: Option<i32>,
+    /// Day the recipe is meant to be cooked (#811), if said.
+    #[serde(default)]
+    pub planned_on: Option<NaiveDate>,
+    /// `lunch` or `dinner` (#811), if said; never without `planned_on`.
+    #[serde(default)]
+    pub meal_slot: Option<String>,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
