@@ -1132,6 +1132,8 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
    the arrows on a PC. */
 .week-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2x); margin-bottom: var(--s4); }
 .week-nav .range { flex: 1 1 100%; margin: 0; font-weight: 600; }
+/* An arrow past the one-year horizon: muted, and no hover ground. */
+.week-nav button:disabled { color: var(--muted); pointer-events: none; }
 /* The window's counts, on a card (the one elevation), in the headings' face. */
 .summary { display: flex; flex-wrap: wrap; gap: var(--s2x) var(--s6); margin: 0 0 var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-md); }
 .summary strong { font-family: "Fraunces", Georgia, serif; font-size: var(--t-xl); font-variant-numeric: tabular-nums; }
