@@ -1127,6 +1127,46 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .when-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .when-form legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
 .when-form .when-state { flex: 1 0 100%; }
+/* -- The planning of the meals (#813) ----------------------------------------
+   ‹ Aujourd'hui › then the window in words: its own line on a phone, beside
+   the arrows on a PC. */
+.week-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2x); margin-bottom: var(--s4); }
+.week-nav .range { flex: 1 1 100%; margin: 0; font-weight: 600; }
+/* An arrow past the one-year horizon: muted, and no hover ground. */
+.week-nav button:disabled { color: var(--muted); pointer-events: none; }
+/* The window's counts, on a card (the one elevation), in the headings' face. */
+.summary { display: flex; flex-wrap: wrap; gap: var(--s2x) var(--s6); margin: 0 0 var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-md); }
+.summary strong { font-family: "Fraunces", Georgia, serif; font-size: var(--t-xl); font-variant-numeric: tabular-nums; }
+/* One day per row, midi and soir under its heading; today wears `.current`,
+   its tint reaching past the text by --s2x. */
+.meals { margin: 0; padding: 0; list-style: none; }
+.meals > li { padding: var(--s2x) 0 var(--s3); border-bottom: 1px solid var(--line); }
+.meals > .current { margin-inline: calc(-1 * var(--s2x)); padding-inline: var(--s2x); border-radius: var(--r-sm); }
+.meals h2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2x); margin: 0 0 var(--s1); font-size: var(--t-lg); }
+/* A meal: its name in the pill of the home's rows (`.when`), on the surface
+   on today's tint; then its recipes, each over its duration and what it
+   lacks; or « Ajouter », a link 48px tall. */
+.meals ul { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.meals li li { display: flex; align-items: flex-start; gap: var(--s3); min-height: var(--s12); padding: var(--s2x) 0; }
+.meals li li + li { border-top: 1px solid var(--line); }
+.meals .current .when { background: var(--surface); }
+.meals .what { gap: var(--s1); }
+.meals .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); color: var(--muted); font-size: var(--t-sm); }
+.meals .empty { align-items: center; }
+.meals .empty a { display: inline-flex; align-items: center; min-height: var(--s12); padding-inline: var(--s2x); margin-left: calc(-1 * var(--s2x)); }
+/* On a PC, a row per day: the day, midi, soir — each meal a flat box. */
+@media (min-width: 861px) {
+  .week-nav .range { flex: 0 1 auto; margin-left: var(--s2x); }
+  .meals > li { display: grid; grid-template-columns: 11rem 1fr 1fr; gap: var(--s4); align-items: start; padding: var(--s3) var(--s2x); }
+  .meals > .current { margin-inline: 0; }
+  .meals h2 { flex-direction: column; align-items: flex-start; margin: var(--s2x) 0 0; }
+  .meals ul { display: contents; }
+  .meals li li { flex-direction: column; gap: var(--s1); padding: var(--s2x) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+  .meals .empty { flex-direction: row; justify-content: space-between; }
+  /* « Non précisé », a day's third box: under midi and soir, not the day. */
+  .meals li li:nth-child(3) { grid-column: 2 / -1; }
+  .meals .when, .meals .current .when { min-width: 0; padding: 0; background: none; color: var(--muted); text-align: left; }
+}
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and
