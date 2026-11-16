@@ -3708,11 +3708,36 @@ async fn a_reset_email_to_an_unverified_account_names_nobody(db: PgPool) {
         assert!(!part.contains("Support urgent"), "{part}");
         assert!(!part.contains("XXXX"), "{part}");
     }
-    common::mailed_token(
+    let token = common::mailed_token(
         &outbox,
         email,
         "http://localhost:5173/reset-password#token=",
     );
+
+    // #833: the notice of the reset that follows names nobody either.
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": token, "new_password": "brand-new-password"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::OK);
+    let emails = outbox.emails();
+    let notice = emails.last().unwrap();
+    assert_password_notice(
+        notice,
+        email,
+        "Votre mot de passe a été modifié",
+        "Votre mot de passe a été modifié\n",
+        "Toutes les sessions ouvertes sur votre compte ont été fermées",
+    );
+    let html = notice.html.as_deref().expect("an HTML part");
+    for part in [notice.body.as_str(), html] {
+        assert!(!part.contains("Support urgent"), "{part}");
+        assert!(!part.contains("XXXX"), "{part}");
+    }
 }
 
 /// #831: the three emails of the auth routes — verification, password reset
@@ -4791,6 +4816,77 @@ async fn a_password_reset_mails_the_notice_only_once_it_succeeds(db: PgPool) {
         "Bonjour Test User, votre mot de passe a été modifié\n",
         "Toutes les sessions ouvertes sur votre compte ont été fermées",
     );
+}
+
+/// #833: once `set_password` has made the address unverified again, the
+/// notice of a change made from that session names nobody, as #831 has
+/// every email to an unverified address.
+#[sqlx::test]
+async fn a_password_change_on_an_unverified_address_names_nobody(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "google-change@example.test";
+    // Google-only: the oauth identity goes in the same transaction, since
+    // `users` refuses a row with no auth method (deferred trigger).
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, email_verified, age_declared_at,
+                            terms_accepted_version, terms_accepted_at)
+         VALUES ($1, 'Google Only', true, now(), $2, now())
+         RETURNING id",
+    )
+    .bind(email)
+    .bind(terms_in_force_now())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'google-subject-833')",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let cookie = common::insert_session(&db, user_id).await;
+
+    let set = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&cookie),
+        Some(serde_json::json!({"new_password": "first-password1"})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+    let change = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&cookie),
+        Some(serde_json::json!({"current_password": "first-password1", "new_password": "second-password1"})),
+    )
+    .await;
+    assert_status(&change, StatusCode::OK);
+
+    let emails = outbox.emails();
+    assert_eq!(
+        emails.len(),
+        3,
+        "added notice, verification link, change notice"
+    );
+    let notice = emails.last().unwrap();
+    assert_password_notice(
+        notice,
+        email,
+        "Votre mot de passe a été modifié",
+        "Votre mot de passe a été modifié\n",
+        "Vos autres sessions ont été fermées",
+    );
+    let html = notice.html.as_deref().expect("an HTML part");
+    assert!(!notice.body.contains("Google Only"), "{}", notice.body);
+    assert!(!html.contains("Google Only"), "{html}");
 }
 
 /// #833: a change from the settings mails the notice once it has
