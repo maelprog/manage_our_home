@@ -1,5 +1,5 @@
 pub mod attachments;
-pub(crate) mod change_notices;
+pub mod change_notices;
 pub mod events;
 pub mod national_days;
 pub mod recurrence;

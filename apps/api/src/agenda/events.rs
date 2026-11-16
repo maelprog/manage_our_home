@@ -224,7 +224,7 @@ pub async fn create_event(
     replace_assignees(&mut tx, event.id, &assignee_ids).await?;
     // The members who see it (#849), in this transaction: the event and
     // their notification are written together or not at all.
-    change_notices::tell_added(
+    let told = change_notices::tell_added(
         &mut tx,
         group_id,
         author(&auth),
@@ -233,6 +233,8 @@ pub async fn create_event(
     )
     .await?;
     tx.commit().await?;
+    // Their devices, once committed (#851).
+    change_notices::push_in_background(&state, told);
 
     Ok((
         StatusCode::CREATED,
@@ -837,7 +839,7 @@ pub async fn update_event(
             )
             .await?;
             // Never an imported series: `scoped_occurrence` refused it.
-            change_notices::tell_changed(
+            let told = change_notices::tell_changed(
                 &mut tx,
                 group_id,
                 author(&auth),
@@ -847,6 +849,7 @@ pub async fn update_event(
             )
             .await?;
             tx.commit().await?;
+            change_notices::push_in_background(&state, told);
             return Ok(Json(event_response(event, assignee_ids)));
         }
     }
@@ -973,8 +976,9 @@ pub async fn update_event(
     };
     // One notification per member for the whole write (#849), whatever
     // it changed; none for an event mirrored from an imported calendar.
+    let mut told = Vec::new();
     if !is_imported(&mut tx, event_id).await? {
-        change_notices::tell_changed(
+        told = change_notices::tell_changed(
             &mut tx,
             group_id,
             author(&auth),
@@ -985,6 +989,7 @@ pub async fn update_event(
         .await?;
     }
     tx.commit().await?;
+    change_notices::push_in_background(&state, told);
 
     Ok(Json(event_response(event, assignee_ids)))
 }
@@ -1437,14 +1442,15 @@ fn deletion(scope: EditScope, produced_before: u32) -> Deletion {
 
 /// Tells the members who saw `event` that the caller deleted it, from its
 /// occurrence at `from` on (#849). Its `object_id` stays the event's id,
-/// whether the row is gone or not.
+/// whether the row is gone or not. Returns the members told, to push once
+/// committed (#851).
 async fn tell_deleted_from(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     auth: &AuthUser,
     event: &EventRow,
     assignees: &[Uuid],
     from: DateTime<Utc>,
-) -> AppResult<()> {
+) -> AppResult<Vec<Uuid>> {
     let seen = shown(event, assignees);
     let gone = Shown {
         visible: Visible {
@@ -1453,8 +1459,7 @@ async fn tell_deleted_from(
         },
         ..seen
     };
-    change_notices::tell_deleted(tx, event.group_id, author(auth), event.id, &gone).await?;
-    Ok(())
+    change_notices::tell_deleted(tx, event.group_id, author(auth), event.id, &gone).await
 }
 
 /// `DELETE …/events/{event_id}` parameters (#710). Without `scope`, or with
@@ -1546,10 +1551,13 @@ pub async fn delete_event(
             Deletion::Series => {}
             Deletion::Occurrence => {
                 exclude_occurrence(&mut tx, event_id, occurrence).await?;
+                let mut told = Vec::new();
                 if notify {
-                    tell_deleted_from(&mut tx, &auth, &existing, &assignees, occurrence).await?;
+                    told = tell_deleted_from(&mut tx, &auth, &existing, &assignees, occurrence)
+                        .await?;
                 }
                 tx.commit().await?;
+                change_notices::push_in_background(&state, told);
                 return Ok(StatusCode::NO_CONTENT);
             }
             Deletion::Following => {
@@ -1561,10 +1569,13 @@ pub async fn delete_event(
                 )
                 .execute(&mut *tx)
                 .await?;
+                let mut told = Vec::new();
                 if notify {
-                    tell_deleted_from(&mut tx, &auth, &existing, &assignees, occurrence).await?;
+                    told = tell_deleted_from(&mut tx, &auth, &existing, &assignees, occurrence)
+                        .await?;
                 }
                 tx.commit().await?;
+                change_notices::push_in_background(&state, told);
                 return Ok(StatusCode::NO_CONTENT);
             }
         }
@@ -1584,10 +1595,12 @@ pub async fn delete_event(
     )
     .execute(&mut *tx)
     .await?;
+    let mut told = Vec::new();
     if notify {
-        tell_deleted_from(&mut tx, &auth, &existing, &assignees, existing.starts_at).await?;
+        told = tell_deleted_from(&mut tx, &auth, &existing, &assignees, existing.starts_at).await?;
     }
     tx.commit().await?;
+    change_notices::push_in_background(&state, told);
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -24,7 +24,9 @@
 //! venir » for a reminder, never the event's title, the same choice as the
 //! reminder emails' subject (#146); « Alerte de budget » for a budget alert
 //! (#536); « Produits bientôt périmés » for the daily expiry recap (#566),
-//! never an item's name; a neutral one when it cannot tell.
+//! never an item's name; « Agenda de la famille modifié » for a change
+//! another member made to the agenda (#851), never the event's title nor
+//! its author; a neutral one when it cannot tell.
 //!
 //! The Android app's WebView has no Push API. There (#668), the reminders
 //! are scheduled on the phone by [`LOCAL_REMINDERS_SCRIPT`], from the list
@@ -313,10 +315,16 @@ pub async fn upcoming(State(state): State<AppState>, headers: HeaderMap) -> Resp
 }
 
 /// The kinds of notification the API pushes to the devices: an agenda
-/// reminder come due (#306), a budget alert (#536) and the daily recap of
-/// the stock items nearing their expiry date (#566). The service worker
-/// shows a text of its own for each (`sw.js`).
-pub(crate) const PUSHED_KINDS: [&str; 3] = ["agenda_reminder", "budget_alert", "stock_expiry"];
+/// reminder come due (#306), a budget alert (#536), the daily recap of
+/// the stock items nearing their expiry date (#566) and a change another
+/// member made to the agenda (#851). The service worker shows a text of
+/// its own for each (`sw.js`).
+pub(crate) const PUSHED_KINDS: [&str; 4] = [
+    "agenda_reminder",
+    "budget_alert",
+    "stock_expiry",
+    "agenda_change",
+];
 
 /// Of the API's answer on a push received, the kind to show if it is one
 /// of [`PUSHED_KINDS`]; `None`, the neutral text, for anything else.
@@ -1073,6 +1081,11 @@ mod tests {
                 Some(kind)
             );
         }
+        // A change to the agenda by another member (#851).
+        assert_eq!(
+            pushed_kind(&serde_json::json!({ "kind": "agenda_change" })),
+            Some("agenda_change")
+        );
         assert_eq!(pushed_kind(&serde_json::json!({ "kind": null })), None);
         assert_eq!(pushed_kind(&serde_json::json!({ "kind": "message" })), None);
         assert_eq!(pushed_kind(&serde_json::json!({ "kind": "mixed" })), None);
@@ -1097,6 +1110,8 @@ mod tests {
         assert!(SERVICE_WORKER.contains(r#"title: "Rappel d'un événement à venir""#));
         assert!(SERVICE_WORKER.contains(r#"title: "Alerte de budget""#));
         assert!(SERVICE_WORKER.contains(r#"title: "Produits bientôt périmés""#));
+        // Neither the event's title nor its author: the family's agenda.
+        assert!(SERVICE_WORKER.contains(r#"title: "Agenda de la famille modifié""#));
         // It never reads the push's data: there is none, and there must not
         // be any title to show.
         assert!(!SERVICE_WORKER.contains("event.data"));
