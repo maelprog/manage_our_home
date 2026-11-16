@@ -1012,6 +1012,23 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .share > p { padding: var(--s2x) var(--s3); border-radius: var(--r-sm); background: var(--hover); font-size: var(--t-sm); }
 label.list-row.pick { padding-block: var(--s2x); }
 label.list-row.pick + label.list-row.pick { margin-top: var(--s2x); }
+/* An allergy's level in a family just created or joined (#827, maquette
+   validée le 2026-11-16): the three as a segmented control, one row of
+   `.pick`s. Where `:has()` is supported, the radio is laid unseen over its
+   box and the chosen box says it — the tint, the accent's text, a dot: not
+   the colour alone; elsewhere the selector drops and the radio stays in
+   sight, the sign of the choice. */
+.levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s2x); }
+.level { position: relative; align-items: center; justify-content: center; min-height: var(--s12); padding: var(--s2x); font-weight: 600; cursor: pointer; }
+.levels:has(input) input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.level:has(:checked) { color: var(--accent); }
+.level:has(:checked)::after { content: ""; position: absolute; top: var(--s1); right: var(--s1); width: var(--s2x); height: var(--s2x); border-radius: 50%; background: currentColor; }
+.level:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* What each level means, its name in a column of its own. */
+.key { display: grid; gap: var(--s2x); padding: 0; list-style: none; font-size: var(--t-sm); }
+.key li { display: grid; grid-template-columns: 5.5rem 1fr; gap: var(--s2x); }
+/* The line under the card: where to change the choices later. */
+.hint { color: var(--muted); font-size: var(--t-xs); }
 /* -- The grocery list (#526) ----------------------------------------------
    One card — the basket's count, the quick-add form, the two sections — and
    on a PC the suggestions and the recipes to cook beside it, under it when

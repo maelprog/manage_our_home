@@ -28,6 +28,7 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "joined" => Some("Vous avez rejoint le groupe."),
         "left" => Some("Vous avez quitté le groupe."),
         "group_deleted" => Some("Groupe supprimé."),
+        "allergy_sharing_saved" => Some("Vos choix de partage sont enregistrés."),
         _ => None,
     }
 }

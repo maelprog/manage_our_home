@@ -855,3 +855,149 @@ async fn a_member_finds_a_category_by_its_name_and_reads_it_back_by_name(db: PgP
     let (_, body) = send(&router, Method::GET, "/me/dislikes", &f.holder, None).await;
     assert_eq!(body["dislikes"][0]["label"], "Champignons");
 }
+
+/// #827: creating a family or joining one writes no level there. Until the
+/// member chooses, each of their allergies is private in it: no
+/// `allergy_sharing` row, and what the family is answered — #817's
+/// `GET /groups/{id}/allergies`, #818's warning on a recipe — takes the
+/// absence for `private`. Nothing of an allergy goes out in the invitation
+/// email or in a notification.
+#[sqlx::test]
+async fn arriving_in_a_family_shares_nothing_until_the_member_chooses(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let owner = register_verify_login(&router, &db, "arrive-owner@example.test").await;
+    let holder_email = "arrive-holder@example.test";
+    let holder = register_verify_login(&router, &db, holder_email).await;
+    for tag in [TAG, "en:eggs"] {
+        let (status, body) = send(
+            &router,
+            Method::POST,
+            "/me/allergies",
+            &holder,
+            Some(json!({ "tag": tag })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    // Creating: a family of the holder's own.
+    let own = create_group(&router, &holder, "Chez moi").await;
+    // Joining: the owner's, through the link the invitation email carries.
+    let group = create_group(&router, &owner, "Maison").await;
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        &format!("/groups/{group}/invitations"),
+        &owner,
+        Some(json!({ "invited_email": holder_email })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let token = common::mailed_token(
+        &outbox,
+        holder_email,
+        "http://localhost:5173/groups/invitations/",
+    );
+    let (status, _) = send(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        &holder,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(sharing_rows(&db, &own).await, 0, "created");
+    assert_eq!(sharing_rows(&db, &group).await, 0, "joined");
+    let (_, body) = send(&router, Method::GET, "/me/allergies", &holder, None).await;
+    let levels: Vec<&Value> = body["allergies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|a| a["sharing"].as_array().unwrap())
+        .map(|s| &s["share"])
+        .collect();
+    assert_eq!(levels, vec!["private"; 4], "{body}");
+
+    // What the family is answered takes the absence for `private`.
+    let (status, body) = send(
+        &router,
+        Method::GET,
+        &format!("/groups/{group}/allergies"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"public": [], "anonymous": false}));
+    let (status, recipe) = send(
+        &router,
+        Method::POST,
+        &format!("/groups/{group}/recipes"),
+        &owner,
+        Some(json!({"name": "Satay", "ingredients": [{"name": "Cacahuètes"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{recipe}");
+    let card = format!("/groups/{group}/recipes/{}", recipe["id"].as_str().unwrap());
+    let (_, read) = send(&router, Method::GET, &card, &owner, None).await;
+    assert_eq!(
+        read["allergy_warning"],
+        json!({"mine": [], "public": [], "anonymous": false, "unverifiable": false})
+    );
+    // The holder's own warning is theirs, whatever the level.
+    let (_, read) = send(&router, Method::GET, &card, &holder, None).await;
+    assert_eq!(read["allergy_warning"]["mine"], json!([TAG]));
+
+    // Nothing of an allergy in an email or a notification.
+    let notifications: String =
+        sqlx::query_scalar("SELECT coalesce(string_agg(body, ' | '), '') FROM notifications")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let emails = outbox.emails();
+    assert!(emails.iter().any(|e| e.to == holder_email));
+    for word in ["peanut", "Arachide", "Cacahu", "eggs", "Œuf", "allerg"] {
+        assert!(!notifications.contains(word), "{word}: {notifications}");
+        for e in &emails {
+            assert!(
+                !e.subject.contains(word) && !e.body.contains(word),
+                "{word} in the email to {}: {}",
+                e.to,
+                e.body
+            );
+        }
+    }
+
+    // Once the member chooses, the level they set is the one row there.
+    let (status, _) = send(
+        &router,
+        Method::PUT,
+        "/me/allergies/sharing",
+        &holder,
+        Some(json!({"tag": TAG, "group_id": group, "share": "public"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(sharing_rows(&db, &group).await, 1);
+    assert_eq!(sharing_rows(&db, &own).await, 0);
+    let (_, body) = send(
+        &router,
+        Method::GET,
+        &format!("/groups/{group}/allergies"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(body["public"][0]["tag"], TAG);
+}
+
+/// The levels set in one family, read past RLS by the harness pool.
+async fn sharing_rows(db: &PgPool, group: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM allergy_sharing WHERE group_id = $1::uuid")
+        .bind(group)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}

@@ -524,6 +524,10 @@ fn build_router(state: AppState) -> Router {
             "/groups/invitations/{token}/accept",
             get(routes::groups::invitations::get).post(routes::groups::invitations::post),
         )
+        .route(
+            "/groups/{id}/allergies",
+            get(routes::groups::allergies::get).post(routes::groups::allergies::post),
+        )
         .route("/groups/{id}/members", get(routes::groups::members::get))
         .route(
             "/groups/{id}/members/invite",
