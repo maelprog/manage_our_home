@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-11-15.
+Dernière mise à jour : 2026-11-16.
 
 ## Qui est responsable de vos données ?
 
@@ -120,8 +120,9 @@ possibles sont :
   transactionnels achemine les emails du site : vérification d'adresse, réinitialisation de mot de passe,
   invitation à un groupe, rappel d'événement, avertissement avant la
   suppression d'un compte désactivé, avis de la propriété d'un groupe
-  qui vous revient sans que vous l'ayez demandée et avis « Vous avez déjà
-  un compte » — les sept seuls emails que
+  qui vous revient sans que vous l'ayez demandée, avis « Vous avez déjà
+  un compte » et avis de modification de votre mot de passe — les huit
+  seuls emails que
   ce service envoie. Scaleway reçoit l'adresse du destinataire, l'objet et le
   corps de chacun : le corps d'un rappel reprend le titre et la date de
   l'événement, le corps d'une invitation nomme le groupe et le membre qui
@@ -133,7 +134,13 @@ possibles sont :
   déjà vérifiée, sauf si votre compte est désactivé ; il vous le signale,
   avec un lien vers la page « mot de passe oublié », sans que la personne
   qui a tenté l'inscription apprenne que le compte existe. Il part au plus
-  3 fois par adresse sur 24 heures glissantes. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
+  3 fois par adresse sur 24 heures glissantes. L'avis de modification du
+  mot de passe part à l'adresse de votre compte chaque fois que votre mot
+  de passe est réinitialisé, changé ou ajouté : son corps donne la date et
+  l'heure du changement, vous nomme par votre nom affiché si votre adresse
+  est vérifiée, dit ce qu'il est advenu de vos sessions ouvertes et porte
+  un lien vers la page « mot de passe oublié » ; son objet ne nomme
+  personne. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
   « Rappel d'un événement à venir ». Un titre peut être sensible (un examen
   médical, un rendez-vous chez un professionnel) : il ne figure donc pas
   dans l'objet, la ligne que la liste des messages affiche en premier. Il
