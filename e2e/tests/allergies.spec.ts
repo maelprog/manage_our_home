@@ -219,3 +219,112 @@ test.describe("Allergies and dislikes (#819)", () => {
     await expect(page.getByText("Aucun équipement requis.")).toBeVisible();
   });
 });
+
+// Issue #827 — whoever creates or joins a family while holding an allergy
+// chooses its level there before « Mes groupes »: private by default, in a
+// segmented control, « Plus tard » writing nothing. Without an allergy, no
+// screen at all.
+
+async function addAllergies(page: Page, names: string[]): Promise<void> {
+  await page.goto("/account/allergies");
+  await page.getByRole("checkbox", { name: /Je consens/ }).check();
+  await page.getByRole("button", { name: "Continuer" }).click();
+  for (const name of names) {
+    await page.locator('select[name="tag"]').selectOption({ label: name });
+    await page.getByRole("button", { name: "Ajouter à ma liste" }).click();
+    await expect(page.getByRole("status").first()).toContainText("Allergie ajoutée.");
+  }
+}
+
+/** The owner's invitation link into `family`. */
+async function invitationLink(owner: Page, family: string): Promise<string> {
+  await owner.goto("/groups");
+  await owner.locator("li", { hasText: family }).getByRole("link", { name: "Membres" }).click();
+  await owner.getByRole("button", { name: "Créer une invitation" }).click();
+  const link = await owner.locator(".notice.success a").getAttribute("href");
+  if (!link) throw new Error("no invitation link rendered");
+  return link;
+}
+
+async function newMember(browser: Browser, displayName: string): Promise<Page> {
+  const page = await (await browser.newContext()).newPage();
+  await registerAndLogin(page, "e2e-sharing", displayName);
+  return page;
+}
+
+function sharingLevel(page: Page, name: string, title: string) {
+  return page.getByRole("group", { name, exact: true }).getByRole("radio", { name: title, exact: true });
+}
+
+async function pills(page: Page, name: string): Promise<string[]> {
+  await page.goto("/account/allergies");
+  return allergy(page, name).locator("summary .badge").allTextContents();
+}
+
+test.describe("Sharing one's allergies on arriving in a family (#827)", () => {
+  test("several allergies: asked on creating and on joining, private by default, only what changes is shared", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-sharing-holder", "Sacha Partage");
+    await addAllergies(page, ["Arachides", "Œufs"]);
+
+    // Creating: the screen, before « Mes groupes ».
+    await page.goto("/groups/new");
+    await page.getByLabel("Nom du groupe").fill("Foyer Delta");
+    await page.getByRole("button", { name: "Créer le groupe" }).click();
+    await expect(page).toHaveURL(/\/groups\/[0-9a-f-]+\/allergies\?from=created$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Partager vos allergies avec Foyer Delta" })).toBeVisible();
+    for (const name of ["Arachides", "Œufs"]) {
+      await expect(sharingLevel(page, name, "Privé")).toBeChecked();
+      await expect(sharingLevel(page, name, "Public")).not.toBeChecked();
+    }
+    await sharingLevel(page, "Arachides", "Public").check();
+    await page.getByRole("button", { name: "Valider mes choix" }).click();
+    await expect(page).toHaveURL(/\/groups\?notice=allergy_sharing_saved$/);
+    await expect(page.getByText("Vos choix de partage sont enregistrés.")).toBeVisible();
+
+    // Creating without an allergy: no screen.
+    const friend = await newMember(browser, "Alix Sans Allergie");
+    await friend.goto("/groups/new");
+    await friend.getByLabel("Nom du groupe").fill("Foyer Zeta");
+    await friend.getByRole("button", { name: "Créer le groupe" }).click();
+    await expect(friend).toHaveURL(/\/groups\?notice=group_created$/);
+
+    // Joining: the same screen, everything private there — the level set in
+    // Foyer Delta stays in Foyer Delta. « Plus tard » writes nothing.
+    await page.goto(await invitationLink(friend, "Foyer Zeta"));
+    await page.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    await expect(page).toHaveURL(/\/groups\/[0-9a-f-]+\/allergies\?from=joined$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Partager vos allergies avec Foyer Zeta" })).toBeVisible();
+    await expect(sharingLevel(page, "Arachides", "Privé")).toBeChecked();
+    await expect(sharingLevel(page, "Œufs", "Privé")).toBeChecked();
+    await page.getByRole("link", { name: "Plus tard, tout laisser privé" }).click();
+    await expect(page).toHaveURL(/\/groups\?notice=joined$/);
+
+    expect(await pills(page, "Arachides")).toEqual(["Foyer Delta : public", "Foyer Zeta : privé"]);
+    expect(await pills(page, "Œufs")).toEqual(["Foyer Delta : privé", "Foyer Zeta : privé"]);
+  });
+
+  test("one allergy: asked on joining, validated as it is; without an allergy, no screen", async ({ page, browser }) => {
+    await registerAndLogin(page, "e2e-sharing-owner", "Robin Hôte");
+    await createGroup(page, "Foyer Eta");
+    const link = await invitationLink(page, "Foyer Eta");
+
+    const one = await newMember(browser, "Noa Une Allergie");
+    await addAllergies(one, ["Lait"]);
+    await one.goto(link);
+    await one.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    await expect(one).toHaveURL(/\/groups\/[0-9a-f-]+\/allergies\?from=joined$/);
+    await expect(one.getByRole("radio")).toHaveCount(3);
+    await expect(sharingLevel(one, "Lait", "Privé")).toBeChecked();
+    await one.getByRole("button", { name: "Valider mes choix" }).click();
+    await expect(one).toHaveURL(/\/groups\?notice=allergy_sharing_saved$/);
+    expect(await pills(one, "Lait")).toEqual(["Foyer Eta : privé"]);
+
+    const none = await newMember(browser, "Lou Aucune Allergie");
+    await none.goto(await invitationLink(page, "Foyer Eta"));
+    await none.getByRole("button", { name: "Rejoindre le groupe" }).click();
+    await expect(none).toHaveURL(/\/groups\?notice=joined$/);
+  });
+});

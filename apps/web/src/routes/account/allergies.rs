@@ -122,7 +122,7 @@ impl Kind {
 /// What the name of a tag is on this page: an INCO allergen's own name
 /// (« Gluten », not the cereals the taxonomy files it under), or the name
 /// apps/api gave.
-fn name_of<'a>(tag: &str, label: &'a str) -> &'a str {
+pub(crate) fn name_of<'a>(tag: &str, label: &'a str) -> &'a str {
     inco_label(tag).unwrap_or(label)
 }
 

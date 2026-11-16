@@ -5,7 +5,9 @@
 //! confirm page (auth-gated: an anonymous visitor is bounced to /login by
 //! `CurrentUser`, which remembers this page, and `/` sends them back here
 //! once logged in — after a registration and its email verification too,
-//! in the same browser, `crate::return_to`, #462); POST calls the API.
+//! in the same browser, `crate::return_to`, #462); POST calls the API,
+//! then asks a member who holds an allergy its level in the group just
+//! joined (`allergies.rs`, #827).
 //!
 //! Error table (`accept_invitation`): 404 unknown or already accepted token
 //! (accepting deletes the invitation, #138), 410 Gone when past the 7-day
@@ -23,6 +25,7 @@ use crate::family::set_active_group_cookie;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
+use super::allergies::{after_arrival, has_allergies, Arrival};
 use super::cookie_of;
 
 fn invalid_page() -> Html<String> {
@@ -87,13 +90,17 @@ pub async fn post(
     match result {
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             let mut response_headers = HeaderMap::new();
-            // The group just joined becomes the active family.
+            let mut to = "/groups?notice=joined".to_string();
+            // The group just joined becomes the active family; a member who
+            // holds an allergy chooses its level there first (#827).
             if let Ok(accepted) = serde_json::from_value::<AcceptInvitationResponse>(resp.body) {
                 if let Ok(v) = set_active_group_cookie(accepted.group_id).parse() {
                     response_headers.insert(axum::http::header::SET_COOKIE, v);
                 }
+                let has = has_allergies(&state, cookie.as_deref()).await;
+                to = after_arrival(accepted.group_id, Arrival::Joined, has);
             }
-            (response_headers, Redirect::to("/groups?notice=joined")).into_response()
+            (response_headers, Redirect::to(&to)).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => invalid_page().into_response(),
         Ok(resp) if resp.status == reqwest::StatusCode::GONE => gone_page().into_response(),
