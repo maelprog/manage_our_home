@@ -2611,7 +2611,7 @@ mod tests {
             "--error-soft",
             ".notice.error, .danger:hover, .badge.late",
         ),
-        ("--success", "--success-soft", ".notice.success"),
+        ("--success", "--success-soft", ".notice.success, .badge.ok"),
         (
             "--warning",
             "--warning-soft",
@@ -3706,9 +3706,11 @@ mod tests {
     }
 
     /// The links #752 sets in bold rather than underlined: every link with
-    /// no class of its own, but the kitchen segment's halves, plus the two
-    /// accent links that carry one (`.more`, `.replies`).
-    const TEXT_LINK: &str = ":where(:not(.segment) > a:not([class]), .more, .replies)";
+    /// no class of its own, but the kitchen segment's halves, plus the
+    /// three accent links that carry one (`.more`, `.replies`, and the « … »
+    /// of « Ce soir », `.more-recipes`, #814).
+    const TEXT_LINK: &str =
+        ":where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes)";
 
     #[test]
     fn a_text_link_is_bold_in_the_accent_and_not_underlined_at_rest() {
