@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agenda::{attachments, recurrence};
+use crate::agenda::{attachments, change_notices, recurrence};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::google_calendar::can_configure;
@@ -546,7 +546,21 @@ pub async fn trigger_calendar_import(
     )
     .execute(&mut *tx)
     .await?;
+    // One notification for the whole run (#852), in its transaction: the
+    // events created or changed upstream, never the ones only repaired in
+    // the `skipped` arm, which are no news from the feed.
+    let told = change_notices::tell_imported(
+        &mut tx,
+        group_id,
+        change_notices::Author {
+            id: auth.user_id,
+            name: &auth.display_name,
+        },
+        imported + updated,
+    )
+    .await?;
     tx.commit().await?;
+    change_notices::push_in_background(&state, told);
 
     Ok(Json(ImportRunResponse {
         imported,

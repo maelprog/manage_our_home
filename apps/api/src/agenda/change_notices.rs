@@ -9,10 +9,12 @@
 //! read: the family's members whose account is active and who keep
 //! `notify_agenda_changes` on (#848).
 //!
-//! Not told: an event mirrored from an imported calendar — what an import
-//! tells is its own question (#5), and its rows are rewritten from the
-//! feed — nor the generated days (bank holidays, school holidays), which are
-//! no rows of `events`. The handlers of `events.rs` are the only callers.
+//! Not told, event by event: an event mirrored from an imported calendar —
+//! its rows are rewritten from the feed — nor the generated days (bank
+//! holidays, school holidays), which are no rows of `events`. An import
+//! tells once for all it added or changed ([`tell_imported`], #852, called
+//! by `google_calendar::imports`); the other writers are the handlers of
+//! `events.rs`.
 //!
 //! Once the write committed, the members told whose channel includes
 //! notifications (`users.reminder_channel`, #306) get a push on each of
@@ -57,6 +59,21 @@ pub(crate) fn recipients(candidates: &[Uuid], author: Uuid, audience: &Audience<
         .copied()
         .filter(|&member| member != author && audience.sees(member))
         .collect()
+}
+
+/// The members to tell of an import that added or changed `count` events
+/// (#852): every candidate but its `author` — the events an import writes
+/// are shared — and nobody when it changed nothing.
+pub(crate) fn import_recipients(candidates: &[Uuid], author: Uuid, count: usize) -> Vec<Uuid> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let shared = Audience {
+        is_private: false,
+        created_by: author,
+        assignees: &[],
+    };
+    recipients(candidates, author, &shared)
 }
 
 /// The members to tell of a change, split by what they are told.
@@ -281,6 +298,44 @@ pub(crate) async fn tell_changed(
     Ok(written)
 }
 
+/// Tells the family that `author` ran an import which added or changed
+/// `count` events (#852): one row per member for the whole import, naming
+/// no event — its `object_id` is empty, there is no single event to open.
+/// Nothing when it changed nothing. Returns the members written, to push
+/// once committed. Same transaction rule as [`write`].
+pub(crate) async fn tell_imported(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    author: Author<'_>,
+    count: usize,
+) -> AppResult<Vec<Uuid>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let candidates = candidates(tx, group_id).await?;
+    let told = import_recipients(&candidates, author.id, count);
+    if told.is_empty() {
+        return Ok(told);
+    }
+    // No `dedup_key`, no `RETURNING`: as in `write`.
+    center::insert_for(
+        tx,
+        &told,
+        &center::NewNotification {
+            group_id,
+            event: center::Event::AgendaImported {
+                author: author.name,
+                count,
+            },
+            object_id: None,
+            actor_id: Some(author.id),
+            dedup_key: None,
+        },
+    )
+    .await?;
+    Ok(told)
+}
+
 /// How long a push service keeps a change for a device that is offline: a
 /// day. A change read later is in the notification centre anyway.
 pub const CHANGE_PUSH_TTL_SECS: i64 = 24 * 3600;
@@ -429,6 +484,24 @@ mod tests {
         };
         assert_eq!(recipients(&[uid(1), uid(3)], uid(1), &private), [uid(3)]);
         assert_eq!(recipients(&[], uid(1), &shared(uid(1))), Vec::<Uuid>::new());
+    }
+
+    // -- import_recipients (#852) ------------------------------------------
+
+    #[test]
+    fn an_import_tells_every_candidate_but_its_author() {
+        let candidates = [uid(1), uid(2), uid(3)];
+        assert_eq!(import_recipients(&candidates, uid(2), 30), [uid(1), uid(3)]);
+        assert_eq!(import_recipients(&candidates, uid(9), 1), candidates);
+    }
+
+    #[test]
+    fn an_import_that_changed_nothing_tells_no_one() {
+        let candidates = [uid(1), uid(2), uid(3)];
+        assert_eq!(
+            import_recipients(&candidates, uid(2), 0),
+            Vec::<Uuid>::new()
+        );
     }
 
     // -- change_recipients -------------------------------------------------

@@ -125,6 +125,10 @@ pub enum Event<'a> {
         starts_at: DateTime<Utc>,
         all_day: bool,
     },
+    /// A member imported a calendar feed that added or changed `count`
+    /// events (#852): one notification for the whole import, naming no
+    /// event.
+    AgendaImported { author: &'a str, count: usize },
 }
 
 /// Which visible fields of an agenda event a change moved (#849), as
@@ -160,7 +164,8 @@ impl Event<'_> {
             | Event::BudgetCategoryCapExceeded { .. } => Kind::BudgetAlert,
             Event::AgendaAdded { .. }
             | Event::AgendaChanged { .. }
-            | Event::AgendaDeleted { .. } => Kind::AgendaChange,
+            | Event::AgendaDeleted { .. }
+            | Event::AgendaImported { .. } => Kind::AgendaChange,
         }
     }
 }
@@ -246,6 +251,11 @@ pub fn body(event: &Event<'_>) -> String {
             typed(author),
             typed(title),
             paris_when(starts_at, all_day)
+        ),
+        Event::AgendaImported { author, count } => format!(
+            "{} a importé {count} événement{}.",
+            typed(author),
+            if count == 1 { "" } else { "s" }
         ),
     }
 }
@@ -1110,5 +1120,61 @@ mod tests {
             assert!((1..=300).contains(&n), "{n} characters for {event:?}");
             assert!(!text.contains(['\n', '\r']), "{text:?}");
         }
+    }
+
+    // -- agenda imports (#852) ----------------------------------------------
+
+    #[test]
+    fn an_import_is_an_agenda_change() {
+        assert_eq!(
+            Event::AgendaImported {
+                author: "a",
+                count: 3
+            }
+            .kind(),
+            Kind::AgendaChange
+        );
+    }
+
+    #[test]
+    fn an_import_of_one_event_is_singular() {
+        assert_eq!(
+            body(&Event::AgendaImported {
+                author: "Alice",
+                count: 1
+            }),
+            "Alice a importé 1 événement."
+        );
+    }
+
+    #[test]
+    fn an_import_of_several_events_is_plural_with_its_exact_count() {
+        for (count, text) in [
+            (2, "Alice a importé 2 événements."),
+            (30, "Alice a importé 30 événements."),
+            (1234, "Alice a importé 1234 événements."),
+        ] {
+            assert_eq!(
+                body(&Event::AgendaImported {
+                    author: "Alice",
+                    count
+                }),
+                text
+            );
+        }
+    }
+
+    /// The author's name is typed: flattened and cut like any other, so the
+    /// text stays one line within the column.
+    #[test]
+    fn an_import_fits_the_column_whatever_its_author() {
+        let author = format!("{}\n{}", "a".repeat(300), "b".repeat(300));
+        let text = body(&Event::AgendaImported {
+            author: &author,
+            count: usize::MAX,
+        });
+        let n = text.chars().count();
+        assert!((1..=300).contains(&n), "{n} characters: {text:?}");
+        assert!(!text.contains(['\n', '\r']), "{text:?}");
     }
 }

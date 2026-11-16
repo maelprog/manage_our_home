@@ -1,7 +1,8 @@
 //! The notification centre (#534), against a real database: the events
 //! that write a notification (a reminder coming due, a stock item nearing
 //! its expiry and the daily recap of those items, a message, an invitation,
-//! a grocery item, an agenda event added, changed or deleted), the member's API
+//! a grocery item, an agenda event added, changed or deleted, a calendar
+//! import), the member's API
 //! (`/notifications`), its isolation per recipient, the 30-day purge and
 //! the export.
 //!
@@ -1912,6 +1913,171 @@ async fn an_imported_event_tells_no_one(db: PgPool) {
     patch_event(&f, &f.owner, &event, json!({"title": "Déjeuner"})).await;
     delete_event(&f, &f.owner, &event, "").await;
     assert_eq!(agenda_rows(&db).await, rows(&[]));
+}
+
+// -- calendar imports (#852) ------------------------------------------------------
+
+/// An ICS feed of the events `uids`, each an hour on its own day of
+/// December 2026. Each was last modified on 1 January, but `moved`, on
+/// 1 February: the stamp a re-import compares to tell a changed event.
+fn feed(uids: std::ops::Range<u32>, moved: Option<u32>) -> String {
+    let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+    for uid in uids {
+        let day = uid % 28 + 1;
+        let modified = if moved == Some(uid) {
+            "20260201T090000Z"
+        } else {
+            "20260101T090000Z"
+        };
+        ics.push_str(&format!(
+            "BEGIN:VEVENT\r\nUID:import-852-{uid}@google.com\r\nDTSTAMP:20260101T090000Z\r\n\
+             DTSTART:202612{day:02}T090000Z\r\nDTEND:202612{day:02}T100000Z\r\n\
+             SUMMARY:Cours {uid}\r\nLAST-MODIFIED:{modified}\r\nEND:VEVENT\r\n"
+        ));
+    }
+    ics.push_str("END:VCALENDAR\r\n");
+    ics
+}
+
+/// Serves `bodies` over plain HTTP on 127.0.0.1, one per connection and in
+/// order: a calendar feed that changes between two syncs.
+async fn serve_feeds(bodies: Vec<String>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for body in bodies {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        }
+    });
+    format!("http://{addr}/feed.ics")
+}
+
+/// The family's calendar import of a feed serving `bodies` in order,
+/// registered by its owner.
+async fn calendar_import(f: &Family, bodies: Vec<String>) -> String {
+    let feed_url = serve_feeds(bodies).await;
+    let res = call(
+        &f.router,
+        Method::POST,
+        &format!("/groups/{}/calendar-imports", f.group),
+        Some(&f.owner),
+        Some(json!({"label": "École", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// Runs the import `import` as `cookie`; returns its counters.
+async fn run_import(f: &Family, cookie: &str, import: &str) -> Value {
+    let res = call(
+        &f.router,
+        Method::POST,
+        &format!("/groups/{}/calendar-imports/{import}/import", f.group),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await
+}
+
+/// #852: an import that added or changed events writes one row per other
+/// member, with their exact count and no title; a re-import that changed
+/// nothing writes none; its author is never told, nor a member who opted
+/// out.
+#[sqlx::test]
+async fn an_import_tells_each_other_member_once_with_its_count(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let member = user_id(&db, "member@example.test").await;
+    let import = calendar_import(
+        &f,
+        vec![
+            feed(0..30, None),
+            feed(0..30, None),
+            // The first event moved upstream, a 31st is new.
+            feed(0..31, Some(0)),
+        ],
+    )
+    .await;
+
+    // 30 new events, imported by a member: one row for each other member.
+    let run = run_import(&f, &f.member, &import).await;
+    assert_eq!(
+        (run["imported"].as_u64(), run["updated"].as_u64()),
+        (Some(30), Some(0))
+    );
+    let told = "member@example.test a importé 30 événements.";
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[("owner@example.test", told), ("third@example.test", told)])
+    );
+    // About no single event, by the member who ran it.
+    let about: Vec<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT object_id, actor_id FROM notifications WHERE kind = 'agenda_change'",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(about, vec![(None, Some(member)); 2]);
+
+    // The same feed again: nothing changed, nobody told.
+    clear_notifications(&db).await;
+    let run = run_import(&f, &f.member, &import).await;
+    assert_eq!(run["skipped"].as_u64(), Some(30));
+    assert_eq!(agenda_rows(&db).await, rows(&[]));
+
+    // One event changed and one added, imported by the owner; the third
+    // member opted out.
+    sqlx::query(
+        "UPDATE users SET notify_agenda_changes = false WHERE email = 'third@example.test'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let run = run_import(&f, &f.owner, &import).await;
+    assert_eq!(
+        (run["imported"].as_u64(), run["updated"].as_u64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a importé 2 événements."
+        )])
+    );
+}
+
+/// #852: once the import committed, the members it told whose channel
+/// includes notifications get a push — not its author, nor a member on
+/// email.
+#[sqlx::test]
+async fn an_import_pushes_the_members_it_told_on_notifications(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    sqlx::query("UPDATE users SET reminder_channel = 'email' WHERE email = 'third@example.test'")
+        .execute(&db)
+        .await
+        .unwrap();
+    let import = calendar_import(&f, vec![feed(0..1, None)]).await;
+    let owner_device = unreachable_device(&db, "owner@example.test").await;
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
+
+    run_import(&f, &f.member, &import).await;
+    pushed_within_10_s(&db, owner_device, "import").await;
+    assert!(device_kept(&db, member_device).await, "the author");
+    assert!(device_kept(&db, third_device).await, "a member on email");
 }
 
 /// A 500-character title broken by new lines is stored, and its
