@@ -187,9 +187,9 @@ pub(crate) fn page_body(
         .map(|e| format!(r#"<p class="notice error" role="alert">{e}</p>"#))
         .unwrap_or_default();
     let opening = match arrival {
-        Some(Arrival::Created) => "Votre groupe est créé. ",
-        Some(Arrival::Joined) => "Vous venez de rejoindre ce groupe. ",
-        None => "",
+        Some(Arrival::Created) => "Votre groupe est créé. ".to_string(),
+        Some(Arrival::Joined) => format!("Vous venez de rejoindre {family}. "),
+        None => String::new(),
     };
     let nothing_yet = if all_private {
         " Rien n'est partagé tant que vous n'avez pas validé : tout reste privé."
@@ -612,7 +612,7 @@ mod tests {
         assert!(!html.contains("tout reste privé"));
         assert!(!html.contains("tout laisser privé"));
         assert!(html.contains(r#"href="/groups?notice=joined">Plus tard</a>"#));
-        assert!(html.contains("Vous venez de rejoindre ce groupe."));
+        assert!(html.contains("<p>Vous venez de rejoindre Maison. Choisissez"));
     }
 
     #[test]
