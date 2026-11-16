@@ -518,8 +518,11 @@ pub async fn get(
 
     // Opened from an empty slot of the planning (#813), on the full list.
     let slot = match tab {
-        Tab::All => slot_from_query(query.date, query.repas.as_deref())
-            .map(|(day, meal)| Slot::new(day, meal, crate::routes::agenda::today_paris())),
+        Tab::All => {
+            let today = crate::routes::agenda::today_paris();
+            slot_from_query(query.date, query.repas.as_deref(), today)
+                .map(|(day, meal)| Slot::new(day, meal, today))
+        }
         _ => None,
     };
     let slot_notice = slot_banner(slot.as_ref());

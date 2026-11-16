@@ -17,7 +17,8 @@
 //! still generated from every planned recipe, whatever its day.
 //!
 //! An empty slot links to the recipe list with its day and its meal
-//! (`/recipes?date=…&repas=…`), where « À réaliser » plans a recipe on it.
+//! (`/recipes?date=…&repas=…`), where « À réaliser » plans a recipe on it —
+//! except on a day beyond the horizon, which ‹ and › do not go past.
 
 use std::collections::{HashMap, HashSet};
 
@@ -64,6 +65,11 @@ impl Window {
     }
 }
 
+/// Whether a plan may take `day`: at most [`HORIZON_DAYS`] from today.
+pub(crate) fn within_horizon(day: NaiveDate, today: NaiveDate) -> bool {
+    day.signed_duration_since(today).num_days().abs() <= HORIZON_DAYS
+}
+
 /// The window `?date=` asks for. `None`, yesterday, or a day whose seven
 /// days hold none within [`HORIZON_DAYS`] of today: the current one, nine
 /// days from yesterday. Any other day: the seven from it — so a window
@@ -73,13 +79,11 @@ pub(crate) fn window(asked: Option<NaiveDate>, today: NaiveDate) -> Window {
     let earliest = today - Duration::days(HORIZON_DAYS + 6);
     let latest = today + Duration::days(HORIZON_DAYS);
     match asked {
-        Some(start) if start != yesterday && (earliest..=latest).contains(&start) => {
-            Window {
-                start,
-                days: 7,
-                current: false,
-            }
-        }
+        Some(start) if start != yesterday && (earliest..=latest).contains(&start) => Window {
+            start,
+            days: 7,
+            current: false,
+        },
         _ => Window {
             start: yesterday,
             days: 9,
@@ -133,17 +137,20 @@ pub(crate) fn back_window(back: &str) -> Option<Option<NaiveDate>> {
 }
 
 /// The meal of an « Ajouter » link (`repas=midi|soir`) as a selection says
-/// it, `lunch` or `dinner`; the slot only when its day reads too.
+/// it, `lunch` or `dinner`; the slot only when its day reads too, and is
+/// one a plan may take — the API would refuse the others.
 pub(crate) fn slot_from_query(
     date: Option<NaiveDate>,
     repas: Option<&str>,
+    today: NaiveDate,
 ) -> Option<(NaiveDate, &'static str)> {
     let meal = match repas? {
         "midi" => "lunch",
         "soir" => "dinner",
         _ => return None,
     };
-    Some((date?, meal))
+    let day = date.filter(|d| within_horizon(*d, today))?;
+    Some((day, meal))
 }
 
 /// French month abbreviations, as a day's heading writes them: « 13 nov. ».
@@ -247,10 +254,12 @@ fn meal_html(p: &PlannedSelection, durations: &HashMap<Uuid, i32>) -> String {
 }
 
 /// A slot of a day: its meal in a pill, then its recipes, or « Ajouter »
-/// when it has none. `meal` is `lunch`, `dinner`, or `None` for the dated
-/// recipes whose meal is not said, which have no « Ajouter ».
+/// when it has none — « À plus d'un an » on a day no plan may take. `meal`
+/// is `lunch`, `dinner`, or `None` for the dated recipes whose meal is not
+/// said, which have no « Ajouter ».
 fn slot_html(
     day: NaiveDate,
+    today: NaiveDate,
     meal: Option<&str>,
     recipes: &[&PlannedSelection],
     durations: &HashMap<Uuid, i32>,
@@ -260,6 +269,11 @@ fn slot_html(
         Some(_) => "Soir",
         None => "Non précisé",
     };
+    if recipes.is_empty() && !within_horizon(day, today) {
+        return format!(
+            r#"<li class="empty"><span class="when">{label}</span><span class="muted">À plus d'un an</span></li>"#
+        );
+    }
     if recipes.is_empty() {
         let meal = meal.unwrap_or("dinner");
         return format!(
@@ -300,10 +314,10 @@ fn day_html(
             .collect()
     };
     let unsaid = on(None);
-    let mut slots = slot_html(day, Some("lunch"), &on(Some("lunch")), durations);
-    slots += &slot_html(day, Some("dinner"), &on(Some("dinner")), durations);
+    let mut slots = slot_html(day, today, Some("lunch"), &on(Some("lunch")), durations);
+    slots += &slot_html(day, today, Some("dinner"), &on(Some("dinner")), durations);
     if !unsaid.is_empty() {
-        slots += &slot_html(day, None, &unsaid, durations);
+        slots += &slot_html(day, today, None, &unsaid, durations);
     }
     let (class, badge) = if day == today {
         (
@@ -377,12 +391,24 @@ pub(crate) struct WeekView<'a> {
 pub(crate) fn week_html(view: &WeekView) -> String {
     let w = view.window;
     let step = Duration::days(7);
-    let target =
-        |start: NaiveDate| week_href((start != window(None, view.today).start).then_some(start));
+    // An arrow to the window from `start`; a disabled button when that one
+    // holds no day a plan may take (`window` would give the current one).
+    let arrow = |start: NaiveDate, label: &str, sign: &str| {
+        let to = window(Some(start), view.today);
+        if to.current && start != view.today - Duration::days(1) {
+            return format!(
+                r#"<button type="button" class="secondary" aria-label="{label}" disabled>{sign}</button>"#
+            );
+        }
+        format!(
+            r#"<a class="btn secondary" href="{href}" aria-label="{label}">{sign}</a>"#,
+            href = week_href((!to.current).then_some(start)),
+        )
+    };
     let nav = format!(
-        r#"<nav class="week-nav" aria-label="Période"><a class="btn secondary" href="{prev}" aria-label="7 jours précédents">‹</a><a class="btn secondary" href="/recipes/week">Aujourd'hui</a><a class="btn secondary" href="{next}" aria-label="7 jours suivants">›</a><p class="range"><span class="sr-only">Du </span>{range}</p></nav>"#,
-        prev = target(w.start - step),
-        next = target(w.start + step),
+        r#"<nav class="week-nav" aria-label="Période">{prev}<a class="btn secondary" href="/recipes/week">Aujourd'hui</a>{next}<p class="range"><span class="sr-only">Du </span>{range}</p></nav>"#,
+        prev = arrow(w.start - step, "7 jours précédents", "‹"),
+        next = arrow(w.start + step, "7 jours suivants", "›"),
         range = range_label(w.start, w.end()),
     );
     let Some(planned) = view.planned else {
@@ -685,19 +711,35 @@ mod tests {
     #[test]
     fn an_ajouter_link_names_a_day_and_midi_or_soir() {
         assert_eq!(
-            slot_from_query(Some(day(2026, 11, 14)), Some("soir")),
+            slot_from_query(Some(day(2026, 11, 14)), Some("soir"), today()),
             Some((day(2026, 11, 14), "dinner"))
         );
         assert_eq!(
-            slot_from_query(Some(day(2026, 11, 14)), Some("midi")),
+            slot_from_query(Some(day(2026, 11, 14)), Some("midi"), today()),
             Some((day(2026, 11, 14), "lunch"))
         );
         assert_eq!(
-            slot_from_query(Some(day(2026, 11, 14)), Some("lunch")),
+            slot_from_query(Some(day(2026, 11, 14)), Some("lunch"), today()),
             None
         );
-        assert_eq!(slot_from_query(Some(day(2026, 11, 14)), None), None);
-        assert_eq!(slot_from_query(None, Some("soir")), None);
+        assert_eq!(
+            slot_from_query(Some(day(2026, 11, 14)), None, today()),
+            None
+        );
+        assert_eq!(slot_from_query(None, Some("soir"), today()), None);
+        // A day no plan may take: no slot, so no selection the API refuses.
+        assert_eq!(
+            slot_from_query(Some(day(2027, 11, 15)), Some("soir"), today()),
+            Some((day(2027, 11, 15), "dinner"))
+        );
+        assert_eq!(
+            slot_from_query(Some(day(2027, 11, 16)), Some("soir"), today()),
+            None
+        );
+        assert_eq!(
+            slot_from_query(Some(day(2025, 11, 12)), Some("midi"), today()),
+            None
+        );
         assert_eq!(
             slot_target(day(2026, 11, 14), "dinner"),
             "/recipes?date=2026-11-14&repas=soir"
@@ -865,6 +907,53 @@ mod tests {
             html.contains(r#"href="/recipes/week" aria-label="7 jours suivants""#),
             "{html}"
         );
+    }
+
+    #[test]
+    fn the_navigation_stops_at_the_horizon_and_so_does_ajouter() {
+        // The last window: the 12th to the 18th of November 2027, the
+        // horizon ending on the 15th.
+        let html = render(Some(&[]), Some(day(2027, 11, 5)));
+        assert!(
+            html.contains(r#"href="/recipes/week?date=2027-11-12" aria-label="7 jours suivants""#),
+            "{html}"
+        );
+        let html = render(Some(&[]), Some(day(2027, 11, 12)));
+        assert!(
+            html.contains(r#"<button type="button" class="secondary" aria-label="7 jours suivants" disabled>›</button>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"href="/recipes/week?date=2027-11-05" aria-label="7 jours précédents""#
+            ),
+            "{html}"
+        );
+        assert_eq!(html.matches(">Ajouter</a>").count(), 8, "{html}");
+        assert!(html.contains("2027-11-15&amp;repas=soir"), "{html}");
+        assert!(!html.contains("2027-11-16&amp;"), "{html}");
+        assert_eq!(
+            html.matches(r#"<span class="muted">À plus d'un an</span>"#)
+                .count(),
+            6,
+            "{html}"
+        );
+        // The first window: the 7th to the 13th of November 2025, the
+        // horizon starting on the 13th.
+        let html = render(Some(&[]), Some(day(2025, 11, 7)));
+        assert!(
+            html.contains(r#"<button type="button" class="secondary" aria-label="7 jours précédents" disabled>‹</button>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"href="/recipes/week?date=2025-11-14" aria-label="7 jours suivants""#),
+            "{html}"
+        );
+        assert_eq!(html.matches(">Ajouter</a>").count(), 2, "{html}");
+        assert!(html.contains("2025-11-13&amp;repas=midi"), "{html}");
+        // Within it, both arrows are links.
+        let html = render(Some(&[]), None);
+        assert!(!html.contains("disabled"), "{html}");
     }
 
     #[test]
