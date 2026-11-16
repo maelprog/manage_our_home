@@ -60,6 +60,7 @@ struct RecipeRow {
     id: Uuid,
     name: String,
     required_equipment: Vec<String>,
+    duration_minutes: Option<i32>,
 }
 
 struct IngredientRow {
@@ -90,6 +91,9 @@ pub struct RecipeSuggestion {
     pub last_eaten_on: Option<NaiveDate>,
     /// What the recipe holds of the allergies the reader may see (#818).
     pub allergy_warning: AllergyWarning,
+    /// How long the recipe takes, when it says (#539), for the page of the
+    /// replacements (#816).
+    pub duration_minutes: Option<i32>,
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -159,7 +163,7 @@ pub(crate) async fn score_recipes(
 ) -> AppResult<Vec<RecipeSuggestion>> {
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
-        "SELECT id, name, required_equipment FROM recipes WHERE group_id = $1",
+        "SELECT id, name, required_equipment, duration_minutes FROM recipes WHERE group_id = $1",
         group_id,
     )
     .fetch_all(&mut **tx)
@@ -355,6 +359,7 @@ pub(crate) async fn score_recipes(
                 recently_eaten,
                 last_eaten_on,
                 allergy_warning: allergy_warning(taxonomy, &allergies, &tagged),
+                duration_minutes: recipe.duration_minutes,
             })
         })
         .collect();
@@ -455,6 +460,7 @@ mod tests {
             recently_eaten: false,
             last_eaten_on: None,
             allergy_warning: AllergyWarning::default(),
+            duration_minutes: None,
         }
     }
 
