@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, required_equipment FROM recipes WHERE group_id = $1",
+  "query": "SELECT id, name, required_equipment, duration_minutes FROM recipes WHERE group_id = $1",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "required_equipment"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "duration_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "duration_minutes"
+          }
+        }
       }
     ],
     "parameters": {
@@ -45,8 +56,9 @@
     "nullable": [
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "62b32d704482b7834808820a66d76d1e0612b642888ed1460395f78ba39903cd"
+  "hash": "67326b8fe12cb5c3ce3a244bcbb5f68da5b283a62af0c6085860a7d8bb731a23"
 }

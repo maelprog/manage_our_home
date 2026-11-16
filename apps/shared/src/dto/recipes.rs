@@ -202,6 +202,17 @@ pub struct RecipeSuggestion {
     pub missing_ingredients: Vec<MissingIngredient>,
     pub recently_eaten: bool,
     pub last_eaten_on: Option<NaiveDate>,
+    /// How long the recipe takes, when it says (#816).
+    #[serde(default)]
+    pub duration_minutes: Option<i32>,
+}
+
+/// `GET /groups/:id/recipes/:recipe_id/selection/replacements` response
+/// envelope (#815): up to three recipes to plan instead, the best first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReplacementList {
+    pub replacements: Vec<RecipeSuggestion>,
 }
 
 /// `GET /groups/:id/recipes/suggestions` response envelope.

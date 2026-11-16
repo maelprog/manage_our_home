@@ -81,6 +81,8 @@ fn source_html(source_url: Option<&str>) -> String {
 pub struct DetailQuery {
     notice: Option<String>,
     error: Option<String>,
+    /// The recipe this one replaced (`notice=recipe_replaced`, #816).
+    from: Option<String>,
 }
 
 pub(super) fn notice_text(code: &str) -> Option<&'static str> {
@@ -221,11 +223,31 @@ pub async fn get(
         String::new()
     };
     let can_edit = can_modify(&fam.role, recipe.created_by == me.user_id);
-    let notice_html = query
-        .notice
-        .as_deref()
-        .and_then(notice_text)
-        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
+    // Planned in place of another (#816): « X remplacé par Y. ».
+    let replaced = match (query.notice.as_deref(), query.from.as_deref()) {
+        (Some("recipe_replaced"), from) => {
+            let from = match from.and_then(|f| Uuid::parse_str(f).ok()) {
+                Some(from) => {
+                    super::replace::recipe_name(&state, fam.gid, from, cookie.as_deref()).await
+                }
+                None => None,
+            };
+            Some(super::replace::replaced_notice(
+                from.as_deref(),
+                Some(&recipe.name),
+            ))
+        }
+        _ => None,
+    };
+    let notice_html = replaced
+        .or_else(|| {
+            query
+                .notice
+                .as_deref()
+                .and_then(notice_text)
+                .map(str::to_string)
+        })
+        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(&n)))
         .unwrap_or_default();
     let error_html = query
         .error
@@ -246,8 +268,8 @@ pub async fn get(
 }
 
 /// The recipe's place in the next shopping (#470): « À réaliser » with the
-/// number of people when it is not planned, the badge and « Retirer » when
-/// it is. `planned` is the selection's number of people, `Some(None)` for a
+/// number of people when it is not planned, the badge, « Faite »,
+/// « Abandonner », « Changer ce plat » (#816) and « Retirer » when it is. `planned` is the selection's number of people, `Some(None)` for a
 /// selection that does not say.
 fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> String {
     match planned {
@@ -255,10 +277,12 @@ fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> 
             r#"<div class="notice split">
 <span>{badge} Cette recette est prise en compte par la <a href="/grocery-list">liste de courses</a>.</span>
 <span class="actions">{outcome}
+<a class="btn secondary" href="{change}">Changer ce plat</a>
 {deselect}</span>
 </div>"#,
             badge = planned_badge(servings),
             outcome = outcome_links(id, "detail"),
+            change = super::replace::replace_href(id, "detail"),
             deselect = deselect_form(id, "detail"),
         ),
         None => select_form(id, base, "detail", "card inline"),
@@ -267,7 +291,7 @@ fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> 
 
 /// When a dated recipe is to be cooked (#812), as its « Quand ? » block
 /// says it: "jeudi 19 novembre, au dîner".
-fn plan_sentence(planned_on: NaiveDate, meal_slot: Option<&str>) -> String {
+pub(super) fn plan_sentence(planned_on: NaiveDate, meal_slot: Option<&str>) -> String {
     let meal = match meal_slot {
         Some("lunch") => ", au déjeuner",
         Some("dinner") => ", au dîner",
@@ -296,6 +320,19 @@ pub(super) fn plan_html(
     open: bool,
     today: NaiveDate,
     back: &str,
+) -> String {
+    plan_html_with(id, selection, open, today, back, "")
+}
+
+/// [`plan_html`] with `beside`, more controls after « Choisir un jour » on
+/// its line — « Changer ce plat » under « À placer » (#816).
+pub(super) fn plan_html_with(
+    id: Uuid,
+    selection: Option<&RecipeSelectionResponse>,
+    open: bool,
+    today: NaiveDate,
+    back: &str,
+    beside: &str,
 ) -> String {
     let Some(selection) = selection else {
         return String::new();
@@ -348,7 +385,7 @@ pub(super) fn plan_html(
     } else {
         let open = if open { " open" } else { "" };
         format!(
-            r#"<div class="actions"><details{open}><summary>Choisir un jour</summary>{form}</details></div>"#
+            r#"<div class="actions"><details{open}><summary>Choisir un jour</summary>{form}</details>{beside}</div>"#
         )
     }
 }
@@ -627,6 +664,20 @@ mod tests {
             html.contains(r#"<span class="badge">À réaliser</span>"#),
             "{html}"
         );
+    }
+
+    #[test]
+    fn a_planned_recipe_offers_changer_ce_plat_between_abandonner_and_retirer() {
+        let id = Uuid::from_u128(1);
+        let html = selection_html(id, Some(4), Some(Some(4)));
+        let change = format!(
+            r#"<a class="btn secondary" href="/recipes/{id}/replace?back=detail">Changer ce plat</a>"#
+        );
+        let at = html.find(&change).expect(&html);
+        assert!(html.find("Abandonner").unwrap() < at, "{html}");
+        assert!(at < html.find("Retirer").unwrap(), "{html}");
+        // Not planned: nothing to change.
+        assert!(!selection_html(id, Some(4), None).contains("Changer ce plat"));
     }
 
     #[test]
