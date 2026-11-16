@@ -1413,15 +1413,15 @@ html { -webkit-tap-highlight-color: transparent; }
    4.34:1 (light) and 4.38:1 (dark) on --border. Hovered, it reads --fg. */
 .chip:hover { background: var(--border); color: var(--fg); }
 /* A text link (#752): every link without a class, but the halves of the
-   kitchen segment, and the two accent links that have one. Bold in the
+   kitchen segment, and the three accent links that have one. Bold in the
    accent rather than underlined — it reads better. `:where()` weighs
    nothing, so a link with a box of its own (`.filters a`, `.mini a`, the
    card title) keeps its colour and decoration. The accent is never the
    only sign (WCAG 1.4.1): the weight is one, and the underline comes back
    under the pointer and the keyboard — beside the focus ring below. A
    background would box a run of body text. */
-:where(:not(.segment) > a:not([class]), .more, .replies) { color: var(--accent); font-weight: 600; text-decoration: none; }
-:where(:not(.segment) > a:not([class]), .more, .replies):is(:hover, :focus-visible) { text-decoration-line: underline; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes) { color: var(--accent); font-weight: 600; text-decoration: none; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes):is(:hover, :focus-visible) { text-decoration-line: underline; }
 /* An underline a link already has (the card title, `.member`) thickens. */
 a:hover { text-decoration-thickness: 2px; }
 /* The password toggle is a `<button>` with no box at all — the primary hover
