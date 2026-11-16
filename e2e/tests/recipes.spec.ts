@@ -702,7 +702,7 @@ test.describe("Recipes — planning des repas (#813)", () => {
       .click();
     await expect(page).toHaveURL(/\/recipes\/week\?notice=plan_saved$/);
     const soir = today.locator("li", { hasText: "Soir" });
-    await expect(soir.getByRole("link", { name: "Velouté de potiron" })).toBeVisible();
+    await expect(soir.getByRole("link", { name: "Velouté de potiron", exact: true })).toBeVisible();
     await expect(soir.getByRole("link", { name: "Il manque 1 élément" })).toBeVisible();
     await expect(page.locator(".summary")).toHaveText(/1 repas planifié\s*1 ingrédient à acheter/);
     await expect(page.locator("ol.meals .empty a")).toHaveCount(17);
@@ -720,7 +720,7 @@ test.describe("Recipes — planning des repas (#813)", () => {
     await expect(page.getByText("Jour et repas enregistrés.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "À placer" })).toHaveCount(0);
     await expect(days).toHaveCount(7);
-    await expect(page.locator("ol.meals").getByRole("link", { name: "Tarte fine" })).toBeVisible();
+    await expect(page.locator("ol.meals").getByRole("link", { name: "Tarte fine", exact: true })).toBeVisible();
 
     // ‹ comes back to the current window, › goes seven days further.
     await page.getByRole("link", { name: "7 jours précédents" }).click();
