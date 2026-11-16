@@ -163,6 +163,32 @@ fn build_router(state: AppState) -> Router {
             routes::account::appearance::PATH,
             get(routes::account::appearance::get).post(routes::account::appearance::post),
         )
+        // #819: the member's allergies and dislikes. Every change posts,
+        // the food in the body.
+        .route(
+            routes::account::allergies::PATH,
+            get(routes::account::allergies::get),
+        )
+        .route(
+            "/account/allergies/add",
+            post(routes::account::allergies::add),
+        )
+        .route(
+            "/account/allergies/remove",
+            post(routes::account::allergies::remove),
+        )
+        .route(
+            "/account/allergies/sharing",
+            post(routes::account::allergies::sharing),
+        )
+        .route(
+            "/account/allergies/search",
+            post(routes::account::allergies::search),
+        )
+        .route(
+            "/account/allergies/clear",
+            get(routes::account::allergies::clear_page).post(routes::account::allergies::clear),
+        )
         .route("/account/export", get(routes::account::export::get))
         .route(
             "/account/export/download",
@@ -528,6 +554,10 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/groups/{id}/settings/calendar",
             post(routes::groups::settings::calendar),
+        )
+        .route(
+            "/groups/{id}/settings/equipment",
+            post(routes::groups::settings::equipment),
         )
         .route(
             "/groups/{id}/settings/transfer",

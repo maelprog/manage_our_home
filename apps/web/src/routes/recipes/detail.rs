@@ -208,6 +208,13 @@ pub async fn get(
     };
 
     let last = last_eaten(&state, fam.gid, recipe_id, cookie.as_deref()).await;
+    // The household's equipment, read only when the recipe requires some
+    // (#819).
+    let household = if recipe.required_equipment.is_empty() {
+        None
+    } else {
+        super::equipment::fetch_household(&state, fam.gid, cookie.as_deref()).await
+    };
     let all_planned = planned_with_stock(&state, fam.gid, cookie.as_deref())
         .await
         .unwrap_or_default();
@@ -258,6 +265,7 @@ pub async fn get(
     Html(page(
         &fam.header,
         &recipe,
+        household.as_deref(),
         last,
         planned,
         is_plan_error(query.error.as_deref()),
@@ -394,9 +402,11 @@ pub(super) fn plan_html_with(
 /// `?error=`, and the planned recipes left incomplete in between (#560).
 /// `planned` is the recipe's planned selection; `plan_open` opens its
 /// « Choisir un jour » again after an error of that form (#812).
+#[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
     recipe: &RecipeResponse,
+    household: Option<&[String]>,
     last_eaten: Option<NaiveDate>,
     planned: Option<&RecipeSelectionResponse>,
     plan_open: bool,
@@ -461,6 +471,7 @@ fn page(
     let selection_html = selection_html(id, recipe.servings, planned.map(|s| s.servings));
     let plan_html = plan_html(id, planned, plan_open, today_paris, "detail");
     let time_html = time_html(recipe.duration_minutes);
+    let equipment_html = super::equipment::required_section(&recipe.required_equipment, household);
     let body = format!(
         r#"<h1>{name}</h1>
 {source_html}
@@ -468,6 +479,7 @@ fn page(
 {banners}
 {selection_html}
 {plan_html}
+{equipment_html}
 <h2>Ingrédients</h2>
 {servings_html}
 {ingredients_html}

@@ -18,6 +18,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::{GroupDetailResponse, GroupMember, RenameGroupRequest};
+use manage_our_home_shared::validation::dietary::{validate_equipment, EQUIPMENT};
 use manage_our_home_shared::validation::groups::{
     actor_can_act_on, can_manage_group, validate_group_name, Accent, SchoolZone,
 };
@@ -38,6 +39,7 @@ fn notice_text(code: &str) -> Option<&'static str> {
         "ownership_transferred" => Some("Propriété transférée."),
         "accent_changed" => Some("Couleur de la famille enregistrée."),
         "calendar_changed" => Some("Calendrier de la famille enregistré."),
+        "equipment_saved" => Some("Équipements enregistrés."),
         _ => None,
     }
 }
@@ -48,6 +50,7 @@ fn error_text(code: &str) -> Option<&'static str> {
         "name_required" => Some("Le nom du groupe ne peut pas être vide."),
         "invalid_accent" => Some("Cette couleur n'est pas proposée."),
         "invalid_school_zone" => Some("Cette zone n'est pas proposée."),
+        "unknown_equipment" => Some("Un équipement coché n'est pas proposé. Rechargez la page."),
         "last_member" => Some(
             "Vous êtes le dernier membre : quitter n'est pas possible, supprimez le groupe à la place.",
         ),
@@ -309,6 +312,59 @@ fn calendar_card(group: &GroupDetailResponse, my_role: &str) -> String {
     )
 }
 
+/// « Équipements de la cuisine » (#819): what the household has, which a
+/// recipe may require. A form of boxes for owners and admins — the bar of
+/// `PUT /groups/:id/equipment`, arbitrated 2026-11-16 like the colour and
+/// the calendar —, the list in pills for the others. `household` is `None`
+/// when it could not be read: no form then, which would save an empty list.
+fn equipment_card(group_id: Uuid, household: Option<&[String]>, my_role: &str) -> String {
+    let body = match household {
+        None => r#"<p class="notice error">Impossible de lire les équipements de la famille. Merci de recharger la page.</p>"#.to_string(),
+        Some(household) if can_manage_group(my_role) => {
+            let boxes: String = EQUIPMENT
+                .iter()
+                .map(|(code, label)| {
+                    let checked = if household.iter().any(|c| c == code) {
+                        " checked"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        r#"<label class="field inline pick"><input type="checkbox" name="equipment" value="{code}"{checked}>{label}</label>"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"<form method="post" action="/groups/{group_id}/settings/equipment">
+<fieldset class="plain">
+<legend class="sr-only">Équipements disponibles</legend>
+<div class="picks">{boxes}</div>
+</fieldset>
+<button type="submit">Enregistrer les équipements</button>
+</form>"#
+            )
+        }
+        Some(household) => {
+            let list = if household.is_empty() {
+                r#"<p>Aucun équipement déclaré.</p>"#.to_string()
+            } else {
+                crate::routes::recipes::equipment::badges(household, None)
+            };
+            format!(
+                r#"{list}
+<p class="muted">Seuls le propriétaire et les admins modifient cette liste.</p>"#
+            )
+        }
+    };
+    format!(
+        r#"<section class="card" id="equipements">
+<h2>Équipements de la cuisine</h2>
+<p class="muted">Ce dont dispose la famille. Une recette peut en exiger : sur sa fiche, un équipement que la famille n'a pas est signalé, et elle n'est pas proposée dans les suggestions.</p>
+{body}
+</section>"#
+    )
+}
+
 #[derive(serde::Deserialize)]
 pub struct CalendarForm {
     /// `""` is « Aucune »; absent, the zone is kept.
@@ -349,6 +405,7 @@ fn page(
     me: &MeResponse,
     group: &GroupDetailResponse,
     accent: Accent,
+    equipment: Option<&[String]>,
     notice: Option<&str>,
     error: Option<&str>,
 ) -> String {
@@ -390,6 +447,7 @@ fn page(
 <div>
 {colour}
 {calendar}
+{equipment}
 <section class="card">
 <h2>Agendas Google</h2>
 <p class="muted">Les agendas Google connectés à cette famille se gèrent depuis l'agenda : leurs événements y sont recopiés à la demande.</p>
@@ -407,6 +465,7 @@ fn page(
         name_card = name_card(group, &my_role, &others),
         colour = colour_card(group.id, accent, &my_role),
         calendar = calendar_card(group, &my_role),
+        equipment = equipment_card(group.id, equipment, &my_role),
         id = group.id,
     );
     shell_with_header(
@@ -445,9 +504,71 @@ pub async fn get(
         .find(|g| g.group_id == group_id)
         .map(accent_of)
         .unwrap_or_default();
+    let equipment =
+        crate::routes::recipes::equipment::fetch_household(&state, group_id, cookie.as_deref())
+            .await;
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
-    Html(page(&header, &me, &group, accent, notice, error)).into_response()
+    Html(page(
+        &header,
+        &me,
+        &group,
+        accent,
+        equipment.as_deref(),
+        notice,
+        error,
+    ))
+    .into_response()
+}
+
+/// « Enregistrer les équipements » (#819): `PUT /groups/:id/equipment`
+/// with the boxes ticked, none ticked being an empty list.
+pub async fn equipment(
+    CurrentUser(_me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<Uuid>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let settings_url = format!("/groups/{group_id}/settings");
+    let ticked: Vec<String> = pairs
+        .into_iter()
+        .filter(|(key, _)| key == "equipment")
+        .map(|(_, code)| code)
+        .collect();
+    let Ok(codes) = validate_equipment(&ticked) else {
+        return Redirect::to(&format!(
+            "{settings_url}?error=unknown_equipment#equipements"
+        ))
+        .into_response();
+    };
+
+    let cookie = cookie_of(&headers);
+    let result = api_request_auth(
+        &state,
+        reqwest::Method::PUT,
+        &format!("/groups/{group_id}/equipment"),
+        cookie.as_deref(),
+        Some(serde_json::json!({ "codes": codes })),
+    )
+    .await;
+
+    let target = match result {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+            format!("{settings_url}?notice=equipment_saved#equipements")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
+            format!("{settings_url}?error=forbidden")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
+            format!("{settings_url}?error=unknown_equipment#equipements")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+            return group_not_found_page().into_response()
+        }
+        Ok(_) | Err(_) => format!("{settings_url}?error=unavailable#equipements"),
+    };
+    Redirect::to(&target).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -762,7 +883,15 @@ mod tests {
     }
 
     fn page_as(id: Uuid) -> String {
-        page("", &me(id), &family(), Accent::Sarcelle, None, None)
+        page(
+            "",
+            &me(id),
+            &family(),
+            Accent::Sarcelle,
+            Some(&[]),
+            None,
+            None,
+        )
     }
 
     fn manage_link(user: Uuid) -> String {
@@ -789,7 +918,15 @@ mod tests {
     fn the_family_name_is_escaped() {
         let mut group = family();
         group.name = "<b>F</b>".to_string();
-        let html = page("", &me(OWNER), &group, Accent::Sarcelle, None, None);
+        let html = page(
+            "",
+            &me(OWNER),
+            &group,
+            Accent::Sarcelle,
+            Some(&[]),
+            None,
+            None,
+        );
         assert!(html.contains("&lt;b&gt;F&lt;/b&gt;"), "{html}");
         assert!(!html.contains("<b>F</b>"), "{html}");
     }
@@ -920,7 +1057,15 @@ mod tests {
             alsace_moselle: false,
             members: vec![member(OWNER, "Alex", "owner")],
         };
-        let html = page("", &me(OWNER), &group, Accent::Sarcelle, None, None);
+        let html = page(
+            "",
+            &me(OWNER),
+            &group,
+            Accent::Sarcelle,
+            Some(&[]),
+            None,
+            None,
+        );
         assert!(!html.contains("/settings/transfer"), "{html}");
         assert!(!html.contains("new_owner_id"), "{html}");
         assert!(html.contains("/settings/leave"), "{html}");
@@ -947,7 +1092,15 @@ mod tests {
         let mut group = family();
         group.members[1].display_name = "<i>Sam</i>".to_string();
         group.members[1].email = "<s>sam@example.test".to_string();
-        let html = page("", &me(OWNER), &group, Accent::Sarcelle, None, None);
+        let html = page(
+            "",
+            &me(OWNER),
+            &group,
+            Accent::Sarcelle,
+            Some(&[]),
+            None,
+            None,
+        );
         assert!(
             html.contains(&format!(
                 r#"<option value="{ADMIN}">&lt;i&gt;Sam&lt;/i&gt; — Admin</option>"#
@@ -976,7 +1129,15 @@ mod tests {
     #[test]
     fn owners_and_admins_pick_among_the_eight_accents() {
         for who in [OWNER, ADMIN] {
-            let html = page("", &me(who), &family(), Accent::Prune, None, None);
+            let html = page(
+                "",
+                &me(who),
+                &family(),
+                Accent::Prune,
+                Some(&[]),
+                None,
+                None,
+            );
             let card = colour_card(&html);
             assert!(card.contains("<h2>Couleur de la famille</h2>"), "{card}");
             assert!(
@@ -1015,7 +1176,7 @@ mod tests {
     #[test]
     fn the_preview_wears_the_familys_colour() {
         for who in [OWNER, STANDARD] {
-            let html = page("", &me(who), &family(), Accent::Miel, None, None);
+            let html = page("", &me(who), &family(), Accent::Miel, Some(&[]), None, None);
             let card = colour_card(&html);
             assert!(
                 card.contains(r#"<div class="preview" data-accent="miel" aria-hidden="true">"#),
@@ -1028,7 +1189,15 @@ mod tests {
     /// control to change it with.
     #[test]
     fn a_standard_member_sees_the_colour_but_cannot_change_it() {
-        let html = page("", &me(STANDARD), &family(), Accent::Ocean, None, None);
+        let html = page(
+            "",
+            &me(STANDARD),
+            &family(),
+            Accent::Ocean,
+            Some(&[]),
+            None,
+            None,
+        );
         let card = colour_card(&html);
         assert!(card.contains("<h2>Couleur de la famille</h2>"), "{card}");
         assert!(card.contains("Océan"), "{card}");
@@ -1077,7 +1246,15 @@ mod tests {
     fn owners_and_admins_set_the_zone_and_alsace_moselle() {
         for who in [OWNER, ADMIN] {
             let group = family_with(Some("B"), true);
-            let html = page("", &me(who), &group, Accent::Sarcelle, None, None);
+            let html = page(
+                "",
+                &me(who),
+                &group,
+                Accent::Sarcelle,
+                Some(&[]),
+                None,
+                None,
+            );
             let card = calendar_card(&html);
             assert!(card.contains("<h2>Calendrier</h2>"), "{card}");
             assert!(
@@ -1125,6 +1302,7 @@ mod tests {
             &me(OWNER),
             &family_with(None, false),
             Accent::Sarcelle,
+            Some(&[]),
             None,
             None,
         );
@@ -1152,6 +1330,7 @@ mod tests {
             &me(STANDARD),
             &family_with(Some("C"), true),
             Accent::Sarcelle,
+            Some(&[]),
             None,
             None,
         );
@@ -1170,6 +1349,7 @@ mod tests {
             &me(STANDARD),
             &family_with(None, false),
             Accent::Sarcelle,
+            Some(&[]),
             None,
             None,
         );
@@ -1282,5 +1462,131 @@ mod tests {
         .unwrap();
         assert_eq!(set.school_zone, Some(Some("C".into())));
         assert_eq!(set.alsace_moselle, Some(false));
+    }
+
+    // -- « Équipements de la cuisine » (#819) -------------------------------
+
+    fn equipment_card(html: &str) -> &str {
+        let at = html
+            .find(r#"<section class="card" id="equipements">"#)
+            .expect("the equipment card");
+        &html[at..at + html[at..].find("</section>").unwrap()]
+    }
+
+    #[test]
+    fn owners_and_admins_tick_the_households_equipment() {
+        let household = vec!["oven".to_string(), "hob".to_string()];
+        for who in [OWNER, ADMIN] {
+            let html = page(
+                "",
+                &me(who),
+                &family(),
+                Accent::Sarcelle,
+                Some(&household),
+                None,
+                None,
+            );
+            let card = equipment_card(&html);
+            assert!(
+                card.contains("<h2>Équipements de la cuisine</h2>"),
+                "{card}"
+            );
+            assert!(
+                card.contains(&format!(
+                    r#"<form method="post" action="/groups/{}/settings/equipment">"#,
+                    family().id
+                )),
+                "{card}"
+            );
+            assert_eq!(
+                card.matches(r#"type="checkbox" name="equipment""#).count(),
+                EQUIPMENT.len(),
+                "{card}"
+            );
+            assert!(
+                card.contains(r#"value="oven" checked>Four</label>"#),
+                "{card}"
+            );
+            assert!(
+                card.contains(r#"value="microwave">Micro-ondes</label>"#),
+                "{card}"
+            );
+            assert_eq!(card.matches(" checked").count(), 2, "{card}");
+            assert!(card.contains("Enregistrer les équipements"), "{card}");
+        }
+        // Between « Calendrier » and the Google calendars.
+        let html = page(
+            "",
+            &me(OWNER),
+            &family(),
+            Accent::Sarcelle,
+            Some(&[]),
+            None,
+            None,
+        );
+        let calendar = html.find(r#"id="calendrier""#).unwrap();
+        let equipment = html.find(r#"id="equipements""#).unwrap();
+        let google = html.find("<h2>Agendas Google</h2>").unwrap();
+        assert!(calendar < equipment && equipment < google);
+    }
+
+    #[test]
+    fn a_standard_member_reads_the_equipment_only() {
+        let household = vec!["oven".to_string()];
+        let html = page(
+            "",
+            &me(STANDARD),
+            &family(),
+            Accent::Sarcelle,
+            Some(&household),
+            None,
+            None,
+        );
+        let card = equipment_card(&html);
+        assert!(
+            card.contains(r#"<span class="badge">Four</span>"#),
+            "{card}"
+        );
+        assert!(
+            card.contains("Seuls le propriétaire et les admins modifient cette liste."),
+            "{card}"
+        );
+        assert!(!card.contains("<form"), "{card}");
+        assert!(!card.contains("<input"), "{card}");
+        let html = page(
+            "",
+            &me(STANDARD),
+            &family(),
+            Accent::Sarcelle,
+            Some(&[]),
+            None,
+            None,
+        );
+        assert!(equipment_card(&html).contains("Aucun équipement déclaré."));
+    }
+
+    #[test]
+    fn an_unread_equipment_list_offers_no_form_to_empty_it() {
+        let html = page(
+            "",
+            &me(OWNER),
+            &family(),
+            Accent::Sarcelle,
+            None,
+            None,
+            None,
+        );
+        let card = equipment_card(&html);
+        assert!(!card.contains("<form"), "{card}");
+        assert!(card.contains(r#"<p class="notice error">"#), "{card}");
+    }
+
+    #[test]
+    fn the_equipment_notice_and_error_are_in_french() {
+        assert_eq!(
+            notice_text("equipment_saved"),
+            Some("Équipements enregistrés.")
+        );
+        assert!(error_text("unknown_equipment").is_some());
     }
 }
