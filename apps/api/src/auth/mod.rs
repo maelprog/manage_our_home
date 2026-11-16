@@ -36,6 +36,7 @@ use manage_our_home_shared::validation::auth::{
 
 use crate::client_ip::ClientIp;
 use crate::crypto::{hash_password, verify_password};
+use crate::email::PasswordChange;
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
@@ -879,6 +880,43 @@ async fn issue_verification(state: &AppState, user_id: Uuid, email: &str) -> App
     Ok(())
 }
 
+/// #833: tells the account's address that a password route has just given
+/// it a new password, once that route has succeeded. Best-effort, like
+/// every email of these routes: a refused or late email is logged, and the
+/// route answers as if it had left.
+async fn notify_password_change(
+    state: &AppState,
+    email: &str,
+    display_name: &str,
+    change: PasswordChange,
+) {
+    let forgot_password_link = format!("{}/forgot-password", state.frontend_base_url);
+    send_within_deadline(
+        state,
+        email,
+        change.subject(),
+        crate::email::EmailSender::password_changed_email(
+            display_name,
+            change,
+            Utc::now(),
+            &forgot_password_link,
+            &privacy_policy_url(state),
+        ),
+        "password changed",
+    )
+    .await;
+}
+
+/// The name to greet the signed-in holder by: none while the address is
+/// unverified, as in `mail_password_reset` (#831).
+fn greeted_holder(auth: &AuthUser) -> &str {
+    if auth.email_verified {
+        &auth.display_name
+    } else {
+        ""
+    }
+}
+
 /// AC #4: consuming a valid reset token revokes every active session.
 #[utoipa::path(
     post,
@@ -934,16 +972,26 @@ pub async fn reset_password(
     )
     .execute(&mut *tx)
     .await?;
-    sqlx::query!(
-        "UPDATE users SET password_hash = $1 WHERE id = $2",
+    let user = sqlx::query!(
+        "UPDATE users SET password_hash = $1 WHERE id = $2
+         RETURNING email, display_name, email_verified",
         password_hash,
         row.user_id
     )
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
 
     revoke_all_sessions(&state.db, row.user_id, None).await?;
+
+    // As in `mail_password_reset` (#831): no name while the address is
+    // unverified.
+    let greeted = if user.email_verified {
+        user.display_name.as_str()
+    } else {
+        ""
+    };
+    notify_password_change(&state, &user.email, greeted, PasswordChange::Reset).await;
 
     Ok(StatusCode::OK)
 }
@@ -993,6 +1041,14 @@ pub async fn change_password(
     .await?;
 
     revoke_all_sessions(&state.db, auth.user_id, Some(auth.session_id)).await?;
+
+    notify_password_change(
+        &state,
+        &auth.email,
+        greeted_holder(&auth),
+        PasswordChange::Changed,
+    )
+    .await;
 
     Ok(StatusCode::OK)
 }
@@ -1054,6 +1110,16 @@ pub async fn set_password(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+
+    // Before the verification link, so that the link is the latest email
+    // of the mailbox.
+    notify_password_change(
+        &state,
+        &auth.email,
+        greeted_holder(&auth),
+        PasswordChange::Added,
+    )
+    .await;
 
     // Lands on apps/web's /verify-email page (which consumes the token via
     // this API's GET /auth/verify-email), not on the API endpoint itself.
