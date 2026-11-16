@@ -211,8 +211,8 @@ pub(crate) fn page_body(
         .unwrap_or_default();
     format!(
         r#"<h1>Partager vos allergies avec {family}</h1>
-{error}<p>{opening}Choisissez ce que ses membres voient de vos allergies.{nothing_yet}</p>
-<ul class="key">
+<p>{opening}Choisissez ce que ses membres voient de vos allergies.{nothing_yet}</p>
+{error}<ul class="key">
 <li><strong>Public</strong><span>Les membres voient l'allergie et que c'est la vôtre.</span></li>
 <li><strong>Anonyme</strong><span>Les membres savent qu'un membre a une allergie, sans votre nom ni laquelle.</span></li>
 <li><strong>Privé</strong><span>Vous seul la voyez.</span></li>
@@ -640,6 +640,11 @@ mod tests {
         assert!(html.contains(
             r#"<p class="notice error" role="alert">Vos choix n'ont pas tous pu être enregistrés."#
         ));
+        // Under the opening sentence, above the key, as in the mockup.
+        let lead = html.find("Choisissez ce que").unwrap();
+        let alert = html.find("notice error").unwrap();
+        let key = html.find(r#"class="key""#).unwrap();
+        assert!(lead < alert && alert < key, "{html}");
         let html = page_body(family(1), "Maison", None, &levels, Some("nope"));
         assert!(!html.contains("notice error"));
     }
