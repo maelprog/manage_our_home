@@ -204,6 +204,7 @@ mod tests {
             source_recipe_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            pack: None,
         }
     }
 

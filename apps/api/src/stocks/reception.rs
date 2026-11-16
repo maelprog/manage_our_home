@@ -12,6 +12,12 @@
 //! the lot with the same function (`plan`), so a lot sent back as `GET`
 //! proposed it is applied exactly as proposed.
 //!
+//! An article named as a scanned stock line enters the stock in that line's
+//! unit when its own converts into it (#824, `scanned_entry`): 800 g of
+//! « Sucre en poudre » scanned in kilograms enter as 0,8 kg, and so merge
+//! into it. `GET` still pre-fills the quantity and the unit of the list,
+//! with the packs they come to (`grocery_list::packs`) for the form's hint.
+//!
 //! Permissions (user arbitration of 2026-10-25): those of stock creation,
 //! any group member — `can_modify` is deliberately not called. A member
 //! receives, and so removes from the list, items another member added; a
@@ -22,7 +28,8 @@ use axum::response::IntoResponse;
 use axum::Json;
 use chrono::NaiveDate;
 use manage_our_home_shared::validation::stocks::{
-    merge_target, normalize_unit, ReceptionMode, StockCandidate, MAX_QUANTITY,
+    merge_target, normalize_unit, scanned_entry, PackRounding, ReceptionMode, StockCandidate,
+    MAX_QUANTITY,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -31,7 +38,9 @@ use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::grocery_list::packs::{packs_for, scanned_packs};
 use crate::groups::require_role;
+use crate::recipes::taxonomy::taxonomy;
 use crate::stocks::items::{today, StockItemResponse, StockItemRow};
 use crate::AppState;
 
@@ -67,6 +76,11 @@ pub struct ReceptionLineResponse {
     pub expires_on: Option<NaiveDate>,
     pub mode: ReceptionMode,
     pub stock_item: Option<StockItemResponse>,
+    /// On `GET`, the packs of a scanned article the pre-filled quantity
+    /// comes to (#824, `grocery_list::packs`), for the form's hint; absent
+    /// otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack: Option<PackRounding>,
 }
 
 /// The grocery-item fields a received article falls back on.
@@ -197,6 +211,29 @@ fn plan<'a>(
     Ok(targets)
 }
 
+/// The article in the unit of the scanned stock line of its name, when its
+/// own converts into it (`scanned_entry`, #824); as it is otherwise.
+fn in_scanned_unit(line: &Line, stock: &[StockItemRow]) -> Line {
+    let scanned: Vec<StockCandidate<'_>> = stock
+        .iter()
+        .filter(|s| s.barcode.is_some())
+        .map(|s| StockCandidate {
+            id: s.id,
+            name: &s.name,
+            unit: &s.unit,
+            expires_on: s.expires_on,
+        })
+        .collect();
+    let (quantity, unit) = scanned_entry(&line.name, line.quantity, &line.unit, &scanned)
+        .unwrap_or((line.quantity, line.unit.clone()));
+    Line {
+        name: line.name.clone(),
+        quantity,
+        unit,
+        expires_on: line.expires_on,
+    }
+}
+
 fn candidates(stock: &[StockItemRow]) -> Vec<StockCandidate<'_>> {
     stock
         .iter()
@@ -248,6 +285,7 @@ pub async fn get_reception(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let packs = scanned_packs(&mut tx, group_id).await?;
     tx.commit().await?;
 
     // A checked item the list holds with a zero quantity (or one above
@@ -266,8 +304,17 @@ pub async fn get_reception(
             received_line(&item, grocery).ok().map(|l| (grocery.id, l))
         })
         .collect();
-    // The lot as the web would send it back unchanged, in this order.
-    let articles: Vec<_> = received.iter().map(|(id, l)| (*id, l, None)).collect();
+    // The lot as the web would send it back unchanged, in this order, and
+    // as `POST` enters it: in the unit of a scanned line of its name.
+    let entered: Vec<Line> = received
+        .iter()
+        .map(|(_, l)| in_scanned_unit(l, &stock))
+        .collect();
+    let articles: Vec<_> = received
+        .iter()
+        .zip(&entered)
+        .map(|((id, _), l)| (*id, l, None))
+        .collect();
     let targets = plan(&articles, &candidates(&stock))?;
 
     let today = today();
@@ -275,6 +322,13 @@ pub async fn get_reception(
         .into_iter()
         .zip(targets)
         .map(|((grocery_item_id, line), target)| ReceptionLineResponse {
+            pack: packs_for(
+                taxonomy(),
+                &line.name,
+                Some(line.quantity),
+                Some(&line.unit),
+                &packs,
+            ),
             grocery_item_id,
             name: line.name,
             quantity: line.quantity,
@@ -357,7 +411,7 @@ pub async fn receive(
             .iter()
             .find(|g| g.id == item.grocery_item_id)
             .ok_or(AppError::NotFound)?;
-        lines.push(received_line(item, grocery)?);
+        lines.push(in_scanned_unit(&received_line(item, grocery)?, &stock));
     }
     let articles: Vec<_> = body
         .items
@@ -455,6 +509,7 @@ pub async fn receive(
             expires_on: line.expires_on,
             mode,
             stock_item: Some(StockItemResponse::from_row(row, today)),
+            pack: None,
         })
         .collect();
 
