@@ -8,8 +8,8 @@
 //! single past one; with `?date=`, the seven days from that one. ‹ and ›
 //! move the window's first day by seven days, so « précédent » from the
 //! current window does not fall on a calendar week (a choice of the user).
-//! A `date` that does not read as a day, or that lies further than the
-//! 366 days either side of today that a plan may take, is the current
+//! A `date` that does not read as a day, or whose seven days hold none of
+//! the 366 days either side of today that a plan may take, is the current
 //! window.
 //!
 //! The summary counts the meals of the window and the ingredients they
@@ -64,16 +64,16 @@ impl Window {
     }
 }
 
-/// The window `?date=` asks for. `None`, yesterday, or a day further than
-/// [`HORIZON_DAYS`] from today: the current one, nine days from yesterday.
-/// Any other day: the seven from it.
+/// The window `?date=` asks for. `None`, yesterday, or a day whose seven
+/// days hold none within [`HORIZON_DAYS`] of today: the current one, nine
+/// days from yesterday. Any other day: the seven from it — so a window
+/// may straddle the horizon, to show the days on its near side.
 pub(crate) fn window(asked: Option<NaiveDate>, today: NaiveDate) -> Window {
     let yesterday = today - Duration::days(1);
+    let earliest = today - Duration::days(HORIZON_DAYS + 6);
+    let latest = today + Duration::days(HORIZON_DAYS);
     match asked {
-        Some(start)
-            if start != yesterday
-                && start.signed_duration_since(today).num_days().abs() <= HORIZON_DAYS =>
-        {
+        Some(start) if start != yesterday && (earliest..=latest).contains(&start) => {
             Window {
                 start,
                 days: 7,
@@ -589,18 +589,34 @@ mod tests {
     }
 
     #[test]
-    fn a_date_beyond_the_horizon_is_the_current_window() {
+    fn a_window_without_a_day_within_the_horizon_is_the_current_one() {
+        // The horizon: 13 November 2025 to 15 November 2027.
         assert_eq!(
             window(Some(day(2027, 11, 16)), today()),
             window(None, today())
         );
         assert_eq!(
-            window(Some(day(2025, 11, 12)), today()),
+            window(Some(day(2025, 11, 6)), today()),
             window(None, today())
         );
         assert_eq!(window(Some(NaiveDate::MAX), today()), window(None, today()));
-        // Within it, still a window of its own.
+        assert_eq!(window(Some(NaiveDate::MIN), today()), window(None, today()));
+        // One day within it is enough for a window of its own.
         assert!(!window(Some(day(2027, 11, 15)), today()).current);
+        assert!(!window(Some(day(2025, 11, 7)), today()).current);
+    }
+
+    #[test]
+    fn every_day_a_plan_may_take_has_a_window_that_shows_it() {
+        for n in -HORIZON_DAYS..=HORIZON_DAYS {
+            let d = today() + Duration::days(n);
+            let w = window(window_for(d, today()), today());
+            assert!(w.contains(d), "{d}: {w:?}");
+        }
+        assert_eq!(
+            window_for(day(2025, 11, 13), today()),
+            Some(day(2025, 11, 7))
+        );
     }
 
     #[test]
