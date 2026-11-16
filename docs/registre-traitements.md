@@ -166,8 +166,8 @@ tourne sur un VPS loué à un hébergeur tiers (arbitrage du 2026-10-10,
   quotidien des articles bientôt périmés (#566), vers les membres de la
   famille dont le canal comprend les notifications, et pour les
   changements de l'agenda (#851), vers les membres prévenus d'un ajout,
-  d'une modification ou d'une suppression d'événement dont le canal
-  comprend les notifications. Pour choisir son texte, l'appareil
+  d'une modification ou d'une suppression d'événement, ou d'un import de
+  calendrier (#852), dont le canal comprend les notifications. Pour choisir son texte, l'appareil
   demande au site, avec la session du membre et en se désignant par son
   adresse d'abonnement, le type du message qu'il a reçu
   (`/account/notifications/last-push`) : le serveur compte, par appareil,
