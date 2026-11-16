@@ -1099,6 +1099,21 @@ async fn push_an_alert(db: &PgPool, member: Uuid) {
         .unwrap();
 }
 
+async fn push_an_agenda_change(db: &PgPool, member: Uuid) {
+    let delivered = |_: String, _: i64| async { PushOutcome::Delivered };
+    manage_our_home::agenda::change_notices::push_changes(db, &delivered, &[member])
+        .await
+        .unwrap();
+}
+
+async fn pending_kind(db: &PgPool, endpoint: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT pending_push_kind FROM push_subscriptions WHERE endpoint = $1")
+        .bind(endpoint)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
 /// A push carries nothing: the device asks which kind it got (user's
 /// decision of 2026-10-30). It is told the kind of that push, a retry
 /// included — never that of a notification written in between — and the
@@ -1162,6 +1177,74 @@ async fn a_device_shows_the_kind_of_the_push_it_got_retries_included(db: PgPool)
         serde_json::Value::Null
     );
     assert_eq!(received(&router, &cookie, FCM).await, "budget_alert");
+
+    // A change to the agenda (#851) is a kind of its own: alone, it shows
+    // itself; on its way with an alert, the device shows neither.
+    push_an_agenda_change(&db, member).await;
+    assert_eq!(received(&router, &cookie, FCM).await, "agenda_change");
+    push_an_agenda_change(&db, member).await;
+    push_an_alert(&db, member).await;
+    assert_eq!(pending_kind(&db, FCM).await.as_deref(), Some("mixed"));
+    for _ in 0..2 {
+        assert_eq!(
+            received(&router, &cookie, FCM).await,
+            serde_json::Value::Null
+        );
+    }
+    assert_eq!(pending_kind(&db, FCM).await, None);
+}
+
+/// A change to the agenda (#851) is pushed to the members told whose
+/// channel includes notifications (`push` or `both`), on every device,
+/// held a day; a member on email gets nothing more than the centre — and
+/// no email, this kind sends none. A device's answer is recorded as for a
+/// reminder: 410 forgets it, a failure is counted, a delivery stamps it.
+#[sqlx::test]
+async fn an_agenda_change_is_pushed_on_the_channels_that_push(db: PgPool) {
+    let on_push = insert_user(&db, "change-push@example.test", "push").await;
+    let on_both = insert_user(&db, "change-both@example.test", "both").await;
+    let on_email = insert_user(&db, "change-email@example.test", "email").await;
+    let gone = format!("{MOZILLA}-gone");
+    let flaky = format!("{FCM}-flaky");
+    add_device(&db, on_push, FCM).await;
+    add_device(&db, on_push, &gone).await;
+    add_device(&db, on_both, &flaky).await;
+    add_device(&db, on_email, MOZILLA).await;
+
+    let pushes = Mutex::new(Vec::new());
+    let send_push = |endpoint: String, ttl: i64| {
+        let outcome = if endpoint == gone {
+            PushOutcome::Gone
+        } else if endpoint == flaky {
+            PushOutcome::Failed("push service answered 503".into())
+        } else {
+            PushOutcome::Delivered
+        };
+        pushes.lock().unwrap().push((endpoint, ttl));
+        async move { outcome }
+    };
+    manage_our_home::agenda::change_notices::push_changes(
+        &db,
+        &send_push,
+        &[on_push, on_both, on_email],
+    )
+    .await
+    .unwrap();
+
+    let mut pushes = pushes.into_inner().unwrap();
+    pushes.sort();
+    let day = manage_our_home::agenda::change_notices::CHANGE_PUSH_TTL_SECS;
+    assert_eq!(day, 24 * 3600);
+    let mut expected = vec![
+        (FCM.to_string(), day),
+        (flaky.clone(), day),
+        (gone.clone(), day),
+    ];
+    expected.sort();
+    assert_eq!(pushes, expected);
+    assert_eq!(devices(&db, on_push).await, [(FCM.to_string(), true)]);
+    assert_eq!(failures(&db, &flaky).await, Some(1));
+    assert_eq!(devices(&db, on_email).await, [(MOZILLA.to_string(), false)]);
 }
 
 /// A push the push service did not answer (a timeout, a connection lost)

@@ -13,13 +13,24 @@
 //! tells is its own question (#5), and its rows are rewritten from the
 //! feed — nor the generated days (bank holidays, school holidays), which are
 //! no rows of `events`. The handlers of `events.rs` are the only callers.
+//!
+//! Once the write committed, the members told whose channel includes
+//! notifications (`users.reminder_channel`, #306) get a push on each of
+//! their devices ([`push_in_background`], #851): no payload, as for the
+//! reminders; the service worker asks which kind of push its device got
+//! (`notifications::push::Pending`) and shows « Agenda de la famille
+//! modifié » — neither the event's title nor its author. No email: a
+//! member on email alone reads the change in the centre.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::agenda::is_participant;
 use crate::error::AppResult;
+use crate::jobs::scheduled_notifications::push_devices;
 use crate::notifications::center::{self, AgendaChanges};
+use crate::notifications::{push, ReminderChannel};
+use crate::AppState;
 
 /// Who sees an event: everyone in the family when it is shared, its
 /// participants alone when it is private — the rule of the `events` policy
@@ -268,6 +279,71 @@ pub(crate) async fn tell_changed(
     };
     written.extend(write(tx, group_id, author.id, event_id, &told.changed, event).await?);
     Ok(written)
+}
+
+/// How long a push service keeps a change for a device that is offline: a
+/// day. A change read later is in the notification centre anyway.
+pub const CHANGE_PUSH_TTL_SECS: i64 = 24 * 3600;
+
+/// Pushes the devices of the `told` members whose channel includes
+/// notifications (`ReminderChannel::includes_push`), recording each
+/// device's answer as the reminders do (`push_devices`). Called by
+/// [`push_in_background`]; `send_push` is the push itself, a parameter so
+/// that a test can stand in for the push services.
+pub async fn push_changes<P, PFut>(
+    pool: &sqlx::PgPool,
+    send_push: &P,
+    told: &[Uuid],
+) -> anyhow::Result<()>
+where
+    P: Fn(String, i64) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let members = sqlx::query!(
+        r#"SELECT id, reminder_channel FROM users
+           WHERE id = ANY($1) AND deactivated_at IS NULL AND deleted_at IS NULL"#,
+        told,
+    )
+    .fetch_all(pool)
+    .await?;
+    for member in members {
+        let pushes = ReminderChannel::parse(&member.reminder_channel)
+            .is_some_and(ReminderChannel::includes_push);
+        if pushes {
+            push_devices(
+                pool,
+                send_push,
+                member.id,
+                push::PushKind::AgendaChange,
+                CHANGE_PUSH_TTL_SECS,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// [`push_changes`] on a task of its own, once the write's transaction
+/// committed: the request does not wait for the push services. Nothing
+/// without members told, nor on a server without a VAPID key.
+pub(crate) fn push_in_background(state: &AppState, told: Vec<Uuid>) {
+    let Some(vapid) = state.push.clone() else {
+        return;
+    };
+    if told.is_empty() {
+        return;
+    }
+    let pool = state.db.clone();
+    tokio::spawn(async move {
+        let client = push::client();
+        let send_push = |endpoint: String, ttl_secs: i64| {
+            let (client, vapid) = (client.clone(), vapid.clone());
+            async move { push::send(&client, &vapid, &endpoint, ttl_secs).await }
+        };
+        if let Err(e) = push_changes(&pool, &send_push, &told).await {
+            tracing::error!(error = ?e, "failed to push an agenda change");
+        }
+    });
 }
 
 fn added<'a>(author: Author<'a>, shown: &Shown<'a>) -> center::Event<'a> {
