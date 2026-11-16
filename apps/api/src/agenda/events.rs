@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::agenda::change_notices::{self, Audience, Author, Shown, Visible};
 use crate::agenda::{
     attachments, can_modify, is_participant, may_set_privacy, recurrence, reminders,
 };
@@ -221,6 +222,16 @@ pub async fn create_event(
         auth.user_id,
     );
     replace_assignees(&mut tx, event.id, &assignee_ids).await?;
+    // The members who see it (#849), in this transaction: the event and
+    // their notification are written together or not at all.
+    change_notices::tell_added(
+        &mut tx,
+        group_id,
+        author(&auth),
+        event.id,
+        &shown(&event, &assignee_ids),
+    )
+    .await?;
     tx.commit().await?;
 
     Ok((
@@ -405,6 +416,34 @@ fn event_response(r: EventRow, assignee_ids: Vec<Uuid>) -> EventResponse {
         rrule: r.rrule,
         assignee_ids,
         is_private: r.is_private,
+    }
+}
+
+/// The caller, as the agenda notifications name them (#849).
+fn author(auth: &AuthUser) -> Author<'_> {
+    Author {
+        id: auth.user_id,
+        name: &auth.display_name,
+    }
+}
+
+/// `row` with `assignees`, as the agenda notifications read it (#849).
+fn shown<'a>(row: &'a EventRow, assignees: &'a [Uuid]) -> Shown<'a> {
+    Shown {
+        audience: Audience {
+            is_private: row.is_private,
+            created_by: row.created_by,
+            assignees,
+        },
+        visible: Visible {
+            title: &row.title,
+            location: row.location.as_deref(),
+            starts_at: row.starts_at,
+            ends_at: row.ends_at,
+            all_day: row.all_day,
+            rrule: row.rrule.as_deref(),
+            assignees,
+        },
     }
 }
 
@@ -762,8 +801,27 @@ pub async fn update_event(
         if scope == EditScope::This || located.produced_before > 0 {
             // Sorted: the order `assignees_for_events` reads a set written
             // in one statement back in (see `update_event`'s own return).
-            let mut assignee_ids = new_assignees.unwrap_or(current_assignees);
+            let mut assignee_ids = new_assignees.unwrap_or_else(|| current_assignees.clone());
             assignee_ids.sort();
+            // What the members saw of the occurrences that leave the series
+            // (#849): the occurrence's own bounds, and the rule the new
+            // event would carry on with were none given — none for `this`,
+            // what is left of the series' for `this_and_following`. The new
+            // event differs from it only by what the request changed.
+            let (occurrence_starts_at, occurrence_ends_at) = located.span;
+            let carried_rule = match scope {
+                EditScope::This => None,
+                _ => recurrence::continued_after(&series_rule, located.produced_before).ok(),
+            };
+            let before = Shown {
+                visible: Visible {
+                    starts_at: occurrence_starts_at,
+                    ends_at: occurrence_ends_at,
+                    rrule: carried_rule.as_deref(),
+                    ..shown(&existing, &current_assignees).visible
+                },
+                ..shown(&existing, &current_assignees)
+            };
             let event = split_series(
                 &mut tx,
                 Split {
@@ -776,6 +834,16 @@ pub async fn update_event(
                     assignee_ids: &assignee_ids,
                     is_private: will_be_private,
                 },
+            )
+            .await?;
+            // Never an imported series: `scoped_occurrence` refused it.
+            change_notices::tell_changed(
+                &mut tx,
+                group_id,
+                author(&auth),
+                event.id,
+                &before,
+                &shown(&event, &assignee_ids),
             )
             .await?;
             tx.commit().await?;
@@ -901,8 +969,21 @@ pub async fn update_event(
             new_assignees.sort();
             new_assignees
         }
-        None => current_assignees,
+        None => current_assignees.clone(),
     };
+    // One notification per member for the whole write (#849), whatever
+    // it changed; none for an event mirrored from an imported calendar.
+    if !is_imported(&mut tx, event_id).await? {
+        change_notices::tell_changed(
+            &mut tx,
+            group_id,
+            author(&auth),
+            event_id,
+            &shown(&existing, &current_assignees),
+            &shown(&event, &assignee_ids),
+        )
+        .await?;
+    }
     tx.commit().await?;
 
     Ok(Json(event_response(event, assignee_ids)))
@@ -1354,6 +1435,28 @@ fn deletion(scope: EditScope, produced_before: u32) -> Deletion {
     }
 }
 
+/// Tells the members who saw `event` that the caller deleted it, from its
+/// occurrence at `from` on (#849). Its `object_id` stays the event's id,
+/// whether the row is gone or not.
+async fn tell_deleted_from(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    auth: &AuthUser,
+    event: &EventRow,
+    assignees: &[Uuid],
+    from: DateTime<Utc>,
+) -> AppResult<()> {
+    let seen = shown(event, assignees);
+    let gone = Shown {
+        visible: Visible {
+            starts_at: from,
+            ..seen.visible
+        },
+        ..seen
+    };
+    change_notices::tell_deleted(tx, event.group_id, author(auth), event.id, &gone).await?;
+    Ok(())
+}
+
 /// `DELETE …/events/{event_id}` parameters (#710). Without `scope`, or with
 /// `all`, the whole event goes, as before; `this` and `this_and_following`
 /// need `occurrence_at`, read as by a scoped `PATCH` (#708).
@@ -1427,6 +1530,10 @@ pub async fn delete_event(
         return Err(AppError::Forbidden);
     }
 
+    // Who saw what went (#849), read before it goes: the import's link
+    // cascades with the row.
+    let notify = !is_imported(&mut tx, event_id).await?;
+
     // Scoped (#710): the occurrence leaves the series, or the series stops
     // before it — unless nothing would be left of it. The attachments, the
     // reminders and the notifications already sent stay with the series.
@@ -1439,6 +1546,9 @@ pub async fn delete_event(
             Deletion::Series => {}
             Deletion::Occurrence => {
                 exclude_occurrence(&mut tx, event_id, occurrence).await?;
+                if notify {
+                    tell_deleted_from(&mut tx, &auth, &existing, &assignees, occurrence).await?;
+                }
                 tx.commit().await?;
                 return Ok(StatusCode::NO_CONTENT);
             }
@@ -1451,6 +1561,9 @@ pub async fn delete_event(
                 )
                 .execute(&mut *tx)
                 .await?;
+                if notify {
+                    tell_deleted_from(&mut tx, &auth, &existing, &assignees, occurrence).await?;
+                }
                 tx.commit().await?;
                 return Ok(StatusCode::NO_CONTENT);
             }
@@ -1471,6 +1584,9 @@ pub async fn delete_event(
     )
     .execute(&mut *tx)
     .await?;
+    if notify {
+        tell_deleted_from(&mut tx, &auth, &existing, &assignees, existing.starts_at).await?;
+    }
     tx.commit().await?;
 
     Ok(StatusCode::NO_CONTENT)
