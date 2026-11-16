@@ -78,10 +78,14 @@ pub(crate) fn required_section(required: &[String], household: Option<&[String]>
 /// household, and per one the recipe already requires that the household
 /// lacks (said so beside it), so that saving does not drop it. `household`
 /// is `None` when the list could not be read: the form then offers what is
-/// ticked alone. Without anything to offer, the way to the settings.
+/// ticked alone, and with nothing ticked says the list was not read.
+/// Without anything to offer otherwise, the way to the settings.
 pub(crate) fn fieldset(group_id: Uuid, household: Option<&[String]>, ticked: &[String]) -> String {
     let choices = equipment_choices(household.unwrap_or_default(), ticked);
-    let body = if choices.is_empty() {
+    let body = if choices.is_empty() && household.is_none() {
+        r#"<p class="notice error" role="alert">Les équipements de la famille n'ont pas pu être lus : rechargez la page pour en choisir.</p>"#
+            .to_string()
+    } else if choices.is_empty() {
         format!(
             r#"<p class="notice">La famille n'a encore déclaré aucun équipement. <a href="/groups/{group_id}/settings#equipements">Les déclarer dans les paramètres de la famille</a> (propriétaire ou admin).</p>"#
         )
@@ -200,6 +204,18 @@ mod tests {
             )),
             "{html}"
         );
+    }
+
+    #[test]
+    fn an_unread_household_list_with_nothing_ticked_says_it_was_not_read() {
+        let html = fieldset(Uuid::nil(), None, &[]);
+        assert!(!html.contains("n'a encore déclaré"), "{html}");
+        assert!(
+            html.contains(r#"<p class="notice error" role="alert">"#),
+            "{html}"
+        );
+        assert!(html.contains("n'ont pas pu être lus"), "{html}");
+        assert!(!html.contains("checkbox"), "{html}");
     }
 
     #[test]

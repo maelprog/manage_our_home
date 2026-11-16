@@ -805,11 +805,17 @@ async fn a_member_finds_a_category_by_its_name_and_reads_it_back_by_name(db: PgP
     let (status, body) = search(json!("")).await;
     assert_eq!((status, body), (StatusCode::OK, json!({"results": []})));
 
-    let (status, body) = search(json!("a".repeat(129))).await;
-    assert_eq!(
-        (status, body["error"].as_str()),
-        (StatusCode::BAD_REQUEST, Some("query_too_long"))
-    );
+    // The bound counts characters, as the page's `maxlength` does: 128 « é »
+    // (256 bytes) are read, 129 are not.
+    let (status, body) = search(json!("é".repeat(128))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for long in ["a".repeat(129), "é".repeat(129)] {
+        let (status, body) = search(json!(long)).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("query_too_long"))
+        );
+    }
 
     // Signed in only.
     let res = call(

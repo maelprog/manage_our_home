@@ -15,6 +15,16 @@
 /// taxonomy (`apps/api/data/off-categories-fr.tsv.gz`) is 127 bytes.
 pub const TAG_MAX_LEN: usize = 128;
 
+/// The longest name `POST /taxonomy/search` looks up, in characters — the
+/// unit of the field's `maxlength` on the account page, so that a name the
+/// field lets through, accents included, is never refused as too long.
+pub const SEARCH_QUERY_MAX_LEN: usize = 128;
+
+/// Whether a search query is within [`SEARCH_QUERY_MAX_LEN`] characters.
+pub fn search_query_fits(query: &str) -> bool {
+    query.chars().count() <= SEARCH_QUERY_MAX_LEN
+}
+
 /// Why a tag, a share level or a list of equipment codes was refused. Each
 /// maps to the API's 400 code through [`DietaryError::code`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,5 +425,15 @@ mod tests {
             DietaryError::DuplicateEquipment.code(),
             "duplicate_equipment"
         );
+    }
+
+    #[test]
+    fn a_search_query_is_bounded_in_characters_not_bytes() {
+        assert!(search_query_fits(""));
+        assert!(search_query_fits(&"a".repeat(SEARCH_QUERY_MAX_LEN)));
+        // 128 « é » are 256 bytes, and as many characters as the field allows.
+        assert!(search_query_fits(&"é".repeat(SEARCH_QUERY_MAX_LEN)));
+        assert!(!search_query_fits(&"a".repeat(SEARCH_QUERY_MAX_LEN + 1)));
+        assert!(!search_query_fits(&"é".repeat(SEARCH_QUERY_MAX_LEN + 1)));
     }
 }

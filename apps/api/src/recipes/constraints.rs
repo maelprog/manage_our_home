@@ -625,10 +625,6 @@ pub async fn get_equipment(
     Ok(Json(Equipment { codes }))
 }
 
-/// The longest query `POST /taxonomy/search` reads, in bytes: the longest
-/// tag's bound, which no French name of the taxonomy exceeds by much.
-pub const SEARCH_QUERY_MAX_LEN: usize = 128;
-
 /// The most categories `POST /taxonomy/search` answers.
 pub const SEARCH_LIMIT: usize = 20;
 
@@ -675,7 +671,10 @@ pub async fn search_tags(
     _auth: AuthUser,
     Json(body): Json<TagSearchRequest>,
 ) -> AppResult<impl IntoResponse> {
-    if body.query.len() > SEARCH_QUERY_MAX_LEN {
+    // In characters, as the account page's `maxlength` counts them
+    // (`SEARCH_QUERY_MAX_LEN`): an accented name the field lets through is
+    // not refused as too long.
+    if !manage_our_home_shared::validation::dietary::search_query_fits(&body.query) {
         return Err(AppError::BadRequest("query_too_long".into()));
     }
     let taxonomy = taxonomy();

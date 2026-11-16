@@ -27,7 +27,7 @@ use axum::Form;
 use chrono::{DateTime, Utc};
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::validation::dietary::{
-    inco_label, validate_tag, ShareLevel, INCO_ALLERGENS,
+    inco_label, validate_tag, ShareLevel, INCO_ALLERGENS, SEARCH_QUERY_MAX_LEN,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -435,7 +435,7 @@ fn add_card(lists: &Lists, search: Option<&Search>) -> String {
 <p class="muted">Par défaut, une allergie est <strong>privée</strong> dans toutes vos familles : personne ne le sait.</p>
 </form>
 <form method="post" action="{PATH}/search" class="actions">
-<label>Chercher un autre aliment <input type="text" name="query" maxlength="128" value="{query}" placeholder="kiwi, coriandre…"></label>
+<label>Chercher un autre aliment <input type="text" name="query" maxlength="{SEARCH_QUERY_MAX_LEN}" value="{query}" placeholder="kiwi, coriandre…"></label>
 <button type="submit" class="secondary">Chercher</button>
 </form>
 {said}
