@@ -249,9 +249,11 @@ pub(crate) async fn has_allergies(state: &AppState, cookie: Option<&str>) -> Opt
     fetch_allergies(state, cookie).await.map(|a| !a.is_empty())
 }
 
+/// Says nothing of the levels in force: `post()` reaches it after a level
+/// may already have been written.
 fn unavailable_page() -> Html<String> {
     let body = r#"<h1>Service momentanément indisponible</h1>
-<p>Vos allergies restent comme elles étaient. Merci de réessayer dans quelques instants.</p>
+<p>Vos allergies n'ont pas pu être lues. Merci de réessayer dans quelques instants.</p>
 <a class="btn secondary" href="/groups">Retour à mes groupes</a>"#;
     Html(shell(Width::Form, "Service indisponible", body))
 }
@@ -611,6 +613,14 @@ mod tests {
         assert!(!html.contains("tout laisser privé"));
         assert!(html.contains(r#"href="/groups?notice=joined">Plus tard</a>"#));
         assert!(html.contains("Vous venez de rejoindre ce groupe."));
+    }
+
+    #[test]
+    fn the_unavailable_page_claims_nothing_about_the_levels() {
+        // `post()` reaches it after a level may already be written.
+        let Html(page) = unavailable_page();
+        assert!(!page.contains("restent"), "{page}");
+        assert!(page.contains("Vos allergies n'ont pas pu être lues."));
     }
 
     #[test]
