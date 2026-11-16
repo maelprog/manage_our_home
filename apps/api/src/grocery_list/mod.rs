@@ -1,4 +1,5 @@
 pub mod items;
+pub(crate) mod packs;
 pub(crate) mod planned;
 
 /// Same permission bar as Stocks/Recipes/Agenda: any member may create,

@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.id, s.name, o.quantity AS \"pack!\", o.categories_tags\n        FROM stock_items s\n        JOIN off_products o ON o.code = s.barcode\n        WHERE s.group_id = $1 AND o.quantity IS NOT NULL\n        ORDER BY s.id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pack!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "categories_tags",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "categories_tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "179a580b9fa482c1001d14b3279d68ed0ba708fa981fb7b3836480fa49636888"
+}

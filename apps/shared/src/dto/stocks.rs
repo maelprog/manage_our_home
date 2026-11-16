@@ -10,7 +10,7 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::validation::stocks::{ExpiryStatus, ReceptionMode};
+use crate::validation::stocks::{ExpiryStatus, PackRounding, ReceptionMode};
 
 /// `POST /groups/:id/stock-items` request body. Mirrors
 /// `CreateStockItemRequest`. `category`/`reorder_threshold` are omitted from
@@ -264,6 +264,10 @@ pub struct ReceptionLine {
     pub mode: ReceptionMode,
     #[serde(default)]
     pub stock_item: Option<StockItemResponse>,
+    /// On `GET`, the packs of a scanned article the pre-filled quantity
+    /// comes to (#824), for the form's hint.
+    #[serde(default)]
+    pub pack: Option<PackRounding>,
 }
 
 /// `GET`/`POST /groups/:id/stock-items/reception` response envelope

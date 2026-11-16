@@ -24,6 +24,8 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::recipes::without_binary_noise;
+
 /// Why a stock-item create/edit form was rejected. Ordered to match the
 /// backend's check order (`create_stock_item` / `update_stock_item`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +189,8 @@ pub fn format_quantity(quantity: f64, unit: &str) -> String {
 
 /// A pack size read from Open Food Facts' `quantity` text (#805): the
 /// amount and the unit the stock form is pre-filled with.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PackSize {
     pub quantity: f64,
     pub unit: String,
@@ -229,6 +232,127 @@ pub fn parse_pack_size(raw: &str) -> Option<PackSize> {
     }
     let unit = if unit == "l" { "L".to_string() } else { unit };
     Some(PackSize { quantity, unit })
+}
+
+/// How much of each metric unit makes the base one of its kind (#824):
+/// the gram for a mass, the millilitre for a volume. Keyed like
+/// `METRIC_SYMBOLS`, in lower case.
+fn metric_scale(unit: &str) -> Option<(char, f64)> {
+    match article_key(unit).as_str() {
+        "mg" => Some(('m', 0.001)),
+        "g" => Some(('m', 1.0)),
+        "kg" => Some(('m', 1000.0)),
+        "ml" => Some(('v', 1.0)),
+        "cl" => Some(('v', 10.0)),
+        "dl" => Some(('v', 100.0)),
+        "l" => Some(('v', 1000.0)),
+        _ => None,
+    }
+}
+
+/// `quantity` written in `from`, converted into `to` (#824).
+///
+/// - Two units that read the same (`article_key`: « G » and « g ») keep
+///   the quantity as it is, whatever they are.
+/// - Two metric units of one kind convert: a mass (`mg`, `g`, `kg`) into a
+///   mass, a volume (`ml`, `cl`, `dl`, `L`) into a volume; 40 cl is 0,4 L.
+///   The result carries no binary noise.
+/// - Anything else does not convert (`None`): a mass and a volume, a named
+///   unit (« paquet », « unité ») against another one.
+pub fn convert_quantity(quantity: f64, from: &str, to: &str) -> Option<f64> {
+    if article_key(from) == article_key(to) {
+        return Some(quantity);
+    }
+    let (from_kind, from_scale) = metric_scale(from)?;
+    let (to_kind, to_scale) = metric_scale(to)?;
+    (from_kind == to_kind).then(|| without_binary_noise(quantity * from_scale / to_scale))
+}
+
+/// A need counted in whole packs (#824): `count` packs of `size`, the
+/// smallest number of packs that holds it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PackRounding {
+    pub count: u64,
+    pub size: PackSize,
+}
+
+/// The packs of a scanned article a grocery line comes to (#824): its pack
+/// size (`pack`, Open Food Facts' text, read by `parse_pack_size`) and the
+/// line's need converted into its unit (`convert_quantity`), counted up to
+/// the next whole pack. 380 g of a 500 g pack is 1 pack, 1 kg is 2.
+///
+/// `None`, the line shown as it is, when the line has no quantity or a
+/// zero one, when its unit does not convert into the pack's, or when the
+/// pack size does not read.
+pub fn round_to_packs(
+    quantity: Option<f64>,
+    unit: Option<&str>,
+    pack: &str,
+) -> Option<PackRounding> {
+    let quantity = quantity.filter(|q| *q > 0.0)?;
+    let size = parse_pack_size(pack)?;
+    let need = convert_quantity(quantity, unit?, &size.unit)?;
+    // 0.3 / 0.1 is 2.9999999999999996: the noise goes before the ceiling.
+    let count = without_binary_noise(need / size.quantity).ceil();
+    (count.is_finite() && count >= 1.0).then_some(PackRounding {
+        count: count as u64,
+        size,
+    })
+}
+
+/// The packs as the grocery list writes them after the need (#824): « 1
+/// paquet (500 g) », « 3 paquets (500 g) ».
+pub fn packs_label(packs: &PackRounding) -> String {
+    format!(
+        "{} ({})",
+        format_quantity(packs.count as f64, "paquet"),
+        format_quantity(packs.size.quantity, &packs.size.unit)
+    )
+}
+
+/// The packs as the reception's hint words them under the unit (#824):
+/// « ≈ 1 paquet de 1 kg ».
+pub fn packs_hint(packs: &PackRounding) -> String {
+    format!(
+        "≈ {} de {}",
+        format_quantity(packs.count as f64, "paquet"),
+        format_quantity(packs.size.quantity, &packs.size.unit)
+    )
+}
+
+/// The quantity and the unit a received article enters the stock in when
+/// a scanned article bears its name (#824): converted into that article's
+/// unit, so that it merges into it (`merge_target` compares the units as
+/// they are). `scanned` holds the family's scanned articles only.
+///
+/// `None`, the article entered as typed, when no scanned article bears its
+/// name, when one of them already has its unit, or when its unit converts
+/// into none of theirs. Among several, the smallest id; a conversion that
+/// would leave `(0, MAX_QUANTITY]` is not made.
+pub fn scanned_entry(
+    name: &str,
+    quantity: f64,
+    unit: &str,
+    scanned: &[StockCandidate<'_>],
+) -> Option<(f64, String)> {
+    let key = article_key(name);
+    let mut namesakes: Vec<&StockCandidate<'_>> = scanned
+        .iter()
+        .filter(|c| article_key(c.name) == key)
+        .collect();
+    if namesakes
+        .iter()
+        .any(|c| article_key(c.unit) == article_key(unit))
+    {
+        return None;
+    }
+    namesakes.sort_by_key(|c| c.id);
+    namesakes.into_iter().find_map(|c| {
+        convert_quantity(quantity, unit, c.unit)
+            .filter(|q| *q > 0.0 && *q <= MAX_QUANTITY)
+            .map(|q| (q, c.unit.to_string()))
+    })
 }
 
 /// The number `text` starts with — digits, then at most one comma or point
@@ -962,5 +1086,171 @@ mod tests {
         ] {
             assert_eq!(parse_pack_size(raw), None, "{raw:?}");
         }
+    }
+
+    // -- convert_quantity (#824) ---------------------------------------------
+
+    #[test]
+    fn the_same_unit_keeps_the_quantity_whatever_it_is() {
+        assert_eq!(convert_quantity(380.0, "g", "g"), Some(380.0));
+        assert_eq!(convert_quantity(2.0, " Paquet ", "paquet"), Some(2.0));
+        assert_eq!(convert_quantity(3.0, "unité", "UNITÉ"), Some(3.0));
+    }
+
+    #[test]
+    fn a_mass_converts_into_a_mass_and_a_volume_into_a_volume() {
+        assert_eq!(convert_quantity(40.0, "cl", "L"), Some(0.4));
+        assert_eq!(convert_quantity(800.0, "g", "kg"), Some(0.8));
+        assert_eq!(convert_quantity(1.2, "kg", "g"), Some(1200.0));
+        assert_eq!(convert_quantity(250.0, "mg", "g"), Some(0.25));
+        assert_eq!(convert_quantity(3.0, "dl", "ml"), Some(300.0));
+        assert_eq!(convert_quantity(1.5, "l", "CL"), Some(150.0));
+    }
+
+    #[test]
+    fn a_conversion_carries_no_binary_noise() {
+        // 0.3 × 1000 is 300.00000000000006 in f64.
+        assert_eq!(convert_quantity(0.3, "kg", "g"), Some(300.0));
+        assert_eq!(convert_quantity(70.0, "cl", "L"), Some(0.7));
+    }
+
+    #[test]
+    fn units_of_two_kinds_or_named_ones_do_not_convert() {
+        assert_eq!(convert_quantity(300.0, "g", "cl"), None);
+        assert_eq!(convert_quantity(1.0, "L", "kg"), None);
+        assert_eq!(convert_quantity(2.0, "unité", "g"), None);
+        assert_eq!(convert_quantity(2.0, "paquet", "boîte"), None);
+        assert_eq!(convert_quantity(2.0, "", "g"), None);
+    }
+
+    // -- round_to_packs (#824) -----------------------------------------------
+
+    fn packs(count: u64, quantity: f64, unit: &str) -> Option<PackRounding> {
+        Some(PackRounding {
+            count,
+            size: PackSize {
+                quantity,
+                unit: unit.to_string(),
+            },
+        })
+    }
+
+    #[test]
+    fn a_need_with_a_remainder_takes_the_next_whole_pack() {
+        assert_eq!(
+            round_to_packs(Some(380.0), Some("g"), "500 g"),
+            packs(1, 500.0, "g")
+        );
+        assert_eq!(
+            round_to_packs(Some(1250.0), Some("g"), "400 g"),
+            packs(4, 400.0, "g")
+        );
+    }
+
+    #[test]
+    fn a_divisible_need_takes_just_its_packs() {
+        assert_eq!(
+            round_to_packs(Some(1000.0), Some("g"), "500 g"),
+            packs(2, 500.0, "g")
+        );
+        assert_eq!(
+            round_to_packs(Some(2.0), Some("L"), "1 L"),
+            packs(2, 1.0, "L")
+        );
+        // 0.3 / 0.1 is 2.9999999999999996 in f64: still 3 packs, not 3.
+        assert_eq!(
+            round_to_packs(Some(0.3), Some("L"), "10 cl"),
+            packs(3, 10.0, "cl")
+        );
+    }
+
+    #[test]
+    fn a_need_in_another_unit_of_its_kind_is_converted() {
+        assert_eq!(
+            round_to_packs(Some(40.0), Some("cl"), "1 L"),
+            packs(1, 1.0, "L")
+        );
+        assert_eq!(
+            round_to_packs(Some(1.2), Some("kg"), "500 g"),
+            packs(3, 500.0, "g")
+        );
+        assert_eq!(
+            round_to_packs(Some(750.0), Some("G"), "1 kg"),
+            packs(1, 1.0, "kg")
+        );
+    }
+
+    #[test]
+    fn a_need_in_an_incompatible_unit_is_not_rounded() {
+        assert_eq!(round_to_packs(Some(300.0), Some("g"), "20 cl"), None);
+        assert_eq!(round_to_packs(Some(2.0), Some("unité"), "500 g"), None);
+        assert_eq!(round_to_packs(Some(2.0), None, "500 g"), None);
+    }
+
+    #[test]
+    fn an_unreadable_pack_size_rounds_nothing() {
+        for pack in ["env. 4 portions", "6 tranches", "", "0 g"] {
+            assert_eq!(round_to_packs(Some(2.0), Some("g"), pack), None, "{pack:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_or_absent_quantity_is_not_rounded() {
+        assert_eq!(round_to_packs(Some(0.0), Some("g"), "500 g"), None);
+        assert_eq!(round_to_packs(None, Some("g"), "500 g"), None);
+        assert_eq!(round_to_packs(Some(-1.0), Some("g"), "500 g"), None);
+        assert_eq!(round_to_packs(Some(f64::NAN), Some("g"), "500 g"), None);
+    }
+
+    // -- packs_label / packs_hint (#824) -------------------------------------
+
+    #[test]
+    fn the_packs_read_in_french_with_their_size() {
+        let one = packs(1, 500.0, "g").unwrap();
+        let three = packs(3, 1.5, "L").unwrap();
+        assert_eq!(packs_label(&one), "1 paquet (500 g)");
+        assert_eq!(packs_label(&three), "3 paquets (1,5 L)");
+        assert_eq!(packs_hint(&one), "≈ 1 paquet de 500 g");
+        assert_eq!(packs_hint(&three), "≈ 3 paquets de 1,5 L");
+    }
+
+    // -- scanned_entry (#824) ------------------------------------------------
+
+    #[test]
+    fn a_received_article_takes_the_unit_of_the_scanned_one_of_its_name() {
+        let scanned = [line(7, "Sucre en poudre", "kg", None)];
+        assert_eq!(
+            scanned_entry(" sucre en POUDRE ", 800.0, "g", &scanned),
+            Some((0.8, "kg".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_received_article_already_in_the_scanned_unit_is_left_as_typed() {
+        let scanned = [line(7, "Sucre", "kg", None), line(8, "Sucre", "g", None)];
+        assert_eq!(scanned_entry("Sucre", 800.0, "g", &scanned), None);
+    }
+
+    #[test]
+    fn no_scanned_article_of_the_name_or_of_the_kind_converts_nothing() {
+        let scanned = [line(7, "Farine", "kg", None), line(8, "Sucre", "L", None)];
+        assert_eq!(scanned_entry("Sucre", 800.0, "g", &scanned), None);
+        assert_eq!(scanned_entry("Sucre", 2.0, "paquet", &scanned), None);
+        assert_eq!(scanned_entry("Sucre", 800.0, "g", &[]), None);
+    }
+
+    #[test]
+    fn among_several_scanned_articles_the_smallest_id_gives_the_unit() {
+        let scanned = [line(9, "Lait", "cl", None), line(8, "Lait", "L", None)];
+        assert_eq!(
+            scanned_entry("Lait", 500.0, "ml", &scanned),
+            Some((0.5, "L".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_conversion_out_of_bounds_is_not_made() {
+        let scanned = [line(7, "Sel", "mg", None)];
+        assert_eq!(scanned_entry("Sel", MAX_QUANTITY, "kg", &scanned), None);
     }
 }

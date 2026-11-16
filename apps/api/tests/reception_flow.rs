@@ -668,3 +668,108 @@ async fn a_quantity_out_of_bounds_is_refused(db: PgPool) {
     assert_eq!(stock.len(), 2);
     assert_eq!(grocery_ids(&router, &cookie, &group_id).await.len(), 2);
 }
+
+/// #824: « Sucre en poudre » scanned, its pack 1 kg, held in kilograms; the
+/// list's 800 g are pre-filled as they are, with the packs they come to,
+/// proposed into the scanned line, and enter it as 0,8 kg.
+#[sqlx::test]
+async fn a_receipt_enters_a_scanned_line_in_its_unit(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "rcv-packs@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    // What a scan would have cached (#402), written directly: the test
+    // must not reach Open Food Facts.
+    sqlx::query("INSERT INTO off_products (code, name, quantity) VALUES ($1, $2, $3)")
+        .bind("3017620422003")
+        .bind("Sucre en poudre")
+        .bind("1 kg")
+        .execute(&db)
+        .await
+        .unwrap();
+    let sugar = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Sucre en poudre", "quantity": 1.0, "unit": "kg", "barcode": "3017620422003"}),
+    )
+    .await;
+    // The same name and unit, without a barcode: entered as typed.
+    let flour = stock(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Farine", "quantity": 1.0, "unit": "kg"}),
+    )
+    .await;
+    let sugar_item = checked(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Sucre en poudre", "quantity": 800.0, "unit": "g"}),
+    )
+    .await;
+    let flour_item = checked(
+        &router,
+        &cookie,
+        &group_id,
+        json!({"name": "Farine", "quantity": 500.0, "unit": "g"}),
+    )
+    .await;
+
+    let proposed = proposals(&router, &cookie, &group_id).await;
+    let line = |id: &str| {
+        proposed
+            .iter()
+            .find(|p| p["grocery_item_id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let s = line(&sugar_item);
+    assert_eq!(
+        (s["quantity"].clone(), s["unit"].clone()),
+        (json!(800.0), json!("g"))
+    );
+    assert_eq!(s["mode"], "merge");
+    assert_eq!(s["stock_item"]["id"], sugar.as_str());
+    assert_eq!(
+        s["pack"],
+        json!({"count": 1, "size": {"quantity": 1.0, "unit": "kg"}})
+    );
+    let f = line(&flour_item);
+    assert_eq!(f["mode"], "new", "{f:?}");
+    assert!(f.get("pack").is_none(), "{f:?}");
+
+    let res = receive(
+        &router,
+        &cookie,
+        &group_id,
+        json!([
+            {"grocery_item_id": sugar_item, "quantity": 800.0, "unit": "g", "mode": "merge"},
+            {"grocery_item_id": flour_item},
+        ]),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let stock = stock_items(&router, &cookie, &group_id).await;
+    let held = |name: &str| -> Vec<(f64, String)> {
+        stock
+            .iter()
+            .filter(|s| s["name"] == name)
+            .map(|s| {
+                (
+                    s["quantity"].as_f64().unwrap(),
+                    s["unit"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(held("Sucre en poudre"), vec![(1.8, "kg".to_string())]);
+    let mut flours = held("Farine");
+    flours.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    assert_eq!(
+        flours,
+        vec![(1.0, "kg".to_string()), (500.0, "g".to_string())],
+        "{flour}"
+    );
+}
