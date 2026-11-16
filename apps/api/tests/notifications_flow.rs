@@ -1918,17 +1918,17 @@ async fn an_imported_event_tells_no_one(db: PgPool) {
 // -- calendar imports (#852) ------------------------------------------------------
 
 /// An ICS feed of the events `uids`, each an hour on its own day of
-/// December 2026. Each was last modified on 1 January, but `moved`, on
-/// 1 February: the stamp a re-import compares to tell a changed event.
-fn feed(uids: std::ops::Range<u32>, moved: Option<u32>) -> String {
+/// December 2026. Each was last modified on 1 January, but the ones of
+/// `moved`, at the stamp given with them: the stamp a re-import compares to
+/// tell a changed event.
+fn feed(uids: std::ops::Range<u32>, moved: &[(u32, &str)]) -> String {
     let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
     for uid in uids {
         let day = uid % 28 + 1;
-        let modified = if moved == Some(uid) {
-            "20260201T090000Z"
-        } else {
-            "20260101T090000Z"
-        };
+        let modified = moved
+            .iter()
+            .find(|(m, _)| *m == uid)
+            .map_or("20260101T090000Z", |(_, stamp)| stamp);
         ics.push_str(&format!(
             "BEGIN:VEVENT\r\nUID:import-852-{uid}@google.com\r\nDTSTAMP:20260101T090000Z\r\n\
              DTSTART:202612{day:02}T090000Z\r\nDTEND:202612{day:02}T100000Z\r\n\
@@ -2003,10 +2003,10 @@ async fn an_import_tells_each_other_member_once_with_its_count(db: PgPool) {
     let import = calendar_import(
         &f,
         vec![
-            feed(0..30, None),
-            feed(0..30, None),
+            feed(0..30, &[]),
+            feed(0..30, &[]),
             // The first event moved upstream, a 31st is new.
-            feed(0..31, Some(0)),
+            feed(0..31, &[(0, "20260201T090000Z")]),
         ],
     )
     .await;
@@ -2069,7 +2069,7 @@ async fn an_import_pushes_the_members_it_told_on_notifications(db: PgPool) {
         .execute(&db)
         .await
         .unwrap();
-    let import = calendar_import(&f, vec![feed(0..1, None)]).await;
+    let import = calendar_import(&f, vec![feed(0..1, &[])]).await;
     let owner_device = unreachable_device(&db, "owner@example.test").await;
     let member_device = unreachable_device(&db, "member@example.test").await;
     let third_device = unreachable_device(&db, "third@example.test").await;
@@ -2078,6 +2078,82 @@ async fn an_import_pushes_the_members_it_told_on_notifications(db: PgPool) {
     pushed_within_10_s(&db, owner_device, "import").await;
     assert!(device_kept(&db, member_device).await, "the author");
     assert!(device_kept(&db, third_device).await, "a member on email");
+}
+
+/// #852 over #620: an imported event its participant made private stays
+/// hidden from the other members when the feed changes it. Each member is
+/// told the count of the events they see, and one who sees none of them
+/// is told nothing — no row, no push.
+#[sqlx::test]
+async fn an_import_counts_for_each_member_the_events_they_see(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let (owner, member) = (
+        user_id(&db, "owner@example.test").await,
+        user_id(&db, "member@example.test").await,
+    );
+    let import = calendar_import(
+        &f,
+        vec![
+            feed(0..2, &[]),
+            // Both events moved upstream.
+            feed(0..2, &[(0, "20260201T090000Z"), (1, "20260201T090000Z")]),
+            // The private one alone moved again.
+            feed(0..2, &[(0, "20260301T090000Z"), (1, "20260201T090000Z")]),
+        ],
+    )
+    .await;
+    run_import(&f, &f.owner, &import).await;
+    let private: String = sqlx::query_scalar(
+        "SELECT event_id::text FROM calendar_import_events
+         WHERE external_uid = 'import-852-0@google.com'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    patch_event(
+        &f,
+        &f.owner,
+        &private,
+        json!({"is_private": true, "assignee_ids": [owner, member]}),
+    )
+    .await;
+    clear_notifications(&db).await;
+
+    // Both changed: the participant sees two, the third member one.
+    let run = run_import(&f, &f.owner, &import).await;
+    assert_eq!(run["updated"].as_u64(), Some(2));
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "member@example.test",
+                "owner@example.test a importé 2 événements."
+            ),
+            (
+                "third@example.test",
+                "owner@example.test a importé 1 événement."
+            ),
+        ])
+    );
+
+    // The private one alone: the third member is told nothing, nor pushed.
+    clear_notifications(&db).await;
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
+    let run = run_import(&f, &f.owner, &import).await;
+    assert_eq!(run["updated"].as_u64(), Some(1));
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a importé 1 événement."
+        )])
+    );
+    pushed_within_10_s(&db, member_device, "the participant").await;
+    assert!(
+        device_kept(&db, third_device).await,
+        "a member who sees none"
+    );
 }
 
 /// A 500-character title broken by new lines is stored, and its

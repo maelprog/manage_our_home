@@ -61,19 +61,26 @@ pub(crate) fn recipients(candidates: &[Uuid], author: Uuid, audience: &Audience<
         .collect()
 }
 
-/// The members to tell of an import that added or changed `count` events
-/// (#852): every candidate but its `author` — the events an import writes
-/// are shared — and nobody when it changed nothing.
-pub(crate) fn import_recipients(candidates: &[Uuid], author: Uuid, count: usize) -> Vec<Uuid> {
-    if count == 0 {
-        return Vec::new();
-    }
-    let shared = Audience {
-        is_private: false,
-        created_by: author,
-        assignees: &[],
-    };
-    recipients(candidates, author, &shared)
+/// The members to tell of an import that added or changed the events
+/// `touched` (#852), each with how many of them they see: an event the
+/// import creates is shared, but one it changes may have been made private
+/// by a participant (#620), and is then counted for its participants alone.
+/// Never its `author`; nobody who sees none of them. In the order of
+/// `candidates`.
+pub(crate) fn import_counts(
+    candidates: &[Uuid],
+    author: Uuid,
+    touched: &[Audience<'_>],
+) -> Vec<(Uuid, usize)> {
+    candidates
+        .iter()
+        .filter(|&&member| member != author)
+        .map(|&member| {
+            let seen = touched.iter().filter(|event| event.sees(member)).count();
+            (member, seen)
+        })
+        .filter(|&(_, seen)| seen > 0)
+        .collect()
 }
 
 /// The members to tell of a change, split by what they are told.
@@ -298,41 +305,66 @@ pub(crate) async fn tell_changed(
     Ok(written)
 }
 
-/// Tells the family that `author` ran an import which added or changed
-/// `count` events (#852): one row per member for the whole import, naming
-/// no event — its `object_id` is empty, there is no single event to open.
-/// Nothing when it changed nothing. Returns the members written, to push
-/// once committed. Same transaction rule as [`write`].
+/// Tells the family that `author` ran an import which added or changed the
+/// events `touched` (#852): one row per member for the whole import, with
+/// the count of those events they see ([`import_counts`]), naming none —
+/// its `object_id` is empty, there is no single event to open. Nothing to
+/// a member who sees none of them. Returns the members written, to push
+/// once committed. Same transaction rule as [`write`]; the author sees
+/// every event they just wrote, so all of `touched` is read back.
 pub(crate) async fn tell_imported(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     group_id: Uuid,
     author: Author<'_>,
-    count: usize,
+    touched: &[Uuid],
 ) -> AppResult<Vec<Uuid>> {
-    if count == 0 {
+    if touched.is_empty() {
         return Ok(Vec::new());
     }
-    let candidates = candidates(tx, group_id).await?;
-    let told = import_recipients(&candidates, author.id, count);
-    if told.is_empty() {
-        return Ok(told);
-    }
-    // No `dedup_key`, no `RETURNING`: as in `write`.
-    center::insert_for(
-        tx,
-        &told,
-        &center::NewNotification {
-            group_id,
-            event: center::Event::AgendaImported {
-                author: author.name,
-                count,
-            },
-            object_id: None,
-            actor_id: Some(author.id),
-            dedup_key: None,
-        },
+    let rows = sqlx::query!(
+        r#"SELECT e.is_private, e.created_by,
+                  ARRAY(SELECT ea.user_id FROM event_assignees ea
+                        WHERE ea.event_id = e.id) AS "assignees!"
+           FROM events e
+           WHERE e.id = ANY($1)"#,
+        touched,
     )
+    .fetch_all(&mut **tx)
     .await?;
+    let audiences: Vec<Audience<'_>> = rows
+        .iter()
+        .map(|row| Audience {
+            is_private: row.is_private,
+            created_by: row.created_by,
+            assignees: &row.assignees,
+        })
+        .collect();
+    let candidates = candidates(tx, group_id).await?;
+    let counts = import_counts(&candidates, author.id, &audiences);
+    // One INSERT per distinct count: the text differs by count alone.
+    let mut by_count: std::collections::BTreeMap<usize, Vec<Uuid>> = Default::default();
+    for &(member, count) in &counts {
+        by_count.entry(count).or_default().push(member);
+    }
+    for (count, members) in &by_count {
+        // No `dedup_key`, no `RETURNING`: as in `write`.
+        center::insert_for(
+            tx,
+            members,
+            &center::NewNotification {
+                group_id,
+                event: center::Event::AgendaImported {
+                    author: author.name,
+                    count: *count,
+                },
+                object_id: None,
+                actor_id: Some(author.id),
+                dedup_key: None,
+            },
+        )
+        .await?;
+    }
+    let told: Vec<Uuid> = counts.into_iter().map(|(member, _)| member).collect();
     Ok(told)
 }
 
@@ -486,21 +518,42 @@ mod tests {
         assert_eq!(recipients(&[], uid(1), &shared(uid(1))), Vec::<Uuid>::new());
     }
 
-    // -- import_recipients (#852) ------------------------------------------
+    // -- import_counts (#852) ---------------------------------------------
 
     #[test]
-    fn an_import_tells_every_candidate_but_its_author() {
+    fn an_import_of_shared_events_tells_every_candidate_but_its_author_the_count() {
         let candidates = [uid(1), uid(2), uid(3)];
-        assert_eq!(import_recipients(&candidates, uid(2), 30), [uid(1), uid(3)]);
-        assert_eq!(import_recipients(&candidates, uid(9), 1), candidates);
+        let touched = vec![shared(uid(2)); 30];
+        assert_eq!(
+            import_counts(&candidates, uid(2), &touched),
+            [(uid(1), 30), (uid(3), 30)]
+        );
     }
 
     #[test]
     fn an_import_that_changed_nothing_tells_no_one() {
         let candidates = [uid(1), uid(2), uid(3)];
+        assert_eq!(import_counts(&candidates, uid(2), &[]), []);
+    }
+
+    /// An imported event made private (#620) counts for its participants
+    /// alone; a member who sees none of the events is not told.
+    #[test]
+    fn a_private_imported_event_counts_for_its_participants_alone() {
+        let candidates = [uid(1), uid(2), uid(3)];
+        let assignees = [uid(1), uid(2)];
+        let private = Audience {
+            is_private: true,
+            created_by: uid(1),
+            assignees: &assignees,
+        };
         assert_eq!(
-            import_recipients(&candidates, uid(2), 0),
-            Vec::<Uuid>::new()
+            import_counts(&candidates, uid(1), &[private, shared(uid(1))]),
+            [(uid(2), 2), (uid(3), 1)]
+        );
+        assert_eq!(
+            import_counts(&candidates, uid(1), &[private, private]),
+            [(uid(2), 2)]
         );
     }
 
