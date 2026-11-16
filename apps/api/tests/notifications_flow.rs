@@ -1,7 +1,7 @@
 //! The notification centre (#534), against a real database: the events
 //! that write a notification (a reminder coming due, a stock item nearing
 //! its expiry and the daily recap of those items, a message, an invitation,
-//! a grocery item), the member's API
+//! a grocery item, an agenda event added, changed or deleted), the member's API
 //! (`/notifications`), its isolation per recipient, the 30-day purge and
 //! the export.
 //!
@@ -1386,4 +1386,466 @@ async fn the_export_holds_the_callers_notifications_only(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(stored, mine);
+}
+
+// -- agenda changes (#849) -------------------------------------------------------
+
+/// `family` with a third member, `third@example.test`, signed in.
+async fn family_of_three(db: &PgPool) -> (Family, String) {
+    let f = family(db).await;
+    let third = register_verify_login(&f.router, db, "third@example.test").await;
+    invite_and_join(&f.router, &f.group, &f.owner, &third).await;
+    (f, third)
+}
+
+/// 14:00 UTC on 10 December 2026 is 15:00 in Paris.
+const DINNER_AT: &str = "2026-12-10T14:00:00Z";
+const DINNER_ENDS: &str = "2026-12-10T15:00:00Z";
+
+async fn create_event(f: &Family, cookie: &str, fields: Value) -> String {
+    let mut body = json!({"title": "Dîner", "starts_at": DINNER_AT, "ends_at": DINNER_ENDS});
+    body.as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+    let res = call(
+        &f.router,
+        Method::POST,
+        &format!("/groups/{}/events", f.group),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+async fn patch_event(f: &Family, cookie: &str, event: &str, fields: Value) -> Value {
+    let res = call(
+        &f.router,
+        Method::PATCH,
+        &format!("/groups/{}/events/{event}", f.group),
+        Some(cookie),
+        Some(fields),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await
+}
+
+async fn delete_event(f: &Family, cookie: &str, event: &str, query: &str) {
+    let res = call(
+        &f.router,
+        Method::DELETE,
+        &format!("/groups/{}/events/{event}{query}", f.group),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+}
+
+/// Every `agenda_change` row, as (recipient's address, body), by address
+/// then by time.
+async fn agenda_rows(db: &PgPool) -> Vec<(String, String)> {
+    sqlx::query_as(
+        "SELECT u.email, n.body FROM notifications n JOIN users u ON u.id = n.user_id
+         WHERE n.kind = 'agenda_change' ORDER BY u.email, n.created_at, n.id",
+    )
+    .fetch_all(db)
+    .await
+    .unwrap()
+}
+
+async fn clear_notifications(db: &PgPool) {
+    sqlx::query("DELETE FROM notifications")
+        .execute(db)
+        .await
+        .unwrap();
+}
+
+fn rows(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|(to, body)| (to.to_string(), body.to_string()))
+        .collect()
+}
+
+/// A shared event, added, changed and deleted by its creator: every other
+/// member is told each time, its author never, and every row names the
+/// event — the deleted one included.
+#[sqlx::test]
+async fn a_shared_event_tells_every_other_member_of_each_write(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let event = create_event(&f, &f.owner, json!({})).await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "member@example.test",
+                "owner@example.test a ajouté « Dîner » le 10/12/2026 à 15:00."
+            ),
+            (
+                "third@example.test",
+                "owner@example.test a ajouté « Dîner » le 10/12/2026 à 15:00."
+            ),
+        ])
+    );
+    assert_eq!(
+        kinds_and_bodies(&list(&f.router, &f.member, "?kind=agenda_change").await),
+        [(
+            "agenda_change".to_string(),
+            "owner@example.test a ajouté « Dîner » le 10/12/2026 à 15:00.".to_string()
+        )]
+    );
+    assert_eq!(unread(&f.router, &f.owner).await, 0);
+
+    clear_notifications(&db).await;
+    patch_event(&f, &f.owner, &event, json!({"location": "Parc"})).await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "member@example.test",
+                "owner@example.test a modifié « Dîner » : lieu."
+            ),
+            (
+                "third@example.test",
+                "owner@example.test a modifié « Dîner » : lieu."
+            ),
+        ])
+    );
+
+    clear_notifications(&db).await;
+    delete_event(&f, &f.owner, &event, "").await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "member@example.test",
+                "owner@example.test a supprimé « Dîner » du 10/12/2026 à 15:00."
+            ),
+            (
+                "third@example.test",
+                "owner@example.test a supprimé « Dîner » du 10/12/2026 à 15:00."
+            ),
+        ])
+    );
+    let objects: Vec<(Option<Uuid>, Option<Uuid>)> =
+        sqlx::query_as("SELECT object_id, actor_id FROM notifications")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    let owner = user_id(&db, "owner@example.test").await;
+    let event = Uuid::parse_str(&event).unwrap();
+    assert_eq!(objects, [(Some(event), Some(owner)); 2]);
+}
+
+/// A private event tells its participants alone: the member outside it has
+/// no row, and nothing of its title reaches their centre.
+#[sqlx::test]
+async fn a_private_event_tells_its_participants_alone(db: PgPool) {
+    let (f, third) = family_of_three(&db).await;
+    let member = user_id(&db, "member@example.test").await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let event = create_event(
+        &f,
+        &f.owner,
+        json!({"title": "Surprise", "is_private": true, "assignee_ids": [owner, member]}),
+    )
+    .await;
+    // Changed and deleted by its assignee, it tells its creator.
+    patch_event(&f, &f.member, &event, json!({"title": "Surprise !"})).await;
+    delete_event(&f, &f.member, &event, "").await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "member@example.test",
+                "owner@example.test a ajouté « Surprise » le 10/12/2026 à 15:00."
+            ),
+            (
+                "owner@example.test",
+                "member@example.test a modifié « Surprise ! » : titre."
+            ),
+            (
+                "owner@example.test",
+                "member@example.test a supprimé « Surprise ! » du 10/12/2026 à 15:00."
+            ),
+        ])
+    );
+    let page = list(&f.router, &third, "").await;
+    assert_eq!(page["notifications"], json!([]));
+    assert!(!page.to_string().contains("Surprise"));
+}
+
+/// The setting off, an account deactivated or purged: told nothing.
+#[sqlx::test]
+async fn a_member_who_opted_out_or_whose_account_is_gone_is_not_told(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let fourth = register_verify_login(&f.router, &db, "fourth@example.test").await;
+    invite_and_join(&f.router, &f.group, &f.owner, &fourth).await;
+    for (update, email) in [
+        (
+            "UPDATE users SET notify_agenda_changes = false WHERE email = $1",
+            "member@example.test",
+        ),
+        (
+            "UPDATE users SET deactivated_at = now() WHERE email = $1",
+            "third@example.test",
+        ),
+        (
+            "UPDATE users SET deleted_at = now() WHERE email = $1",
+            "fourth@example.test",
+        ),
+    ] {
+        sqlx::query(update).bind(email).execute(&db).await.unwrap();
+    }
+    let event = create_event(&f, &f.owner, json!({})).await;
+    patch_event(&f, &f.owner, &event, json!({"title": "Déjeuner"})).await;
+    delete_event(&f, &f.owner, &event, "").await;
+    assert_eq!(agenda_rows(&db).await, rows(&[]));
+}
+
+/// What a member does not see of an event in the list is no news: its
+/// description, its reminders, a task's completion — nor a form sent back
+/// unchanged, with an empty location and the assignees in another order.
+#[sqlx::test]
+async fn a_write_that_changes_nothing_visible_tells_no_one(db: PgPool) {
+    let f = family(&db).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let member = user_id(&db, "member@example.test").await;
+    let event = create_event(&f, &f.owner, json!({"assignee_ids": [owner, member]})).await;
+    let task = create_event(&f, &f.owner, json!({"title": "Courses", "is_task": true})).await;
+    clear_notifications(&db).await;
+
+    patch_event(
+        &f,
+        &f.owner,
+        &event,
+        json!({"description": "Apporter le dessert"}),
+    )
+    .await;
+    patch_event(
+        &f,
+        &f.owner,
+        &event,
+        json!({"title": "Dîner", "location": "", "starts_at": DINNER_AT, "ends_at": DINNER_ENDS,
+               "all_day": false, "rrule": "", "assignee_ids": [member, owner], "is_private": false}),
+    )
+    .await;
+    let reminder = call(
+        &f.router,
+        Method::POST,
+        &format!("/groups/{}/events/{event}/reminders", f.group),
+        Some(&f.owner),
+        Some(json!({"offset_minutes": 60})),
+    )
+    .await;
+    assert_status(&reminder, StatusCode::CREATED);
+    patch_event(&f, &f.owner, &task, json!({"completed": true})).await;
+    assert_eq!(agenda_rows(&db).await, rows(&[]));
+}
+
+/// A series changed or deleted under each scope tells each member once,
+/// and the occurrences split off it are told by what the request changed
+/// alone.
+#[sqlx::test]
+async fn a_series_tells_once_per_write_whatever_its_scope(db: PgPool) {
+    let f = family(&db).await;
+    // Weekly from Monday 7 December 2026, 09:00 UTC (10:00 in Paris).
+    let series = json!({"title": "Piscine", "starts_at": "2026-12-07T09:00:00Z",
+                        "ends_at": "2026-12-07T10:00:00Z", "rrule": "FREQ=WEEKLY;COUNT=5"});
+    let second = "2026-12-14T09:00:00Z";
+    for scope in ["all", "this", "this_and_following"] {
+        let event = create_event(&f, &f.owner, series.clone()).await;
+        clear_notifications(&db).await;
+        patch_event(
+            &f,
+            &f.owner,
+            &event,
+            json!({"title": "Natation", "scope": scope, "occurrence_at": second}),
+        )
+        .await;
+        assert_eq!(
+            agenda_rows(&db).await,
+            rows(&[(
+                "member@example.test",
+                "owner@example.test a modifié « Natation » : titre."
+            )]),
+            "PATCH {scope}"
+        );
+    }
+    // Moved an hour later under `this`: its date and hour, nothing else,
+    // about the event that now holds the occurrence.
+    let event = create_event(&f, &f.owner, series.clone()).await;
+    clear_notifications(&db).await;
+    let moved = patch_event(
+        &f,
+        &f.owner,
+        &event,
+        json!({"scope": "this", "occurrence_at": second,
+               "starts_at": "2026-12-14T10:00:00Z", "ends_at": "2026-12-14T11:00:00Z"}),
+    )
+    .await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a modifié « Piscine » : date et heure."
+        )])
+    );
+    let object: Option<Uuid> = sqlx::query_scalar("SELECT object_id FROM notifications")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(object.unwrap().to_string(), moved["id"].as_str().unwrap());
+
+    for (query, day) in [
+        (format!("?scope=this&occurrence_at={second}"), "14/12/2026"),
+        (
+            format!("?scope=this_and_following&occurrence_at={second}"),
+            "14/12/2026",
+        ),
+        ("?scope=all".to_string(), "07/12/2026"),
+    ] {
+        let event = create_event(&f, &f.owner, series.clone()).await;
+        clear_notifications(&db).await;
+        delete_event(&f, &f.owner, &event, &query).await;
+        let expected = format!("owner@example.test a supprimé « Piscine » du {day} à 10:00.");
+        assert_eq!(
+            agenda_rows(&db).await,
+            rows(&[("member@example.test", &expected)]),
+            "DELETE {query}"
+        );
+    }
+}
+
+/// Made private, an event tells nothing to those who stop seeing it; a
+/// member added to a private one's participants is told it was added, one
+/// taken off it nothing; made shared again, it is added for those who see
+/// it now.
+#[sqlx::test]
+async fn a_change_of_privacy_tells_who_sees_the_event_afterwards(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let member = user_id(&db, "member@example.test").await;
+    let third = user_id(&db, "third@example.test").await;
+    let event = create_event(&f, &f.owner, json!({"assignee_ids": [owner, member]})).await;
+
+    clear_notifications(&db).await;
+    patch_event(
+        &f,
+        &f.owner,
+        &event,
+        json!({"is_private": true, "title": "Secret"}),
+    )
+    .await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a modifié « Secret » : titre."
+        )])
+    );
+
+    clear_notifications(&db).await;
+    patch_event(
+        &f,
+        &f.owner,
+        &event,
+        json!({"assignee_ids": [owner, member, third]}),
+    )
+    .await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "member@example.test",
+                "owner@example.test a modifié « Secret » : participants."
+            ),
+            (
+                "third@example.test",
+                "owner@example.test a ajouté « Secret » le 10/12/2026 à 15:00."
+            ),
+        ])
+    );
+
+    clear_notifications(&db).await;
+    patch_event(
+        &f,
+        &f.owner,
+        &event,
+        json!({"assignee_ids": [owner, member]}),
+    )
+    .await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a modifié « Secret » : participants."
+        )])
+    );
+
+    clear_notifications(&db).await;
+    patch_event(&f, &f.owner, &event, json!({"is_private": false})).await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "third@example.test",
+            "owner@example.test a ajouté « Secret » le 10/12/2026 à 15:00."
+        )])
+    );
+}
+
+/// An event mirrored from an imported calendar tells no one of a change
+/// nor of its deletion.
+#[sqlx::test]
+async fn an_imported_event_tells_no_one(db: PgPool) {
+    let f = family(&db).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    let event = create_event(&f, &f.owner, json!({})).await;
+    sqlx::query(
+        "WITH import AS (
+             INSERT INTO calendar_imports (group_id, created_by, label, feed_url)
+             VALUES ($1::uuid, $2, 'Agenda', '\\x00'::bytea) RETURNING id
+         )
+         INSERT INTO calendar_import_events (calendar_import_id, event_id, external_uid)
+         SELECT id, $3::uuid, 'uid-849' FROM import",
+    )
+    .bind(&f.group)
+    .bind(owner)
+    .bind(&event)
+    .execute(&db)
+    .await
+    .unwrap();
+    clear_notifications(&db).await;
+    patch_event(&f, &f.owner, &event, json!({"title": "Déjeuner"})).await;
+    delete_event(&f, &f.owner, &event, "").await;
+    assert_eq!(agenda_rows(&db).await, rows(&[]));
+}
+
+/// A 500-character title broken by new lines is stored, and its
+/// notifications stay one line within the column's 300 characters.
+#[sqlx::test]
+async fn a_long_title_still_fits_the_notification(db: PgPool) {
+    let f = family(&db).await;
+    let title = format!(
+        "{}\n{}\r\n{}",
+        "t".repeat(200),
+        "u".repeat(200),
+        "v".repeat(98)
+    );
+    let event = create_event(&f, &f.owner, json!({ "title": title })).await;
+    patch_event(&f, &f.owner, &event, json!({"location": "Parc"})).await;
+    delete_event(&f, &f.owner, &event, "").await;
+    let bodies: Vec<String> =
+        sqlx::query_scalar("SELECT body FROM notifications WHERE kind = 'agenda_change'")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(bodies.len(), 3);
+    for body in bodies {
+        assert!(body.chars().count() <= 300, "{body}");
+        assert!(!body.contains(['\n', '\r']), "{body}");
+    }
 }

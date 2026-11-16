@@ -100,6 +100,51 @@ pub enum Event<'a> {
     BudgetCapReached,
     /// The month's spending in a category exceeded that category's cap.
     BudgetCategoryCapExceeded { category: &'a str },
+    /// A member added an agenda event the recipient sees — or made one they
+    /// did not see visible to them (#849). `starts_at` is its first
+    /// occurrence; `all_day` drops the hour, as for a reminder.
+    AgendaAdded {
+        author: &'a str,
+        title: &'a str,
+        starts_at: DateTime<Utc>,
+        all_day: bool,
+    },
+    /// A member changed what the recipient sees of an agenda event (#849):
+    /// `changes` names which of its visible fields moved, `title` is the one
+    /// it has now.
+    AgendaChanged {
+        author: &'a str,
+        title: &'a str,
+        changes: AgendaChanges,
+    },
+    /// A member deleted an agenda event the recipient saw, or some of its
+    /// occurrences (#849): `starts_at` is the first one that went.
+    AgendaDeleted {
+        author: &'a str,
+        title: &'a str,
+        starts_at: DateTime<Utc>,
+        all_day: bool,
+    },
+}
+
+/// Which visible fields of an agenda event a change moved (#849), as
+/// `agenda::change_notices::visible_changes` tells them. The others — its
+/// description, attachments, reminders, a task's completion — are not news.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AgendaChanges {
+    /// Its bounds, its all-day flag or its rule: when it happens.
+    pub when: bool,
+    pub location: bool,
+    pub title: bool,
+    /// Who it is for (`event_assignees`).
+    pub participants: bool,
+}
+
+impl AgendaChanges {
+    /// Nothing a member sees changed: no notification.
+    pub fn is_empty(&self) -> bool {
+        *self == AgendaChanges::default()
+    }
 }
 
 impl Event<'_> {
@@ -113,6 +158,9 @@ impl Event<'_> {
             Event::BudgetCapNear
             | Event::BudgetCapReached
             | Event::BudgetCategoryCapExceeded { .. } => Kind::BudgetAlert,
+            Event::AgendaAdded { .. }
+            | Event::AgendaChanged { .. }
+            | Event::AgendaDeleted { .. } => Kind::AgendaChange,
         }
     }
 }
@@ -132,15 +180,11 @@ pub fn body(event: &Event<'_>) -> String {
             title,
             occurrence_at,
             all_day,
-        } => {
-            let local = occurrence_at.with_timezone(&PARIS);
-            let when = if all_day {
-                local.format("%d/%m/%Y")
-            } else {
-                local.format("%d/%m/%Y à %H:%M")
-            };
-            format!("Rappel : « {} » le {when}.", typed(title))
-        }
+        } => format!(
+            "Rappel : « {} » le {}.",
+            typed(title),
+            paris_when(occurrence_at, all_day)
+        ),
         Event::StockExpiry { item, expires_on } => format!(
             "« {} » est à consommer jusqu'au {}.",
             typed(item),
@@ -171,7 +215,65 @@ pub fn body(event: &Event<'_>) -> String {
             "Les dépenses du mois dépassent le plafond de « {} ».",
             typed(category)
         ),
+        Event::AgendaAdded {
+            author,
+            title,
+            starts_at,
+            all_day,
+        } => format!(
+            "{} a ajouté « {} » le {}.",
+            typed(author),
+            typed(title),
+            paris_when(starts_at, all_day)
+        ),
+        Event::AgendaChanged {
+            author,
+            title,
+            changes,
+        } => format!(
+            "{} a modifié « {} » : {}.",
+            typed(author),
+            typed(title),
+            change_labels(changes)
+        ),
+        Event::AgendaDeleted {
+            author,
+            title,
+            starts_at,
+            all_day,
+        } => format!(
+            "{} a supprimé « {} » du {}.",
+            typed(author),
+            typed(title),
+            paris_when(starts_at, all_day)
+        ),
     }
+}
+
+/// The day and hour of `at` in Paris, the day alone for an all-day event:
+/// its start is only the Paris midnight it opens on.
+fn paris_when(at: DateTime<Utc>, all_day: bool) -> String {
+    let local = at.with_timezone(&PARIS);
+    if all_day {
+        local.format("%d/%m/%Y").to_string()
+    } else {
+        local.format("%d/%m/%Y à %H:%M").to_string()
+    }
+}
+
+/// « date et heure, lieu »: what an agenda change moved, always in this
+/// order. Fixed words only, so the text stays within the column.
+fn change_labels(changes: AgendaChanges) -> String {
+    [
+        (changes.when, "date et heure"),
+        (changes.location, "lieu"),
+        (changes.title, "titre"),
+        (changes.participants, "participants"),
+    ]
+    .into_iter()
+    .filter_map(|(changed, label)| changed.then_some(label))
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// How many item names the recap's text spells out at most.
@@ -824,5 +926,189 @@ mod tests {
     #[test]
     fn an_empty_part_still_gives_a_body() {
         assert!(!body(&Event::Message { author: "" }).is_empty());
+    }
+
+    // -- agenda changes (#849) ----------------------------------------------
+
+    #[test]
+    fn the_agenda_changes_are_of_their_kind() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 3, 14, 30, 0).unwrap();
+        for event in [
+            Event::AgendaAdded {
+                author: "a",
+                title: "t",
+                starts_at: at,
+                all_day: false,
+            },
+            Event::AgendaChanged {
+                author: "a",
+                title: "t",
+                changes: AgendaChanges {
+                    title: true,
+                    ..AgendaChanges::default()
+                },
+            },
+            Event::AgendaDeleted {
+                author: "a",
+                title: "t",
+                starts_at: at,
+                all_day: false,
+            },
+        ] {
+            assert_eq!(event.kind(), Kind::AgendaChange, "{event:?}");
+        }
+    }
+
+    /// 14:30 UTC on 3 October is 16:30 in Paris.
+    #[test]
+    fn an_added_event_names_its_author_title_and_paris_hour() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 3, 14, 30, 0).unwrap();
+        assert_eq!(
+            body(&Event::AgendaAdded {
+                author: "Alice",
+                title: "Dîner",
+                starts_at: at,
+                all_day: false,
+            }),
+            "Alice a ajouté « Dîner » le 03/10/2026 à 16:30."
+        );
+    }
+
+    #[test]
+    fn an_added_all_day_event_names_its_day_only() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 2, 22, 0, 0).unwrap();
+        assert_eq!(
+            body(&Event::AgendaAdded {
+                author: "Alice",
+                title: "Vacances",
+                starts_at: at,
+                all_day: true,
+            }),
+            "Alice a ajouté « Vacances » le 03/10/2026."
+        );
+    }
+
+    #[test]
+    fn a_deleted_event_names_the_day_it_went_from() {
+        let at = Utc.with_ymd_and_hms(2026, 12, 31, 23, 30, 0).unwrap();
+        assert_eq!(
+            body(&Event::AgendaDeleted {
+                author: "Bob",
+                title: "Réveillon",
+                starts_at: at,
+                all_day: false,
+            }),
+            "Bob a supprimé « Réveillon » du 01/01/2027 à 00:30."
+        );
+        let day = Utc.with_ymd_and_hms(2026, 10, 2, 22, 0, 0).unwrap();
+        assert_eq!(
+            body(&Event::AgendaDeleted {
+                author: "Bob",
+                title: "Vacances",
+                starts_at: day,
+                all_day: true,
+            }),
+            "Bob a supprimé « Vacances » du 03/10/2026."
+        );
+    }
+
+    #[test]
+    fn a_changed_event_names_one_change() {
+        assert_eq!(
+            body(&Event::AgendaChanged {
+                author: "Alice",
+                title: "Dîner",
+                changes: AgendaChanges {
+                    location: true,
+                    ..AgendaChanges::default()
+                },
+            }),
+            "Alice a modifié « Dîner » : lieu."
+        );
+    }
+
+    /// Every change, in a fixed order whatever moved first.
+    #[test]
+    fn a_changed_event_names_every_change_in_order() {
+        assert_eq!(
+            body(&Event::AgendaChanged {
+                author: "Alice",
+                title: "Dîner",
+                changes: AgendaChanges {
+                    when: true,
+                    location: true,
+                    title: true,
+                    participants: true,
+                },
+            }),
+            "Alice a modifié « Dîner » : date et heure, lieu, titre, participants."
+        );
+        assert_eq!(
+            body(&Event::AgendaChanged {
+                author: "Alice",
+                title: "Dîner",
+                changes: AgendaChanges {
+                    when: true,
+                    participants: true,
+                    ..AgendaChanges::default()
+                },
+            }),
+            "Alice a modifié « Dîner » : date et heure, participants."
+        );
+    }
+
+    #[test]
+    fn no_change_is_empty() {
+        assert!(AgendaChanges::default().is_empty());
+        assert!(!AgendaChanges {
+            participants: true,
+            ..AgendaChanges::default()
+        }
+        .is_empty());
+    }
+
+    /// The issue's bound: a 500-character title broken by new lines, and an
+    /// author as long, still give one line within the column's 300.
+    #[test]
+    fn an_agenda_change_fits_the_column_whatever_its_title() {
+        let title = format!(
+            "{}\n{}\r\n{}",
+            "t".repeat(200),
+            "u".repeat(200),
+            "v".repeat(98)
+        );
+        assert_eq!(title.chars().count(), 501);
+        let author = "a".repeat(500);
+        let at = Utc.with_ymd_and_hms(2026, 10, 3, 14, 30, 0).unwrap();
+        let every = AgendaChanges {
+            when: true,
+            location: true,
+            title: true,
+            participants: true,
+        };
+        for event in [
+            Event::AgendaAdded {
+                author: &author,
+                title: &title,
+                starts_at: at,
+                all_day: false,
+            },
+            Event::AgendaChanged {
+                author: &author,
+                title: &title,
+                changes: every,
+            },
+            Event::AgendaDeleted {
+                author: &author,
+                title: &title,
+                starts_at: at,
+                all_day: false,
+            },
+        ] {
+            let text = body(&event);
+            let n = text.chars().count();
+            assert!((1..=300).contains(&n), "{n} characters for {event:?}");
+            assert!(!text.contains(['\n', '\r']), "{text:?}");
+        }
     }
 }
