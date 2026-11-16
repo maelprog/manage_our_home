@@ -2243,10 +2243,7 @@ async fn replacing_a_dated_recipe_keeps_its_plan_and_follows_on_the_grocery_list
         .iter()
         .map(|r| r["duration_minutes"].clone())
         .collect();
-    assert_eq!(
-        durations,
-        [serde_json::json!(45), serde_json::Value::Null]
-    );
+    assert_eq!(durations, [serde_json::json!(45), serde_json::Value::Null]);
 
     let replace = call(
         &router,
