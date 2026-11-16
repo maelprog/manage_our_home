@@ -219,7 +219,7 @@ pub(crate) fn page_body(
 </ul>
 <form method="post" action="/groups/{group_id}/allergies">
 {from}<section class="card"><ul class="list">{rows}</ul></section>
-<p class="muted">Vous pourrez modifier ces choix à tout moment depuis <a href="/account/allergies">Mes allergies et aversions</a>. Une allergie ajoutée plus tard est d'abord privée dans toutes vos familles.</p>
+<p class="hint">Vous pourrez modifier ces choix à tout moment depuis <a href="/account/allergies">votre profil</a>. Une allergie ajoutée plus tard est d'abord privée dans toutes vos familles.</p>
 <div class="actions stacked">
 <button type="submit" data-busy-label="Enregistrement…">Valider mes choix</button>
 <a class="btn secondary" href="{later_href}">{later}</a>
@@ -620,6 +620,15 @@ mod tests {
         let levels = [level("en:peanuts", "Arachides", ShareLevel::Private)];
         let html = page_body(family(1), "Maison", None, &levels, None);
         assert!(html.contains(r#"<ul class="key" aria-label="Signification des niveaux">"#));
+    }
+
+    #[test]
+    fn the_footer_points_to_the_profile() {
+        let levels = [level("en:peanuts", "Arachides", ShareLevel::Private)];
+        let html = page_body(family(1), "Maison", None, &levels, None);
+        assert!(html.contains(
+            r#"<p class="hint">Vous pourrez modifier ces choix à tout moment depuis <a href="/account/allergies">votre profil</a>."#
+        ));
     }
 
     #[test]

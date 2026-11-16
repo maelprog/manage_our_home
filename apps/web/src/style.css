@@ -1024,6 +1024,8 @@ label.list-row.pick + label.list-row.pick { margin-top: var(--s2x); }
 /* What each level means, its name in a column of its own. */
 .key { display: grid; gap: var(--s2x); padding: 0; list-style: none; font-size: var(--t-sm); }
 .key li { display: grid; grid-template-columns: 5.5rem 1fr; gap: var(--s2x); }
+/* The line under the card: where to change the choices later. */
+.hint { color: var(--muted); font-size: var(--t-xs); }
 /* -- The grocery list (#526) ----------------------------------------------
    One card — the basket's count, the quick-add form, the two sections — and
    on a PC the suggestions and the recipes to cook beside it, under it when
