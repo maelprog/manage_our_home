@@ -1161,6 +1161,8 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
   .meals ul { display: contents; }
   .meals li li { flex-direction: column; gap: var(--s1); padding: var(--s2x) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
   .meals .empty { flex-direction: row; justify-content: space-between; }
+  /* « Non précisé », a day's third box: under midi and soir, not the day. */
+  .meals li li:nth-child(3) { grid-column: 2 / -1; }
   .meals .when, .meals .current .when { min-width: 0; padding: 0; background: none; color: var(--muted); text-align: left; }
 }
 /* -- The budget (#533) -------------------------------------------------------
