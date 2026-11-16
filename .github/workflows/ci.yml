@@ -135,7 +135,7 @@ jobs:
       # together). Renovate (renovate.json) opens a PR for each new 16.x
       # release or digest republication.
       postgres:
-        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        image: postgres:16.15@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -283,7 +283,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16.15@sha256:a902560563d3a5661228585f53474c5065e7f273b21ffd77e555a8b5682c5690
+        image: postgres:16.15@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
