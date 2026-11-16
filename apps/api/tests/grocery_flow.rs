@@ -1170,3 +1170,118 @@ async fn adding_the_missing_ingredients_of_another_group_is_404(db: PgPool) {
         .unwrap();
     assert_eq!(rows, 0);
 }
+
+/// #824: the lines generated from a recipe come in packs of a scanned
+/// article of their name (« Coquillettes », 500 g) or of their category
+/// (« Lait » and « Lait demi-écrémé Lactel », 1 L); a line no scanned
+/// article matches (« Farine ») is unchanged. The stored quantity stays
+/// exact, and only the list read carries the packs.
+#[sqlx::test]
+async fn the_list_counts_lines_in_packs_of_scanned_articles(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-packs@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    // What a scan would have cached (#402), written directly: the test
+    // must not reach Open Food Facts.
+    for (code, name, quantity, tags) in [
+        ("3038350208002", "Coquillettes", "500 g", vec!["en:pastas"]),
+        (
+            "4006381333931",
+            "Lait demi-écrémé Lactel",
+            "1 L",
+            vec!["en:dairies", "en:milks", "en:semi-skimmed-milks"],
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO off_products (code, name, quantity, categories_tags) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(code)
+        .bind(name)
+        .bind(quantity)
+        .bind(tags)
+        .execute(&db)
+        .await
+        .unwrap();
+        // Used up: an article at 0 does not keep the line off the list.
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&cookie),
+            Some(serde_json::json!({"name": name, "quantity": 0.0, "unit": "g", "barcode": code})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+    let recipe = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Gratin",
+            "ingredients": [
+                {"name": "Coquillettes", "quantity": 380.0, "unit": "g", "is_optional": false},
+                {"name": "Lait", "quantity": 40.0, "unit": "cl", "is_optional": false},
+                {"name": "Farine", "quantity": 300.0, "unit": "g", "is_optional": false}
+            ]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &recipe, None).await;
+    let created = generate(&router, &cookie, &group_id).await;
+    assert_eq!(created.len(), 3, "{created:?}");
+    assert!(
+        created.iter().all(|i| i.get("pack").is_none()),
+        "{created:?}"
+    );
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/grocery-items"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let items = json_body(res).await["items"].as_array().unwrap().clone();
+    let item = |name: &str| items.iter().find(|i| i["name"] == name).unwrap().clone();
+    let pasta = item("Coquillettes");
+    assert_eq!(pasta["quantity"], 380.0);
+    assert_eq!(
+        pasta["pack"],
+        serde_json::json!({"count": 1, "size": {"quantity": 500.0, "unit": "g"}})
+    );
+    let milk = item("Lait");
+    assert_eq!(milk["quantity"], 40.0);
+    assert_eq!(milk["unit"], "cl");
+    assert_eq!(
+        milk["pack"],
+        serde_json::json!({"count": 1, "size": {"quantity": 1.0, "unit": "L"}})
+    );
+    let flour = item("Farine");
+    assert_eq!(flour["quantity"], 300.0);
+    assert!(flour.get("pack").is_none(), "{flour:?}");
+
+    // The rounding is shown, never stored.
+    let stored: Vec<(String, Option<f64>)> =
+        sqlx::query_as("SELECT name, quantity FROM grocery_items ORDER BY name")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        stored,
+        vec![
+            ("Coquillettes".to_string(), Some(380.0)),
+            ("Farine".to_string(), Some(300.0)),
+            ("Lait".to_string(), Some(40.0)),
+        ]
+    );
+}

@@ -369,15 +369,19 @@ pub(crate) async fn score_recipes(
 /// An article in stock as the matching sees it: its name, trimmed and
 /// lowercased, and the categories it belongs to, each with all its
 /// ancestors (empty when it has none).
-struct StockEntry {
-    name: String,
-    tags: HashSet<TagId>,
+pub(crate) struct StockEntry {
+    pub(crate) name: String,
+    pub(crate) tags: HashSet<TagId>,
 }
 
 /// The categories come first from Open Food Facts' `categories_tags` of a
 /// scanned article (#402), the ones the taxonomy knows; otherwise from the
 /// article's name.
-fn stock_entry(taxonomy: &Taxonomy, name: &str, off_categories: &[String]) -> StockEntry {
+pub(crate) fn stock_entry(
+    taxonomy: &Taxonomy,
+    name: &str,
+    off_categories: &[String],
+) -> StockEntry {
     let mut direct: Vec<TagId> = off_categories
         .iter()
         .filter_map(|id| taxonomy.tag(id))

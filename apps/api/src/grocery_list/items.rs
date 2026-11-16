@@ -3,6 +3,7 @@ use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
 use manage_our_home_shared::validation::grocery_list::normalize_unit;
+use manage_our_home_shared::validation::stocks::PackRounding;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
@@ -11,6 +12,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::can_modify;
+use crate::grocery_list::packs::{packs_for, scanned_packs};
 use crate::grocery_list::planned::{
     count_against_list, count_missing_against_list, plan_lines, ListChange, ListedLine,
     PlannedIngredient,
@@ -18,6 +20,7 @@ use crate::grocery_list::planned::{
 use crate::groups::require_role;
 use crate::notifications::center;
 use crate::recipes::availability::planned_availability;
+use crate::recipes::taxonomy::taxonomy;
 use crate::stocks::items::today;
 use crate::AppState;
 
@@ -69,6 +72,12 @@ pub struct GroceryItemResponse {
     pub source_recipe_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The line counted in whole packs of a scanned article (#824,
+    /// `grocery_list::packs`): read on the list (`GET`) only, absent
+    /// elsewhere and when no scanned article matches. Shown, never stored:
+    /// `quantity` stays exact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack: Option<PackRounding>,
 }
 
 struct GroceryItemRow {
@@ -99,6 +108,7 @@ impl From<GroceryItemRow> for GroceryItemResponse {
             source_recipe_id: r.source_recipe_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
+            pack: None,
         }
     }
 }
@@ -252,9 +262,26 @@ pub async fn list_grocery_items(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let scanned = scanned_packs(&mut tx, group_id).await?;
     tx.commit().await?;
 
-    let items: Vec<GroceryItemResponse> = rows.into_iter().map(GroceryItemResponse::from).collect();
+    let taxonomy = taxonomy();
+    let items: Vec<GroceryItemResponse> = rows
+        .into_iter()
+        .map(|row| {
+            let pack = packs_for(
+                taxonomy,
+                &row.name,
+                row.quantity,
+                row.unit.as_deref(),
+                &scanned,
+            );
+            GroceryItemResponse {
+                pack,
+                ..GroceryItemResponse::from(row)
+            }
+        })
+        .collect();
 
     Ok(Json(json!({ "items": items })))
 }

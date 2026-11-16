@@ -9,6 +9,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::validation::stocks::PackRounding;
+
 /// `POST /groups/:id/grocery-items` request body. Mirrors
 /// `CreateGroceryItemRequest`. `quantity`/`unit` are omitted from the wire
 /// when `None` (the backend stores an absent quantity as `NULL`, and an absent
@@ -91,6 +93,10 @@ pub struct GroceryItemResponse {
     pub source_recipe_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The line counted in whole packs of a scanned article (#824), on the
+    /// list read only; `None` when absent. `quantity` stays exact.
+    #[serde(default)]
+    pub pack: Option<PackRounding>,
 }
 
 /// `GET /groups/:id/grocery-items` and `POST …/generate` response envelope
