@@ -37,9 +37,10 @@ use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::agenda::calendar::short_weekday;
 use crate::state::{api_request_auth, AppState};
 
-use super::detail::{error_text, notice_text, plan_html};
+use super::detail::{error_text, notice_text, plan_html_with};
 use super::list::{fetch_suggestions, tabs_html, Tab};
 use super::missing::{missing_badge, missing_dialog};
+use super::replace::{change_link, replaced_notice};
 use super::{family_context, planned_with_stock, recipes_cookie};
 
 /// The days a plan may lie from today, either side (the API's bound, #811).
@@ -232,8 +233,14 @@ fn weekday_name(day: NaiveDate) -> &'static str {
 }
 
 /// One recipe in a slot: its name to its page, then its duration and what
-/// it lacks — the badge, and the dialog it opens.
-fn meal_html(p: &PlannedSelection, durations: &HashMap<Uuid, i32>) -> String {
+/// it lacks — the badge, and the dialog it opens —, and « Changer ce
+/// plat » (#816), named with `slot`, its day and meal in words.
+fn meal_html(
+    p: &PlannedSelection,
+    durations: &HashMap<Uuid, i32>,
+    back: &str,
+    slot: &str,
+) -> String {
     let s = &p.selection;
     let duration = durations
         .get(&s.recipe_id)
@@ -246,9 +253,10 @@ fn meal_html(p: &PlannedSelection, durations: &HashMap<Uuid, i32>) -> String {
         format!(r#"<span class="meta">{duration}{missing}</span>"#)
     };
     format!(
-        r#"<a href="/recipes/{id}">{name}</a>{meta}{dialog}"#,
+        r#"<a href="/recipes/{id}">{name}</a>{meta}{change}{dialog}"#,
         id = s.recipe_id,
         name = html_escape(&s.recipe_name),
+        change = change_link(s.recipe_id, back, &format!("{}, {slot}", s.recipe_name)),
         dialog = missing_dialog(p),
     )
 }
@@ -263,6 +271,7 @@ fn slot_html(
     meal: Option<&str>,
     recipes: &[&PlannedSelection],
     durations: &HashMap<Uuid, i32>,
+    back: &str,
 ) -> String {
     let label = match meal {
         Some("lunch") => "Midi",
@@ -284,7 +293,15 @@ fn slot_html(
             word = label.to_lowercase(),
         );
     }
-    let what: String = recipes.iter().map(|p| meal_html(p, durations)).collect();
+    let weekday = weekday_name(day).to_lowercase();
+    let slot = match meal {
+        Some(_) => format!("{weekday} {}, {}", long_day(day), label.to_lowercase()),
+        None => format!("{weekday} {}", long_day(day)),
+    };
+    let what: String = recipes
+        .iter()
+        .map(|p| meal_html(p, durations, back, &slot))
+        .collect();
     format!(r#"<li><span class="when">{label}</span><div class="what">{what}</div></li>"#)
 }
 
@@ -301,6 +318,7 @@ fn day_html(
     today: NaiveDate,
     planned: &[&PlannedSelection],
     durations: &HashMap<Uuid, i32>,
+    back: &str,
 ) -> String {
     let on = |meal: Option<&str>| -> Vec<&PlannedSelection> {
         planned
@@ -314,10 +332,24 @@ fn day_html(
             .collect()
     };
     let unsaid = on(None);
-    let mut slots = slot_html(day, today, Some("lunch"), &on(Some("lunch")), durations);
-    slots += &slot_html(day, today, Some("dinner"), &on(Some("dinner")), durations);
+    let mut slots = slot_html(
+        day,
+        today,
+        Some("lunch"),
+        &on(Some("lunch")),
+        durations,
+        back,
+    );
+    slots += &slot_html(
+        day,
+        today,
+        Some("dinner"),
+        &on(Some("dinner")),
+        durations,
+        back,
+    );
     if !unsaid.is_empty() {
-        slots += &slot_html(day, today, None, &unsaid, durations);
+        slots += &slot_html(day, today, None, &unsaid, durations, back);
     }
     let (class, badge) = if day == today {
         (
@@ -336,8 +368,8 @@ fn day_html(
 }
 
 /// « À placer »: the planned recipes without a day, each with its number
-/// of people, its duration, what it lacks, and « Choisir un jour » (#812),
-/// which comes back to this window.
+/// of people, its duration, what it lacks, and « Choisir un jour » (#812)
+/// and « Changer ce plat » (#816), which come back to this window.
 fn to_place_html(
     undated: &[&PlannedSelection],
     durations: &HashMap<Uuid, i32>,
@@ -367,7 +399,14 @@ fn to_place_html(
                 id = s.recipe_id,
                 name = html_escape(&s.recipe_name),
                 missing = missing_badge(s.recipe_id, p.missing.len()),
-                form = plan_html(s.recipe_id, Some(s), false, today, back),
+                form = plan_html_with(
+                    s.recipe_id,
+                    Some(s),
+                    false,
+                    today,
+                    back,
+                    &change_link(s.recipe_id, back, &s.recipe_name),
+                ),
                 dialog = missing_dialog(p),
             )
         })
@@ -424,6 +463,7 @@ pub(crate) fn week_html(view: &WeekView) -> String {
         .iter()
         .filter(|p| p.selection.planned_on.is_none())
         .collect();
+    let back = week_back((!w.current).then_some(w.start));
     let days: String = (0..w.days)
         .map(|i| {
             day_html(
@@ -431,10 +471,10 @@ pub(crate) fn week_html(view: &WeekView) -> String {
                 view.today,
                 &shown,
                 view.durations,
+                &back,
             )
         })
         .collect();
-    let back = week_back((!w.current).then_some(w.start));
     format!(
         r#"{nav}{summary}<ol class="meals">{days}</ol>{place}"#,
         summary = summary_html(shown.len(), to_buy_count(&shown)),
@@ -448,6 +488,9 @@ pub struct WeekQuery {
     date: Option<NaiveDate>,
     notice: Option<String>,
     error: Option<String>,
+    /// The two recipes of `notice=recipe_replaced` (#816).
+    from: Option<String>,
+    to: Option<String>,
 }
 
 /// `GET /recipes/week`.
@@ -515,7 +558,19 @@ pub async fn get(
         text.map(|t| format!(r#"<p class="notice {class}">{}</p>"#, html_escape(t)))
             .unwrap_or_default()
     };
-    let notice = banner(query.notice.as_deref().and_then(notice_text), "success");
+    // « X remplacé par Y. » (#816), named from the recipes read above.
+    let name_of = |id: Option<&str>| {
+        let id = Uuid::parse_str(id?).ok()?;
+        recipes.iter().find(|r| r.id == id).map(|r| r.name.as_str())
+    };
+    let replaced = (query.notice.as_deref() == Some("recipe_replaced"))
+        .then(|| replaced_notice(name_of(query.from.as_deref()), name_of(query.to.as_deref())));
+    let notice = banner(
+        replaced
+            .as_deref()
+            .or_else(|| query.notice.as_deref().and_then(notice_text)),
+        "success",
+    );
     let error = banner(query.error.as_deref().and_then(error_text), "error");
     let week = week_html(&WeekView {
         window: window(query.date, today),
@@ -1118,6 +1173,52 @@ mod tests {
             html.contains("Aucun repas planifié cette semaine."),
             "{html}"
         );
+    }
+
+    #[test]
+    fn each_planned_recipe_offers_changer_ce_plat_back_to_its_window() {
+        let planned = [
+            planned(
+                1,
+                "Gratin <dauphinois>",
+                Some(day(2026, 11, 20)),
+                Some("dinner"),
+                &[],
+            ),
+            planned(2, "Quiche", Some(day(2026, 11, 21)), None, &[]),
+            planned(5, "Tarte", None, None, &[]),
+        ];
+        let html = render(Some(&planned), Some(day(2026, 11, 20)));
+        assert!(
+            html.contains(&format!(
+                r#"<a class="change" href="/recipes/{}/replace?back=week@2026-11-20" aria-label="Changer ce plat : Gratin &lt;dauphinois&gt;, vendredi 20 novembre, soir">Changer ce plat</a>"#,
+                Uuid::from_u128(1)
+            )),
+            "{html}"
+        );
+        // A meal not said is not named.
+        assert!(
+            html.contains(r#"aria-label="Changer ce plat : Quiche, samedi 21 novembre">"#),
+            "{html}"
+        );
+        // Under « À placer » too, beside « Choisir un jour ».
+        let place = &html[html.find("À placer").unwrap()..];
+        assert!(
+            place.contains(&format!(
+                r#"</details><a class="change" href="/recipes/{}/replace?back=week@2026-11-20" aria-label="Changer ce plat : Tarte">Changer ce plat</a></div>"#,
+                Uuid::from_u128(5)
+            )),
+            "{place}"
+        );
+        assert_eq!(html.matches(">Changer ce plat</a>").count(), 3, "{html}");
+        // The current window comes back to itself.
+        let planned = [planned_at(1, day(2026, 11, 14))];
+        let html = render(Some(&planned), None);
+        assert!(html.contains("/replace?back=week\""), "{html}");
+    }
+
+    fn planned_at(id: u128, on: NaiveDate) -> PlannedSelection {
+        planned(id, "Gratin", Some(on), Some("lunch"), &[])
     }
 
     #[test]

@@ -1159,7 +1159,7 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .meals li li + li { border-top: 1px solid var(--line); }
 .meals .current .when { background: var(--surface); }
 .meals .what { gap: var(--s1); }
-.meals .meta, .tonight .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); color: var(--muted); font-size: var(--t-sm); }
+.meals .meta, .tonight .meta, .prop .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); color: var(--muted); font-size: var(--t-sm); }
 .meals .empty { align-items: center; }
 .meals .empty a { display: inline-flex; align-items: center; min-height: var(--s12); padding-inline: var(--s2x); margin-left: calc(-1 * var(--s2x)); }
 /* On a PC, a row per day: the day, midi, soir — each meal a flat box. */
@@ -1174,6 +1174,23 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
   /* « Non précisé », a day's third box: under midi and soir, not the day. */
   .meals li li:nth-child(3) { grid-column: 2 / -1; }
   .meals .when, .meals .current .when { min-width: 0; padding: 0; background: none; color: var(--muted); text-align: left; }
+}
+/* « Changer ce plat » (#816): under a planned recipe, a text link 48px
+   tall, its text in line with the name above it. Its page: what is
+   replaced on a card, then up to three offers, a card each — one column on
+   a phone, three on a PC —, « Choisir » at the foot of each. */
+.change { display: inline-flex; align-self: flex-start; align-items: center; min-height: var(--s12); margin-left: calc(-1 * var(--s2x)); padding-inline: var(--s2x); font-size: var(--t-sm); }
+.ctx { margin-top: 0; }
+.ctx p { margin: var(--s1) 0 0; }
+.ctx-name, .prop .name { font-family: "Fraunces", Georgia, serif; font-size: var(--t-xl); font-weight: 600; }
+.prop .name { font-size: var(--t-lg); }
+.props { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.props > .card { margin: 0; }
+.prop form { display: flex; flex-direction: column; gap: var(--s3); height: 100%; }
+.prop button { margin-top: auto; }
+@media (min-width: 861px) {
+  .props { grid-template-columns: repeat(3, 1fr); }
+  .prop button { align-self: flex-start; }
 }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
@@ -1413,15 +1430,15 @@ html { -webkit-tap-highlight-color: transparent; }
    4.34:1 (light) and 4.38:1 (dark) on --border. Hovered, it reads --fg. */
 .chip:hover { background: var(--border); color: var(--fg); }
 /* A text link (#752): every link without a class, but the halves of the
-   kitchen segment, and the three accent links that have one. Bold in the
+   kitchen segment, and the four accent links that have one. Bold in the
    accent rather than underlined — it reads better. `:where()` weighs
    nothing, so a link with a box of its own (`.filters a`, `.mini a`, the
    card title) keeps its colour and decoration. The accent is never the
    only sign (WCAG 1.4.1): the weight is one, and the underline comes back
    under the pointer and the keyboard — beside the focus ring below. A
    background would box a run of body text. */
-:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes) { color: var(--accent); font-weight: 600; text-decoration: none; }
-:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes):is(:hover, :focus-visible) { text-decoration-line: underline; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change) { color: var(--accent); font-weight: 600; text-decoration: none; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change):is(:hover, :focus-visible) { text-decoration-line: underline; }
 /* An underline a link already has (the card title, `.member`) thickens. */
 a:hover { text-decoration-thickness: 2px; }
 /* The password toggle is a `<button>` with no box at all — the primary hover

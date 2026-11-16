@@ -358,6 +358,10 @@ fn build_router(state: AppState) -> Router {
         .route("/recipes/{id}/deselect", post(routes::recipes::deselect))
         .route("/recipes/{id}/planning", post(routes::recipes::plan))
         .route(
+            "/recipes/{id}/replace",
+            get(routes::recipes::replace::get).post(routes::recipes::replace::post),
+        )
+        .route(
             "/recipes/{id}/planning/clear",
             post(routes::recipes::clear_plan),
         )
