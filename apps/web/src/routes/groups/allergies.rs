@@ -212,7 +212,7 @@ pub(crate) fn page_body(
     format!(
         r#"<h1>Partager vos allergies avec {family}</h1>
 <p>{opening}Choisissez ce que ses membres voient de vos allergies.{nothing_yet}</p>
-{error}<ul class="key">
+{error}<ul class="key" aria-label="Signification des niveaux">
 <li><strong>Public</strong><span>Les membres voient l'allergie et que c'est la vôtre.</span></li>
 <li><strong>Anonyme</strong><span>Les membres savent qu'un membre a une allergie, sans votre nom ni laquelle.</span></li>
 <li><strong>Privé</strong><span>Vous seul la voyez.</span></li>
@@ -613,6 +613,13 @@ mod tests {
         assert!(!html.contains("tout laisser privé"));
         assert!(html.contains(r#"href="/groups?notice=joined">Plus tard</a>"#));
         assert!(html.contains("<p>Vous venez de rejoindre Maison. Choisissez"));
+    }
+
+    #[test]
+    fn the_key_is_named() {
+        let levels = [level("en:peanuts", "Arachides", ShareLevel::Private)];
+        let html = page_body(family(1), "Maison", None, &levels, None);
+        assert!(html.contains(r#"<ul class="key" aria-label="Signification des niveaux">"#));
     }
 
     #[test]
