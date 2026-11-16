@@ -709,6 +709,12 @@ hgroup > h1 { margin: 0; }
 /* What expires this week, in the warning tint, flat on the page. */
 .tile.warn { background: var(--warning-soft); color: var(--warning); box-shadow: none; }
 .tile.warn .icon { background: var(--surface); color: var(--warning); }
+/* « Ce soir » (#814), first of the cards: the recipe's name a size up,
+   then its duration and what it lacks as on the planning (`.meta`, with
+   `.meals`); a second recipe greyed, link and all; « … » a 48px target. */
+.tonight .dish { font-size: var(--t-lg); }
+.also, .also a { color: var(--muted); }
+.more-recipes { display: inline-flex; align-items: center; min-width: var(--s12); min-height: var(--s12); }
 /* The grocery tile's gauge, the password gauge's shape: the track in
    --line, the fill in currentColor. `appearance: none` hands its two parts
    to the sheet; each engine names them its own way, and a selector list
@@ -1050,6 +1056,8 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
    week. Its words say which; the tint repeats them. */
 .badge.late { background: var(--error-soft); color: var(--error); }
 .badge.soon { background: var(--warning-soft); color: var(--warning); }
+/* « Tout est en stock » (#814): the success pair. */
+.badge.ok { background: var(--success-soft); color: var(--success); }
 /* The add sheet: quantity and unit share a line; the scan comes first, in
    the accent's dashed box, then « ou saisir » between two fine lines. */
 .pair { display: flex; gap: var(--s2x); }
@@ -1151,7 +1159,7 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .meals li li + li { border-top: 1px solid var(--line); }
 .meals .current .when { background: var(--surface); }
 .meals .what { gap: var(--s1); }
-.meals .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); color: var(--muted); font-size: var(--t-sm); }
+.meals .meta, .tonight .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); color: var(--muted); font-size: var(--t-sm); }
 .meals .empty { align-items: center; }
 .meals .empty a { display: inline-flex; align-items: center; min-height: var(--s12); padding-inline: var(--s2x); margin-left: calc(-1 * var(--s2x)); }
 /* On a PC, a row per day: the day, midi, soir — each meal a flat box. */

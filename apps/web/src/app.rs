@@ -2611,7 +2611,7 @@ mod tests {
             "--error-soft",
             ".notice.error, .danger:hover, .badge.late",
         ),
-        ("--success", "--success-soft", ".notice.success"),
+        ("--success", "--success-soft", ".notice.success, .badge.ok"),
         (
             "--warning",
             "--warning-soft",
