@@ -293,7 +293,8 @@ pub fn round_to_packs(
     let quantity = quantity.filter(|q| *q > 0.0)?;
     let size = parse_pack_size(pack)?;
     let need = convert_quantity(quantity, unit?, &size.unit)?;
-    // 0.3 / 0.1 is 2.9999999999999996: the noise goes before the ceiling.
+    // 2.1 / 0.7 is 3.0000000000000004: the noise goes before the ceiling,
+    // or a whole number of packs takes one too many.
     let count = without_binary_noise(need / size.quantity).ceil();
     (count.is_finite() && count >= 1.0).then_some(PackRounding {
         count: count as u64,
@@ -1157,10 +1158,14 @@ mod tests {
             round_to_packs(Some(2.0), Some("L"), "1 L"),
             packs(2, 1.0, "L")
         );
-        // 0.3 / 0.1 is 2.9999999999999996 in f64: still 3 packs, not 3.
         assert_eq!(
             round_to_packs(Some(0.3), Some("L"), "10 cl"),
             packs(3, 10.0, "cl")
+        );
+        // 2.1 / 0.7 is 3.0000000000000004 in f64: still 3 packs, not 4.
+        assert_eq!(
+            round_to_packs(Some(2.1), Some("L"), "0,7 L"),
+            packs(3, 0.7, "L")
         );
     }
 
