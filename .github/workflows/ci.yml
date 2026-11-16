@@ -305,7 +305,7 @@ jobs:
       # runner itself, which the names of the Caddyfile's upstreams, `api`
       # and `web`, are pointed at.
       caddy:
-        image: caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af
+        image: caddy:2.11.8@sha256:4fcafa98afd1c2e642e353e3c5cf9ddbe892fcee14bc990e7ba2c5b78e51f9cf
         env:
           SITE_ADDRESS: localhost
         ports:
