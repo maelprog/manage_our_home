@@ -269,6 +269,9 @@ pub fn build_router(state: AppState) -> Router {
             "/me/dietary-constraints",
             delete(recipes::constraints::erase_constraints),
         )
+        // #819: the categories a member may name an allergy or a dislike
+        // by; the query, like a tag, travels in the body.
+        .route("/taxonomy/search", post(recipes::constraints::search_tags))
         .route(
             "/me/avatar",
             // The body limit on `PUT` only: `MethodRouter::layer` applies to

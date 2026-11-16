@@ -49,6 +49,10 @@ pub struct CreateRecipeRequest {
     /// `validation::recipes::DURATION_MAX`; omitted when not said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<i32>,
+    /// The equipment it needs (#817, #819): codes of
+    /// `validation::dietary::EQUIPMENT`, none by default.
+    #[serde(default)]
+    pub required_equipment: Vec<String>,
 }
 
 /// The longest `source_url` a recipe may carry, in characters.
@@ -102,6 +106,10 @@ pub struct UpdateRecipeRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub duration_minutes: Option<Option<i32>>,
+    /// The equipment it needs (#819): omitted leaves it as it is, a list
+    /// replaces it, `[]` clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_equipment: Option<Vec<String>>,
 }
 
 /// One ingredient on a recipe response. Mirrors `IngredientResponse`.
@@ -136,6 +144,9 @@ pub struct RecipeResponse {
     /// How long it takes, in minutes (#539), if it says.
     #[serde(default)]
     pub duration_minutes: Option<i32>,
+    /// The equipment it needs (#817, #819), sorted codes.
+    #[serde(default)]
+    pub required_equipment: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

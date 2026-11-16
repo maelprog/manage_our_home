@@ -104,6 +104,70 @@ pub fn equipment_label(code: &str) -> Option<&'static str> {
         .map(|(_, label)| *label)
 }
 
+/// The fourteen allergens of annex II of regulation (EU) 1169/2011 (INCO),
+/// in its order, each with the category of the embedded taxonomy that
+/// stands for it and its French name (#819). The account page offers them
+/// first. The taxonomy names food categories, not substances: gluten is
+/// the cereals (`en:cereals-and-their-products`, which rice and maize fall
+/// under too), and sulphites, which no category names, are the wines, where
+/// a label most often declares them. `recipes::constraints`' tests in
+/// apps/api check that each tag is a category of the embedded taxonomy.
+pub const INCO_ALLERGENS: &[(&str, &str)] = &[
+    ("en:cereals-and-their-products", "Gluten"),
+    ("en:crustaceans", "Crustacés"),
+    ("en:eggs", "Œufs"),
+    ("en:fishes", "Poissons"),
+    ("en:peanuts", "Arachides"),
+    ("en:soy-beans", "Soja"),
+    ("en:milks", "Lait"),
+    ("en:nuts", "Fruits à coque"),
+    ("en:celery", "Céleri"),
+    ("en:mustards", "Moutarde"),
+    ("en:sesame", "Sésame"),
+    ("en:wines", "Sulfites"),
+    ("en:lupin-beans", "Lupin"),
+    ("en:mollusc", "Mollusques"),
+];
+
+/// The French name of an INCO allergen's tag, `None` for any other tag.
+pub fn inco_label(tag: &str) -> Option<&'static str> {
+    INCO_ALLERGENS
+        .iter()
+        .find(|(t, _)| *t == tag)
+        .map(|(_, label)| *label)
+}
+
+/// One equipment a form offers to tick (#819).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EquipmentChoice {
+    pub code: &'static str,
+    pub label: &'static str,
+    /// Ticked when the form is drawn.
+    pub ticked: bool,
+    /// The household has it.
+    pub owned: bool,
+}
+
+/// The equipment a recipe's form offers: the household's, and whatever the
+/// recipe already requires that the household lacks, so that saving the
+/// form does not drop it. In [`EQUIPMENT`]'s order; a code outside it is
+/// left out.
+pub fn equipment_choices(household: &[String], ticked: &[String]) -> Vec<EquipmentChoice> {
+    EQUIPMENT
+        .iter()
+        .filter_map(|(code, label)| {
+            let owned = household.iter().any(|c| c == code);
+            let ticked = ticked.iter().any(|c| c == code);
+            (owned || ticked).then_some(EquipmentChoice {
+                code,
+                label,
+                ticked,
+                owned,
+            })
+        })
+        .collect()
+}
+
 /// Checks a tag's shape and returns it trimmed: a language prefix of two
 /// lowercase ASCII letters, a colon, then a name with no whitespace, no
 /// control character and no upper-case letter, the whole at most
@@ -284,6 +348,60 @@ mod tests {
             assert_eq!(equipment_label(code), Some(*label));
         }
         assert_eq!(equipment_label("teleporter"), None);
+    }
+
+    #[test]
+    fn the_fourteen_inco_allergens_each_have_one_tag_and_a_label() {
+        assert_eq!(INCO_ALLERGENS.len(), 14);
+        for (i, (tag, label)) in INCO_ALLERGENS.iter().enumerate() {
+            assert_eq!(validate_tag(tag), Ok(*tag), "{label}");
+            assert!(
+                !INCO_ALLERGENS[..i].iter().any(|(t, _)| t == tag),
+                "{tag} listed twice"
+            );
+            assert!(
+                !INCO_ALLERGENS[..i].iter().any(|(_, l)| l == label),
+                "{label} listed twice"
+            );
+            assert_eq!(inco_label(tag), Some(*label));
+        }
+        assert_eq!(inco_label("en:peanuts"), Some("Arachides"));
+        assert_eq!(inco_label("en:kiwifruits"), None);
+    }
+
+    #[test]
+    fn the_equipment_offered_is_the_households_and_what_is_ticked_in_list_order() {
+        let choices = equipment_choices(&codes(&["oven", "hob"]), &codes(&["barbecue", "oven"]));
+        assert_eq!(
+            choices,
+            vec![
+                EquipmentChoice {
+                    code: "oven",
+                    label: "Four",
+                    ticked: true,
+                    owned: true
+                },
+                EquipmentChoice {
+                    code: "hob",
+                    label: "Plaques de cuisson",
+                    ticked: false,
+                    owned: true
+                },
+                EquipmentChoice {
+                    code: "barbecue",
+                    label: "Barbecue",
+                    ticked: true,
+                    owned: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_code_is_never_offered() {
+        let choices = equipment_choices(&codes(&["teleporter"]), &codes(&["Oven"]));
+        assert!(choices.is_empty(), "{choices:?}");
+        assert!(equipment_choices(&[], &[]).is_empty());
     }
 
     #[test]

@@ -38,6 +38,11 @@ pub struct Taxonomy {
     exact: HashMap<String, TagId>,
     /// Normalized name, accents folded → tag.
     folded: HashMap<String, TagId>,
+    /// Each tag's first French name, as written (#819).
+    labels: Vec<String>,
+    /// Each tag's names, normalized with their accents folded: what
+    /// [`Taxonomy::search`] reads (#819).
+    searchable: Vec<Vec<String>>,
 }
 
 /// The embedded data: Open Food Facts' categories with a French name, and
@@ -134,12 +139,28 @@ impl Taxonomy {
             })
             .collect();
 
+        let labels = rows
+            .iter()
+            .map(|(_, _, names)| names.split('|').next().unwrap_or_default().to_string())
+            .collect();
+        let searchable = rows
+            .iter()
+            .map(|(_, _, names)| {
+                names
+                    .split('|')
+                    .map(|name| normalize(name, true))
+                    .filter(|key| !key.is_empty())
+                    .collect()
+            })
+            .collect();
         let mut taxonomy = Taxonomy {
             ids,
             by_id,
             parents,
             exact: HashMap::new(),
             folded: HashMap::new(),
+            labels,
+            searchable,
         };
         for fold in [false, true] {
             let mut candidates: HashMap<String, Vec<TagId>> = HashMap::new();
@@ -185,6 +206,56 @@ impl Taxonomy {
     /// The Open Food Facts id of a tag.
     pub fn id(&self, tag: TagId) -> &str {
         &self.ids[tag.0 as usize]
+    }
+
+    /// The tag's first French name, as the taxonomy writes it (#819).
+    pub fn label(&self, tag: TagId) -> &str {
+        &self.labels[tag.0 as usize]
+    }
+
+    /// At most `limit` tags whose French names match `query` (#819), the
+    /// query read as a name is ([`normalize`], accents folded): first the
+    /// tags one of whose names is the query, then those one of whose names
+    /// starts with it, then those one of whose names has a word starting
+    /// with it. A match inside a word is none. Within a rank, the shorter
+    /// label first, then the label, then the id: the same query always
+    /// answers the same list.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<TagId> {
+        let query = normalize(query, true);
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let word_start = format!(" {query}");
+        let mut found: Vec<(u8, TagId)> = self
+            .searchable
+            .iter()
+            .enumerate()
+            .filter_map(|(i, names)| {
+                let rank = names
+                    .iter()
+                    .filter_map(|name| {
+                        if *name == query {
+                            Some(0)
+                        } else if name.starts_with(&query) {
+                            Some(1)
+                        } else if name.contains(&word_start) {
+                            Some(2)
+                        } else {
+                            None
+                        }
+                    })
+                    .min()?;
+                Some((rank, TagId(i as u32)))
+            })
+            .collect();
+        found.sort_by(|(ra, a), (rb, b)| {
+            let (la, lb) = (self.label(*a), self.label(*b));
+            ra.cmp(rb)
+                .then(la.chars().count().cmp(&lb.chars().count()))
+                .then(la.cmp(lb))
+                .then(self.id(*a).cmp(self.id(*b)))
+        });
+        found.into_iter().take(limit).map(|(_, tag)| tag).collect()
     }
 
     pub fn canonical_ingredient(&self, name: &str) -> Option<TagId> {
@@ -361,6 +432,50 @@ en:potatoes\t\tPommes de terre
             .map(|id| tag(&t, id))
             .collect();
         assert_eq!(t.ancestors_or_self(semi), expected);
+    }
+
+    fn found<'t>(t: &'t Taxonomy, query: &str, limit: usize) -> Vec<&'t str> {
+        t.search(query, limit)
+            .into_iter()
+            .map(|tag| t.id(tag))
+            .collect()
+    }
+
+    #[test]
+    fn a_label_is_the_first_french_name() {
+        let t = fixture();
+        assert_eq!(t.label(tag(&t, "en:milks")), "Laits");
+        assert_eq!(t.label(tag(&t, "en:eggs")), "Œufs");
+        assert_eq!(t.label(tag(&t, "en:potatoes")), "Pommes de terre");
+    }
+
+    #[test]
+    fn search_ranks_a_whole_name_then_a_name_start_then_a_word_start() {
+        let t = fixture();
+        assert_eq!(
+            found(&t, "lait", 10),
+            vec!["en:milks", "en:semi-skimmed-milks", "en:dairies"]
+        );
+        assert_eq!(found(&t, "lait", 1), vec!["en:milks"]);
+    }
+
+    #[test]
+    fn search_reads_the_query_as_a_name_is_read() {
+        let t = fixture();
+        assert_eq!(found(&t, "ŒUFS", 10), vec!["en:eggs"]);
+        assert_eq!(found(&t, " oeuf ", 10), vec!["en:eggs"]);
+        assert_eq!(found(&t, "terre", 10), vec!["en:potatoes"]);
+        assert_eq!(found(&t, "creme fraiche", 10), vec!["en:creme-fraiche"]);
+    }
+
+    #[test]
+    fn search_finds_nothing_for_an_empty_query_or_the_inside_of_a_word() {
+        let t = fixture();
+        assert!(found(&t, "", 10).is_empty());
+        assert!(found(&t, "  de ", 10).is_empty());
+        assert!(found(&t, "aits", 10).is_empty());
+        assert!(found(&t, "licorne", 10).is_empty());
+        assert!(found(&t, "lait", 0).is_empty());
     }
 
     #[test]
