@@ -1757,8 +1757,10 @@ async fn pushed_within_10_s(db: &PgPool, device: Uuid, what: &str) {
 
 /// #851: once each write committed, the members told whose channel
 /// includes notifications get a push on their devices — not its author,
-/// nor a member on email. Every write that tells: an addition, a change,
-/// a deletion of one occurrence of a series, a deletion of the whole.
+/// nor a member on email. Every write that tells, under each of the
+/// handlers' commits: an addition, a change of the whole series and of one
+/// occurrence (split off it), a deletion of one occurrence, of the
+/// following ones, and of the whole.
 #[sqlx::test]
 async fn each_agenda_write_pushes_the_members_told_on_notifications(db: PgPool) {
     let (f, _third) = family_of_three(&db).await;
@@ -1772,15 +1774,32 @@ async fn each_agenda_write_pushes_the_members_told_on_notifications(db: PgPool) 
     let third_device = unreachable_device(&db, "third@example.test").await;
 
     let mut event = String::new();
-    for write in ["POST", "PATCH", "DELETE this", "DELETE all"] {
+    for write in [
+        "POST",
+        "PATCH",
+        "PATCH this",
+        "DELETE this",
+        "DELETE this_and_following",
+        "DELETE all",
+    ] {
         let member_device = unreachable_device(&db, "member@example.test").await;
         match write {
             "POST" => event = create_event(&f, &f.owner, series.clone()).await,
             "PATCH" => {
                 patch_event(&f, &f.owner, &event, json!({"location": "Parc"})).await;
             }
+            // Splits the occurrence of 21 December off the series.
+            "PATCH this" => {
+                let fields = json!({"title": "Natation", "scope": "this",
+                                    "occurrence_at": "2026-12-21T09:00:00Z"});
+                patch_event(&f, &f.owner, &event, fields).await;
+            }
             "DELETE this" => {
                 let query = "?scope=this&occurrence_at=2026-12-14T09:00:00Z";
+                delete_event(&f, &f.owner, &event, query).await;
+            }
+            "DELETE this_and_following" => {
+                let query = "?scope=this_and_following&occurrence_at=2026-12-28T09:00:00Z";
                 delete_event(&f, &f.owner, &event, query).await;
             }
             _ => delete_event(&f, &f.owner, &event, "").await,
