@@ -612,19 +612,52 @@ async fn the_household_equipment_and_what_a_recipe_needs(db: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({"codes": []}));
 
-    // Any member sets it; the list is stored sorted.
+    // The owner and the admins set it (#819), the list stored sorted; every
+    // member reads it.
     let (status, body) = send(
         &router,
         Method::PUT,
         &uri,
-        &f.holder,
+        &f.owner,
         Some(json!({"codes": ["oven", "blender"]})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+    let (_, body) = send(&router, Method::GET, &uri, &f.holder, None).await;
+    assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+
+    // A standard member does not change it.
+    let (status, _) = send(
+        &router,
+        Method::PUT,
+        &uri,
+        &f.holder,
+        Some(json!({"codes": ["oven"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let (_, body) = send(&router, Method::GET, &uri, &f.owner, None).await;
     assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+
+    // An admin does.
+    sqlx::query(
+        "UPDATE group_members SET role = 'admin' WHERE group_id = $1::uuid AND role = 'standard'",
+    )
+    .bind(&f.group)
+    .execute(&db)
+    .await
+    .unwrap();
+    let (status, body) = send(
+        &router,
+        Method::PUT,
+        &uri,
+        &f.holder,
+        Some(json!({"codes": ["blender", "oven", "hob"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"codes": ["blender", "hob", "oven"]}));
 
     for (codes, code) in [
         (json!(["oven", "teleporter"]), "unknown_equipment"),
@@ -644,7 +677,7 @@ async fn the_household_equipment_and_what_a_recipe_needs(db: PgPool) {
         );
     }
     let (_, body) = send(&router, Method::GET, &uri, &f.owner, None).await;
-    assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+    assert_eq!(body, json!({"codes": ["blender", "hob", "oven"]}));
 
     let stranger = register_verify_login(&router, &db, "equipment-stranger@example.test").await;
     let (status, _) = send(&router, Method::GET, &uri, &stranger, None).await;
@@ -738,4 +771,87 @@ async fn the_household_equipment_and_what_a_recipe_needs(db: PgPool) {
         (status, body["error"].as_str()),
         (StatusCode::BAD_REQUEST, Some("unknown_equipment"))
     );
+}
+
+/// #819: the account page names an allergy or a dislike beyond the INCO
+/// fourteen by searching the taxonomy, and shows each one by its name.
+#[sqlx::test]
+async fn a_member_finds_a_category_by_its_name_and_reads_it_back_by_name(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "search").await;
+    let search = |query: Value| {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        async move {
+            send(
+                &router,
+                Method::POST,
+                "/taxonomy/search",
+                &cookie,
+                Some(json!({ "query": query })),
+            )
+            .await
+        }
+    };
+
+    let (status, body) = search(json!("Kiwi")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["results"][0],
+        json!({"tag": "en:kiwifruits", "label": "Kiwis"})
+    );
+    assert!(body["results"].as_array().unwrap().len() <= 20, "{body}");
+
+    let (status, body) = search(json!("")).await;
+    assert_eq!((status, body), (StatusCode::OK, json!({"results": []})));
+
+    // The bound counts characters, as the page's `maxlength` does: 128 « é »
+    // (256 bytes) are read, 129 are not.
+    let (status, body) = search(json!("é".repeat(128))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for long in ["a".repeat(129), "é".repeat(129)] {
+        let (status, body) = search(json!(long)).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("query_too_long"))
+        );
+    }
+
+    // Signed in only.
+    let res = call(
+        &router,
+        Method::POST,
+        "/taxonomy/search",
+        None,
+        Some(json!({"query": "kiwi"})),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // What was found is what is recorded, and read back by its name.
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        "/me/allergies",
+        &f.holder,
+        Some(json!({"tag": "en:kiwifruits"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["label"], "Kiwis");
+    let (_, body) = send(&router, Method::GET, "/me/allergies", &f.holder, None).await;
+    assert_eq!(body["allergies"][0]["label"], "Kiwis");
+
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        "/me/dislikes",
+        &f.holder,
+        Some(json!({"tag": "en:mushrooms"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["label"], "Champignons");
+    let (_, body) = send(&router, Method::GET, "/me/dislikes", &f.holder, None).await;
+    assert_eq!(body["dislikes"][0]["label"], "Champignons");
 }

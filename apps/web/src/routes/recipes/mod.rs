@@ -16,6 +16,7 @@
 
 pub mod detail;
 pub mod edit;
+pub mod equipment;
 pub mod import;
 pub mod list;
 pub mod missing;

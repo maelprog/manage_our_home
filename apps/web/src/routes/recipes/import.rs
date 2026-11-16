@@ -132,7 +132,9 @@ pub async fn post(
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             match serde_json::from_value::<RecipeDraft>(resp.body) {
                 Ok(draft) => {
-                    Html(super::new::page(&fam.header, &draft_form(&draft), None)).into_response()
+                    let mut form = draft_form(&draft);
+                    super::new::for_family(&mut form, &state, fam.gid, &headers).await;
+                    Html(super::new::page(&fam.header, &form, None)).into_response()
                 }
                 Err(_) => refused("unavailable"),
             }

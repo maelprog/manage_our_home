@@ -1000,6 +1000,15 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .picks { display: flex; flex-wrap: wrap; gap: var(--s2x); }
 .pick { padding: 0 var(--s3) 0 var(--s2x); border: 1px solid var(--border); border-radius: var(--r-sm); accent-color: var(--accent); }
 .pick:has(:checked) { border-color: var(--accent); background: var(--accent-soft); }
+/* An allergy's three levels in one family (#819): each says what it does,
+   the chosen one alone shown; all three where :has() is unsupported. */
+.share:has([value=public]:not(:checked)) .public, .share:has([value=anonymous]:not(:checked)) .anonymous, .share:has([value=private]:not(:checked)) .private { display: none; }
+/* The effect in a --hover box (maquette #819). The levels, the kind of an
+   allergy and the box of consent are `label.list-row.pick`: framed, tinted
+   once ticked, two lines tall, one under the other. */
+.share > p { padding: var(--s2x) var(--s3); border-radius: var(--r-sm); background: var(--hover); font-size: var(--t-sm); }
+label.list-row.pick { padding-block: var(--s2x); }
+label.list-row.pick + label.list-row.pick { margin-top: var(--s2x); }
 /* -- The grocery list (#526) ----------------------------------------------
    One card — the basket's count, the quick-add form, the two sections — and
    on a PC the suggestions and the recipes to cook beside it, under it when
@@ -1131,9 +1140,11 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 /* The day and the meal of a planned recipe (#812): a `.card.inline` whose
    meals are `.picks` in a fieldset, which draws no box of its own here, its
    legend the size of a field's label; the line that says the day takes the
-   whole row, above the fields. */
-.when-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-.when-form legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
+   whole row, above the fields. `.plain` is the same boxless fieldset
+   elsewhere (#819): the levels of an allergy, the kind of a new one, the
+   household's equipment. */
+.when-form fieldset, fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
+.when-form legend, .plain > legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
 .when-form .when-state { flex: 1 0 100%; }
 /* -- The planning of the meals (#813) ----------------------------------------
    ‹ Aujourd'hui › then the window in words: its own line on a phone, beside

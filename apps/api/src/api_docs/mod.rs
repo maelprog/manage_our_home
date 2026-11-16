@@ -161,6 +161,7 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::recipes::constraints::put_equipment,
         crate::recipes::constraints::remove_allergy,
         crate::recipes::constraints::remove_dislike,
+        crate::recipes::constraints::search_tags,
         crate::recipes::constraints::set_allergy_sharing,
         crate::recipes::crud::create_recipe,
         crate::recipes::crud::delete_recipe,

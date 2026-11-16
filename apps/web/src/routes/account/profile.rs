@@ -138,6 +138,7 @@ pub(crate) fn settings_section(me: &MeResponse, appearance: Appearance) -> Strin
 <h2>Compte</h2>
 <ul class="list">
 {appearance}
+{allergies}
 {notifications}
 {sessions}
 {export}
@@ -148,6 +149,12 @@ pub(crate) fn settings_section(me: &MeResponse, appearance: Appearance) -> Strin
 </form>
 </section>"#,
         appearance = setting_row(appearance::PATH, "Apparence", appearance.label()),
+        // #819.
+        allergies = setting_row(
+            super::allergies::PATH,
+            "Mes allergies et aversions",
+            "Données de santé : vous choisissez qui les voit, famille par famille",
+        ),
         notifications = setting_row(
             "/account/notifications",
             "Gérer mes notifications",

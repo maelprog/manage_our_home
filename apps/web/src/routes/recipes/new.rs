@@ -29,6 +29,8 @@ use manage_our_home_shared::validation::recipes::{
     IngredientFields, IngredientParseError, RecipeFormError, DURATION_MAX, SERVINGS_MAX,
 };
 
+use uuid::Uuid;
+
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -56,6 +58,13 @@ pub struct RecipeForm {
     pub ingredients: Vec<IngredientFields>,
     /// The steps, in their order.
     pub steps: Vec<String>,
+    /// The equipment ticked (#819), codes of `dietary::EQUIPMENT`.
+    pub equipment: Vec<String>,
+    /// Not a field: the family the form is drawn for, and its equipment
+    /// (`None` when it could not be read), which the « Équipements requis »
+    /// boxes are drawn from (#819). Set by the handler.
+    pub group_id: Uuid,
+    pub household: Option<Vec<String>>,
 }
 
 impl RecipeForm {
@@ -98,6 +107,7 @@ pub(crate) fn read_form(pairs: &[(String, String)]) -> (RecipeForm, Intent) {
             "servings_was" => form.servings_was = Some(value.clone()),
             "duration" => form.duration = value.clone(),
             "source_url" => form.source_url = value.clone(),
+            "equipment" => form.equipment.push(value.clone()),
             "more" => intent = Intent::MoreLines,
             _ => {
                 let Some((field, n)) = key.split_once('.') else {
@@ -151,6 +161,8 @@ pub(crate) fn error_message(code: &str) -> &'static str {
         "invalid_duration" => {
             "Le temps doit être un nombre entier de minutes, de 1 à 1440 (24 heures)."
         }
+        "unknown_equipment" => "Un équipement choisi n'est pas proposé. Rechargez la page.",
+        "duplicate_equipment" => "Un équipement est coché deux fois. Rechargez la page.",
         "unavailable" => "Service momentanément indisponible, merci de réessayer.",
         _ => "Une erreur est survenue, merci de réessayer.",
     }
@@ -277,6 +289,7 @@ fn fields_with(form: &RecipeForm, blank_lines: usize, blank_steps: usize) -> Str
 </label>
 </div>
 <p class="muted">Personnes : pour combien les quantités sont écrites. La liste de courses les recalcule pour les personnes indiquées en mettant la recette « À réaliser ».{rescales}</p>
+{equipment}
 <fieldset class="card">
 <legend>Ingrédients</legend>
 <p class="muted">Seul l'ingrédient est obligatoire. Saison : les mois, en numéros séparés par des virgules (1 à 12). Un ingrédient facultatif n'est pas compté pour savoir si la recette se fait avec le stock. Une ligne laissée vide est ignorée.</p>
@@ -289,6 +302,8 @@ fn fields_with(form: &RecipeForm, blank_lines: usize, blank_steps: usize) -> Str
         name = html_escape(&form.name),
         servings = html_escape(&form.servings),
         duration = html_escape(&form.duration),
+        equipment =
+            super::equipment::fieldset(form.group_id, form.household.as_deref(), &form.equipment),
     )
 }
 
@@ -387,7 +402,22 @@ pub async fn get(
     let Some(fam) = family_context(&state, &headers, &me, "/recipes/new").await else {
         return Redirect::to("/groups/new").into_response();
     };
-    Html(page(&fam.header, &RecipeForm::default(), None)).into_response()
+    let mut form = RecipeForm::default();
+    for_family(&mut form, &state, fam.gid, &headers).await;
+    Html(page(&fam.header, &form, None)).into_response()
+}
+
+/// Draws `form` for the family `gid`: its equipment, for « Équipements
+/// requis » (#819).
+pub(crate) async fn for_family(
+    form: &mut RecipeForm,
+    state: &AppState,
+    gid: Uuid,
+    headers: &HeaderMap,
+) {
+    let cookie = recipes_cookie(headers);
+    form.group_id = gid;
+    form.household = super::equipment::fetch_household(state, gid, cookie.as_deref()).await;
 }
 
 pub async fn post(
@@ -400,6 +430,7 @@ pub async fn post(
         return Redirect::to("/groups/new").into_response();
     };
     let (mut form, intent) = read_form(&pairs);
+    for_family(&mut form, &state, fam.gid, &headers).await;
     if intent == Intent::MoreLines {
         return Html(page(&fam.header, &form, None)).into_response();
     }
@@ -423,6 +454,7 @@ pub async fn post(
         source_url,
         servings: checked.servings,
         duration_minutes: checked.duration_minutes,
+        required_equipment: form.equipment.clone(),
     };
 
     let cookie = recipes_cookie(&headers);
