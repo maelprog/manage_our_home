@@ -150,15 +150,17 @@ possibles sont :
   rappels vous parviennent par notification et que vous les avez activées
   sur un appareil — il porte alors aussi les alertes de plafond du budget,
   si vous êtes propriétaire ou administrateur d'une famille, et le
-  récapitulatif quotidien des articles bientôt périmés : celui de Google pour Chrome et la plupart des
+  récapitulatif quotidien des articles bientôt périmés, et les changements
+  qu'un autre membre fait à un événement de l'agenda que vous voyez : celui de Google pour Chrome et la plupart des
   navigateurs qui en dérivent, de Mozilla pour Firefox, d'Apple pour
   Safari, de Microsoft pour Edge. Ce n'est pas le service qui le choisit,
   c'est votre navigateur. À chaque rappel, le serveur lui envoie un message
   **vide** à l'adresse d'abonnement de votre appareil : ni le titre de
   l'événement, ni sa date, ni aucun identifiant de l'événement ou de votre
   compte. Ce service de notification apprend donc que ce serveur a envoyé
-  un message à cet appareil, à cette heure. Une alerte de budget ou le
-  récapitulatif arrivent de la même façon, message vide compris. Pour choisir le texte à afficher,
+  un message à cet appareil, à cette heure. Une alerte de budget, le
+  récapitulatif ou un changement de l'agenda arrivent de la même façon,
+  message vide compris. Pour choisir le texte à afficher,
   votre appareil demande au site, avec votre session et son adresse
   d'abonnement, le type du message qu'il vient de recevoir ; le serveur
   tient pour cela, par appareil, le compte des messages envoyés et pas
@@ -166,7 +168,9 @@ possibles sont :
   événement à venir » pour un rappel — rien sur l'écran verrouillé ne dit
   de quel événement il s'agit, le titre ne se lit qu'en ouvrant l'agenda —,
   « Alerte de budget » pour une alerte, sans montant ni catégorie,
-  « Produits bientôt périmés » pour le récapitulatif, sans nom d'article, et
+  « Produits bientôt périmés » pour le récapitulatif, sans nom d'article,
+  « Agenda de la famille modifié » pour un changement de l'agenda, sans
+  titre de l'événement ni nom de son auteur, et
   « Nouvelle notification » quand il ne peut pas savoir lequel il a reçu :
   des messages de deux types en route vers lui en même temps, pas de session
   ou pas de réseau. Pas de repli : sans appareil abonné, un
