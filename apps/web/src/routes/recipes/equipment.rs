@@ -6,7 +6,7 @@
 //! Codes and labels are `validation::dietary::EQUIPMENT`'s; apps/api
 //! refuses any other code (`unknown_equipment`).
 
-use manage_our_home_shared::validation::dietary::{equipment_choices, equipment_label};
+use manage_our_home_shared::validation::dietary::{equipment_choices, equipment_label, EQUIPMENT};
 use uuid::Uuid;
 
 use crate::app::html_escape;
@@ -40,20 +40,23 @@ pub(crate) async fn fetch_household(
     )
 }
 
-/// Equipment as pills: one `.badge` per code, in the order given, a code
-/// outside the list left out. With the household's list, an equipment it
-/// lacks is a `.badge.soon` that says so in words, not by its colour alone.
+/// Equipment as pills: one `.badge` per code, in the order of `EQUIPMENT`
+/// — the order of the form's boxes, not apps/api's, which sorts by code —,
+/// a code outside the list left out. With the household's list, an
+/// equipment it lacks is a `.badge.soon` that says so in words, not by its
+/// colour alone.
 pub(crate) fn badges(codes: &[String], household: Option<&[String]>) -> String {
-    let pills: String = codes
+    let pills: String = EQUIPMENT
         .iter()
-        .filter_map(|code| {
-            let label = html_escape(equipment_label(code)?);
-            let missing = household.is_some_and(|h| !h.contains(code));
-            Some(if missing {
+        .filter(|(code, _)| codes.iter().any(|c| c == code))
+        .map(|(code, label)| {
+            let label = html_escape(label);
+            let missing = household.is_some_and(|h| !h.iter().any(|c| c == code));
+            if missing {
                 format!(r#"<span class="badge soon">{label} · manquant dans cette famille</span>"#)
             } else {
                 format!(r#"<span class="badge">{label}</span>"#)
-            })
+            }
         })
         .collect();
     format!(r#"<p class="picks">{pills}</p>"#)
@@ -204,6 +207,16 @@ mod tests {
             )),
             "{html}"
         );
+    }
+
+    #[test]
+    fn the_pills_follow_the_lists_order_not_the_codes() {
+        // apps/api returns codes sorted by code: « barbecue » before « oven ».
+        let html = badges(&codes(&["barbecue", "hob", "oven"]), None);
+        let four = html.find(">Four<").unwrap();
+        let hob = html.find(">Plaques de cuisson<").unwrap();
+        let bbq = html.find(">Barbecue<").unwrap();
+        assert!(four < hob && hob < bbq, "{html}");
     }
 
     #[test]
