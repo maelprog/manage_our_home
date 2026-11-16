@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agenda::{attachments, recurrence};
+use crate::agenda::{attachments, change_notices, recurrence};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::google_calendar::can_configure;
@@ -356,6 +356,8 @@ pub async fn trigger_calendar_import(
     let mut imported = 0usize;
     let mut updated = 0usize;
     let mut skipped = 0usize;
+    // The events created or changed upstream, for the notification (#852).
+    let mut touched: Vec<Uuid> = Vec::new();
 
     for event in parsed {
         // The mapped row's current shape comes back with the mapping: the
@@ -478,6 +480,7 @@ pub async fn trigger_calendar_import(
                 )
                 .execute(&mut *tx)
                 .await?;
+                touched.push(existing.event_id);
                 updated += 1;
             }
             None => {
@@ -534,6 +537,7 @@ pub async fn trigger_calendar_import(
                 )
                 .execute(&mut *tx)
                 .await?;
+                touched.push(new_event_id);
                 imported += 1;
             }
         }
@@ -546,7 +550,22 @@ pub async fn trigger_calendar_import(
     )
     .execute(&mut *tx)
     .await?;
+    // One notification for the whole run (#852), in its transaction: the
+    // events created or changed upstream, never the ones only repaired in
+    // the `skipped` arm, which are no news from the feed. Each member is
+    // told of those they see: a changed one may be private (#620).
+    let told = change_notices::tell_imported(
+        &mut tx,
+        group_id,
+        change_notices::Author {
+            id: auth.user_id,
+            name: &auth.display_name,
+        },
+        &touched,
+    )
+    .await?;
     tx.commit().await?;
+    change_notices::push_in_background(&state, told);
 
     Ok(Json(ImportRunResponse {
         imported,
