@@ -1,6 +1,7 @@
 // Service worker of the notifications pushed to the devices: the agenda
-// reminders (#306), the budget alerts (#536) and the daily recap of the
-// stock items nearing their expiry date (#566). Served at /sw.js by
+// reminders (#306), the budget alerts (#536), the daily recap of the
+// stock items nearing their expiry date (#566) and the changes another
+// member made to the agenda (#851). Served at /sw.js by
 // apps/web/src/routes/account/notifications.rs, out of the binary.
 //
 // A push carries no payload (apps/api/src/notifications/push.rs). The
@@ -30,6 +31,13 @@ var TEXTS = {
     title: "Produits bientôt périmés",
     body: "Des produits du stock arrivent à leur date. Ouvrez les stocks pour les voir.",
     url: "/stocks",
+  },
+  // A change another member made to the agenda (#851): neither the
+  // event's title nor its author's name, only that the agenda changed.
+  agenda_change: {
+    title: "Agenda de la famille modifié",
+    body: "Un événement a été ajouté, modifié ou supprimé. Ouvrez l'agenda pour le voir.",
+    url: "/agenda",
   },
 };
 
