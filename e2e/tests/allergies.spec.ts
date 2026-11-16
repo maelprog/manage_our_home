@@ -86,15 +86,19 @@ test.describe("Allergies and dislikes (#819)", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Mes allergies et aversions" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Avant de commencer" })).toBeVisible();
 
-    // No allergy without the box of consent.
+    // No allergy without the box of consent: « Ajouter » offers a dislike
+    // only, and « Continuer » refuses an unticked box.
     const food = page.locator('select[name="tag"]');
-    await food.selectOption({ label: "Arachides" });
-    await page.getByRole("button", { name: "Ajouter à ma liste" }).click();
+    await expect(page.getByRole("radio", { name: /Une allergie/ })).toHaveCount(0);
+    await page.getByRole("button", { name: "Continuer" }).click();
     await expect(page.getByRole("alert")).toContainText("Votre consentement est nécessaire");
     await expect(page.getByText("Ma liste (0)")).toBeVisible();
 
-    await food.selectOption({ label: "Arachides" });
     await page.getByRole("checkbox", { name: /Je consens/ }).check();
+    await page.getByRole("button", { name: "Continuer" }).click();
+    await expect(page.getByRole("heading", { name: "Mon consentement" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: /Une allergie/ })).toBeChecked();
+    await food.selectOption({ label: "Arachides" });
     await page.getByRole("button", { name: "Ajouter à ma liste" }).click();
     await expect(page.getByRole("status").first()).toContainText("Allergie ajoutée.");
     await expect(page.getByRole("heading", { name: "Mon consentement" })).toBeVisible();
@@ -106,6 +110,12 @@ test.describe("Allergies and dislikes (#819)", () => {
     await expect(food.locator("option:checked")).toHaveText("Kiwis");
     await page.getByRole("button", { name: "Ajouter à ma liste" }).click();
     await expect(page.getByText("Ma liste (2)")).toBeVisible();
+
+    // An accented name as long as the field allows is looked up, not refused.
+    await page.locator('input[name="query"]').fill("é".repeat(128));
+    await page.getByRole("button", { name: "Chercher" }).click();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.getByRole("status").first()).toContainText("Aucun aliment trouvé");
 
     // Private by default, in both families.
     await allergy(page, "Arachides").locator("summary").click();
@@ -121,9 +131,8 @@ test.describe("Allergies and dislikes (#819)", () => {
     await level(page, "Arachides", "Foyer Beta", "Anonyme").check();
     await allergy(page, "Arachides").getByRole("button", { name: "Enregistrer le partage" }).click();
     await expect(page.getByRole("status").first()).toContainText("Partage enregistré.");
-    await expect(allergy(page, "Arachides").locator("summary")).toContainText(
-      "Foyer Alpha : public · Foyer Beta : anonyme",
-    );
+    const pills = allergy(page, "Arachides").locator("summary .badge");
+    await expect(pills).toHaveText(["Foyer Alpha : public", "Foyer Beta : anonyme"]);
 
     await allergy(page, "Kiwis").locator("summary").click();
     await level(page, "Kiwis", "Foyer Alpha", "Public").check();

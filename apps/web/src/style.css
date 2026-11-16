@@ -1003,6 +1003,12 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 /* An allergy's three levels in one family (#819): each says what it does,
    the chosen one alone shown; all three where :has() is unsupported. */
 .share:has([value=public]:not(:checked)) .public, .share:has([value=anonymous]:not(:checked)) .anonymous, .share:has([value=private]:not(:checked)) .private { display: none; }
+/* The effect in a --hover box (maquette #819). The levels, the kind of an
+   allergy and the box of consent are `label.list-row.pick`: framed, tinted
+   once ticked, two lines tall, one under the other. */
+.share > p { padding: var(--s2x) var(--s3); border-radius: var(--r-sm); background: var(--hover); font-size: var(--t-sm); }
+label.list-row.pick { padding-block: var(--s2x); }
+label.list-row.pick + label.list-row.pick { margin-top: var(--s2x); }
 /* -- The grocery list (#526) ----------------------------------------------
    One card — the basket's count, the quick-add form, the two sections — and
    on a PC the suggestions and the recipes to cook beside it, under it when

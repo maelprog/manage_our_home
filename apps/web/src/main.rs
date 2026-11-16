@@ -170,6 +170,10 @@ fn build_router(state: AppState) -> Router {
             get(routes::account::allergies::get),
         )
         .route(
+            "/account/allergies/consent",
+            post(routes::account::allergies::consent),
+        )
+        .route(
             "/account/allergies/add",
             post(routes::account::allergies::add),
         )

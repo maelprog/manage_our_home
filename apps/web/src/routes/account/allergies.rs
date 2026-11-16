@@ -9,8 +9,9 @@
 //! up in access logs, a notice code does not name the food.
 //!
 //! Consent, as `docs/registre-traitements.md` (line 4a) records it: given by
-//! the member's own entry, explicit — a box to tick before the first
-//! allergy, apart from the terms of service —, and withdrawn as simply:
+//! the member's own entry, explicit — a box to tick under « Avant de
+//! commencer », apart from the terms of service, which « Continuer »
+//! carries to the first allergy —, and withdrawn as simply:
 //! removing an allergy, setting it back to « Privé » in a family, or
 //! « Tout effacer » (`DELETE /me/dietary-constraints`). The service keeps
 //! no record of it beyond the allergies themselves: with none left, the box
@@ -24,15 +25,16 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use manage_our_home_shared::dto::auth::MeResponse;
+use manage_our_home_shared::validation::budget::month_name_fr;
 use manage_our_home_shared::validation::dietary::{
     inco_label, validate_tag, ShareLevel, INCO_ALLERGENS, SEARCH_QUERY_MAX_LEN,
 };
 use serde::Deserialize;
 use uuid::Uuid;
 
-use super::{account_cookie, account_header, format_rgpd_date, service_unavailable_page};
+use super::{account_cookie, account_header, service_unavailable_page};
 use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -161,6 +163,38 @@ pub(crate) fn sharing_choices(
     Ok(choices)
 }
 
+/// Where the member stands with the consent, which no record keeps beyond
+/// the allergies (registre, line 4a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Consent {
+    /// No allergy: « Avant de commencer » asks for it.
+    Asked,
+    /// No allergy yet, the box of « Avant de commencer » just ticked: the
+    /// forms carry it to the first allergy, which records it.
+    JustGiven,
+    /// An allergy is recorded: given, on the day of the oldest.
+    InForce(DateTime<Utc>),
+}
+
+pub(crate) fn consent_state(lists: &Lists, given_now: bool) -> Consent {
+    match lists.allergies.iter().map(|a| a.created_at).min() {
+        Some(oldest) => Consent::InForce(oldest),
+        None if given_now => Consent::JustGiven,
+        None => Consent::Asked,
+    }
+}
+
+/// A day as French writes it out, the Paris one: « 12 novembre 2026 »,
+/// « 1er décembre 2026 ».
+pub(crate) fn long_date(at: DateTime<Utc>) -> String {
+    let day = at.with_timezone(&chrono_tz::Europe::Paris).date_naive();
+    let num = match day.day() {
+        1 => "1er".to_string(),
+        n => n.to_string(),
+    };
+    format!("{num} {} {}", month_name_fr(day.month()), day.year())
+}
+
 /// « 1 allergie », « 2 allergies ».
 pub(crate) fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n > 1 { many } else { one })
@@ -184,7 +218,7 @@ fn notice_text(code: &str) -> Option<&'static str> {
 fn error_text(code: &str) -> Option<&'static str> {
     match code {
         "consent_required" => Some(
-            "Votre consentement est nécessaire pour enregistrer une allergie. Cochez la case, puis ajoutez-la.",
+            "Votre consentement est nécessaire pour enregistrer une allergie. Cochez la case, puis continuez.",
         ),
         "already_listed" => Some("Cet aliment est déjà dans votre liste."),
         "unknown_tag" => Some("Cet aliment n'est pas reconnu. Choisissez-le dans la liste."),
@@ -218,7 +252,7 @@ fn family_levels(me: &str, name: &str, sharing: &Sharing) -> String {
             ""
         };
         format!(
-            r#"<label class="list-row"><input type="radio" name="{field}" value="{value}"{checked}><span><strong>{title}</strong><br><span class="muted">{hint}</span></span></label>"#
+            r#"<label class="list-row pick"><input type="radio" name="{field}" value="{value}"{checked}><span><strong>{title}</strong><br><span class="muted">{hint}</span></span></label>"#
         )
     };
     format!(
@@ -245,30 +279,26 @@ fn family_levels(me: &str, name: &str, sharing: &Sharing) -> String {
     )
 }
 
-/// The level in words, for the line under an allergy's name.
-fn level_word(share: &str) -> &'static str {
-    match share {
-        "public" => "public",
-        "anonymous" => "anonyme",
-        _ => "privé",
-    }
+/// A family's level as a pill under an allergy's name, the word saying it
+/// and the tint repeating it: « public » in the warning's, « anonyme » in
+/// the accent's, « privé » neutral.
+fn level_badge(sharing: &Sharing) -> String {
+    let (class, word) = match sharing.share.as_str() {
+        "public" => ("badge soon", "public"),
+        "anonymous" => ("badge accent", "anonyme"),
+        _ => ("badge", "privé"),
+    };
+    format!(
+        r#" <span class="{class}">{} : {word}</span>"#,
+        html_escape(&sharing.group_name)
+    )
 }
 
-/// One allergy: its name and its levels in a line, then, opened, the form
+/// One allergy: its name and its levels in pills, then, opened, the form
 /// of its levels and « Retirer ».
 fn allergy_row(me: &str, allergy: &Allergy) -> String {
     let name = name_of(&allergy.tag, &allergy.label);
-    let levels: String = allergy
-        .sharing
-        .iter()
-        .map(|s| {
-            format!(
-                " · {} : {}",
-                html_escape(&s.group_name),
-                level_word(&s.share)
-            )
-        })
-        .collect();
+    let levels: String = allergy.sharing.iter().map(level_badge).collect();
     let form = if allergy.sharing.is_empty() {
         r#"<p class="muted">Vous n'êtes membre d'aucune famille : personne ne peut la voir.</p>"#
             .to_string()
@@ -290,7 +320,7 @@ fn allergy_row(me: &str, allergy: &Allergy) -> String {
     format!(
         r#"<li class="list-row stacked">
 <details>
-<summary><strong>{name}</strong><br><span class="muted">Allergie{levels}</span></summary>
+<summary><strong>{name}</strong><br><span class="muted">Allergie</span>{levels}</summary>
 {form}
 {remove}
 </details>
@@ -331,9 +361,10 @@ fn dislike_row(dislike: &Dislike) -> String {
 }
 
 /// « Mon consentement » once given — the date of the oldest allergy still
-/// recorded — or what it is about before the first; with « Tout effacer »
+/// recorded, or none yet when just given — or, before the first allergy,
+/// « Avant de commencer », its box and « Continuer »; with « Tout effacer »
 /// as soon as there is anything to erase.
-fn consent_card(lists: &Lists) -> String {
+fn consent_card(lists: &Lists, consent: Consent) -> String {
     let clear = if lists.allergies.is_empty() && lists.dislikes.is_empty() {
         r#"<button type="button" class="secondary danger" disabled>Tout effacer</button>
 <p class="muted">Rien à effacer pour l'instant.</p>"#
@@ -344,26 +375,37 @@ fn consent_card(lists: &Lists) -> String {
 <p class="muted">Supprime toutes vos allergies et aversions, et retire votre consentement.</p>"#
         )
     };
-    match lists.allergies.iter().map(|a| a.created_at).min() {
-        Some(oldest) => format!(
+    match consent {
+        Consent::InForce(oldest) => format!(
             r#"<section class="card" id="consentement">
 <div class="split"><h2>Mon consentement</h2><span class="badge accent">Donné</span></div>
 <p>Vous avez consenti, à part des conditions d'utilisation, à l'enregistrement de vos allergies, une donnée de santé. La plus ancienne date du {date}.</p>
 <p class="muted">Chaque allergie est gardée tant que vous la gardez. Vous retirez votre consentement aussi simplement : en retirant une allergie, en la repassant à « Privé » dans une famille, ou en effaçant tout.</p>
 {clear}
 </section>"#,
-            date = format_rgpd_date(oldest),
+            date = long_date(oldest),
         ),
-        None => format!(
+        Consent::JustGiven => format!(
+            r#"<section class="card" id="consentement">
+<div class="split"><h2>Mon consentement</h2><span class="badge accent">Donné</span></div>
+<p>Vous avez consenti, à part des conditions d'utilisation, à l'enregistrement de vos allergies, une donnée de santé. Il est enregistré avec votre première allergie : sans elle, il vous sera redemandé.</p>
+{clear}
+</section>"#
+        ),
+        Consent::Asked => format!(
             r#"<section class="card" id="consentement">
 <h2>Avant de commencer</h2>
-<p>Une allergie est une <strong>donnée de santé</strong>. Pour l'enregistrer, nous avons besoin de votre accord, <strong>à part des conditions d'utilisation</strong> : la case à cocher sous « Ajouter ».</p>
+<p>Une allergie est une <strong>donnée de santé</strong>. Pour l'enregistrer, nous avons besoin de votre accord, <strong>à part des conditions d'utilisation</strong>.</p>
 <ul>
 <li>Rien n'est visible des autres membres tant que vous ne le décidez pas : le choix par défaut est « Privé ».</li>
 <li>Vous réglez le partage allergie par allergie, famille par famille, et le changez à tout moment.</li>
 <li>Une allergie est gardée tant que vous la gardez. « Tout effacer » supprime vos données et retire ce consentement, à tout moment.</li>
 <li>Une aversion n'est pas une donnée de santé, et n'est jamais partagée.</li>
 </ul>
+<form method="post" action="{PATH}/consent">
+<label class="list-row pick"><input type="checkbox" name="consent" value="on"><span><strong>Je consens à l'enregistrement de mes allergies</strong><br><span class="muted">Donnée de santé, pour signaler et écarter les recettes qui en contiennent.</span></span></label>
+<button type="submit">Continuer</button>
+</form>
 <p><a href="/privacy-policy">Politique de confidentialité</a></p>
 {clear}
 </section>"#
@@ -372,9 +414,10 @@ fn consent_card(lists: &Lists) -> String {
 }
 
 /// « Ajouter »: the kind, the food — the fourteen INCO allergens first,
-/// then what a search found —, the box of consent before the first allergy;
-/// then the search itself.
-fn add_card(lists: &Lists, search: Option<&Search>) -> String {
+/// then what a search found —; then the search itself. Before the box of
+/// « Avant de commencer » is ticked, a dislike only, which needs no
+/// consent; just ticked, both forms carry it to the first allergy.
+fn add_card(consent: Consent, search: Option<&Search>) -> String {
     let inco: String = INCO_ALLERGENS
         .iter()
         .map(|(tag, label)| format!(r#"<option value="{tag}">{label}</option>"#))
@@ -413,29 +456,39 @@ fn add_card(lists: &Lists, search: Option<&Search>) -> String {
         ),
         None => (String::new(), String::new(), ""),
     };
-    let consent = if lists.allergies.is_empty() {
-        r#"<label class="field inline"><input type="checkbox" name="consent" value="on"> Je consens à l'enregistrement de mes allergies, une donnée de santé, pour signaler et écarter les recettes qui en contiennent.</label>"#
+    let carried = if consent == Consent::JustGiven {
+        r#"<input type="hidden" name="consent" value="on">"#
     } else {
         ""
+    };
+    let (kind, hint) = if consent == Consent::Asked {
+        (
+            r#"<input type="hidden" name="kind" value="dislike">"#,
+            "Une aversion écarte les recettes qu'on vous propose et n'est jamais partagée. Pour une allergie, donnez d'abord votre accord, ci-dessus.",
+        )
+    } else {
+        (
+            r#"<fieldset class="plain">
+<legend>C'est</legend>
+<label class="list-row pick"><input type="radio" name="kind" value="allergy" checked><span><strong>Une allergie</strong><br><span class="muted">Signalée sur les recettes ; partagée seulement si vous le décidez</span></span></label>
+<label class="list-row pick"><input type="radio" name="kind" value="dislike"><span><strong>Une aversion</strong><br><span class="muted">Écarte les recettes qu'on vous propose ; jamais partagée</span></span></label>
+</fieldset>"#,
+            "Par défaut, une allergie est <strong>privée</strong> dans toutes vos familles : personne ne le sait.",
+        )
     };
     format!(
         r#"<section class="card">
 <h2>Ajouter</h2>
 <form method="post" action="{PATH}/add">
-<fieldset class="plain">
-<legend>C'est</legend>
-<label class="list-row"><input type="radio" name="kind" value="allergy" checked><span><strong>Une allergie</strong><br><span class="muted">Signalée sur les recettes ; partagée seulement si vous le décidez</span></span></label>
-<label class="list-row"><input type="radio" name="kind" value="dislike"><span><strong>Une aversion</strong><br><span class="muted">Écarte les recettes qu'on vous propose ; jamais partagée</span></span></label>
-</fieldset>
+{carried}{kind}
 <label class="field">Aliment
 <select name="tag"><optgroup label="Les 14 allergènes réglementaires (INCO)">{inco}</optgroup>{found}</select>
 </label>
-{consent}
 <button type="submit">Ajouter à ma liste</button>
-<p class="muted">Par défaut, une allergie est <strong>privée</strong> dans toutes vos familles : personne ne le sait.</p>
+<p class="muted">{hint}</p>
 </form>
 <form method="post" action="{PATH}/search" class="actions">
-<label>Chercher un autre aliment <input type="text" name="query" maxlength="{SEARCH_QUERY_MAX_LEN}" value="{query}" placeholder="kiwi, coriandre…"></label>
+{carried}<label>Chercher un autre aliment <input type="text" name="query" maxlength="{SEARCH_QUERY_MAX_LEN}" value="{query}" placeholder="kiwi, coriandre…"></label>
 <button type="submit" class="secondary">Chercher</button>
 </form>
 {said}
@@ -444,10 +497,12 @@ fn add_card(lists: &Lists, search: Option<&Search>) -> String {
     )
 }
 
-/// The page: the consent, « Ajouter », then the list.
+/// The page: the consent, « Ajouter », then the list. `consent_given_now`:
+/// the box of « Avant de commencer » was just ticked.
 pub(crate) fn page_body(
     me: &str,
     lists: &Lists,
+    consent_given_now: bool,
     search: Option<&Search>,
     notice: Option<&str>,
     error: Option<&str>,
@@ -460,6 +515,7 @@ pub(crate) fn page_body(
         .and_then(error_text)
         .map(|e| format!(r#"<p class="notice error" role="alert">{e}</p>"#))
         .unwrap_or_default();
+    let consent = consent_state(lists, consent_given_now);
     let total = lists.allergies.len() + lists.dislikes.len();
     let list = if total == 0 {
         r#"<p class="muted">Vous n'avez déclaré aucune allergie ni aversion. Personne ne voit rien à votre sujet.</p>"#
@@ -486,8 +542,8 @@ pub(crate) fn page_body(
 {list}
 </section>
 <p><a href="/account">Retour à mon compte</a></p>"#,
-        consent = consent_card(lists),
-        add = add_card(lists, search),
+        consent = consent_card(lists, consent),
+        add = add_card(consent, search),
     )
 }
 
@@ -513,6 +569,7 @@ async fn render(
     state: &AppState,
     headers: &HeaderMap,
     me: &MeResponse,
+    consent_given_now: bool,
     search: Option<&Search>,
     notice: Option<&str>,
     error: Option<&str>,
@@ -522,7 +579,14 @@ async fn render(
         return service_unavailable_page().into_response();
     };
     let header = account_header(state, headers, me, PATH).await;
-    let body = page_body(&me.display_name, &lists, search, notice, error);
+    let body = page_body(
+        &me.display_name,
+        &lists,
+        consent_given_now,
+        search,
+        notice,
+        error,
+    );
     Html(shell_with_header(
         Width::Read,
         "Mes allergies et aversions",
@@ -536,9 +600,11 @@ async fn render(
 pub struct PageQuery {
     notice: Option<String>,
     error: Option<String>,
+    consent: Option<String>,
 }
 
-/// `GET /account/allergies`.
+/// `GET /account/allergies`. `?consent=given`: the box of « Avant de
+/// commencer » was just ticked (`POST /account/allergies/consent`).
 pub async fn get(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -549,6 +615,7 @@ pub async fn get(
         &state,
         &headers,
         &me,
+        query.consent.as_deref() == Some("given"),
         None,
         query.notice.as_deref(),
         query.error.as_deref(),
@@ -558,6 +625,33 @@ pub async fn get(
 
 fn back(param: &str, code: &str) -> Response {
     Redirect::to(&format!("{PATH}?{param}={code}")).into_response()
+}
+
+/// [`back`], the consent just given kept for the next form.
+fn back_given(param: &str, code: &str, given: bool) -> Response {
+    if given {
+        Redirect::to(&format!("{PATH}?{param}={code}&consent=given")).into_response()
+    } else {
+        back(param, code)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ConsentForm {
+    #[serde(default)]
+    consent: Option<String>,
+}
+
+/// `POST /account/allergies/consent` — « Continuer » under « Avant de
+/// commencer »: nothing is recorded, the page comes back with « Ajouter »
+/// open to allergies and the consent carried to the first, which records
+/// it. Without the box ticked, the error says so.
+pub async fn consent(CurrentUser(_me): CurrentUser, Form(form): Form<ConsentForm>) -> Response {
+    if form.consent.is_some() {
+        Redirect::to(&format!("{PATH}?consent=given")).into_response()
+    } else {
+        back("error", "consent_required")
+    }
 }
 
 #[derive(Deserialize)]
@@ -578,19 +672,19 @@ pub async fn add(
     headers: HeaderMap,
     Form(form): Form<AddForm>,
 ) -> Response {
+    let given = form.consent.is_some();
     let Some(kind) = Kind::parse(&form.kind) else {
-        return back("error", "unknown_tag");
+        return back_given("error", "unknown_tag", given);
     };
     let Ok(tag) = validate_tag(&form.tag) else {
-        return back("error", "unknown_tag");
+        return back_given("error", "unknown_tag", given);
     };
     let cookie = account_cookie(&headers);
     if kind == Kind::Allergy {
         let Some(lists) = fetch_lists(&state, cookie.as_deref()).await else {
-            return back("error", "unavailable");
+            return back_given("error", "unavailable", given);
         };
-        if let Err(code) = consent_check(kind, !lists.allergies.is_empty(), form.consent.is_some())
-        {
+        if let Err(code) = consent_check(kind, !lists.allergies.is_empty(), given) {
             return back("error", code);
         }
     }
@@ -603,13 +697,19 @@ pub async fn add(
     )
     .await;
     match result {
+        // An allergy recorded holds the consent from now on; anything else
+        // keeps it carried.
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => match kind {
             Kind::Allergy => back("notice", "allergy_added"),
-            Kind::Dislike => back("notice", "dislike_added"),
+            Kind::Dislike => back_given("notice", "dislike_added", given),
         },
-        Ok(resp) if resp.status == reqwest::StatusCode::CONFLICT => back("error", "already_listed"),
-        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => back("error", "unknown_tag"),
-        _ => back("error", "unavailable"),
+        Ok(resp) if resp.status == reqwest::StatusCode::CONFLICT => {
+            back_given("error", "already_listed", given)
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
+            back_given("error", "unknown_tag", given)
+        }
+        _ => back_given("error", "unavailable", given),
     }
 }
 
@@ -700,6 +800,8 @@ pub async fn sharing(
 pub struct SearchForm {
     #[serde(default)]
     query: String,
+    #[serde(default)]
+    consent: Option<String>,
 }
 
 /// `POST /account/allergies/search` — `POST /taxonomy/search`, then the
@@ -736,7 +838,16 @@ pub async fn search(
         query: form.query.trim().to_string(),
         results,
     });
-    render(&state, &headers, &me, search.as_ref(), None, error).await
+    render(
+        &state,
+        &headers,
+        &me,
+        form.consent.is_some(),
+        search.as_ref(),
+        None,
+        error,
+    )
+    .await
 }
 
 /// `GET /account/allergies/clear` — « Tout effacer ? »: what goes, before
@@ -924,6 +1035,41 @@ mod tests {
     }
 
     #[test]
+    fn without_an_allergy_consent_is_asked_unless_just_given() {
+        assert_eq!(consent_state(&Lists::default(), false), Consent::Asked);
+        assert_eq!(consent_state(&Lists::default(), true), Consent::JustGiven);
+        let only_dislikes = Lists {
+            allergies: vec![],
+            dislikes: vec![dislike("en:mushrooms", "Champignons")],
+        };
+        assert_eq!(consent_state(&only_dislikes, false), Consent::Asked);
+    }
+
+    #[test]
+    fn with_allergies_consent_is_in_force_since_the_oldest() {
+        let lists = Lists {
+            allergies: vec![
+                allergy("en:eggs", "Œufs", 14, vec![]),
+                allergy("en:peanuts", "Cacahuètes", 12, vec![]),
+            ],
+            dislikes: vec![],
+        };
+        let oldest = Utc.with_ymd_and_hms(2026, 11, 12, 10, 0, 0).unwrap();
+        for given_now in [false, true] {
+            assert_eq!(consent_state(&lists, given_now), Consent::InForce(oldest));
+        }
+    }
+
+    #[test]
+    fn a_date_is_written_out_in_french_on_the_paris_day() {
+        let at = Utc.with_ymd_and_hms(2026, 11, 12, 10, 0, 0).unwrap();
+        assert_eq!(long_date(at), "12 novembre 2026");
+        // 23:30 UTC on 30 November is already 1 December in Paris.
+        let late = Utc.with_ymd_and_hms(2026, 11, 30, 23, 30, 0).unwrap();
+        assert_eq!(long_date(late), "1er décembre 2026");
+    }
+
+    #[test]
     fn counts_are_said_in_words() {
         assert_eq!(count(0, "allergie", "allergies"), "0 allergie");
         assert_eq!(count(1, "allergie", "allergies"), "1 allergie");
@@ -934,10 +1080,35 @@ mod tests {
 
     #[test]
     fn before_the_first_allergy_the_page_asks_for_consent() {
-        let html = page_body("Camille", &Lists::default(), None, None, None);
+        let html = page_body("Camille", &Lists::default(), false, None, None, None);
         assert!(html.contains("<h2>Avant de commencer</h2>"), "{html}");
+        // The box and « Continuer » are in the card, in a form of their own.
+        let card =
+            &html[html.find("Avant de commencer").unwrap()..html.find("<h2>Ajouter</h2>").unwrap()];
         assert!(
-            html.contains(r#"<input type="checkbox" name="consent" value="on">"#),
+            card.contains(r#"<form method="post" action="/account/allergies/consent">"#),
+            "{card}"
+        );
+        assert!(
+            card.contains(
+                r#"<label class="list-row pick"><input type="checkbox" name="consent" value="on">"#
+            ),
+            "{card}"
+        );
+        assert!(
+            card.contains(r#"<button type="submit">Continuer</button>"#),
+            "{card}"
+        );
+        // « Ajouter » offers a dislike only, which needs no consent.
+        let add = &html[html.find("<h2>Ajouter</h2>").unwrap()..];
+        assert!(!add.contains(r#"name="consent""#), "{add}");
+        assert!(!add.contains(r#"value="allergy""#), "{add}");
+        assert!(
+            add.contains(r#"<input type="hidden" name="kind" value="dislike">"#),
+            "{add}"
+        );
+        assert!(
+            html.contains(&format!(r#"maxlength="{SEARCH_QUERY_MAX_LEN}""#)),
             "{html}"
         );
         assert!(
@@ -962,7 +1133,14 @@ mod tests {
                 label: "Kiwis".into(),
             }],
         };
-        let html = page_body("Camille", &Lists::default(), Some(&search), None, None);
+        let html = page_body(
+            "Camille",
+            &Lists::default(),
+            false,
+            Some(&search),
+            None,
+            None,
+        );
         let inco = html
             .find("Les 14 allergènes réglementaires (INCO)")
             .unwrap();
@@ -993,15 +1171,38 @@ mod tests {
             ],
             dislikes: vec![],
         };
-        let html = page_body("Camille", &lists, None, None, None);
+        let html = page_body("Camille", &lists, false, None, None, None);
         assert!(html.contains("<h2>Mon consentement</h2>"), "{html}");
         assert!(html.contains("Donné"), "{html}");
-        assert!(html.contains("12/11/2026"), "{html}");
+        assert!(
+            html.contains("La plus ancienne date du 12 novembre 2026."),
+            "{html}"
+        );
         assert!(!html.contains(r#"name="consent""#), "{html}");
+        assert!(
+            html.contains(r#"<label class="list-row pick"><input type="radio" name="kind" value="allergy" checked>"#),
+            "{html}"
+        );
         assert!(
             html.contains(r#"<a class="btn secondary danger" href="/account/allergies/clear">Tout effacer</a>"#),
             "{html}"
         );
+    }
+
+    #[test]
+    fn the_consent_just_given_opens_allergies_and_travels_with_both_forms() {
+        let html = page_body("Camille", &Lists::default(), true, None, None, None);
+        assert!(!html.contains("Avant de commencer"), "{html}");
+        assert!(html.contains("<h2>Mon consentement</h2>"), "{html}");
+        assert!(html.contains("sans elle, il vous sera redemandé"), "{html}");
+        assert!(html.contains(r#"value="allergy" checked"#), "{html}");
+        let carried = r#"<input type="hidden" name="consent" value="on">"#;
+        let add = html.find(r#"action="/account/allergies/add""#).unwrap();
+        let search = html.find(r#"action="/account/allergies/search""#).unwrap();
+        assert_eq!(html.matches(carried).count(), 2, "{html}");
+        let first = html.find(carried).unwrap();
+        let second = html.rfind(carried).unwrap();
+        assert!(add < first && first < search && search < second, "{html}");
     }
 
     #[test]
@@ -1015,7 +1216,7 @@ mod tests {
             )],
             dislikes: vec![dislike("en:coriander-products", "Produits de coriandre")],
         };
-        let html = page_body("Camille", &lists, None, None, None);
+        let html = page_body("Camille", &lists, false, None, None, None);
         assert!(html.contains("<strong>Arachides</strong>"), "{html}");
         assert!(html.contains("Retirer « Arachides »"), "{html}");
         assert!(
@@ -1036,18 +1237,19 @@ mod tests {
                 vec![
                     sharing(1, "Foyer Perrin", "private"),
                     sharing(2, "Famille Martin", "public"),
+                    sharing(3, "Famille Roux", "anonymous"),
                 ],
             )],
             dislikes: vec![],
         };
-        let html = page_body("Camille Perrin", &lists, None, None, None);
+        let html = page_body("Camille Perrin", &lists, false, None, None, None);
         for (n, current) in [(1, "private"), (2, "public")] {
             let field = format!("share.{}", family(n));
             for value in ["public", "anonymous", "private"] {
                 let checked = if value == current { " checked" } else { "" };
                 assert!(
                     html.contains(&format!(
-                        r#"<input type="radio" name="{field}" value="{value}"{checked}>"#
+                        r#"<label class="list-row pick"><input type="radio" name="{field}" value="{value}"{checked}>"#
                     )),
                     "{field} {value}: {html}"
                 );
@@ -1062,8 +1264,9 @@ mod tests {
             html.contains("Personne dans Foyer Perrin ne le saura"),
             "{html}"
         );
+        // The levels in pills under the name, the word saying each.
         assert!(
-            html.contains("Allergie · Foyer Perrin : privé · Famille Martin : public"),
+            html.contains(r#"<span class="muted">Allergie</span> <span class="badge">Foyer Perrin : privé</span> <span class="badge soon">Famille Martin : public</span> <span class="badge accent">Famille Roux : anonyme</span></summary>"#),
             "{html}"
         );
         assert!(
@@ -1083,7 +1286,7 @@ mod tests {
             )],
             dislikes: vec![],
         };
-        let html = page_body("<Camille>", &lists, None, None, None);
+        let html = page_body("<Camille>", &lists, false, None, None, None);
         assert!(!html.contains("<b>Kiwis</b>"), "{html}");
         assert!(!html.contains("<i>Foyer</i>"), "{html}");
         assert!(!html.contains("<Camille>"), "{html}");
