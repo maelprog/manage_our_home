@@ -21,6 +21,7 @@ pub mod list;
 pub mod missing;
 pub mod new;
 pub mod outcome;
+pub mod replace;
 pub mod week;
 
 use axum::extract::{Path, State};

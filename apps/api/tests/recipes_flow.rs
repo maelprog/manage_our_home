@@ -2199,6 +2199,13 @@ async fn replacing_a_dated_recipe_keeps_its_plan_and_follows_on_the_grocery_list
     )
     .await;
 
+    // The soup says how long it takes, the rice does not (#816).
+    sqlx::query("UPDATE recipes SET duration_minutes = 45 WHERE id = $1::uuid")
+        .bind(&soupe)
+        .execute(&db)
+        .await
+        .unwrap();
+
     assert_eq!(
         generate_grocery_list(&router, &owner_cookie, &group_id).await,
         3
@@ -2221,13 +2228,22 @@ async fn replacing_a_dated_recipe_keeps_its_plan_and_follows_on_the_grocery_list
     )
     .await;
     assert_status(&offer, StatusCode::OK);
-    let offered: Vec<String> = json_body(offer).await["replacements"]
+    let offer = json_body(offer).await;
+    let offered: Vec<String> = offer["replacements"]
         .as_array()
         .unwrap()
         .iter()
         .map(|r| r["recipe_id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(offered, [soupe.clone(), riz.clone()]);
+    // Each offer carries its duration, `null` when the recipe has none.
+    let durations: Vec<serde_json::Value> = offer["replacements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["duration_minutes"].clone())
+        .collect();
+    assert_eq!(durations, [serde_json::json!(45), serde_json::Value::Null]);
 
     let replace = call(
         &router,

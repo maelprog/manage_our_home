@@ -684,6 +684,7 @@ mod tests {
             missing_ingredients: Vec::new(),
             recently_eaten: false,
             last_eaten_on: None,
+            duration_minutes: None,
         }
     }
 

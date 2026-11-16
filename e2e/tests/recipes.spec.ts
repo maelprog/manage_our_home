@@ -702,7 +702,7 @@ test.describe("Recipes — planning des repas (#813)", () => {
       .click();
     await expect(page).toHaveURL(/\/recipes\/week\?notice=plan_saved$/);
     const soir = today.locator("li", { hasText: "Soir" });
-    await expect(soir.getByRole("link", { name: "Velouté de potiron" })).toBeVisible();
+    await expect(soir.getByRole("link", { name: "Velouté de potiron", exact: true })).toBeVisible();
     await expect(soir.getByRole("link", { name: "Il manque 1 élément" })).toBeVisible();
     await expect(page.locator(".summary")).toHaveText(/1 repas planifié\s*1 ingrédient à acheter/);
     await expect(page.locator("ol.meals .empty a")).toHaveCount(17);
@@ -720,7 +720,7 @@ test.describe("Recipes — planning des repas (#813)", () => {
     await expect(page.getByText("Jour et repas enregistrés.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "À placer" })).toHaveCount(0);
     await expect(days).toHaveCount(7);
-    await expect(page.locator("ol.meals").getByRole("link", { name: "Tarte fine" })).toBeVisible();
+    await expect(page.locator("ol.meals").getByRole("link", { name: "Tarte fine", exact: true })).toBeVisible();
 
     // ‹ comes back to the current window, › goes seven days further.
     await page.getByRole("link", { name: "7 jours précédents" }).click();
@@ -733,6 +733,64 @@ test.describe("Recipes — planning des repas (#813)", () => {
     await page.goto("/recipes/week?date=demain");
     await expect(days).toHaveCount(9);
     await expect(page.locator("ol.meals > li.current")).toHaveCount(1);
+    await context.close();
+  });
+});
+
+// #816: « Changer ce plat », without JavaScript — from the planning, an
+// offer chosen, back on the planning with the new dish on the same slot;
+// then, from the recipe's page, no offer left, and nothing changed.
+test.describe("Recipes — changer ce plat (#816)", () => {
+  test("a dish replaced from the planning keeps its slot; none left is said", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-rcswap", "Swap User");
+    await createGroup(page, "Famille Échange");
+    await createRecipe(page, { name: "Gratin du soir", ingredients: "Pommes de terre | 1 | kg" });
+    await createRecipe(page, { name: "Soupe du jour", ingredients: "Potiron | 1 | pièce" });
+
+    // Gratin planned on today's soir from its « Ajouter ».
+    await page.goto("/recipes/week");
+    const today = page.locator("ol.meals > li.current");
+    await today.locator(`a[href="/recipes?date=${parisDay(0)}&repas=soir"]`).click();
+    await page
+      .locator("li", { hasText: "Gratin du soir" })
+      .filter({ has: page.getByRole("button", { name: "À réaliser" }) })
+      .getByRole("button", { name: "À réaliser" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\/week\?notice=plan_saved$/);
+
+    // « Changer ce plat »: what is replaced, and the soup offered.
+    await today.getByRole("link", { name: /^Changer ce plat : Gratin du soir, .+, soir$/ }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\/replace\?back=week$/);
+    await expect(page.getByRole("heading", { name: "Changer ce plat", level: 1 })).toBeVisible();
+    const context816 = page.locator("section.ctx");
+    await expect(context816.getByText("Vous remplacez")).toBeVisible();
+    await expect(context816.getByText("Gratin du soir")).toBeVisible();
+    await expect(context816.getByText("Le jour, le repas et le nombre de personnes sont conservés.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Proposition", level: 2 })).toBeVisible();
+    const offer = page.locator("li.prop", { hasText: "Soupe du jour" });
+    await expect(offer.getByText("Il manque 1 élément")).toBeVisible();
+
+    // Chosen: back on the planning, the soup on the same slot.
+    await offer.getByRole("button", { name: "Choisir Soupe du jour" }).click();
+    await expect(page).toHaveURL(/\/recipes\/week\?notice=recipe_replaced&from=[0-9a-f-]+&to=[0-9a-f-]+$/);
+    await expect(page.getByText("Gratin du soir remplacé par Soupe du jour.")).toBeVisible();
+    const soir = today.locator("li", { hasText: "Soir" });
+    await expect(soir.getByRole("link", { name: "Soupe du jour", exact: true })).toBeVisible();
+    await expect(page.locator("ol.meals").getByRole("link", { name: "Gratin du soir", exact: true })).toHaveCount(0);
+
+    // The gratin planned again: from the soup's page, no offer is left.
+    await planFromList(page, "Gratin du soir");
+    await openRecipeDetail(page, "Soupe du jour");
+    await page.getByRole("link", { name: "Changer ce plat" }).click();
+    await expect(page.getByText("Aucune autre recette à proposer pour l'instant.")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Choisir/ })).toHaveCount(0);
+    await page.getByRole("link", { name: "Annuler" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+$/);
+    await expect(page.getByRole("heading", { name: "Soupe du jour", level: 1 })).toBeVisible();
+    await page.goto("/recipes/week");
+    await expect(soir.getByRole("link", { name: "Soupe du jour", exact: true })).toBeVisible();
     await context.close();
   });
 });
