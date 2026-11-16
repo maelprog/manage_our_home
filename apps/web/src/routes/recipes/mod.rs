@@ -21,6 +21,7 @@ pub mod list;
 pub mod missing;
 pub mod new;
 pub mod outcome;
+pub mod week;
 
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
@@ -130,8 +131,12 @@ pub(crate) async fn planned_with_stock(
 
 /// Where the « À réaliser » and « Retirer » forms send the member back:
 /// the list when they came from it, its « Prévues » tab (`planned`, #539),
-/// the recipe otherwise.
+/// the planning on its window (`week`, `week@AAAA-MM-JJ`, #813), the recipe
+/// otherwise.
 pub(crate) fn back_path(back: &str, recipe_id: Uuid) -> String {
+    if let Some(start) = week::back_window(back) {
+        return week::week_href(start);
+    }
     match back {
         "list" => "/recipes".to_string(),
         "planned" => "/recipes?vue=prevues".to_string(),
@@ -152,16 +157,57 @@ pub(crate) fn back_with(back: &str, recipe_id: Uuid, param: &str) -> String {
 /// blank when it has none (the quantities are then taken as written).
 /// `back` is `list` or `detail`, the page the redirect returns to.
 pub(crate) fn select_form(recipe_id: Uuid, base: Option<i32>, back: &str, class: &str) -> String {
+    select_form_with(recipe_id, base, back, class, "")
+}
+
+/// [`select_form`] with `hidden`, more hidden fields, after `back`.
+fn select_form_with(
+    recipe_id: Uuid,
+    base: Option<i32>,
+    back: &str,
+    class: &str,
+    hidden: &str,
+) -> String {
     let value = base.map(|s| s.to_string()).unwrap_or_default();
     format!(
         r#"<form method="post" action="/recipes/{recipe_id}/select" class="{class}">
-<input type="hidden" name="back" value="{back}"/>
+<input type="hidden" name="back" value="{back}"/>{hidden}
 <label>Personnes <input type="number" name="servings" min="1" max="{SERVINGS_MAX}" step="1" value="{value}" placeholder="Optionnel"/></label>
 <button type="submit">À réaliser</button>
 </form>"#,
         class = html_escape(class),
         back = html_escape(back),
     )
+}
+
+/// The « À réaliser » form of a recipe chosen for a slot of the planning
+/// (#813): the same form, which also sends the slot's day and meal, so that
+/// the recipe is planned on them in one go.
+pub(crate) fn select_form_on(
+    recipe_id: Uuid,
+    base: Option<i32>,
+    back: &str,
+    class: &str,
+    slot: (NaiveDate, &str),
+) -> String {
+    let hidden = format!(
+        r#"
+<input type="hidden" name="planned_on" value="{day}"/>
+<input type="hidden" name="meal_slot" value="{meal}"/>"#,
+        day = slot.0.format("%Y-%m-%d"),
+        meal = html_escape(slot.1),
+    );
+    select_form_with(recipe_id, base, back, class, &hidden)
+}
+
+/// The `back` of a plan made from the planning (#813): the window that
+/// shows the day chosen, so that the recipe is seen where it went; without
+/// a day, or from another page, `back` itself.
+pub(crate) fn plan_back(back: &str, request: &UpdateSelectionRequest, today: NaiveDate) -> String {
+    match (week::back_window(back), request.planned_on) {
+        (Some(_), Some(Some(day))) => week::week_back(week::window_for(day, today)),
+        _ => back.to_string(),
+    }
 }
 
 /// The « Retirer » form (#470): takes the recipe out of the next shopping.
@@ -283,7 +329,8 @@ pub async fn plan(
                 .into_response()
         }
     };
-    patch_plan(me, state, headers, recipe_id, back, request, "plan_saved").await
+    let back = plan_back(back, &request, crate::routes::agenda::today_paris());
+    patch_plan(me, state, headers, recipe_id, &back, request, "plan_saved").await
 }
 
 #[derive(serde::Deserialize)]
@@ -370,11 +417,18 @@ pub struct SelectForm {
     servings: String,
     #[serde(default)]
     back: String,
+    /// The slot of the planning the recipe is chosen for (#813), when the
+    /// list was opened from one; both empty otherwise.
+    #[serde(default)]
+    planned_on: String,
+    #[serde(default)]
+    meal_slot: String,
 }
 
 /// `POST /recipes/:id/select`: plans the recipe (`POST …/selection`), or
 /// changes the number of people of the one already planned — the API is
-/// idempotent on it.
+/// idempotent on it. Chosen for a slot of the planning (#813), the day and
+/// the meal follow (`PATCH …/selection`, as « Choisir un jour »).
 pub async fn select(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -393,6 +447,17 @@ pub async fn select(
                 .into_response()
         }
     };
+    let plan = if form.planned_on.is_empty() && form.meal_slot.is_empty() {
+        None
+    } else {
+        match plan_request(&form.planned_on, &form.meal_slot) {
+            Ok(request) => Some(request),
+            Err(code) => {
+                return Redirect::to(&back_with(back, recipe_id, &format!("error={code}")))
+                    .into_response()
+            }
+        }
+    };
     let cookie = recipes_cookie(&headers);
     let result = api_request_auth(
         &state,
@@ -407,6 +472,11 @@ pub async fn select(
             if resp.status == reqwest::StatusCode::CREATED
                 || resp.status == reqwest::StatusCode::OK =>
         {
+            if let Some(request) = plan {
+                let back = plan_back(back, &request, crate::routes::agenda::today_paris());
+                return patch_plan(me, state, headers, recipe_id, &back, request, "plan_saved")
+                    .await;
+            }
             back_with(back, recipe_id, "notice=recipe_selected")
         }
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
@@ -530,6 +600,78 @@ mod tests {
     fn the_planned_tab_is_a_way_back_too() {
         let id = Uuid::from_u128(7);
         assert_eq!(back_path("planned", id), "/recipes?vue=prevues");
+    }
+
+    #[test]
+    fn the_planning_is_a_way_back_too_on_its_window() {
+        let id = Uuid::from_u128(7);
+        assert_eq!(back_path("week", id), "/recipes/week");
+        assert_eq!(
+            back_path("week@2026-11-20", id),
+            "/recipes/week?date=2026-11-20"
+        );
+        assert_eq!(back_path("week@demain", id), "/recipes/week");
+        assert_eq!(
+            back_with("week@2026-11-20", id, "notice=plan_saved"),
+            "/recipes/week?date=2026-11-20&notice=plan_saved"
+        );
+        assert_eq!(
+            back_with("week", id, "error=forbidden"),
+            "/recipes/week?error=forbidden"
+        );
+    }
+
+    #[test]
+    fn a_day_chosen_from_the_planning_returns_to_the_window_that_shows_it() {
+        let today = day(2026, 11, 14);
+        let on = |d: NaiveDate| plan_request(&d.format("%Y-%m-%d").to_string(), "").unwrap();
+        // In the current window: the current window.
+        assert_eq!(
+            plan_back("week@2026-11-27", &on(day(2026, 11, 21)), today),
+            "week"
+        );
+        // Further: the window of the day.
+        assert_eq!(
+            plan_back("week", &on(day(2026, 11, 22)), today),
+            "week@2026-11-20"
+        );
+        // Without a day, the window the form came from.
+        assert_eq!(
+            plan_back("week@2026-11-27", &plan_request("", "").unwrap(), today),
+            "week@2026-11-27"
+        );
+        // Another page keeps its own way back.
+        assert_eq!(plan_back("detail", &on(day(2026, 11, 22)), today), "detail");
+    }
+
+    #[test]
+    fn the_select_form_of_a_slot_carries_its_day_and_its_meal() {
+        let id = Uuid::from_u128(7);
+        let html = select_form_on(
+            id,
+            Some(4),
+            "week",
+            "actions",
+            (day(2026, 11, 14), "dinner"),
+        );
+        assert!(
+            html.contains(&format!(r#"action="/recipes/{id}/select" class="actions""#)),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="back" value="week""#), "{html}");
+        assert!(
+            html.contains(r#"<input type="hidden" name="planned_on" value="2026-11-14"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="meal_slot" value="dinner"/>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"value="4""#), "{html}");
+        assert!(html.contains(">À réaliser</button>"), "{html}");
+        // The plain form carries neither.
+        let html = select_form(id, Some(4), "list", "actions");
+        assert!(!html.contains("planned_on"), "{html}");
     }
 
     #[test]

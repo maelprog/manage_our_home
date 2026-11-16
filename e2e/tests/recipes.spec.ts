@@ -664,3 +664,75 @@ test.describe("Recipes — import from a URL", () => {
     await expect(page.getByText("Source :")).toHaveCount(0);
   });
 });
+
+// #813: the planning of the meals, without JavaScript — a slot filled from
+// its « Ajouter », an undated recipe placed from « À placer », the window
+// moved by seven days.
+test.describe("Recipes — planning des repas (#813)", () => {
+  test("a meal added from an empty slot, another placed, the window moved", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-rcweek", "Week User");
+    await createGroup(page, "Famille Semainier");
+    await createRecipe(page, { name: "Velouté de potiron", ingredients: "Potiron | 1 | pièce" });
+    await createRecipe(page, { name: "Tarte fine" });
+
+    // Reached from the recipes' filters, lit there; nothing planned yet.
+    await page.goto("/recipes");
+    const filters = page.getByRole("navigation", { name: "Groupes de recettes" });
+    await filters.getByRole("link", { name: "Planning" }).click();
+    await expect(page).toHaveURL(/\/recipes\/week$/);
+    await expect(page.getByRole("heading", { name: "Planning des repas", level: 1 })).toBeVisible();
+    await expect(filters.getByRole("link", { name: "Planning" })).toHaveAttribute("aria-current", "true");
+    await expect(page.getByText("Aucun repas planifié cette semaine.")).toBeVisible();
+    const days = page.locator("ol.meals > li");
+    await expect(days).toHaveCount(9);
+    await expect(page.locator("ol.meals .empty a")).toHaveCount(18);
+    const today = page.locator("ol.meals > li.current");
+    await expect(today.getByText("Aujourd'hui")).toBeVisible();
+
+    // « Ajouter » on today's soir: the list names the slot, « À réaliser »
+    // plans the recipe on it and comes back to the planning.
+    await today.locator(`a[href="/recipes?date=${parisDay(0)}&repas=soir"]`).click();
+    await expect(page.getByText("« À réaliser » sur une recette la place dans le planning.")).toBeVisible();
+    await page
+      .locator("li", { hasText: "Velouté de potiron" })
+      .filter({ has: page.getByRole("button", { name: "À réaliser" }) })
+      .getByRole("button", { name: "À réaliser" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\/week\?notice=plan_saved$/);
+    const soir = today.locator("li", { hasText: "Soir" });
+    await expect(soir.getByRole("link", { name: "Velouté de potiron" })).toBeVisible();
+    await expect(soir.getByRole("link", { name: "Il manque 1 élément" })).toBeVisible();
+    await expect(page.locator(".summary")).toHaveText(/1 repas planifié\s*1 ingrédient à acheter/);
+    await expect(page.locator("ol.meals .empty a")).toHaveCount(17);
+
+    // Planned without a day: under « À placer », placed ten days ahead at
+    // midi, then seen on the window that shows that day.
+    await planFromList(page, "Tarte fine");
+    await page.goto("/recipes/week");
+    const toPlace = page.locator("section", { has: page.getByRole("heading", { name: "À placer" }) });
+    await toPlace.getByText("Choisir un jour").click();
+    await toPlace.getByLabel("Jour (facultatif)").fill(parisDay(10));
+    await toPlace.getByRole("radio", { name: "Midi" }).check();
+    await toPlace.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(new RegExp(`/recipes/week\\?date=${parisDay(6)}&notice=plan_saved$`));
+    await expect(page.getByText("Jour et repas enregistrés.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "À placer" })).toHaveCount(0);
+    await expect(days).toHaveCount(7);
+    await expect(page.locator("ol.meals").getByRole("link", { name: "Tarte fine" })).toBeVisible();
+
+    // ‹ comes back to the current window, › goes seven days further.
+    await page.getByRole("link", { name: "7 jours précédents" }).click();
+    await expect(page).toHaveURL(/\/recipes\/week$/);
+    await expect(days).toHaveCount(9);
+    await page.getByRole("link", { name: "7 jours suivants" }).click();
+    await expect(page).toHaveURL(new RegExp(`/recipes/week\\?date=${parisDay(6)}$`));
+
+    // A date that does not read is the current window.
+    await page.goto("/recipes/week?date=demain");
+    await expect(days).toHaveCount(9);
+    await expect(page.locator("ol.meals > li.current")).toHaveCount(1);
+    await context.close();
+  });
+});
