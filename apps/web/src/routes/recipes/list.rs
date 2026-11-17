@@ -773,10 +773,7 @@ mod tests {
     #[test]
     fn the_first_questions_open_from_the_list_but_not_from_a_slot() {
         let user = Uuid::from_u128(7);
-        assert_eq!(
-            start_mark(None, user),
-            format!(r#" data-depart="{user}""#)
-        );
+        assert_eq!(start_mark(None, user), format!(r#" data-depart="{user}""#));
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
         let slot = Slot::new(today, "dinner", today);
         assert_eq!(start_mark(Some(&slot), user), "");
