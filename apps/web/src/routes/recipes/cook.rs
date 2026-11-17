@@ -530,6 +530,11 @@ mod tests {
             ("Cuire 1 min 75 s", &[("1 min", 60), ("75 s", 75)]),
             ("Cuire 1 h 3 tomates", &[("1 h", 3600)]),
             ("Cuire 1 min 5", &[("1 min", 60)]),
+            ("Laisser reposer 1 h 25cl de crème", &[("1 h", 3600)]),
+            // Two bare digits end the duration; a unit after the minutes
+            // leaves the seconds to come.
+            ("Cuire 1 h 30 20 min", &[("1 h 30", 5400), ("20 min", 1200)]),
+            ("Cuire 1 h 30 min 20", &[("1 h 30 min 20", 5420)]),
             // A smaller unit only: « 10 min 2 h » is two durations.
             ("Cuire 10 min 2 h", &[("10 min", 600), ("2 h", 7200)]),
             ("Cuire 10 min 2 min", &[("10 min", 600), ("2 min", 120)]),
