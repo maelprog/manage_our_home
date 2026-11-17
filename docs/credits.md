@@ -3,6 +3,11 @@
 Œuvres de tiers que `apps/web` sert à ses visiteurs, et les licences sous
 lesquelles elles le sont.
 
+La licence du projet (PolyForm Noncommercial 1.0.0, fichier `LICENSE` à la
+racine) ne s'applique pas aux œuvres listées ici : chacune reste sous sa
+propre licence, celle que cette page indique, et seul son auteur peut en
+changer.
+
 ## Polices
 
 Fraunces et Source Sans 3, sous SIL Open Font License 1.1 : le texte de la
