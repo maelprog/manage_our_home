@@ -2287,90 +2287,97 @@ async fn group_access_policies_isolated_without_scoping(db: PgPool) {
 }
 
 /// Issue #863: the base refuses a feature or a role outside the closed
-/// lists, and a second row for the same feature of one family; a family's
-/// policy goes with the family. Checked as the harness role: constraints,
-/// not RLS.
+/// lists, a missing role, and a second row for the same feature of one
+/// family; a family's policy goes with the family. Checked as the harness
+/// role: constraints, not RLS. Each refusal is asserted on its SQLSTATE,
+/// and each is tried on a (family, feature) pair with no row yet, so no
+/// other constraint can be what refuses it.
+///
+/// The values are written as untyped SQL literals, so the column's own
+/// type decides: a `min_role` declared `TEXT` would accept `superuser`.
 #[sqlx::test]
 async fn group_access_policies_refuse_what_is_off_the_lists(db: PgPool) {
     let ((_, group_a), _) = two_owned_groups(&db).await;
-    let insert = |feature: &'static str, min_role: &'static str| {
+    // `None` writes `NULL`. Test-only literals, no input.
+    let insert = |feature: &'static str, min_role: Option<&'static str>| {
         let db = db.clone();
+        let min_role = min_role.map_or("NULL".to_string(), |r| format!("'{r}'"));
         async move {
-            sqlx::query(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "INSERT INTO group_access_policies (group_id, feature, min_role) \
-                 VALUES ($1, $2, $3::group_role)",
-            )
+                 VALUES ($1, '{feature}', {min_role})"
+            )))
             .bind(group_a)
-            .bind(feature)
-            .bind(min_role)
             .execute(&db)
             .await
         }
     };
-
-    for feature in [
-        "budget",
-        "google_calendar",
-        "stocks_edit",
-        "recipes_edit",
-        "grocery_edit",
-        "agenda_edit",
-        "messagerie_moderate",
-    ] {
-        insert(feature, "admin")
+    let refused_with = |result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>| {
+        result.err().and_then(|e| {
+            e.as_database_error()
+                .and_then(|d| d.code())
+                .map(|c| c.into_owned())
+        })
+    };
+    let rows = |db: PgPool| async move {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM group_access_policies")
+            .fetch_one(&db)
             .await
-            .unwrap_or_else(|e| panic!("{feature} is a known feature: {e}"));
-    }
-    for (feature, min_role) in [("stocks", "admin"), ("", "admin"), ("Budget", "admin")] {
-        assert!(
-            insert(feature, min_role).await.is_err(),
+            .unwrap();
+        n
+    };
+
+    // A role off the list, and no role: refused on `min_role` itself, on
+    // an empty table.
+    assert_eq!(
+        refused_with(insert("budget", Some("superuser")).await).as_deref(),
+        Some("22P02"),
+        "min_role off the list"
+    );
+    assert_eq!(
+        refused_with(insert("budget", None).await).as_deref(),
+        Some("23502"),
+        "min_role is required"
+    );
+    assert_eq!(rows(db.clone()).await, 0);
+
+    // A feature off the list: refused by the CHECK.
+    for feature in ["stocks", "", "Budget"] {
+        assert_eq!(
+            refused_with(insert(feature, Some("admin")).await).as_deref(),
+            Some("23514"),
             "feature {feature:?} is not on the list"
         );
     }
-    let second = insert("budget", "owner").await;
-    assert!(second.is_err(), "one row per feature and family");
+    assert_eq!(rows(db.clone()).await, 0);
 
-    // A role off the list: refused by the base, whatever the cast.
-    let off_role = sqlx::query(
-        "INSERT INTO group_access_policies (group_id, feature, min_role) \
-         VALUES ($1, 'budget', 'superuser')",
-    )
-    .bind(group_a)
-    .execute(&db)
-    .await;
-    assert!(off_role.is_err(), "min_role off the list");
-    let null_role = sqlx::query(
-        "INSERT INTO group_access_policies (group_id, feature, min_role) \
-         VALUES ($1, 'budget', NULL)",
-    )
-    .bind(group_a)
-    .execute(&db)
-    .await;
-    assert!(null_role.is_err(), "min_role is required");
-
-    // The three roles are accepted.
-    sqlx::query("DELETE FROM group_access_policies")
-        .execute(&db)
-        .await
-        .unwrap();
+    // The three roles and the seven features are accepted.
     for (feature, min_role) in [
         ("budget", "standard"),
-        ("stocks_edit", "admin"),
-        ("agenda_edit", "owner"),
+        ("google_calendar", "admin"),
+        ("stocks_edit", "owner"),
+        ("recipes_edit", "admin"),
+        ("grocery_edit", "admin"),
+        ("agenda_edit", "admin"),
+        ("messagerie_moderate", "admin"),
     ] {
-        insert(feature, min_role)
+        insert(feature, Some(min_role))
             .await
-            .unwrap_or_else(|e| panic!("{min_role} is a known role: {e}"));
+            .unwrap_or_else(|e| panic!("{feature} / {min_role} is on the lists: {e}"));
     }
+    assert_eq!(rows(db.clone()).await, 7);
+
+    // One row per feature and family.
+    assert_eq!(
+        refused_with(insert("budget", Some("owner")).await).as_deref(),
+        Some("23505"),
+        "one row per feature and family"
+    );
 
     sqlx::query("DELETE FROM groups WHERE id = $1")
         .bind(group_a)
         .execute(&db)
         .await
         .unwrap();
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM group_access_policies")
-        .fetch_one(&db)
-        .await
-        .unwrap();
-    assert_eq!(left, 0, "the policy goes with its family");
+    assert_eq!(rows(db.clone()).await, 0, "the policy goes with its family");
 }
