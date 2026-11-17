@@ -15,6 +15,9 @@ mod dietary;
 use axum::http::{Method, StatusCode};
 use common::{call, test_router};
 use dietary::{create_group, family, join, register_verify_login, send, Family, TAG};
+
+/// The French name the warning gives `TAG` (#825).
+const LABEL: &str = "Cacahuètes";
 use http_body_util::BodyExt;
 use manage_our_home::api_docs::openapi;
 use serde_json::{json, Value};
@@ -944,11 +947,14 @@ async fn arriving_in_a_family_shares_nothing_until_the_member_chooses(db: PgPool
     let (_, read) = send(&router, Method::GET, &card, &owner, None).await;
     assert_eq!(
         read["allergy_warning"],
-        json!({"mine": [], "public": [], "anonymous": false, "unverifiable": false})
+        json!({"mine": [], "public": [], "anonymous": false, "unverifiable": []})
     );
     // The holder's own warning is theirs, whatever the level.
     let (_, read) = send(&router, Method::GET, &card, &holder, None).await;
-    assert_eq!(read["allergy_warning"]["mine"], json!([TAG]));
+    assert_eq!(
+        read["allergy_warning"]["mine"],
+        json!([{"tag": TAG, "label": LABEL}])
+    );
 
     // Nothing of an allergy in an email or a notification.
     let notifications: String =

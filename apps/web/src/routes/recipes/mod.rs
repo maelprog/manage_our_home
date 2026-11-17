@@ -14,6 +14,7 @@
 //! recipe's creator or a group admin/owner. The backend stays the authority
 //! (a forged edit/delete/log is still 403'd, mapped defensively here).
 
+pub mod allergy;
 pub mod detail;
 pub mod edit;
 pub mod equipment;

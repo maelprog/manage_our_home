@@ -32,6 +32,7 @@ use crate::routes::agenda::{
 };
 use crate::routes::groups::ownership::ownership_notices;
 use crate::routes::groups::{cookie_of, header_parts};
+use crate::routes::recipes::allergy;
 use crate::routes::recipes::missing::missing_dialog;
 use crate::routes::recipes::planned_with_stock;
 use crate::state::{api_request_auth, AppState};
@@ -757,10 +758,13 @@ fn tonight_block(
         ),
     };
     format!(
-        "<section class=\"card tonight\">\n<h2>{title}</h2>\n<p class=\"dish\">{name}</p><p class=\"meta\">{first_duration}{badge}</p>{dialog}{also}{more}\n</section>",
+        "<section class=\"card tonight\">\n<h2>{title}</h2>\n<p class=\"dish\">{name}</p><p class=\"meta\">{first_duration}{badge}</p>{allergy}{dialog}{also}{more}\n</section>",
         title = meal.title(),
         name = link(first),
         badge = availability_badge(first),
+        // The first recipe's allergy warning (#825), the aim with it: the
+        // only banner of the page.
+        allergy = allergy::banner(&first.allergy_warning, true, true),
         dialog = missing_dialog(first),
     )
 }
@@ -2594,6 +2598,7 @@ mod pure_logic_tests {
                 .collect(),
             use_by: None,
             days_left: None,
+            allergy_warning: Default::default(),
         }
     }
 
@@ -2670,6 +2675,36 @@ mod pure_logic_tests {
         let planned = [dish(1, "Salade", Some(today_814()), Some("lunch"), 0, &[])];
         assert_eq!(render_tonight(&planned, Meal::Dinner, &[]), "");
         assert_eq!(render_tonight(&[], Meal::Lunch, &[]), "");
+    }
+
+    #[test]
+    fn the_card_warns_of_its_first_recipes_allergies_with_the_aim() {
+        // #825: always shown on « Ce soir », under the duration line.
+        let mut first = dish(1, "Gratin", Some(today_814()), Some("dinner"), 0, &[]);
+        first.allergy_warning = serde_json::from_value(serde_json::json!({
+            "mine": [{"tag": "en:milks", "label": "Laits"}],
+            "unverifiable": ["sauce soja"],
+        }))
+        .unwrap();
+        let second = dish(2, "Soupe", Some(today_814()), Some("dinner"), 1, &[]);
+        let html = render_tonight(&[first, second], Meal::Dinner, &[(1, 75)]);
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        assert!(at("<span>1 h 15</span>") < at(r#"<div class="allergy sm" role="status">"#));
+        assert!(at(r#"<div class="allergy sm" role="status">"#) < at("Soupe"));
+        assert!(
+            html.contains("Contient lait : vous y êtes allergique."),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"<p class="aim">{}</p>"#, allergy::AIM)),
+            "{html}"
+        );
+        assert_eq!(html.matches(r#"class="allergy"#).count(), 1, "{html}");
+        // Nothing to warn of: the card as before.
+        let plain = [dish(1, "Gratin", Some(today_814()), Some("dinner"), 0, &[])];
+        let html = render_tonight(&plain, Meal::Dinner, &[]);
+        assert!(!html.contains(r#"class="allergy"#), "{html}");
+        assert!(!html.contains("Aide uniquement"), "{html}");
     }
 
     #[test]

@@ -478,10 +478,13 @@ fn page(
     let plan_html = plan_html(id, planned, plan_open, today_paris, "detail");
     let time_html = time_html(recipe.duration_minutes);
     let equipment_html = super::equipment::required_section(&recipe.required_equipment, household);
+    // The allergy warning (#825), before « À réaliser »: read before acting.
+    let allergy = super::allergy::banner(&recipe.allergy_warning, false, true);
     let body = format!(
         r#"<h1>{name}</h1>
 {source_html}
 {time_html}
+{allergy}
 {banners}
 {selection_html}
 {plan_html}
@@ -895,5 +898,53 @@ mod tests {
         assert!(is_plan_error(Some("invalid_meal_slot")));
         assert!(!is_plan_error(Some("unavailable")));
         assert!(!is_plan_error(None));
+    }
+
+    fn recipe_with(warning: serde_json::Value) -> RecipeResponse {
+        serde_json::from_value(serde_json::json!({
+            "id": Uuid::nil(),
+            "group_id": Uuid::nil(),
+            "name": "Gratin",
+            "instructions": null,
+            "duration_minutes": 75,
+            "created_by": Uuid::nil(),
+            "created_at": "2026-11-14T10:00:00Z",
+            "updated_at": "2026-11-14T10:00:00Z",
+            "ingredients": [],
+            "allergy_warning": warning,
+        }))
+        .unwrap()
+    }
+
+    fn render(recipe: &RecipeResponse) -> String {
+        page("", recipe, None, None, None, None, false, false, "")
+    }
+
+    #[test]
+    fn the_recipe_page_warns_between_its_time_and_a_realiser() {
+        // #825: every kind the API sends, read before acting.
+        let html = render(&recipe_with(serde_json::json!({
+            "mine": [{"tag": "en:milks", "label": "Laits"}],
+            "public": [{"member": "Léa", "tag": "en:eggs", "label": "Œufs"}],
+            "anonymous": true,
+            "unverifiable": ["sauce soja"],
+        })));
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        assert!(at("Temps : 1 h 15") < at(r#"<div class="allergy" role="status">"#));
+        assert!(at(r#"<div class="allergy" role="status">"#) < at("À réaliser"));
+        for line in [
+            "Contient lait : vous y êtes allergique.",
+            "Léa est allergique à : œufs.",
+            "Un membre de la famille est allergique à un ingrédient de cette recette.",
+            "Certains ingrédients n'ont pas pu être vérifiés pour les allergies : sauce soja.",
+            super::super::allergy::AIM,
+        ] {
+            assert!(html.contains(line), "{line} in {html}");
+        }
+        // Nothing to say: no banner, no aim, no « sans allergène ».
+        let html = render(&recipe_with(serde_json::json!({})));
+        assert!(!html.contains(r#"class="allergy"#), "{html}");
+        assert!(!html.contains("Aide uniquement"), "{html}");
+        assert!(!html.contains("sans allergène"), "{html}");
     }
 }
