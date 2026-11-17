@@ -1203,6 +1203,11 @@ async fn export_accounts_for_every_table(db: PgPool) {
             "the household's kitchen equipment (#817): equipment codes of a family, no account",
         ),
         (
+            "group_access_policies",
+            "a family's access policy (#863): the lowest role admitted to each restricted \
+             feature, a family's setting, no account",
+        ),
+        (
             "off_products",
             "Open Food Facts' public product records, keyed by code: no family, no account",
         ),

@@ -2139,3 +2139,238 @@ async fn food_constraints_are_their_holders_alone(db: PgPool) {
     .unwrap();
     assert_eq!(kept, 5, "the holder's rows are untouched");
 }
+
+/// Issue #863: a family's access policy (`group_access_policies`, 0062) is
+/// read by its members, and by nobody else — even through a query with no
+/// `WHERE` at all. A member scoped to their own family can neither read,
+/// change, delete nor add a row of another family's policy; with no family
+/// scope, nothing is readable.
+///
+/// Seeded as the harness role, which bypasses RLS.
+#[sqlx::test]
+async fn group_access_policies_isolated_without_scoping(db: PgPool) {
+    let ((_, group_a), (_, group_b)) = two_owned_groups(&db).await;
+    for (group, feature, min_role) in [
+        (group_a, "budget", "owner"),
+        (group_a, "stocks_edit", "standard"),
+        (group_b, "budget", "standard"),
+    ] {
+        sqlx::query(
+            "INSERT INTO group_access_policies (group_id, feature, min_role) \
+             VALUES ($1, $2, $3::group_role)",
+        )
+        .bind(group)
+        .bind(feature)
+        .bind(min_role)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        format!("GRANT SELECT, INSERT, UPDATE, DELETE ON group_access_policies TO {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // No family scope: no row at all.
+    let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM group_access_policies")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(unscoped, 0, "no family scope, no policy row");
+
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // A member reads their own family's rows, and only them.
+    let read: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT group_id, feature FROM group_access_policies ORDER BY feature")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        read,
+        vec![
+            (group_a, "budget".to_string()),
+            (group_a, "stocks_edit".to_string()),
+        ],
+        "group A's scope reads A's policy and nothing of B's"
+    );
+
+    // Nor change nor delete B's rows: they are invisible to the statement.
+    let updated =
+        sqlx::query("UPDATE group_access_policies SET min_role = 'owner' WHERE group_id = $1")
+            .bind(group_b)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        updated.rows_affected(),
+        0,
+        "B's policy is not updatable from A"
+    );
+    let deleted = sqlx::query("DELETE FROM group_access_policies WHERE group_id = $1")
+        .bind(group_b)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        deleted.rows_affected(),
+        0,
+        "B's policy is not deletable from A"
+    );
+
+    // Nor move one of A's rows over to B.
+    sqlx::query("SAVEPOINT moved")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let moved =
+        sqlx::query("UPDATE group_access_policies SET group_id = $1 WHERE feature = 'stocks_edit'")
+            .bind(group_b)
+            .execute(&mut *tx)
+            .await;
+    assert!(moved.is_err(), "a row of A cannot be moved to B");
+    sqlx::query("ROLLBACK TO SAVEPOINT moved")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // Nor add a row to B's policy.
+    let inserted = sqlx::query(
+        "INSERT INTO group_access_policies (group_id, feature, min_role) \
+         VALUES ($1, 'agenda_edit', 'owner')",
+    )
+    .bind(group_b)
+    .execute(&mut *tx)
+    .await;
+    assert!(inserted.is_err(), "group A's scope cannot write B's policy");
+    tx.rollback().await.unwrap();
+
+    for statement in [
+        format!("REVOKE ALL ON group_access_policies FROM {role}"),
+        format!("DROP ROLE {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let b_rows: Vec<String> = sqlx::query_scalar(
+        "SELECT feature || ':' || min_role::text FROM group_access_policies WHERE group_id = $1",
+    )
+    .bind(group_b)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        b_rows,
+        vec!["budget:standard".to_string()],
+        "B's policy untouched"
+    );
+}
+
+/// Issue #863: the base refuses a feature or a role outside the closed
+/// lists, and a second row for the same feature of one family; a family's
+/// policy goes with the family. Checked as the harness role: constraints,
+/// not RLS.
+#[sqlx::test]
+async fn group_access_policies_refuse_what_is_off_the_lists(db: PgPool) {
+    let ((_, group_a), _) = two_owned_groups(&db).await;
+    let insert = |feature: &'static str, min_role: &'static str| {
+        let db = db.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO group_access_policies (group_id, feature, min_role) \
+                 VALUES ($1, $2, $3::group_role)",
+            )
+            .bind(group_a)
+            .bind(feature)
+            .bind(min_role)
+            .execute(&db)
+            .await
+        }
+    };
+
+    for feature in [
+        "budget",
+        "google_calendar",
+        "stocks_edit",
+        "recipes_edit",
+        "grocery_edit",
+        "agenda_edit",
+        "messagerie_moderate",
+    ] {
+        insert(feature, "admin")
+            .await
+            .unwrap_or_else(|e| panic!("{feature} is a known feature: {e}"));
+    }
+    for (feature, min_role) in [("stocks", "admin"), ("", "admin"), ("Budget", "admin")] {
+        assert!(
+            insert(feature, min_role).await.is_err(),
+            "feature {feature:?} is not on the list"
+        );
+    }
+    let second = insert("budget", "owner").await;
+    assert!(second.is_err(), "one row per feature and family");
+
+    // A role off the list: refused by the base, whatever the cast.
+    let off_role = sqlx::query(
+        "INSERT INTO group_access_policies (group_id, feature, min_role) \
+         VALUES ($1, 'budget', 'superuser')",
+    )
+    .bind(group_a)
+    .execute(&db)
+    .await;
+    assert!(off_role.is_err(), "min_role off the list");
+    let null_role = sqlx::query(
+        "INSERT INTO group_access_policies (group_id, feature, min_role) \
+         VALUES ($1, 'budget', NULL)",
+    )
+    .bind(group_a)
+    .execute(&db)
+    .await;
+    assert!(null_role.is_err(), "min_role is required");
+
+    // The three roles are accepted.
+    sqlx::query("DELETE FROM group_access_policies")
+        .execute(&db)
+        .await
+        .unwrap();
+    for (feature, min_role) in [
+        ("budget", "standard"),
+        ("stocks_edit", "admin"),
+        ("agenda_edit", "owner"),
+    ] {
+        insert(feature, min_role)
+            .await
+            .unwrap_or_else(|e| panic!("{min_role} is a known role: {e}"));
+    }
+
+    sqlx::query("DELETE FROM groups WHERE id = $1")
+        .bind(group_a)
+        .execute(&db)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM group_access_policies")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "the policy goes with its family");
+}
