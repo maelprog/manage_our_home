@@ -85,20 +85,20 @@ fn workspace_members_reads_the_one_line_list() {
 
 #[test]
 fn licence_file_is_polyform_noncommercial_with_the_required_notice() {
+    // The fixture is the upstream file, byte for byte:
+    // polyformproject/polyform-licenses, tag 1.0.0,
+    // PolyForm-Noncommercial-1.0.0.md (sha256 c0ea4a89…48fabbe5). LICENSE
+    // must be exactly that text, then the Required Notice line: any edit to
+    // the terms, however small, fails here.
     let licence = read(&repo_root().join("LICENSE"));
-    assert!(
-        licence.starts_with("# PolyForm Noncommercial License 1.0.0\n"),
-        "LICENSE must start with the PolyForm Noncommercial 1.0.0 title"
+    let expected = format!(
+        "{}\nRequired Notice: Copyright (c) 2026 maelprog\n",
+        include_str!("fixtures/PolyForm-Noncommercial-1.0.0.md")
     );
     assert!(
-        licence
-            .lines()
-            .any(|l| l == "Required Notice: Copyright (c) 2026 maelprog"),
-        "LICENSE must carry the Required Notice line"
-    );
-    assert!(
-        !licence.contains("Permission is hereby granted"),
-        "LICENSE still holds the MIT text"
+        licence == expected,
+        "LICENSE must be the PolyForm Noncommercial 1.0.0 text, unchanged, \
+         followed by the Required Notice line"
     );
 }
 
