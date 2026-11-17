@@ -19,6 +19,12 @@
 //!
 //! Since #812 a planned recipe that has a day shows it, with its meal, in
 //! « Prévues » and « Toutes » (`plan_badge`); one without shows nothing more.
+//!
+//! Since #825 « Possibles » carries the box « Éviter les recettes contenant
+//! les allergènes de la famille », ticked by default: unticked, the
+//! suggestions are asked with `avoid_allergens=false` for that request, and
+//! no recipe of the tab shows its allergy warning; ticked, each shows its
+//! own (`allergy::banner`).
 
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
@@ -41,8 +47,8 @@ use super::missing::{
 use super::start::{prefill, usual_servings};
 use super::week::{back_window, slot_from_query, week_back, week_href, window_for};
 use super::{
-    deselect_form, family_context, outcome_links, plan_badge, planned_badge, planned_with_stock,
-    recipes_cookie, select_form, select_form_on, service_unavailable_page,
+    allergy, deselect_form, family_context, outcome_links, plan_badge, planned_badge,
+    planned_with_stock, recipes_cookie, select_form, select_form_on, service_unavailable_page,
 };
 
 #[derive(serde::Deserialize)]
@@ -56,6 +62,10 @@ pub struct ListQuery {
     #[serde(default, deserialize_with = "crate::lenient_query::lenient")]
     date: Option<NaiveDate>,
     repas: Option<String>,
+    /// The allergens' box of « Possibles » (#825): its form was sent, and
+    /// whether the box was ticked (`allergy::avoid_from`).
+    avoid_form: Option<String>,
+    avoid_allergens: Option<String>,
 }
 
 fn notice_text(code: &str) -> Option<&'static str> {
@@ -146,7 +156,8 @@ fn missing_html(missing: &[MissingIngredient]) -> String {
     )
 }
 
-fn suggestion_html(s: &RecipeSuggestion) -> String {
+/// One suggestion; `warn` shows its allergy warning (#825).
+fn suggestion_html(s: &RecipeSuggestion, warn: bool) -> String {
     let summary = html_escape(&stock_summary(
         s.matched_ingredients,
         s.total_required_ingredients,
@@ -161,11 +172,16 @@ fn suggestion_html(s: &RecipeSuggestion) -> String {
         String::new()
     };
     let missing = missing_html(&s.missing_ingredients);
+    let allergy = if warn {
+        allergy::banner(&s.allergy_warning, true, false)
+    } else {
+        String::new()
+    };
     format!(
         r#"<li class="list-row stacked">
 <a href="/recipes/{id}"><strong>{name}</strong></a>{recent}
 <div class="muted">{summary}</div>
-{missing}
+{allergy}{missing}
 </li>"#,
         id = s.recipe_id,
         name = html_escape(&s.name),
@@ -369,16 +385,30 @@ fn planned_tab_html(planned: &[PlannedSelection]) -> String {
     )
 }
 
-/// « Possibles »: the recipes whose every required ingredient is in stock,
-/// in the suggestions' order.
-fn possible_tab_html(possible: &[RecipeSuggestion]) -> String {
+/// « Possibles »: the box of the family's allergens (#825), then the
+/// recipes whose every required ingredient is in stock, in the
+/// suggestions' order — each with its allergy warning while the box is
+/// ticked (`avoid`), and the aim once under them; none unticked.
+fn possible_tab_html(possible: &[RecipeSuggestion], avoid: bool) -> String {
+    let form = allergy::avoid_form("/recipes", &[("vue", "possibles")], avoid, "Appliquer");
     if possible.is_empty() {
-        return r#"<p class="muted">Aucune recette ne se fait avec le stock actuel. Une recette apparaît ici quand tous ses ingrédients obligatoires sont en stock.</p>"#.to_string();
+        return format!(
+            r#"{form}<p class="muted">Aucune recette ne se fait avec le stock actuel. Une recette apparaît ici quand tous ses ingrédients obligatoires sont en stock.</p>"#
+        );
     }
-    let rows = possible.iter().map(suggestion_html).collect::<String>();
+    let rows = possible
+        .iter()
+        .map(|s| suggestion_html(s, avoid))
+        .collect::<String>();
+    let aim = allergy::aim_line(
+        avoid
+            && possible
+                .iter()
+                .any(|s| allergy::says_something(&s.allergy_warning)),
+    );
     format!(
-        r#"<ul class="list">{rows}</ul>
-{OFF_ATTRIBUTION}"#
+        r#"{form}<ul class="list">{rows}</ul>
+{aim}{OFF_ATTRIBUTION}"#
     )
 }
 
@@ -394,7 +424,10 @@ fn all_tab_html(
     let suggestions_section = if suggestions.is_empty() {
         String::new()
     } else {
-        let rows = suggestions.iter().map(suggestion_html).collect::<String>();
+        let rows = suggestions
+            .iter()
+            .map(|s| suggestion_html(s, false))
+            .collect::<String>();
         format!(
             r#"<h2>Suggestions</h2>
 <p class="muted">Classées selon ce que vous avez en stock, la variété (repas récents), la saison et les avis donnés sur les plats déjà faits (Aimé, Pas aimé).</p>
@@ -489,14 +522,20 @@ pub async fn get(
         with_stock.iter().map(|p| p.selection.clone()).collect();
 
     // The recipes the stock covers (#539), for the « Possibles » tab and
-    // its count on every tab, all of them.
+    // its count on every tab, all of them; the family's allergens kept out
+    // unless the box of « Possibles » came unticked (#825).
+    let avoid = allergy::avoid_from(
+        query.avoid_form.as_deref(),
+        query.avoid_allergens.as_deref(),
+    );
     let possible = if recipes.is_empty() {
         Vec::new()
     } else {
         let path = format!(
-            "/groups/{}/recipes/suggestions?possible=true&limit={}",
+            "/groups/{}/recipes/suggestions?possible=true&limit={}{}",
             fam.gid,
-            recipes.len()
+            recipes.len(),
+            if avoid { "" } else { "&avoid_allergens=false" },
         );
         match fetch_suggestions(&state, &path, cookie.as_deref()).await {
             Ok(list) => list,
@@ -538,7 +577,7 @@ pub async fn get(
 
     let content = match tab {
         Tab::Planned => planned_tab_html(&with_stock),
-        Tab::Possible => possible_tab_html(&possible),
+        Tab::Possible => possible_tab_html(&possible, avoid),
         Tab::All | Tab::Week => {
             // The ranked suggestions, on this tab only.
             let path = format!("/groups/{}/recipes/suggestions", fam.gid);
@@ -604,6 +643,7 @@ mod tests {
             required_equipment: Vec::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            allergy_warning: Default::default(),
         }
     }
 
@@ -613,6 +653,7 @@ mod tests {
             missing: Vec::new(),
             use_by: None,
             days_left: None,
+            allergy_warning: Default::default(),
         }
     }
 
@@ -711,6 +752,7 @@ mod tests {
             recently_eaten: false,
             last_eaten_on: None,
             duration_minutes: None,
+            allergy_warning: Default::default(),
         }
     }
 
@@ -954,7 +996,7 @@ mod tests {
 
     #[test]
     fn the_possible_tab_lists_the_recipes_the_stock_covers() {
-        let html = possible_tab_html(&[suggestion(1, "Pain <maison>", 2, 2)]);
+        let html = possible_tab_html(&[suggestion(1, "Pain <maison>", 2, 2)], true);
         let id = Uuid::from_u128(1);
         assert!(
             html.contains(&format!(
@@ -965,12 +1007,94 @@ mod tests {
         assert!(html.contains("Tous les ingrédients en stock"), "{html}");
         // The matching goes through Open Food Facts' categories (#406).
         assert!(html.contains(OFF_ATTRIBUTION), "{html}");
-        let empty = possible_tab_html(&[]);
+        let empty = possible_tab_html(&[], true);
         assert!(
             empty.contains("Aucune recette ne se fait avec le stock actuel."),
             "{empty}"
         );
         assert!(!empty.contains(OFF_ATTRIBUTION), "{empty}");
+        // The box of the allergens, even with nothing listed (#825).
+        assert!(empty.contains(r#"<form class="avoid""#), "{empty}");
+    }
+
+    fn warned(mut s: RecipeSuggestion, json: serde_json::Value) -> RecipeSuggestion {
+        s.allergy_warning = serde_json::from_value(json).unwrap();
+        s
+    }
+
+    #[test]
+    fn the_possible_tab_carries_the_box_ticked_and_each_warning() {
+        let possible = [
+            warned(
+                suggestion(1, "Crêpes", 2, 2),
+                serde_json::json!({"mine": [{"tag": "en:milks", "label": "Laits"}]}),
+            ),
+            warned(
+                suggestion(2, "Sauté", 1, 1),
+                serde_json::json!({"unverifiable": ["sauce soja"]}),
+            ),
+            suggestion(3, "Pâtes", 1, 1),
+        ];
+        let html = possible_tab_html(&possible, true);
+        assert!(
+            html.starts_with(r#"<form class="avoid" method="get" action="/recipes"><input type="hidden" name="vue" value="possibles"/>"#),
+            "{html}"
+        );
+        assert!(html.contains("data-submit-on-change checked/>"), "{html}");
+        assert_eq!(
+            html.matches(r#"<div class="allergy sm" role="status">"#)
+                .count(),
+            2,
+            "{html}"
+        );
+        assert!(
+            html.contains("Contient lait : vous y êtes allergique."),
+            "{html}"
+        );
+        assert!(
+            html.contains("pas pu être vérifiés pour les allergies : sauce soja."),
+            "{html}"
+        );
+        // The aim once, under the list.
+        assert_eq!(html.matches(super::allergy::AIM).count(), 1, "{html}");
+        // Nothing to warn of: no aim either.
+        let html = possible_tab_html(&[suggestion(3, "Pâtes", 1, 1)], true);
+        assert!(!html.contains("Aide uniquement"), "{html}");
+    }
+
+    #[test]
+    fn unticked_the_possible_tab_shows_no_allergy_warning_at_all() {
+        // Arbitration of 2026-11-17: unticked, the recipes come back
+        // without any banner, whatever the kind.
+        let possible = [warned(
+            suggestion(1, "Crêpes", 2, 2),
+            serde_json::json!({
+                "mine": [{"tag": "en:milks", "label": "Laits"}],
+                "public": [{"member": "Léa", "tag": "en:eggs", "label": "Œufs"}],
+                "anonymous": true,
+                "unverifiable": ["sauce soja"],
+            }),
+        )];
+        let html = possible_tab_html(&possible, false);
+        assert!(html.contains("Crêpes"), "{html}");
+        assert!(!html.contains(r#"class="allergy"#), "{html}");
+        assert!(!html.contains("Aide uniquement"), "{html}");
+        assert!(!html.contains(" checked"), "{html}");
+        assert!(
+            html.contains(r#"name="avoid_allergens" value="true""#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_suggestions_of_toutes_carry_no_banner() {
+        let s = warned(
+            suggestion(1, "Crêpes", 2, 2),
+            serde_json::json!({"anonymous": true}),
+        );
+        let html = all_tab_html(&[], &[], &[s], None, None);
+        assert!(html.contains("Crêpes"), "{html}");
+        assert!(!html.contains(r#"class="allergy"#), "{html}");
     }
 
     #[test]

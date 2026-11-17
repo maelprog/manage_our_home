@@ -2617,7 +2617,7 @@ mod tests {
             "--warning-soft",
             ".notice.warning, .badge.soon",
         ),
-        ("--fg", "--warning-soft", ".ad.gen (#793)"),
+        ("--fg", "--warning-soft", ".ad.gen (#793), .allergy (#825)"),
     ];
 
     /// `color-mix(in srgb, …)` of equal parts, which is what

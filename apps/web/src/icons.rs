@@ -91,6 +91,7 @@ icon_set! {
         Picture,
         Play,
         Document,
+        Warning,
     }
 }
 
@@ -214,6 +215,10 @@ pub fn icon(icon: Icon) -> &'static str {
         // file-text: a PDF attachment (#776).
         Icon::Document => svg!(
             r#"<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>"#
+        ),
+        // triangle-alert: an allergy warning on a recipe (#825).
+        Icon::Warning => svg!(
+            r#"<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>"#
         ),
     }
 }

@@ -12,6 +12,11 @@
 //! the meal and the number of people; the page it came from then says
 //! « X remplacé par Y. » — the planning on its window, or the page of the
 //! new recipe. Without JavaScript throughout.
+//!
+//! Since #825 « Propositions » opens on the box « Éviter les recettes
+//! contenant les allergènes de la famille », ticked by default; unticked,
+//! the replacements are asked with `avoid_allergens=false` for that request
+//! and no offer shows its allergy warning, ticked each shows its own.
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -28,7 +33,9 @@ use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
 use super::detail::plan_sentence;
-use super::{back_path, back_with, family_context, planned_with_stock, recipes_cookie, week};
+use super::{
+    allergy, back_path, back_with, family_context, planned_with_stock, recipes_cookie, week,
+};
 
 /// The address of the page, from the page `back` names.
 pub(crate) fn replace_href(recipe_id: Uuid, back: &str) -> String {
@@ -119,6 +126,9 @@ pub(crate) struct ReplaceView<'a> {
     pub offer: Offer<'a>,
     /// The sentence of `?error=`.
     pub error: Option<&'a str>,
+    /// The allergens' box (#825): ticked, the offers keep the family's
+    /// allergens out and show their warnings; unticked, neither.
+    pub avoid: bool,
 }
 
 /// « Vendredi 13 novembre, au dîner », or « Sans jour pour l'instant ».
@@ -159,8 +169,9 @@ fn context_html(s: &RecipeSelectionResponse) -> String {
 
 /// One offer: a form of its own, the recipe's name over its duration and
 /// what the stock lacks of it — nothing of the stock for a recipe without
-/// a required ingredient —, then « Choisir ».
-fn offer_html(recipe_id: Uuid, back: &str, o: &RecipeSuggestion) -> String {
+/// a required ingredient —, its allergy warning when `warn` (#825), then
+/// « Choisir ».
+fn offer_html(recipe_id: Uuid, back: &str, o: &RecipeSuggestion, warn: bool) -> String {
     let duration = o
         .duration_minutes
         .map(|m| format!("<span>{}</span>", duration_label(m)))
@@ -176,8 +187,13 @@ fn offer_html(recipe_id: Uuid, back: &str, o: &RecipeSuggestion) -> String {
     } else {
         format!(r#"<span class="meta">{duration}{stock}</span>"#)
     };
+    let allergy = if warn {
+        allergy::banner(&o.allergy_warning, true, false)
+    } else {
+        String::new()
+    };
     format!(
-        r#"<li class="card prop"><form method="post" action="/recipes/{recipe_id}/replace"><input type="hidden" name="back" value="{back}"/><input type="hidden" name="replacement" value="{id}"/><div class="what"><span class="name">{name}</span>{meta}</div><button type="submit">Choisir<span class="sr-only"> {name}</span></button></form></li>"#,
+        r#"<li class="card prop"><form method="post" action="/recipes/{recipe_id}/replace"><input type="hidden" name="back" value="{back}"/><input type="hidden" name="replacement" value="{id}"/><div class="what"><span class="name">{name}</span>{meta}</div>{allergy}<button type="submit">Choisir<span class="sr-only"> {name}</span></button></form></li>"#,
         back = html_escape(back),
         id = o.recipe_id,
         name = html_escape(&o.name),
@@ -200,6 +216,13 @@ pub(crate) fn replace_html(view: &ReplaceView) -> String {
         )
     };
     let error = view.error.map(alert).unwrap_or_default();
+    // The allergens' box (#825), over the offers or their absence.
+    let avoid = allergy::avoid_form(
+        &format!("/recipes/{}/replace", view.recipe_id),
+        &[("back", view.back)],
+        view.avoid,
+        "Actualiser",
+    );
     let offers = match view.offer {
         Offer::Unavailable => format!(
             r#"<h2>Propositions</h2>{alert}<div class="actions"><a class="btn" href="{href}">Réessayer</a></div>"#,
@@ -223,7 +246,7 @@ pub(crate) fn replace_html(view: &ReplaceView) -> String {
                 None => String::new(),
             };
             format!(
-                r#"<h2>Propositions</h2><div class="card"><p><strong>Aucune autre recette à proposer pour l'instant.</strong></p><p class="muted">Toutes vos autres recettes sont déjà prévues, ou aucune n'est enregistrée. Rien n'a été modifié{kept}.</p><div class="actions"><a class="btn" href="/recipes">Voir les recettes</a></div></div>"#
+                r#"<h2>Propositions</h2>{avoid}<div class="card"><p><strong>Aucune autre recette à proposer pour l'instant.</strong></p><p class="muted">Toutes vos autres recettes sont déjà prévues, ou aucune n'est enregistrée. Rien n'a été modifié{kept}.</p><div class="actions"><a class="btn" href="/recipes">Voir les recettes</a></div></div>"#
             )
         }
         Offer::Ready(list) => {
@@ -234,10 +257,16 @@ pub(crate) fn replace_html(view: &ReplaceView) -> String {
             };
             let items: String = list
                 .iter()
-                .map(|o| offer_html(view.recipe_id, view.back, o))
+                .map(|o| offer_html(view.recipe_id, view.back, o, view.avoid))
                 .collect();
+            let aim = allergy::aim_line(
+                view.avoid
+                    && list
+                        .iter()
+                        .any(|o| allergy::says_something(&o.allergy_warning)),
+            );
             format!(
-                r#"<h2>{title}</h2><p class="muted">Classées d'après votre stock, ce qui a été cuisiné récemment et la saison. La première est la mieux placée.</p><ol class="props">{items}</ol>"#
+                r#"<h2>{title}</h2><p class="muted">Classées d'après votre stock, ce qui a été cuisiné récemment et la saison. La première est la mieux placée.</p>{avoid}{aim}<ol class="props">{items}</ol>"#
             )
         }
     };
@@ -251,6 +280,10 @@ pub struct ReplaceQuery {
     error: Option<String>,
     /// The recipe found already planned (`error=already_planned`).
     tried: Option<String>,
+    /// The allergens' box (#825): its form was sent, and whether the box
+    /// was ticked (`allergy::avoid_from`).
+    avoid_form: Option<String>,
+    avoid_allergens: Option<String>,
 }
 
 /// The name of one of the family's recipes, `None` when it cannot be read.
@@ -293,6 +326,10 @@ pub async fn get(
     };
     let cookie = recipes_cookie(&headers);
     let gone = || Redirect::to(&back_with(back, recipe_id, "error=selection_gone")).into_response();
+    let avoid = allergy::avoid_from(
+        query.avoid_form.as_deref(),
+        query.avoid_allergens.as_deref(),
+    );
 
     let planned = planned_with_stock(&state, fam.gid, cookie.as_deref()).await;
     let selection = match &planned {
@@ -308,8 +345,10 @@ pub async fn get(
             &state,
             reqwest::Method::GET,
             &format!(
-                "/groups/{}/recipes/{}/selection/replacements",
-                fam.gid, recipe_id
+                "/groups/{}/recipes/{}/selection/replacements{}",
+                fam.gid,
+                recipe_id,
+                if avoid { "" } else { "?avoid_allergens=false" },
             ),
             cookie.as_deref(),
             None,
@@ -348,6 +387,7 @@ pub async fn get(
                 None => Offer::Unavailable,
             },
             error: error.as_deref(),
+            avoid,
         })
     );
     Html(shell_with_header(
@@ -473,6 +513,7 @@ mod tests {
             recently_eaten: false,
             last_eaten_on: None,
             duration_minutes: minutes,
+            allergy_warning: Default::default(),
         }
     }
 
@@ -491,7 +532,100 @@ mod tests {
             selection,
             offer,
             error,
+            avoid: true,
         })
+    }
+
+    fn warned(mut o: RecipeSuggestion, json: serde_json::Value) -> RecipeSuggestion {
+        o.allergy_warning = serde_json::from_value(json).unwrap();
+        o
+    }
+
+    fn render_box(offers: &[RecipeSuggestion], avoid: bool) -> String {
+        let s = selection("Gratin", Some(friday()), Some("dinner"), Some(4));
+        replace_html(&ReplaceView {
+            recipe_id: id(1),
+            back: "week@2026-11-13",
+            selection: Some(&s),
+            offer: Offer::Ready(offers),
+            error: None,
+            avoid,
+        })
+    }
+
+    // -- the allergens' box and the warnings (#825) ---------------------------
+
+    #[test]
+    fn the_offers_open_on_the_box_ticked_back_to_this_page() {
+        let html = render_box(&[offer(2, "Crêpes", Some(30), &[], 1)], true);
+        let form = format!(
+            r#"<form class="avoid" method="get" action="/recipes/{}/replace"><input type="hidden" name="back" value="week@2026-11-13"/><input type="hidden" name="avoid_form" value="1"/>"#,
+            id(1)
+        );
+        assert!(html.contains(&form), "{html}");
+        assert!(html.contains("data-submit-on-change checked/>"), "{html}");
+        assert!(html.contains(">Actualiser</button>"), "{html}");
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        assert!(at("<h2>Proposition</h2>") < at(&form));
+        assert!(at(&form) < at(r#"<ol class="props">"#));
+        // None left: the box stays, to untick it.
+        let html = render_box(&[], true);
+        assert!(html.contains(&form), "{html}");
+    }
+
+    #[test]
+    fn ticked_each_offer_shows_its_warning_and_the_aim_once() {
+        let offers = [
+            warned(
+                offer(2, "Crêpes", Some(30), &[], 1),
+                serde_json::json!({"mine": [{"tag": "en:milks", "label": "Laits"}]}),
+            ),
+            warned(
+                offer(3, "Sauté", None, &[], 1),
+                serde_json::json!({"anonymous": true, "unverifiable": ["sauce soja"]}),
+            ),
+            offer(4, "Pâtes", None, &[], 1),
+        ];
+        let html = render_box(&offers, true);
+        assert_eq!(
+            html.matches(r#"<div class="allergy sm" role="status">"#)
+                .count(),
+            2,
+            "{html}"
+        );
+        assert!(
+            html.contains("Contient lait : vous y êtes allergique."),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                "Un membre de la famille est allergique à un ingrédient de cette recette."
+            ),
+            "{html}"
+        );
+        assert_eq!(html.matches(allergy::AIM).count(), 1, "{html}");
+        // The banner sits between the offer's stock and « Choisir ».
+        let crepes = &html[html.find("Crêpes").unwrap()..];
+        assert!(
+            crepes.find(r#"class="allergy sm""#).unwrap() < crepes.find("Choisir").unwrap(),
+            "{crepes}"
+        );
+    }
+
+    #[test]
+    fn unticked_no_offer_shows_a_warning() {
+        let offers = [warned(
+            offer(2, "Crêpes", Some(30), &[], 1),
+            serde_json::json!({
+                "mine": [{"tag": "en:milks", "label": "Laits"}],
+                "unverifiable": ["sauce soja"],
+            }),
+        )];
+        let html = render_box(&offers, false);
+        assert!(html.contains("Crêpes"), "{html}");
+        assert!(!html.contains(r#"class="allergy"#), "{html}");
+        assert!(!html.contains("Aide uniquement"), "{html}");
+        assert!(!html.contains(" checked"), "{html}");
     }
 
     // -- the ways in and out ------------------------------------------------
@@ -668,10 +802,11 @@ mod tests {
             3,
             "{html}"
         );
+        // One per offer, and the allergens' box's (#825).
         assert_eq!(
             html.matches(r#"<input type="hidden" name="back" value="week"/>"#)
                 .count(),
-            3,
+            4,
             "{html}"
         );
         assert!(
@@ -753,7 +888,9 @@ mod tests {
             html.contains(r#"<a class="btn" href="/recipes">Voir les recettes</a>"#),
             "{html}"
         );
-        assert!(!html.contains("<form"), "{html}");
+        // Nothing to post; the allergens' box alone (#825).
+        assert!(!html.contains(r#"<form method="post""#), "{html}");
+        assert_eq!(html.matches("<form").count(), 1, "{html}");
         assert!(!html.contains("Choisir"), "{html}");
         assert!(html.contains(">Annuler</a>"), "{html}");
         // Without a day.
