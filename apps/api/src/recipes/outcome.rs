@@ -22,8 +22,8 @@
 //! already capped, so a larger quantity means the stock changed since, or a
 //! request asking for more than there is. A line gone since is 409
 //! `stock_item_gone`. The stock is decremented, a `meal_history` entry is
-//! inserted as « log a meal » does, with the taste tags given (#821,
-//! `recipes::taste`), and the selection becomes `done`. A
+//! inserted as « log a meal » does, with the opinion and the note given
+//! (#822, `recipes::taste`), and the selection becomes `done`. A
 //! line taken from that is left at 0 without a reorder threshold is
 //! deleted (#801), the rule of a quantity-only adjustment
 //! (`should_remove_at_zero`, #800); the response gives its last state with
@@ -91,7 +91,7 @@ use crate::groups::require_role;
 use crate::recipes::can_modify;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::selections::SelectionResponse;
-use crate::recipes::taste::{taste_tags_to_store, TasteTag};
+use crate::recipes::taste::{taste_note_to_store, Taste};
 use crate::stocks::items::{
     day_or_today, should_remove_at_zero, today, StockItemResponse, StockItemRow,
 };
@@ -750,11 +750,14 @@ pub struct DoneRequest {
     /// `add_to_recipe`.
     #[serde(default)]
     pub recipe_updates: Vec<RecipeUpdate>,
-    /// Taste tags kept with the meal (#821), none required. « Aimé » and
-    /// « Pas aimé » feed the suggestions (`recipes::taste`); both at once
-    /// are 400 `conflicting_taste_tags`.
+    /// The opinion kept with the meal (#822), `neutre` when omitted.
+    /// « Aimé » and « Pas aimé » feed the suggestions (`recipes::taste`).
     #[serde(default)]
-    pub taste_tags: Vec<TasteTag>,
+    pub taste: Taste,
+    /// A free note kept with the meal, trimmed; blank is none. Above 200
+    /// characters: 400 `taste_note_too_long`, nothing applied.
+    #[serde(default)]
+    pub taste_note: Option<String>,
 }
 
 /// An ingredient added by `add_to_recipe`.
@@ -779,7 +782,7 @@ pub struct AddedIngredientResponse {
     request_body = DoneRequest,
     responses(
         (status = 200, description = "Cooked: stock taken, meal logged, selection closed", body = crate::api_docs::schemas::DoneOutcome),
-        (status = 400, description = "`stock_item_not_in_recipe`, `duplicate_stock_item`, `duplicate_ingredient`, `invalid_quantity` or `conflicting_taste_tags`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`stock_item_not_in_recipe`, `duplicate_stock_item`, `duplicate_ingredient`, `invalid_quantity` or `taste_note_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 409, description = "`stock_item_gone` or `insufficient_stock`, with the stock item concerned next to `error`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
@@ -795,7 +798,7 @@ pub async fn apply_done(
     let mut to_apply = removals_to_apply(&body.removals)?;
     let others = check_others(&body.removals, &body.others)?;
     check_recipe_updates(&body.recipe_updates)?;
-    let taste_tags = taste_tags_to_store(&body.taste_tags)?;
+    let taste_note = taste_note_to_store(body.taste_note.as_deref())?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
@@ -936,15 +939,16 @@ pub async fn apply_done(
     let meal = sqlx::query_as!(
         MealHistoryEntryResponse,
         r#"
-        INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by, taste_tags)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste_tags
+        INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by, taste, taste_note)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste, taste_note
         "#,
         group_id,
         recipe_id,
         day_or_today(body.eaten_on, Utc::now()),
         auth.user_id,
-        &taste_tags as &[&str],
+        body.taste.as_str(),
+        taste_note,
     )
     .fetch_one(&mut *tx)
     .await?;

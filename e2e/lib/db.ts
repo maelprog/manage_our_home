@@ -216,6 +216,28 @@ export async function countVerificationTokens(
   }
 }
 
+/**
+ * The opinion and the note kept with each meal `email` logged, oldest first
+ * (#822). apps/web shows them nowhere yet, so the suite reads them here.
+ */
+export async function fetchMealTastes(
+  email: string,
+): Promise<{ taste: string; taste_note: string | null }[]> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT m.taste, m.taste_note FROM meal_history m
+       JOIN users u ON u.id = m.created_by
+       WHERE u.email = $1 ORDER BY m.created_at`,
+      [email],
+    );
+    return rows;
+  } finally {
+    await client.end();
+  }
+}
+
 /** How many accounts hold `email`: 0 or 1. */
 export async function countUsers(email: string): Promise<number> {
   const client = new Client({ connectionString: requireDatabaseUrl() });

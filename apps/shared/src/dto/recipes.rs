@@ -251,6 +251,27 @@ pub struct MealHistoryEntryResponse {
     pub eaten_on: NaiveDate,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
+    /// The opinion given when the recipe was marked done (#822).
+    pub taste: Taste,
+    /// Its free note, at most 200 characters.
+    #[serde(default)]
+    pub taste_note: Option<String>,
+}
+
+/// The longest note of a meal (#822), in characters once trimmed: apps/api
+/// refuses a longer one, apps/web says so before sending it.
+pub const TASTE_NOTE_MAX_CHARS: usize = 200;
+
+/// The opinion on a meal (#822). Mirrors `recipes::taste::Taste`: on the
+/// wire `aime`, `neutre` (the default) or `pas_aime`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Taste {
+    Aime,
+    #[default]
+    Neutre,
+    PasAime,
 }
 
 /// `GET /groups/:id/recipes/meal-history` response envelope.
@@ -438,6 +459,12 @@ pub struct DoneRequest {
     /// Changes to the recipe's ingredients (#558).
     #[serde(default)]
     pub recipe_updates: Vec<RecipeUpdate>,
+    /// The opinion on the meal (#822), `neutre` by default.
+    #[serde(default)]
+    pub taste: Taste,
+    /// A free note, at most 200 characters once trimmed (#822).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taste_note: Option<String>,
 }
 
 /// What a `done` request changes in one of the recipe's ingredients

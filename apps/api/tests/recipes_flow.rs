@@ -549,7 +549,8 @@ async fn suggestions_rank_by_stock_match_and_variety(db: PgPool) {
 
 /// AC (#821): the suggestions' variety window is 28 days, counted back from
 /// today in Paris: a recipe eaten 28 days ago is penalized, one eaten 29
-/// days ago is not. A meal logged without taste tags changes nothing else.
+/// days ago is not. A meal logged without an opinion is « Neutre » (#822)
+/// and changes nothing else.
 #[sqlx::test]
 async fn suggestions_variety_window_is_28_days(db: PgPool) {
     let router = test_router(db.clone());
@@ -584,7 +585,9 @@ async fn suggestions_variety_window_is_28_days(db: PgPool) {
         )
         .await;
         assert_status(&log, StatusCode::CREATED);
-        assert_eq!(json_body(log).await["taste_tags"], serde_json::json!([]));
+        let entry = json_body(log).await;
+        assert_eq!(entry["taste"], "neutre");
+        assert_eq!(entry["taste_note"], serde_json::Value::Null);
         ids.push(id);
     }
 

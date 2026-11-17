@@ -14,7 +14,7 @@ use crate::recipes::dietary_filter::{
     allergy_warning, excluded, household_equipment, reader_dislikes, visible_allergies,
     AllergyWarning, HardFilter, Ingredient,
 };
-use crate::recipes::taste::{taste_score, Rated, TasteTag};
+use crate::recipes::taste::{taste_score, Rated, Taste};
 use crate::recipes::taxonomy::{taxonomy, TagId, Taxonomy};
 use crate::stocks::items::today;
 use crate::AppState;
@@ -36,8 +36,8 @@ use crate::AppState;
 /// 4. **Taste** — the « Aimé » / « Pas aimé » given when a recipe was
 ///    marked done, on the recipe and, weaker, on the recipes sharing its
 ///    ingredient categories ([`taste_score`]), bounded by
-///    [`crate::recipes::taste::TASTE_MAX`] (15). Without such tags the
-///    term is 0 and the score is the three others'.
+///    [`crate::recipes::taste::TASTE_MAX`] (15). Without such a verdict
+///    (« Neutre », #822) the term is 0 and the score is the three others'.
 ///
 /// Ingredient/stock matching goes through Open Food Facts' category
 /// taxonomy (#406, `recipes::taxonomy`): an article covers an ingredient
@@ -223,15 +223,15 @@ pub(crate) async fn score_recipes(
     let verdicts: Vec<(Uuid, i64)> = sqlx::query!(
         r#"
         SELECT recipe_id,
-               COUNT(*) FILTER (WHERE $2::text = ANY(taste_tags))
-                 - COUNT(*) FILTER (WHERE $3::text = ANY(taste_tags)) AS "net!"
+               COUNT(*) FILTER (WHERE taste = $2)
+                 - COUNT(*) FILTER (WHERE taste = $3) AS "net!"
         FROM meal_history
         WHERE group_id = $1
         GROUP BY recipe_id
         "#,
         group_id,
-        TasteTag::Aime.as_str(),
-        TasteTag::PasAime.as_str(),
+        Taste::Aime.as_str(),
+        Taste::PasAime.as_str(),
     )
     .fetch_all(&mut **tx)
     .await?

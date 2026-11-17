@@ -45,7 +45,8 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::NaiveDate;
 use manage_our_home_shared::dto::recipes::{
     AbandonItem, AbandonPreview, AbandonRequest, DoneIngredient, DoneOther, DonePreview,
-    DoneRemoval, DoneRequest, RecipeChange, RecipeUpdate, RemovalWarning,
+    DoneRemoval, DoneRequest, RecipeChange, RecipeUpdate, RemovalWarning, Taste,
+    TASTE_NOTE_MAX_CHARS,
 };
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
 use manage_our_home_shared::validation::stocks::{article_key, format_quantity, normalize_unit};
@@ -109,6 +110,11 @@ pub(crate) struct DoneForm {
     pub updates: Option<Vec<UpdateChoice>>,
     pub eaten_on: String,
     pub back: String,
+    /// « Votre avis sur le plat » (#822): « Neutre » unless another is
+    /// chosen.
+    pub taste: Taste,
+    /// « Autre avis », as typed.
+    pub taste_note: String,
 }
 
 /// What stops a stock line from being taken from as typed.
@@ -131,6 +137,9 @@ pub(crate) struct Invalid {
     pub date: bool,
     /// « Ajouter … à la recette ? » is asked and not answered.
     pub add_to_recipe: bool,
+    /// « Autre avis » is longer than [`TASTE_NOTE_MAX_CHARS`] once
+    /// trimmed: its length in characters.
+    pub taste_note: Option<usize>,
 }
 
 /// Why a `done` form is not sent.
@@ -150,11 +159,13 @@ pub(crate) enum DoneError {
 /// the search, `intent=search` its button, `add_to_recipe` `yes` or `no`.
 /// `step=update` marks the answers of « Mettre à jour la recette ? »
 /// (#558), numbered `update.i` (the ingredient), `update_apply.i` (its
-/// box), `update_unused.i` (`remove` or `optional`).
+/// box), `update_unused.i` (`remove` or `optional`). `taste` is `aime`,
+/// `neutre` or `pas_aime` (any other value reads « Neutre »), `taste_note`
+/// the « Autre avis » (#822).
 pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
     use std::collections::btree_map::{BTreeMap, Entry};
     let (mut eaten_on, mut back, mut search, mut intent, mut add) = (None, None, None, None, None);
-    let mut step = None;
+    let (mut step, mut taste, mut taste_note) = (None, None, None);
     // line index → field name → value, for the recipe's lines and for the
     // other products.
     let mut fields: BTreeMap<usize, BTreeMap<&str, &str>> = BTreeMap::new();
@@ -171,6 +182,8 @@ pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
                     "intent" => &mut intent,
                     "add_to_recipe" => &mut add,
                     "step" => &mut step,
+                    "taste" => &mut taste,
+                    "taste_note" => &mut taste_note,
                     _ => continue,
                 };
                 slot.get_or_insert(value);
@@ -243,6 +256,12 @@ pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
         }),
         eaten_on: eaten_on.unwrap_or_default().to_string(),
         back: back.unwrap_or_default().to_string(),
+        taste: match taste {
+            Some("aime") => Taste::Aime,
+            Some("pas_aime") => Taste::PasAime,
+            _ => Taste::Neutre,
+        },
+        taste_note: taste_note.unwrap_or_default().to_string(),
     }
 }
 
@@ -271,7 +290,10 @@ fn parse_quantity(text: &str) -> Option<f64> {
 /// chosen must still be in the group's `stock`, with a quantity above 0
 /// and at most what its line holds. « Ajouter … à la recette ? » must be
 /// answered when it is asked (`offered_names`, to who may change the
-/// recipe); `add_to_recipe` is sent only then, for Oui.
+/// recipe); `add_to_recipe` is sent only then, for Oui. The opinion is
+/// sent as chosen and its note trimmed, none when blank; a note longer
+/// than [`TASTE_NOTE_MAX_CHARS`] characters once trimmed, the bound
+/// apps/api checks, is an error (#822).
 pub(crate) fn validate_done(
     form: &DoneForm,
     preview: &DonePreview,
@@ -349,17 +371,21 @@ pub(crate) fn validate_done(
         "" => Ok(None),
         d => d.parse::<NaiveDate>().map(Some),
     };
+    let note = form.taste_note.trim();
+    let note_chars = note.chars().count();
+    let note_too_long = (note_chars > TASTE_NOTE_MAX_CHARS).then_some(note_chars);
     // Every field in error at once, the date with the lines.
     let lines_ok = errors.iter().all(Option::is_none);
     let others_ok = other_errors.iter().all(Option::is_none);
     let eaten_on = match eaten_on {
-        Ok(d) if lines_ok && others_ok && !unanswered => d,
+        Ok(d) if lines_ok && others_ok && !unanswered && note_too_long.is_none() => d,
         date => {
             return Err(DoneError::Invalid(Invalid {
                 lines: if lines_ok { vec![] } else { errors },
                 others: if others_ok { vec![] } else { other_errors },
                 date: date.is_err(),
                 add_to_recipe: unanswered,
+                taste_note: note_too_long,
             }))
         }
     };
@@ -376,6 +402,8 @@ pub(crate) fn validate_done(
             .collect(),
         eaten_on,
         recipe_updates: Vec::new(),
+        taste: form.taste,
+        taste_note: (!note.is_empty()).then(|| note.to_string()),
     })
 }
 
@@ -994,6 +1022,11 @@ pub(crate) fn done_body(
     } else {
         String::new()
     };
+    let opinion = taste_fieldset(
+        typed.map_or(Taste::Neutre, |t| t.taste),
+        typed.map_or("", |t| t.taste_note.as_str()),
+        invalid.taste_note,
+    );
     format!(
         r#"<h1>Recette faite : {name}</h1>
 {banner}<p class="muted">À la validation, les quantités cochées sont retirées du stock et le repas est enregistré. Décochez un ingrédient que vous n'avez pas utilisé ; une quantité à 0 ne retire rien non plus.</p>
@@ -1001,7 +1034,7 @@ pub(crate) fn done_body(
 <input type="hidden" name="back" value="{back}"/>
 {date_error}<label>Date du repas
 <input type="date" name="eaten_on" value="{eaten_on}"{date_aria}/></label>
-{fieldsets}{others_html}{question}<div class="actions">
+{fieldsets}{others_html}{question}{opinion}<div class="actions">
 <button type="submit">Marquer comme faite</button>
 <a class="btn secondary" href="{cancel}">Annuler</a>
 </div>
@@ -1122,7 +1155,8 @@ pub(crate) fn update_body(
 
 /// The `done` form as sent, in hidden fields, so that the update step
 /// sends it again (`step=update`): the lines, the products chosen, the
-/// answer to « Ajouter … à la recette ? », the date and `back`.
+/// answer to « Ajouter … à la recette ? », the opinion and its note (#822),
+/// the date and `back`.
 fn sent_form_fields(form: &DoneForm, back: &str) -> String {
     let hidden = |name: &str, value: &str| {
         format!(
@@ -1155,6 +1189,14 @@ fn sent_form_fields(form: &DoneForm, back: &str) -> String {
         Some(true) => out.push_str(&hidden("add_to_recipe", "yes")),
         Some(false) => out.push_str(&hidden("add_to_recipe", "no")),
         None => {}
+    }
+    match form.taste {
+        Taste::Aime => out.push_str(&hidden("taste", "aime")),
+        Taste::PasAime => out.push_str(&hidden("taste", "pas_aime")),
+        Taste::Neutre => {}
+    }
+    if !form.taste_note.trim().is_empty() {
+        out.push_str(&hidden("taste_note", &form.taste_note));
     }
     out
 }
@@ -1258,6 +1300,57 @@ fn add_to_recipe_fieldset(names: &[String], answer: Option<bool>, unanswered: bo
     )
 }
 
+/// « Votre avis sur le plat (facultatif) » (#822, maquette validée le
+/// 2026-11-17): Aimé, Neutre or Pas aimé, `taste` chosen — « Neutre » on a
+/// first showing, so that marking done without touching it is one gesture
+/// as before —, and « Autre avis », `note` as typed, at most
+/// [`TASTE_NOTE_MAX_CHARS`] characters. Its hint counts the characters
+/// typed, once trimmed as apps/api counts them; enhance.js keeps it up to
+/// date while typing (`data-count`). `too_long`, the length of a note
+/// refused, is said on the field.
+fn taste_fieldset(taste: Taste, note: &str, too_long: Option<usize>) -> String {
+    let radio = |value: Taste, wire: &str, label: &str| {
+        format!(
+            r#"<label class="field inline pick"><input type="radio" name="taste" value="{wire}"{checked}/> {label}</label>"#,
+            checked = if value == taste { " checked" } else { "" },
+        )
+    };
+    let (error, describedby) = match too_long {
+        Some(n) => (
+            field_error(
+                "taste_note",
+                Some(format!(
+                    "Trop long : {n} caractères sur {TASTE_NOTE_MAX_CHARS}."
+                )),
+            )
+            .0,
+            r#" aria-invalid="true" aria-describedby="taste_note-error taste_note-hint""#,
+        ),
+        None => (String::new(), r#" aria-describedby="taste_note-hint""#),
+    };
+    let typed = note.trim().chars().count();
+    let count = if typed > 0 {
+        format!(" · {typed} saisis")
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<fieldset class="card">
+<legend>Votre avis sur le plat (facultatif)</legend>
+<p class="muted">« Aimé » et « Pas aimé » orientent les prochaines suggestions de recettes. Laissé sur « Neutre », rien ne change.</p>
+<fieldset class="picks plain taste"><legend class="sr-only">Avis sur le plat</legend>{aime}{neutre}{pas_aime}</fieldset>
+{error}<label for="taste_note">Autre avis (facultatif)
+<textarea id="taste_note" name="taste_note" maxlength="{TASTE_NOTE_MAX_CHARS}" rows="3"{describedby} data-count="taste_note-hint">{note}</textarea></label>
+<span class="muted count" id="taste_note-hint">{TASTE_NOTE_MAX_CHARS} caractères au plus{count}</span>
+</fieldset>
+"#,
+        aime = radio(Taste::Aime, "aime", "Aimé"),
+        neutre = radio(Taste::Neutre, "neutre", "Neutre"),
+        pas_aime = radio(Taste::PasAime, "pas_aime", "Pas aimé"),
+        note = html_escape(note),
+    )
+}
+
 /// The message of a field in error and the attributes tying the field to
 /// it (`aria-invalid`, `aria-describedby`), or nothing.
 fn field_error(name: &str, message: Option<String>) -> (String, String) {
@@ -1328,6 +1421,29 @@ fn item_checkbox(item: &AbandonItem, checked: bool) -> String {
         what = html_escape(&what),
         checked = if checked { " checked" } else { "" },
     )
+}
+
+/// The banner of a form in error (`invalid`): when « Autre avis » is the
+/// only field to correct, what to do about it (maquette #822); otherwise
+/// the banner of every form in error.
+fn invalid_banner(invalid: &Invalid) -> String {
+    match invalid.taste_note {
+        Some(n)
+            if *invalid
+                == (Invalid {
+                    taste_note: Some(n),
+                    ..Invalid::default()
+                }) =>
+        {
+            format!(
+                "<p class=\"notice error\" role=\"alert\">{}</p>\n",
+                html_escape(&format!(
+                    "L'avis doit faire {TASTE_NOTE_MAX_CHARS} caractères au plus ; le vôtre en fait {n}. Raccourcissez-le."
+                ))
+            )
+        }
+        _ => banner("invalid"),
+    }
 }
 
 /// The banner of a form shown again.
@@ -1525,10 +1641,10 @@ pub async fn done_post(
                 invalid: &Invalid,
                 code: &str,
                 others: &Others| {
-        let banner = if code.is_empty() {
-            String::new()
-        } else {
-            banner(code)
+        let banner = match code {
+            "" => String::new(),
+            "invalid" => invalid_banner(invalid),
+            code => banner(code),
         };
         (
             status,
@@ -4122,5 +4238,235 @@ mod tests {
             html.contains("&lt;b&gt;Farine&lt;/b&gt; : 200 g → 250 g"),
             "{html}"
         );
+    }
+
+    // -- « Votre avis sur le plat » (#822) -------------------------------------
+
+    fn proposed() -> DoneForm {
+        form(vec![
+            line(10, "100", true),
+            line(11, "300", true),
+            line(20, "1", true),
+        ])
+    }
+
+    fn done_page(typed: Option<&DoneForm>, invalid: &Invalid) -> String {
+        done_body(
+            id(901),
+            &preview(),
+            typed,
+            invalid,
+            "",
+            "list",
+            today(),
+            &Others::default(),
+        )
+    }
+
+    #[test]
+    fn the_done_form_reads_the_taste_and_its_note() {
+        let got = parse_done_form(&pairs(&[("taste", "aime"), ("taste_note", " Bon. ")]));
+        assert_eq!(got.taste, Taste::Aime);
+        assert_eq!(got.taste_note, " Bon. ");
+        let got = parse_done_form(&pairs(&[("taste", "pas_aime")]));
+        assert_eq!(got.taste, Taste::PasAime);
+        // Absent, or a value the page never offers: « Neutre ».
+        for list in [
+            vec![],
+            vec![("taste", "neutre")],
+            vec![("taste", "trop_long")],
+        ] {
+            let got = parse_done_form(&pairs(&list));
+            assert_eq!(got.taste, Taste::Neutre, "{list:?}");
+            assert_eq!(got.taste_note, "");
+        }
+    }
+
+    #[test]
+    fn the_taste_and_the_note_trimmed_are_sent() {
+        // Nothing touched: « Neutre », no note — the request as before.
+        assert_eq!(
+            validate_done(&proposed(), &preview(), &[]).map(|r| (r.taste, r.taste_note)),
+            Ok((Taste::Neutre, None))
+        );
+        let mut typed = proposed();
+        typed.taste = Taste::PasAime;
+        typed.taste_note = "  Trop long à préparer.\n".into();
+        assert_eq!(
+            validate_done(&typed, &preview(), &[]).map(|r| (r.taste, r.taste_note)),
+            Ok((Taste::PasAime, Some("Trop long à préparer.".to_string())))
+        );
+        // A blank note is none.
+        typed.taste_note = " \n ".into();
+        assert_eq!(
+            validate_done(&typed, &preview(), &[]).map(|r| r.taste_note),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn the_request_carries_the_taste_as_apps_api_reads_it() {
+        let request = DoneRequest {
+            taste: Taste::PasAime,
+            taste_note: Some("À refaire.".into()),
+            ..DoneRequest::default()
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["taste"], "pas_aime");
+        assert_eq!(json["taste_note"], "À refaire.");
+        let json = serde_json::to_value(DoneRequest::default()).unwrap();
+        assert_eq!(json["taste"], "neutre");
+        assert!(json.get("taste_note").is_none(), "{json}");
+    }
+
+    #[test]
+    fn a_note_longer_than_200_characters_is_an_error_with_its_count() {
+        let mut typed = proposed();
+        typed.taste = Taste::Aime;
+        // 200 « é » once trimmed: accepted, counted in characters.
+        typed.taste_note = format!(" {} ", "é".repeat(200));
+        assert!(validate_done(&typed, &preview(), &[]).is_ok());
+        typed.taste_note = "é".repeat(274);
+        assert_eq!(
+            validate_done(&typed, &preview(), &[]),
+            Err(DoneError::Invalid(Invalid {
+                taste_note: Some(274),
+                ..Invalid::default()
+            }))
+        );
+        // Reported with the other fields in error, at once.
+        typed.lines[0].quantity = "abc".into();
+        typed.eaten_on = "hier".into();
+        assert_eq!(
+            validate_done(&typed, &preview(), &[]),
+            Err(DoneError::Invalid(Invalid {
+                lines: vec![Some(LineError::InvalidQuantity), None, None],
+                date: true,
+                taste_note: Some(274),
+                ..Invalid::default()
+            }))
+        );
+    }
+
+    #[test]
+    fn the_done_page_asks_for_an_opinion_neutral_by_default() {
+        let html = done_page(None, &Invalid::default());
+        assert!(
+            html.contains(
+                "<fieldset class=\"card\">\n<legend>Votre avis sur le plat (facultatif)</legend>"
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<fieldset class="picks plain taste"><legend class="sr-only">Avis sur le plat</legend>"#),
+            "{html}"
+        );
+        for radio in [
+            r#"<label class="field inline pick"><input type="radio" name="taste" value="aime"/> Aimé</label>"#,
+            r#"<label class="field inline pick"><input type="radio" name="taste" value="neutre" checked/> Neutre</label>"#,
+            r#"<label class="field inline pick"><input type="radio" name="taste" value="pas_aime"/> Pas aimé</label>"#,
+        ] {
+            assert!(html.contains(radio), "{radio} in {html}");
+        }
+        assert!(
+            html.contains(r#"<textarea id="taste_note" name="taste_note" maxlength="200" rows="3" aria-describedby="taste_note-hint" data-count="taste_note-hint"></textarea>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<span class="muted count" id="taste_note-hint">200 caractères au plus</span>"#
+            ),
+            "{html}"
+        );
+        // After the other fieldsets, before the buttons.
+        let opinion = html.find("Votre avis sur le plat").unwrap();
+        assert!(html.find("Autre chose utilisé ?").unwrap() < opinion);
+        assert!(opinion < html.find("Marquer comme faite").unwrap());
+    }
+
+    #[test]
+    fn the_done_page_shown_again_keeps_the_opinion_and_escapes_the_note() {
+        let mut typed = proposed();
+        typed.taste = Taste::PasAime;
+        typed.taste_note = "<b>Trop</b> long".into();
+        let html = done_page(Some(&typed), &Invalid::default());
+        assert!(
+            html.contains(r#"value="pas_aime" checked/> Pas aimé"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"value="neutre"/> Neutre"#), "{html}");
+        assert!(
+            html.contains(">&lt;b&gt;Trop&lt;/b&gt; long</textarea>"),
+            "{html}"
+        );
+        assert!(!html.contains("<b>Trop"), "{html}");
+        // The characters typed, counted: 16, the markup's included.
+        assert!(
+            html.contains(r#"id="taste_note-hint">200 caractères au plus · 16 saisis</span>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_note_too_long_is_tied_to_its_message_and_kept() {
+        let mut typed = proposed();
+        typed.taste_note = "é".repeat(274);
+        let invalid = Invalid {
+            taste_note: Some(274),
+            ..Invalid::default()
+        };
+        let html = done_page(Some(&typed), &invalid);
+        assert!(
+            html.contains(r#"<p class="field-error" id="taste_note-error">Trop long : 274 caractères sur 200.</p>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"maxlength="200" rows="3" aria-invalid="true" aria-describedby="taste_note-error taste_note-hint""#),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(">{}</textarea>", "é".repeat(274))),
+            "{html}"
+        );
+        assert_eq!(html.matches("aria-invalid").count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_form_invalid_only_by_its_note_says_so_in_the_banner() {
+        let note_only = Invalid {
+            taste_note: Some(274),
+            ..Invalid::default()
+        };
+        assert_eq!(
+            invalid_banner(&note_only),
+            "<p class=\"notice error\" role=\"alert\">L'avis doit faire 200 caractères au plus ; le vôtre en fait 274. Raccourcissez-le.</p>\n"
+        );
+        // With other fields in error, the banner of every invalid form.
+        let more = Invalid {
+            date: true,
+            ..note_only
+        };
+        assert_eq!(invalid_banner(&more), banner("invalid"));
+        assert_eq!(invalid_banner(&Invalid::default()), banner("invalid"));
+    }
+
+    #[test]
+    fn the_update_step_carries_the_opinion() {
+        let mut f = form(vec![line(10, "100", true)]);
+        f.taste = Taste::Aime;
+        f.taste_note = "Les enfants ont redemandé.".into();
+        let proposals = [proposal(1, "Farine", 200.0, "g", Some(250.0))];
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        // Not asked again: carried.
+        assert!(!html.contains("Votre avis sur le plat"), "{html}");
+        let back = parse_done_form(&hidden_pairs(&html));
+        assert_eq!(back.taste, Taste::Aime);
+        assert_eq!(back.taste_note, "Les enfants ont redemandé.");
+        // « Neutre » without a note adds nothing to read back.
+        let f = form(vec![line(10, "100", true)]);
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        let back = parse_done_form(&hidden_pairs(&html));
+        assert_eq!((back.taste, back.taste_note.as_str()), (Taste::Neutre, ""));
+        assert!(!html.contains("taste_note"), "{html}");
     }
 }

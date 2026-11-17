@@ -1,13 +1,16 @@
-//! Taste tags given when a recipe is marked done (#821), and the soft score
-//! they add to the suggestions.
+//! The opinion given when a recipe is marked done (#821, amended by #822),
+//! and the soft score it adds to the suggestions.
 //!
-//! A closed list (`TasteTag`), stored in `meal_history.taste_tags` under
-//! their wire names; none is required. Only « Aimé » and « Pas aimé » weigh
-//! on the suggestions: each meal's verdict counts +1 or −1 for its recipe,
-//! fully on the recipe itself and at half weight on the recipes that share
-//! its ingredient categories (`taxonomy`), in proportion to how many they
-//! share ([`similarity`]). The other tags are kept for the household, they
-//! score nothing.
+//! One choice ([`Taste`]): « Aimé », « Neutre » (the default) or « Pas
+//! aimé », stored in `meal_history.taste`, and a free note of at most
+//! [`TASTE_NOTE_MAX_CHARS`] characters, `meal_history.taste_note`
+//! (migration 0061, which replaced #821's closed list of tags). Neither is
+//! required. Only the choice weighs on the suggestions: each meal's verdict
+//! counts +1 (« Aimé ») or −1 (« Pas aimé ») for its recipe, fully on the
+//! recipe itself and at half weight on the recipes that share its
+//! ingredient categories (`taxonomy`), in proportion to how many they share
+//! ([`similarity`]); « Neutre » counts 0. The note is kept for the
+//! household, it scores nothing.
 //!
 //! The term is bounded by [`TASTE_MAX`], well under the stock match
 //! (dominant, 0–100) and the variety penalty (30): one opinion is worth at
@@ -27,6 +30,10 @@ pub(crate) const TASTE_VOTE: f64 = 5.0;
 pub(crate) const SIMILAR_WEIGHT: f64 = 0.5;
 /// Bound of the taste term, either way.
 pub(crate) const TASTE_MAX: f64 = 15.0;
+/// The longest note, in characters (Unicode scalar values, as Postgres'
+/// `char_length` counts them in migration 0061's check), once trimmed.
+pub(crate) const TASTE_NOTE_MAX_CHARS: usize =
+    manage_our_home_shared::dto::recipes::TASTE_NOTE_MAX_CHARS;
 
 // Checked at compile time: a similar recipe's share stays under the
 // recipe's own; one opinion never outweighs one ingredient out of four in
@@ -38,50 +45,41 @@ const _: () = assert!(
         && TASTE_MAX < crate::recipes::suggestions::RECENCY_PENALTY
 );
 
-/// A taste tag (#821). On the wire and in the database, its snake_case name.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, utoipa::ToSchema,
-)]
+/// The opinion on a meal (#822). On the wire and in the database, its
+/// snake_case name; « Neutre » when none is given.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum TasteTag {
-    /// « Ail »
-    Ail,
-    /// « Épicé »
-    Epice,
-    /// « Sucré-salé »
-    SucreSale,
-    /// « Trop long »
-    TropLong,
-    /// « Aimé »
+pub enum Taste {
+    /// « Aimé »: +1 for the recipe.
     Aime,
-    /// « Pas aimé »
+    /// « Neutre »: changes nothing.
+    #[default]
+    Neutre,
+    /// « Pas aimé »: −1 for the recipe.
     PasAime,
 }
 
-impl TasteTag {
-    /// The name stored in `meal_history.taste_tags` (migration 0059).
+impl Taste {
+    /// The name stored in `meal_history.taste` (migration 0061).
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            TasteTag::Ail => "ail",
-            TasteTag::Epice => "epice",
-            TasteTag::SucreSale => "sucre_sale",
-            TasteTag::TropLong => "trop_long",
-            TasteTag::Aime => "aime",
-            TasteTag::PasAime => "pas_aime",
+            Taste::Aime => "aime",
+            Taste::Neutre => "neutre",
+            Taste::PasAime => "pas_aime",
         }
     }
 }
 
-/// The tags to store: each once, in the list's order. « Aimé » and « Pas
-/// aimé » together say nothing: 400 `conflicting_taste_tags`.
-pub(crate) fn taste_tags_to_store(tags: &[TasteTag]) -> AppResult<Vec<&'static str>> {
-    if tags.contains(&TasteTag::Aime) && tags.contains(&TasteTag::PasAime) {
-        return Err(AppError::BadRequest("conflicting_taste_tags".into()));
+/// The note to store: trimmed, `None` when empty or absent. Longer than
+/// [`TASTE_NOTE_MAX_CHARS`] once trimmed: 400 `taste_note_too_long`.
+pub(crate) fn taste_note_to_store(note: Option<&str>) -> AppResult<Option<&str>> {
+    let Some(note) = note.map(str::trim).filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
+    if note.chars().count() > TASTE_NOTE_MAX_CHARS {
+        return Err(AppError::BadRequest("taste_note_too_long".into()));
     }
-    let mut sorted = tags.to_vec();
-    sorted.sort();
-    sorted.dedup();
-    Ok(sorted.into_iter().map(TasteTag::as_str).collect())
+    Ok(Some(note))
 }
 
 /// How alike two recipes are by their ingredient categories: the share of
@@ -138,38 +136,55 @@ mod tests {
         names.iter().copied().collect()
     }
 
-    // -- taste_tags_to_store ------------------------------------------------
+    // -- Taste / taste_note_to_store -----------------------------------------
 
     #[test]
-    fn no_tag_stores_nothing() {
-        assert!(taste_tags_to_store(&[]).unwrap().is_empty());
+    fn every_taste_has_its_wire_name_and_neutral_is_the_default() {
+        use Taste::*;
+        for (taste, wire) in [(Aime, "aime"), (Neutre, "neutre"), (PasAime, "pas_aime")] {
+            assert_eq!(taste.as_str(), wire);
+            let read: Taste = serde_json::from_value(serde_json::json!(wire)).unwrap();
+            assert_eq!(read, taste);
+        }
+        assert_eq!(Taste::default(), Neutre);
+        assert!(serde_json::from_value::<Taste>(serde_json::json!("Aimé")).is_err());
+        // #821's other tags are gone.
+        assert!(serde_json::from_value::<Taste>(serde_json::json!("trop_long")).is_err());
     }
 
     #[test]
-    fn tags_are_stored_once_in_the_list_order() {
-        use TasteTag::*;
+    fn no_note_or_a_blank_one_stores_nothing() {
+        assert_eq!(taste_note_to_store(None).unwrap(), None);
+        assert_eq!(taste_note_to_store(Some("")).unwrap(), None);
+        assert_eq!(taste_note_to_store(Some("  \n\t ")).unwrap(), None);
+    }
+
+    #[test]
+    fn a_note_is_stored_trimmed() {
         assert_eq!(
-            taste_tags_to_store(&[TropLong, Ail, Aime, Ail]).unwrap(),
-            ["ail", "trop_long", "aime"]
+            taste_note_to_store(Some("  À refaire.\n")).unwrap(),
+            Some("À refaire.")
         );
     }
 
     #[test]
-    fn every_tag_has_its_wire_name() {
-        use TasteTag::*;
-        for tag in [Ail, Epice, SucreSale, TropLong, Aime, PasAime] {
-            let wire: TasteTag = serde_json::from_value(serde_json::json!(tag.as_str())).unwrap();
-            assert_eq!(wire, tag);
-        }
-        assert!(serde_json::from_value::<TasteTag>(serde_json::json!("Aimé")).is_err());
+    fn a_note_of_the_maximum_length_in_characters_is_kept() {
+        // 200 « é » are 400 bytes: the bound counts characters, and the
+        // spaces around are not counted.
+        let longest = "é".repeat(TASTE_NOTE_MAX_CHARS);
+        let padded = format!("  {longest} ");
+        assert_eq!(
+            taste_note_to_store(Some(&padded)).unwrap(),
+            Some(longest.as_str())
+        );
     }
 
     #[test]
-    fn liked_and_disliked_together_are_refused() {
-        use TasteTag::*;
-        match taste_tags_to_store(&[Aime, Epice, PasAime]) {
-            Err(AppError::BadRequest(code)) => assert_eq!(code, "conflicting_taste_tags"),
-            other => panic!("expected 400, got {:?}", other.map(|_| ())),
+    fn a_longer_note_is_refused() {
+        let long = "é".repeat(TASTE_NOTE_MAX_CHARS + 1);
+        match taste_note_to_store(Some(&long)) {
+            Err(AppError::BadRequest(code)) => assert_eq!(code, "taste_note_too_long"),
+            other => panic!("expected 400, got {other:?}"),
         }
     }
 
