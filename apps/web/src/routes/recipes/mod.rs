@@ -23,6 +23,7 @@ pub mod missing;
 pub mod new;
 pub mod outcome;
 pub mod replace;
+pub mod start;
 pub mod week;
 
 use axum::extract::{Path, State};
@@ -53,6 +54,7 @@ use crate::state::{api_request_auth, AppState};
 /// user has no group yet — callers redirect to `/groups/new`.
 pub(crate) struct FamilyContext {
     pub gid: Uuid,
+    pub name: String,
     pub role: String,
     pub header: String,
 }
@@ -68,6 +70,7 @@ pub(crate) async fn family_context(
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     active.map(|g| FamilyContext {
         gid: g.group_id,
+        name: g.name.clone(),
         role: g.role.clone(),
         header,
     })

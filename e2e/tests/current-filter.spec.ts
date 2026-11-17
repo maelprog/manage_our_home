@@ -1,5 +1,12 @@
 import { expect, Locator, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Issue #674 — the filter shown (`aria-current="true"`) links to the page
 // already open: a click on it only reloaded the page. It is now inert to the

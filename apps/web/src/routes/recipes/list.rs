@@ -38,6 +38,7 @@ use crate::state::{api_request_auth, AppState};
 use super::missing::{
     incomplete_banner, incomplete_count, missing_badge, missing_dialog, use_by_badge,
 };
+use super::start::{prefill, usual_servings};
 use super::week::{back_window, slot_from_query, week_back, week_href, window_for};
 use super::{
     deselect_form, family_context, outcome_links, plan_badge, planned_badge, planned_with_stock,
@@ -203,15 +204,28 @@ fn slot_banner(slot: Option<&Slot>) -> String {
     )
 }
 
+/// The mark on the page header that has `enhance.js` open the first
+/// questions (#820) once per member — not when the list was opened from a
+/// slot of the planning, which would lose the slot.
+fn start_mark(slot: Option<&Slot>, user: uuid::Uuid) -> String {
+    match slot {
+        None => format!(r#" data-depart="{user}""#),
+        Some(_) => String::new(),
+    }
+}
+
 /// One recipe of the full list. `planned` is its selection when it is
 /// « À réaliser », `None` when it is not. Opened from a slot of the
 /// planning (`slot`, #813), a recipe not planned yet is planned on it by its
-/// « À réaliser ».
+/// « À réaliser ». `usual` is the household's usual number of people
+/// (#820), which « À réaliser » proposes before the recipe's base.
 fn recipe_row_for(
     r: &RecipeResponse,
     planned: Option<&RecipeSelectionResponse>,
     slot: Option<&Slot>,
+    usual: Option<i32>,
 ) -> String {
+    let base = prefill(usual, r.servings);
     let count = r.ingredients.len();
     let count_label = match count {
         0 => "aucun ingrédient".to_string(),
@@ -227,14 +241,8 @@ fn recipe_row_for(
             deselect = deselect_form(r.id, "list"),
         ),
         None => match slot {
-            Some(slot) => select_form_on(
-                r.id,
-                r.servings,
-                &slot.back,
-                "actions",
-                (slot.day, slot.meal),
-            ),
-            None => select_form(r.id, r.servings, "list", "actions"),
+            Some(slot) => select_form_on(r.id, base, &slot.back, "actions", (slot.day, slot.meal)),
+            None => select_form(r.id, base, "list", "actions"),
         },
     };
     format!(
@@ -381,6 +389,7 @@ fn all_tab_html(
     planned: &[RecipeSelectionResponse],
     suggestions: &[RecipeSuggestion],
     slot: Option<&Slot>,
+    usual: Option<i32>,
 ) -> String {
     let suggestions_section = if suggestions.is_empty() {
         String::new()
@@ -401,7 +410,7 @@ fn all_tab_html(
             .iter()
             .map(|r| {
                 let selection = planned.iter().find(|s| s.recipe_id == r.id);
-                recipe_row_for(r, selection, slot)
+                recipe_row_for(r, selection, slot, usual)
             })
             .collect::<String>();
         format!(r#"<ul class="list">{rows}</ul>"#)
@@ -536,12 +545,19 @@ pub async fn get(
             let Ok(suggestions) = fetch_suggestions(&state, &path, cookie.as_deref()).await else {
                 return service_unavailable_page().into_response();
             };
-            all_tab_html(&recipes, &planned, &suggestions, slot.as_ref())
+            all_tab_html(
+                &recipes,
+                &planned,
+                &suggestions,
+                slot.as_ref(),
+                usual_servings(&headers, fam.gid),
+            )
         }
     };
 
+    let start = start_mark(slot.as_ref(), me.user_id);
     let body = format!(
-        r#"{segment}<div class="page-header">
+        r#"{segment}<div class="page-header"{start}>
 <h1>Recettes</h1>
 <div class="actions">
 <a class="btn secondary" href="/recipes/import">Importer depuis une URL</a>
@@ -571,7 +587,7 @@ mod tests {
 
     /// A row of the full list opened without a slot.
     fn recipe_row_html(r: &RecipeResponse, planned: Option<&RecipeSelectionResponse>) -> String {
-        recipe_row_for(r, planned, None)
+        recipe_row_for(r, planned, None, None)
     }
 
     fn recipe(id: u128, name: &str, servings: Option<i32>) -> RecipeResponse {
@@ -627,6 +643,15 @@ mod tests {
         assert!(html.contains(r#"value="4""#), "{html}");
         assert!(!html.contains("Retirer"), "{html}");
         assert!(!html.contains(r#"class="badge""#), "{html}");
+    }
+
+    #[test]
+    fn a_recipe_not_planned_offers_the_households_usual_number_once_given() {
+        // #820: the answer to « Combien de personnes mangent d'habitude ? »
+        // comes before the recipe's own base.
+        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, None, Some(2));
+        assert!(html.contains(r#"value="2""#), "{html}");
+        assert!(!html.contains(r#"value="4""#), "{html}");
     }
 
     #[test]
@@ -746,6 +771,15 @@ mod tests {
     }
 
     #[test]
+    fn the_first_questions_open_from_the_list_but_not_from_a_slot() {
+        let user = Uuid::from_u128(7);
+        assert_eq!(start_mark(None, user), format!(r#" data-depart="{user}""#));
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let slot = Slot::new(today, "dinner", today);
+        assert_eq!(start_mark(Some(&slot), user), "");
+    }
+
+    #[test]
     fn a_slot_of_the_planning_names_itself_and_rides_on_a_realiser() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
         let slot = Some(Slot::new(today, "dinner", today));
@@ -761,7 +795,7 @@ mod tests {
         assert_eq!(slot_banner(None), "");
         // A recipe not planned: « À réaliser » carries the slot, back to
         // the window of its day.
-        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, slot.as_ref());
+        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, slot.as_ref(), None);
         assert!(
             html.contains(r#"name="planned_on" value="2026-11-14""#),
             "{html}"
@@ -776,7 +810,7 @@ mod tests {
             "lunch",
             today,
         ));
-        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, later.as_ref());
+        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, later.as_ref(), None);
         assert!(
             html.contains(r#"name="back" value="week@2026-11-27""#),
             "{html}"
@@ -791,10 +825,11 @@ mod tests {
             &recipe(1, "Crêpes", Some(4)),
             Some(&selection(1, "Crêpes", Some(6))),
             slot.as_ref(),
+            None,
         );
         assert!(!html.contains("planned_on"), "{html}");
         // Without a slot, the plain form.
-        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, None);
+        let html = recipe_row_for(&recipe(1, "Crêpes", Some(4)), None, None, None);
         assert!(!html.contains("planned_on"), "{html}");
         assert!(html.contains(r#"name="back" value="list""#), "{html}");
     }

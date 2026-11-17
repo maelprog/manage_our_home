@@ -1,5 +1,12 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Issue #523: one navigation markup, laid out as six bottom tabs on a phone
 // and as a sidebar on a PC. Every destination has to be reachable from it on

@@ -548,7 +548,7 @@ pub(crate) fn page_body(
 }
 
 /// `GET /me/allergies` and `GET /me/dislikes`, `None` on any failure.
-async fn fetch_lists(state: &AppState, cookie: Option<&str>) -> Option<Lists> {
+pub(crate) async fn fetch_lists(state: &AppState, cookie: Option<&str>) -> Option<Lists> {
     let allergies = api_request_auth(state, reqwest::Method::GET, "/me/allergies", cookie, None)
         .await
         .ok()
