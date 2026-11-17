@@ -1,6 +1,13 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
 import { chooseTheme } from "../lib/theme";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Issue #69 — interaction states. Its "Vérification" is a manual one:
 // "parcourir l'application entièrement au clavier (Tab / Entrée) : le focus

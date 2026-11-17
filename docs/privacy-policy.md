@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-11-16.
+Dernière mise à jour : 2026-11-17.
 
 ## Qui est responsable de vos données ?
 
@@ -64,6 +64,16 @@ navigateur garde ce choix dans un cookie pendant un an ; revenir à
 « Automatique » le supprime. Ce cookie ne contient que ce choix et ne sert
 qu'à afficher les pages dans ce thème : préférence d'interface, il ne
 demande pas votre accord.
+
+Les premières questions sur les repas, posées à votre première visite des
+recettes, laissent deux traces dans votre navigateur, et aucune sur nos
+serveurs : le nombre habituel de personnes à table, si vous y répondez,
+gardé un an dans un cookie avec l'identifiant de la famille concernée, pour
+préremplir le nombre de personnes d'une recette à réaliser ; et le fait que
+vous avez terminé ou remis ces questions à plus tard, gardé dans le stockage
+local du navigateur avec l'identifiant de votre compte — à défaut, dans un
+cookie qui disparaît à la fermeture du navigateur —, pour ne pas vous les
+reposer. Préférences d'interface, ils ne demandent pas votre accord.
 
 ## Le service et les mineurs
 

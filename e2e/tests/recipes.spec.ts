@@ -2,6 +2,13 @@ import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
 import { fillIngredients, fillSteps, lineField } from "../lib/recipe-form";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Front epic F5 — Recipes (issue #20): every user journey the epic
 // introduces, happy paths plus the documented error states from
@@ -581,6 +588,7 @@ test.describe("Recipes — permission bar", () => {
     await createRecipe(page, { name: "Gratin du proprio", ingredients: "Pomme de terre | 4 | pièce" });
 
     const context = await browser.newContext();
+    await skipMealStart(context);
     const member = await context.newPage();
     await registerAndLogin(member, "e2e-rcmember", "Perm Member");
     await member.goto(href);

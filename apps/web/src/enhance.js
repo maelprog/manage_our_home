@@ -971,6 +971,43 @@
     bar.scrollTo({ left: bar.scrollLeft + offset, top: 0, behavior: "instant" });
   }
 
+  // The first questions about meals (#820, `routes::recipes::start`), once
+  // per member: the recipe list (`data-depart`, the member's id) opens them
+  // until the member has finished them (`data-depart-done` on the end's
+  // card, read when it loads) or put them off (the same attribute on
+  // « Plus tard », read when it is followed). Seen is kept in localStorage;
+  // where it is missing or refuses writes, in a cookie for the session.
+  // Without JavaScript nothing opens them: they are never forced.
+  var MEAL_START = "mhome.depart-repas.";
+  var MEAL_START_COOKIE = "depart_repas";
+
+  function mealStartSeen(user) {
+    try {
+      if (localStorage.getItem(MEAL_START + user)) return true;
+    } catch (e) {}
+    return document.cookie.split("; ").indexOf(MEAL_START_COOKIE + "=" + user) !== -1;
+  }
+
+  function mealStartDone(user) {
+    try {
+      localStorage.setItem(MEAL_START + user, "1");
+      return;
+    } catch (e) {}
+    document.cookie = MEAL_START_COOKIE + "=" + user + "; Path=/; SameSite=Lax";
+  }
+
+  document.addEventListener("click", function (event) {
+    var link = closest(event.target, "a[data-depart-done]");
+    if (link) mealStartDone(link.getAttribute("data-depart-done"));
+  });
+
+  function mealStart() {
+    var done = document.querySelector("[data-depart-done]:not(a)");
+    if (done) mealStartDone(done.getAttribute("data-depart-done"));
+    var list = document.querySelector("[data-depart]");
+    if (list && !mealStartSeen(list.getAttribute("data-depart"))) location.replace("/recipes/depart");
+  }
+
   // The day view's hours (#793) open on 08:00: the sheet's
   // `scroll-initial-target` does it without a script where the browser
   // knows it, and this where it does not. Not over a position the reader
@@ -989,6 +1026,9 @@
   // apart: one throwing (a browser refusing `behavior: "instant"`) must not
   // cost the other.
   function ready() {
+    try {
+      mealStart();
+    } catch (e) {}
     expiryShortcuts();
     resendCooldowns();
     strengthMeters();
