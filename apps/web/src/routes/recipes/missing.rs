@@ -308,6 +308,7 @@ mod tests {
             missing,
             use_by: use_by.map(|(d, _)| d),
             days_left: use_by.map(|(_, n)| n),
+            allergy_warning: Default::default(),
         }
     }
 

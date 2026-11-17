@@ -951,7 +951,10 @@ async fn arriving_in_a_family_shares_nothing_until_the_member_chooses(db: PgPool
     );
     // The holder's own warning is theirs, whatever the level.
     let (_, read) = send(&router, Method::GET, &card, &holder, None).await;
-    assert_eq!(read["allergy_warning"]["mine"], json!([{"tag": TAG, "label": LABEL}]));
+    assert_eq!(
+        read["allergy_warning"]["mine"],
+        json!([{"tag": TAG, "label": LABEL}])
+    );
 
     // Nothing of an allergy in an email or a notification.
     let notifications: String =

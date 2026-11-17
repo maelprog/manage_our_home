@@ -149,6 +149,54 @@ pub struct RecipeResponse {
     pub required_equipment: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// What it holds of the allergies the reader may see (#818).
+    #[serde(default)]
+    pub allergy_warning: AllergyWarning,
+}
+
+/// One of the reader's own allergies a recipe holds (#818). Mirrors
+/// `apps/api/src/recipes/dietary_filter.rs::AllergenMatch`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AllergenMatch {
+    /// The allergy, an Open Food Facts category.
+    pub tag: String,
+    /// Its first French name in the taxonomy (#825).
+    #[serde(default)]
+    pub label: String,
+}
+
+/// A public allergy of another member a recipe holds (#818). Mirrors
+/// `apps/api/src/recipes/dietary_filter.rs::PublicAllergyMatch`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PublicAllergyMatch {
+    /// The member's display name.
+    pub member: String,
+    /// The allergy, an Open Food Facts category.
+    pub tag: String,
+    /// Its first French name in the taxonomy (#825).
+    #[serde(default)]
+    pub label: String,
+}
+
+/// What a recipe holds of the allergies the reader may see (#818). Mirrors
+/// `apps/api/src/recipes/dietary_filter.rs::AllergyWarning`: the reader's
+/// own, the public ones of other members with their name, whether an
+/// anonymous one matches — never which nor whose —, and the ingredients
+/// that could not be checked (#825). All empty: nothing to say, which is
+/// no guarantee either.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AllergyWarning {
+    #[serde(default)]
+    pub mine: Vec<AllergenMatch>,
+    #[serde(default)]
+    pub public: Vec<PublicAllergyMatch>,
+    #[serde(default)]
+    pub anonymous: bool,
+    #[serde(default)]
+    pub unverifiable: Vec<String>,
 }
 
 /// `POST /groups/:id/recipes/import` request body (#405).
@@ -216,6 +264,9 @@ pub struct RecipeSuggestion {
     /// How long the recipe takes, when it says (#816).
     #[serde(default)]
     pub duration_minutes: Option<i32>,
+    /// What it holds of the allergies the reader may see (#818).
+    #[serde(default)]
+    pub allergy_warning: AllergyWarning,
 }
 
 /// `GET /groups/:id/recipes/:recipe_id/selection/replacements` response
@@ -356,6 +407,9 @@ pub struct PlannedSelection {
     pub use_by: Option<NaiveDate>,
     #[serde(default)]
     pub days_left: Option<i64>,
+    /// What its recipe holds of the allergies the reader may see (#818).
+    #[serde(default)]
+    pub allergy_warning: AllergyWarning,
 }
 
 /// The same response as [`RecipeSelectionList`], read with what the stock

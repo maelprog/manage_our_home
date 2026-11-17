@@ -37,6 +37,7 @@ use crate::lenient_query::{lenient, LenientQuery};
 use crate::routes::agenda::calendar::short_weekday;
 use crate::state::{api_request_auth, AppState};
 
+use super::allergy;
 use super::detail::{error_text, notice_text, plan_html_with};
 use super::list::{fetch_suggestions, tabs_html, Tab};
 use super::missing::{missing_badge, missing_dialog};
@@ -253,9 +254,10 @@ fn meal_html(
         format!(r#"<span class="meta">{duration}{missing}</span>"#)
     };
     format!(
-        r#"<a href="/recipes/{id}">{name}</a>{meta}{change}{dialog}"#,
+        r#"<a href="/recipes/{id}">{name}</a>{meta}{allergy}{change}{dialog}"#,
         id = s.recipe_id,
         name = html_escape(&s.recipe_name),
+        allergy = allergy::banner(&p.allergy_warning, true, false),
         change = change_link(s.recipe_id, back, &format!("{}, {slot}", s.recipe_name)),
         dialog = missing_dialog(p),
     )
@@ -395,9 +397,10 @@ fn to_place_html(
                 format!(r#" <span class="muted">{}</span>"#, about.join(" · "))
             };
             format!(
-                r#"<li class="list-row stacked"><span><a href="/recipes/{id}"><strong>{name}</strong></a>{about}{missing}</span>{form}{dialog}</li>"#,
+                r#"<li class="list-row stacked"><span><a href="/recipes/{id}"><strong>{name}</strong></a>{about}{missing}</span>{allergy}{form}{dialog}</li>"#,
                 id = s.recipe_id,
                 name = html_escape(&s.recipe_name),
+                allergy = allergy::banner(&p.allergy_warning, true, false),
                 missing = missing_badge(s.recipe_id, p.missing.len()),
                 form = plan_html_with(
                     s.recipe_id,
@@ -475,8 +478,16 @@ pub(crate) fn week_html(view: &WeekView) -> String {
             )
         })
         .collect();
+    // The allergy warnings (#825) are always shown here; the aim once,
+    // over the days, when one of them says something.
+    let aim = allergy::aim_line(
+        shown
+            .iter()
+            .chain(&undated)
+            .any(|p| allergy::says_something(&p.allergy_warning)),
+    );
     format!(
-        r#"{nav}{summary}<ol class="meals">{days}</ol>{place}"#,
+        r#"{nav}{summary}{aim}<ol class="meals">{days}</ol>{place}"#,
         summary = summary_html(shown.len(), to_buy_count(&shown)),
         place = to_place_html(&undated, view.durations, view.today, &back),
     )
@@ -638,6 +649,7 @@ mod tests {
                 .collect(),
             use_by: None,
             days_left: None,
+            allergy_warning: Default::default(),
         }
     }
 
@@ -1244,5 +1256,67 @@ mod tests {
             "the page's title is the handler's: {html}"
         );
         assert!(!html.contains("<h3"), "{html}");
+    }
+
+    fn warned(mut p: PlannedSelection, json: serde_json::Value) -> PlannedSelection {
+        p.allergy_warning = serde_json::from_value(json).unwrap();
+        p
+    }
+
+    #[test]
+    fn each_slot_and_a_placer_show_their_warning_and_the_aim_once() {
+        // #825: always shown here, the box or not.
+        let planned = [
+            warned(
+                planned(1, "Gratin", Some(day(2026, 11, 14)), Some("dinner"), &[]),
+                serde_json::json!({
+                    "mine": [{"tag": "en:milks", "label": "Laits"}],
+                    "public": [{"member": "Léa", "tag": "en:eggs", "label": "Œufs"}],
+                }),
+            ),
+            warned(
+                planned(2, "Tarte", None, None, &[]),
+                serde_json::json!({"anonymous": true, "unverifiable": ["sauce soja"]}),
+            ),
+            planned(3, "Pâtes", Some(day(2026, 11, 15)), Some("lunch"), &[]),
+        ];
+        let html = render(Some(&planned), None);
+        assert_eq!(
+            html.matches(r#"<div class="allergy sm" role="status">"#)
+                .count(),
+            2,
+            "{html}"
+        );
+        assert_eq!(html.matches(allergy::AIM).count(), 1, "{html}");
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        // The aim over the days.
+        assert!(at(allergy::AIM) < at(r#"<ol class="meals">"#));
+        // In the slot: under the name, before « Changer ce plat ».
+        let gratin = &html[at("Gratin</a>")..];
+        assert!(
+            gratin
+                .find("Contient lait : vous y êtes allergique.")
+                .unwrap()
+                < gratin.find(">Changer ce plat</a>").unwrap(),
+            "{gratin}"
+        );
+        assert!(html.contains("Léa est allergique à : œufs."), "{html}");
+        // Under « À placer », before « Choisir un jour ».
+        let place = &html[at("À placer")..];
+        assert!(
+            place
+                .find("Un membre de la famille est allergique à un ingrédient de cette recette.")
+                .unwrap()
+                < place.find("Choisir un jour").unwrap(),
+            "{place}"
+        );
+        assert!(
+            place.contains("pas pu être vérifiés pour les allergies : sauce soja."),
+            "{place}"
+        );
+        // Nothing to warn of: neither banner nor aim.
+        let html = render(Some(&planned[2..]), None);
+        assert!(!html.contains(r#"class="allergy"#), "{html}");
+        assert!(!html.contains("Aide uniquement"), "{html}");
     }
 }
