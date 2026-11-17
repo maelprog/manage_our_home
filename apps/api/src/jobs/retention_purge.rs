@@ -8,8 +8,9 @@
 //! an address never confirmed (#834): such an account cannot log in, and
 //! the token purge left its row in place for good.
 //!
-//! The durations below are the controller's decision of 2026-09-19, not a
-//! technical default, and they are the ones published in
+//! The durations below are the controller's decision of 2026-09-19 unless
+//! their own comment dates a later one, not a technical default, and they
+//! are the ones published in
 //! `docs/privacy-policy.md` and recorded in `docs/registre-traitements.md`.
 //!
 //! The pass also deletes the login lock's counters past their own bound
@@ -38,8 +39,9 @@ pub const AUDIT_LOG_RETENTION_MONTHS: u32 = 6;
 pub const EMAIL_VERIFICATION_RETENTION_HOURS: i64 = 48;
 /// An email/password account whose address was never confirmed cannot
 /// log in (`auth::login`): past a week, its address, name and hash are
-/// personal data with no purpose left (#834). Counted from the account's
-/// creation, not from the last link mailed.
+/// personal data with no purpose left (controller's decision of
+/// 2026-11-13, #834). Counted from the account's creation, not from the
+/// last link mailed.
 pub const UNVERIFIED_ACCOUNT_RETENTION_DAYS: i64 = 7;
 /// A reset token is deleted the moment it is used, so this only catches
 /// the ones nobody clicked. It matches the token's validity exactly.

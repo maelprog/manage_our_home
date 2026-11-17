@@ -610,7 +610,8 @@ et la session restreinte est révoquée. Le refus
 
 `apps/api/src/jobs/retention_purge.rs` (#138) applique, une fois par heure
 et dès le démarrage de l'API, les durées du tableau ci-dessus, décidées par
-le responsable de traitement le 2026-09-19 :
+le responsable de traitement le 2026-09-19 sauf date contraire indiquée
+sur la ligne :
 
 | Table | Supprimé |
 |---|---|
@@ -620,7 +621,7 @@ le responsable de traitement le 2026-09-19 :
 | `invitations` | invitation créée il y a plus de 30 jours (une invitation acceptée l'est déjà à l'acceptation) |
 | `sessions` | session révoquée, expirée, inactive depuis plus de 7 jours, d'un compte purgé, ordinaire d'un compte désactivé, ou restreinte d'un compte qui ne l'est plus (#289) |
 | `notifications` | notification créée il y a plus de 30 jours, lue ou non (#534, durée décidée le 2026-10-21) |
-| `users` | compte dont l'adresse n'a jamais été vérifiée (`email_verified` faux), créé il y a plus de 7 jours (`created_at` ; un lien renvoyé depuis ne repousse rien), sans identité Google, sans appartenance à un groupe ni invitation acceptée, ni désactivé ni déjà purgé ; ses jetons et autres lignes rattachées partent avec lui (#834) |
+| `users` | compte dont l'adresse n'a jamais été vérifiée (`email_verified` faux), créé il y a plus de 7 jours (`created_at` ; un lien renvoyé depuis ne repousse rien), sans identité Google, sans appartenance à un groupe ni invitation acceptée, ni désactivé ni déjà purgé ; ses jetons et autres lignes rattachées partent avec lui (#834, durée décidée le 2026-11-13) |
 
 Une ligne vit jusqu'à une heure de plus que sa durée **tant que la passe
 tourne**, et la passe ne tourne qu'à deux conditions : l'API est démarrée,
