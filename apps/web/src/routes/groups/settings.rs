@@ -24,7 +24,9 @@ use manage_our_home_shared::validation::groups::{
 };
 use uuid::Uuid;
 
-use crate::app::{html_escape, member_link, shell_with_header, Icon, Width};
+use crate::app::{
+    html_escape, member_link, shell_with_header, submit_fallback, Icon, Width, APPLIES_ON_CHANGE,
+};
 use crate::family::{accent_label, accent_of};
 use crate::icons::{icon, Icon as Glyph};
 use crate::layout::CurrentUser;
@@ -215,7 +217,9 @@ fn name_card(group: &GroupDetailResponse, my_role: &str, others: &[&GroupMember]
 /// « Couleur de la famille » (#538): the eight accents as native radios
 /// of a form, for owners and admins — the bar of `PATCH /groups/:id`
 /// (`can_manage_group`) — or the colour and who may change it, for a
-/// standard member. Each pill carries its own `data-accent`, so its swatch,
+/// standard member. A pill sends the form by itself (#844), the button
+/// being the fallback without JavaScript (`app::submit_fallback`). Each
+/// pill carries its own `data-accent`, so its swatch,
 /// its radio and its tint when checked are in that colour; the preview
 /// shows the family's colour on what it paints: a tint, a button, a link.
 fn colour_card(group_id: Uuid, accent: Accent, my_role: &str) -> String {
@@ -230,7 +234,7 @@ fn colour_card(group_id: Uuid, accent: Accent, my_role: &str) -> String {
             .into_iter()
             .map(|a| {
                 format!(
-                    r#"<label class="field inline pick" data-accent="{id}"><input type="radio" name="accent" value="{id}"{checked}><span class="swatch" aria-hidden="true"></span>{label}</label>"#,
+                    r#"<label class="field inline pick" data-accent="{id}"><input type="radio" name="accent" value="{id}"{checked} data-submit-on-change><span class="swatch" aria-hidden="true"></span>{label}</label>"#,
                     id = a.as_str(),
                     checked = if a == accent { " checked" } else { "" },
                     label = accent_label(a),
@@ -238,11 +242,13 @@ fn colour_card(group_id: Uuid, accent: Accent, my_role: &str) -> String {
             })
             .collect();
         format!(
-            r#"<form method="post" action="/groups/{group_id}/settings/accent">
+            r#"<form method="post" action="/groups/{group_id}/settings/accent" data-keep-scroll>
+{APPLIES_ON_CHANGE}
 <div class="picks" role="radiogroup" aria-label="Couleur de la famille">{picks}</div>
 {preview}
-<button type="submit">Enregistrer la couleur</button>
-</form>"#
+{fallback}
+</form>"#,
+            fallback = submit_fallback("Enregistrer la couleur"),
         )
     } else {
         format!(
@@ -264,6 +270,9 @@ fn colour_card(group_id: Uuid, accent: Accent, my_role: &str) -> String {
 /// Alsace-Moselle, which the agenda's national days follow (#561, #562,
 /// #563). A form of native radios and a checkbox for owners and admins,
 /// the bar of `PATCH /groups/:id`; the settings in words for the others.
+/// A zone or the box sends the whole form by itself (#844), so both
+/// settings always leave together; the button is the fallback without
+/// JavaScript.
 fn calendar_card(group: &GroupDetailResponse, my_role: &str) -> String {
     let zone = group.school_zone.as_deref().and_then(SchoolZone::parse);
     let checked = |on: bool| if on { " checked" } else { "" };
@@ -274,20 +283,22 @@ fn calendar_card(group: &GroupDetailResponse, my_role: &str) -> String {
             .chain([("", "Aucune".to_string(), zone.is_none())])
             .map(|(value, label, on)| {
                 format!(
-                    r#"<label class="field inline pick"><input type="radio" name="school_zone" value="{value}"{on}>{label}</label>"#,
+                    r#"<label class="field inline pick"><input type="radio" name="school_zone" value="{value}"{on} data-submit-on-change>{label}</label>"#,
                     on = checked(on),
                 )
             })
             .collect();
         format!(
-            r#"<form method="post" action="/groups/{id}/settings/calendar">
+            r#"<form method="post" action="/groups/{id}/settings/calendar" data-keep-scroll>
+{APPLIES_ON_CHANGE}
 <div class="picks" role="radiogroup" aria-label="Zone de vacances scolaires">{picks}</div>
-<label class="field inline"><input type="checkbox" name="alsace_moselle" value="on"{am}>Alsace-Moselle</label>
+<label class="field inline"><input type="checkbox" name="alsace_moselle" value="on"{am} data-submit-on-change>Alsace-Moselle</label>
 <p class="muted">Ajoute le Vendredi saint et la Saint-Étienne aux jours fériés de l'agenda.</p>
-<button type="submit">Enregistrer le calendrier</button>
+{fallback}
 </form>"#,
             id = group.id,
             am = checked(group.alsace_moselle),
+            fallback = submit_fallback("Enregistrer le calendrier"),
         )
     } else {
         let zone = zone.map_or("Aucune zone".to_string(), |z| {
@@ -422,7 +433,7 @@ fn page(
         .collect::<Vec<_>>();
 
     let notice = notice
-        .map(|n| format!(r#"<p class="notice success">{n}</p>"#))
+        .map(|n| format!(r#"<p class="notice success" role="status">{n}</p>"#))
         .unwrap_or_default();
     let error = error
         .map(|e| format!(r#"<p class="notice error">{e}</p>"#))
@@ -1156,15 +1167,27 @@ mod tests {
                 };
                 assert!(
                     card.contains(&format!(
-                        r#"<label class="field inline pick" data-accent="{id}"><input type="radio" name="accent" value="{id}"{checked}><span class="swatch" aria-hidden="true"></span>{}</label>"#,
+                        r#"<label class="field inline pick" data-accent="{id}"><input type="radio" name="accent" value="{id}"{checked} data-submit-on-change><span class="swatch" aria-hidden="true"></span>{}</label>"#,
                         crate::family::accent_label(accent)
                     )),
                     "{id}: {card}"
                 );
             }
             assert_eq!(card.matches(" checked").count(), 1, "{card}");
+            // #844: a pastille sends the form by itself; the button is
+            // the fallback without JavaScript, which hides it.
             assert!(
-                card.contains(r#"<button type="submit">Enregistrer la couleur</button>"#),
+                card.contains(&format!(
+                    r#"<form method="post" action="/groups/{G}/settings/accent" data-keep-scroll>"#
+                )),
+                "{card}"
+            );
+            assert!(
+                card.contains(r#"<p class="muted" data-shown-with-js hidden>Le choix s'applique dès que vous le touchez.</p>"#),
+                "{card}"
+            );
+            assert!(
+                card.contains(r#"<div data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer la couleur</button></div>"#),
                 "{card}"
             );
             assert!(!card.contains("Réservé aux"), "{card}");
@@ -1207,6 +1230,7 @@ mod tests {
         );
         assert!(!card.contains("<form"), "{card}");
         assert!(!card.contains(r#"name="accent""#), "{card}");
+        assert!(!card.contains("data-shown-with-js"), "{card}");
         assert!(!html.contains("/settings/accent"), "{html}");
     }
 
@@ -1258,12 +1282,6 @@ mod tests {
             let card = calendar_card(&html);
             assert!(card.contains("<h2>Calendrier</h2>"), "{card}");
             assert!(
-                card.contains(&format!(
-                    r#"<form method="post" action="/groups/{G}/settings/calendar">"#
-                )),
-                "{card}"
-            );
-            assert!(
                 card.contains(r#"role="radiogroup" aria-label="Zone de vacances scolaires""#),
                 "{card}"
             );
@@ -1276,18 +1294,32 @@ mod tests {
                 let checked = if value == "B" { " checked" } else { "" };
                 assert!(
                     card.contains(&format!(
-                        r#"<input type="radio" name="school_zone" value="{value}"{checked}>{label}</label>"#
+                        r#"<input type="radio" name="school_zone" value="{value}"{checked} data-submit-on-change>{label}</label>"#
                     )),
                     "{value}: {card}"
                 );
             }
             assert!(
-                card.contains(r#"<input type="checkbox" name="alsace_moselle" value="on" checked>Alsace-Moselle</label>"#),
+                card.contains(r#"<input type="checkbox" name="alsace_moselle" value="on" checked data-submit-on-change>Alsace-Moselle</label>"#),
                 "{card}"
             );
             assert_eq!(card.matches(" checked").count(), 2, "{card}");
+            // #844: a zone or the box sends the whole form — both
+            // settings together; the button is the fallback without
+            // JavaScript.
             assert!(
-                card.contains("<button type=\"submit\">Enregistrer le calendrier</button>"),
+                card.contains(&format!(
+                    r#"<form method="post" action="/groups/{G}/settings/calendar" data-keep-scroll>"#
+                )),
+                "{card}"
+            );
+            assert_eq!(card.matches(" data-submit-on-change").count(), 5, "{card}");
+            assert!(
+                card.contains(r#"<p class="muted" data-shown-with-js hidden>Le choix s'applique dès que vous le touchez.</p>"#),
+                "{card}"
+            );
+            assert!(
+                card.contains(r#"<div data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer le calendrier</button></div>"#),
                 "{card}"
             );
             assert!(!card.contains("<script"), "{card}");
@@ -1309,13 +1341,13 @@ mod tests {
         let card = calendar_card(&html);
         assert!(
             card.contains(
-                r#"<input type="radio" name="school_zone" value="" checked>Aucune</label>"#
+                r#"<input type="radio" name="school_zone" value="" checked data-submit-on-change>Aucune</label>"#
             ),
             "{card}"
         );
         assert!(
             card.contains(
-                r#"<input type="checkbox" name="alsace_moselle" value="on">Alsace-Moselle</label>"#
+                r#"<input type="checkbox" name="alsace_moselle" value="on" data-submit-on-change>Alsace-Moselle</label>"#
             ),
             "{card}"
         );
@@ -1385,6 +1417,24 @@ mod tests {
         for zone in ["D", "b", "Zone B", " B"] {
             assert_eq!(body(Some(zone), None), Err("invalid_school_zone"), "{zone}");
         }
+    }
+
+    /// #844: the banner a saved setting brings back is announced.
+    #[test]
+    fn the_saved_banner_is_a_status() {
+        let html = page(
+            "",
+            &me(OWNER),
+            &family(),
+            Accent::Sarcelle,
+            Some(&[]),
+            Some("Calendrier de la famille enregistré."),
+            None,
+        );
+        assert!(
+            html.contains(r#"<p class="notice success" role="status">Calendrier de la famille enregistré.</p>"#),
+            "{html}"
+        );
     }
 
     #[test]
