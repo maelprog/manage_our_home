@@ -383,6 +383,7 @@ fn build_router(state: AppState) -> Router {
             get(routes::recipes::import::get).post(routes::recipes::import::post),
         )
         .route("/recipes/{id}", get(routes::recipes::detail::get))
+        .route("/recipes/{id}/cook", get(routes::recipes::cook::get))
         .route(
             "/recipes/{id}/edit",
             get(routes::recipes::edit::get).post(routes::recipes::edit::post),

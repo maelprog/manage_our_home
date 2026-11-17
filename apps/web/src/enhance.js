@@ -1038,6 +1038,332 @@
     hours.scrollTop = eight.getBoundingClientRect().top - hours.getBoundingClientRect().top;
   }
 
+  // `data-cook="<recipe id>"` (`recipes::cook`, #823): cooking a recipe one
+  // step at a time. The readable list the page shows without JavaScript
+  // (`data-cook-plain`) gives way to the stepper the server wrote hidden
+  // (`data-cook-ui`): Précédent and Suivant, ← and →, a swipe on the step;
+  // « Minuteur 8 min » starts a timer (`data-cook-start`, its seconds),
+  // several may run at once. A timer that ends rings — a beep made by Web
+  // Audio, no file, and a vibration where there is one — until « Arrêter »;
+  // never a notification. The step shown and the timers, by the time they
+  // end, are kept per recipe in localStorage (`mhome.cuisine.<id>`) so that
+  // leaving the page and coming back finds them; « Terminer » forgets them,
+  // and so does half a day without a change. Storage that throws is left
+  // alone: the page works the same, it only forgets. The screen is kept on
+  // (Screen Wake Lock) while the page is shown, and released when it is
+  // left; without the API, nothing is said and nothing breaks.
+  var COOK = "mhome.cuisine.";
+  var COOK_KEPT = 12 * 3600 * 1000;
+  var cooking = null;
+  var audio = null;
+  var ringing = null;
+  var wakeLock = null;
+
+  function cookSave() {
+    if (cooking.over) return;
+    try {
+      localStorage.setItem(COOK + cooking.id, JSON.stringify({ at: Date.now(), step: cooking.step, timers: cooking.timers }));
+    } catch (e) {}
+  }
+
+  function cookKept(id) {
+    try {
+      var kept = JSON.parse(localStorage.getItem(COOK + id));
+      if (kept && Date.now() - kept.at < COOK_KEPT) return kept;
+    } catch (e) {}
+    return {};
+  }
+
+  // What a timer still has to run, in milliseconds: from its end while it
+  // runs, as it was left while it is paused.
+  function remaining(timer) {
+    return timer.end ? timer.end - Date.now() : timer.left;
+  }
+
+  // « 07:52 », « 1:29:05 ».
+  function clockOf(ms) {
+    var s = Math.max(0, Math.ceil(ms / 1000));
+    var h = Math.floor(s / 3600);
+    var two = function (n) {
+      return (n < 10 ? "0" : "") + n;
+    };
+    var rest = two(Math.floor((s % 3600) / 60)) + ":" + two(s % 60);
+    return h ? h + ":" + rest : rest;
+  }
+
+  function cookShow(index) {
+    var n = cooking.steps.length;
+    cooking.step = Math.max(0, Math.min(n - 1, index));
+    cooking.steps.forEach(function (step, i) {
+      step.hidden = i !== cooking.step;
+    });
+    cooking.at.textContent = "Étape " + (cooking.step + 1) + " sur " + n;
+    cooking.gauge.value = cooking.step + 1;
+    var last = cooking.step === n - 1;
+    // The focus leaves a button about to vanish or be disabled for the one
+    // that takes its place.
+    var focused = document.activeElement;
+    cooking.prev.disabled = cooking.step === 0;
+    cooking.next.hidden = last;
+    cooking.end.hidden = !last;
+    if (focused === cooking.next && last) cooking.end.focus();
+    if (focused === cooking.prev && cooking.prev.disabled) cooking.next.focus();
+    cookSave();
+  }
+
+  // The rows of the timers, written again from `cooking.timers`; the focus
+  // stays on the control it was on, in the same row.
+  function cookRows() {
+    var focused = document.activeElement;
+    var keep = closest(focused, "[data-timer]") && focused.getAttribute("data-cook-key");
+    var keepRow = keep && closest(focused, "[data-timer]").getAttribute("data-timer");
+    var rows = cooking.timers.map(function (timer) {
+      var row = cooking.row.content.firstElementChild.cloneNode(true);
+      var what = row.querySelector(".what");
+      var left = row.querySelector(".left");
+      var pause = row.querySelector("[data-cook-pause]");
+      var stop = row.querySelector("[data-cook-stop]");
+      var ring = row.querySelector("[data-cook-ring]");
+      pause.setAttribute("data-cook-key", "pause");
+      stop.setAttribute("data-cook-key", "stop");
+      ring.setAttribute("data-cook-key", "ring");
+      row.setAttribute("data-timer", timer.id);
+      if (timer.done) {
+        row.classList.add("ended");
+        row.setAttribute("role", "alert");
+        what.textContent = timer.what;
+        left.removeAttribute("role");
+        left.textContent = "Terminé !";
+        pause.hidden = true;
+        stop.hidden = true;
+      } else {
+        var paused = !timer.end;
+        row.classList.toggle("paused", paused);
+        what.textContent = timer.what + (paused ? " · en pause" : "");
+        left.setAttribute("aria-label", timer.what);
+        left.textContent = clockOf(remaining(timer));
+        pause.textContent = paused ? "Reprendre" : "Pause";
+        stop.setAttribute("aria-label", "Arrêter le minuteur : " + timer.what);
+        ring.hidden = true;
+      }
+      return row;
+    });
+    cooking.list.replaceChildren.apply(cooking.list, rows);
+    cooking.box.hidden = !rows.length;
+    var again = keepRow && cooking.list.querySelector('[data-timer="' + keepRow + '"] [data-cook-key="' + keep + '"]');
+    if (again && !again.hidden) again.focus();
+    else if (keepRow) (cooking.next.hidden ? cooking.end : cooking.next).focus();
+  }
+
+  function beep() {
+    try {
+      if (!audio) {
+        var Context = window.AudioContext || window.webkitAudioContext;
+        if (!Context) return;
+        audio = new Context();
+      }
+      if (audio.state === "suspended") audio.resume();
+      [0, 0.3, 0.6].forEach(function (offset) {
+        var at = audio.currentTime + offset;
+        var tone = audio.createOscillator();
+        var gain = audio.createGain();
+        tone.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(0.4, at + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.2);
+        tone.connect(gain);
+        gain.connect(audio.destination);
+        tone.start(at);
+        tone.stop(at + 0.22);
+      });
+    } catch (e) {}
+    try {
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    } catch (e) {}
+  }
+
+  // Rings every two seconds while a timer is over and not yet stopped.
+  function cookRing() {
+    var over = cooking.timers.some(function (timer) {
+      return timer.done;
+    });
+    if (over && !ringing) {
+      beep();
+      ringing = setInterval(beep, 2000);
+    } else if (!over && ringing) {
+      clearInterval(ringing);
+      ringing = null;
+    }
+  }
+
+  function cookTick() {
+    var ended = false;
+    cooking.timers.forEach(function (timer) {
+      if (!timer.done && timer.end && remaining(timer) <= 0) {
+        timer.done = true;
+        ended = true;
+      }
+    });
+    if (ended) {
+      cookRows();
+      cookSave();
+    } else {
+      Array.prototype.forEach.call(cooking.list.querySelectorAll("[data-timer]"), function (row, i) {
+        var timer = cooking.timers[i];
+        if (timer && !timer.done) row.querySelector(".left").textContent = clockOf(remaining(timer));
+      });
+    }
+    cookRing();
+  }
+
+  // `wakeLock` is the lock held, `true` while one is asked for.
+  function cookWake() {
+    if (!cooking || wakeLock || document.visibilityState !== "visible" || !navigator.wakeLock) return;
+    wakeLock = true;
+    try {
+      navigator.wakeLock.request("screen").then(
+        function (lock) {
+          wakeLock = lock;
+          cooking.wake.hidden = false;
+          lock.addEventListener("release", function () {
+            if (wakeLock === lock) wakeLock = null;
+            cooking.wake.hidden = true;
+          });
+        },
+        function () {
+          wakeLock = null;
+        }
+      );
+    } catch (e) {
+      wakeLock = null;
+    }
+  }
+
+  document.addEventListener("visibilitychange", cookWake);
+  window.addEventListener("pageshow", cookWake);
+  window.addEventListener("pagehide", function () {
+    try {
+      if (wakeLock && wakeLock !== true) wakeLock.release();
+    } catch (e) {}
+    wakeLock = null;
+  });
+
+  document.addEventListener("click", function (event) {
+    if (!cooking) return;
+    var target = event.target;
+    var button;
+    if (closest(target, "[data-cook-prev]")) cookShow(cooking.step - 1);
+    else if (closest(target, "[data-cook-next]")) cookShow(cooking.step + 1);
+    else if ((button = closest(target, "[data-cook-start]"))) {
+      // A press is what lets a page make a sound: the context is made here,
+      // so that it can ring later.
+      if (!audio) {
+        try {
+          var Context = window.AudioContext || window.webkitAudioContext;
+          if (Context) audio = new Context();
+        } catch (e) {}
+      }
+      cooking.timers.push({
+        id: String(Date.now()) + cooking.timers.length,
+        what: button.getAttribute("data-cook-what"),
+        end: Date.now() + 1000 * Number(button.getAttribute("data-cook-start")),
+        left: 0,
+        done: false
+      });
+      cookRows();
+      cookSave();
+    } else if ((button = closest(target, "[data-cook-pause], [data-cook-stop], [data-cook-ring]"))) {
+      var id = closest(button, "[data-timer]").getAttribute("data-timer");
+      var timer = cooking.timers.filter(function (t) {
+        return t.id === id;
+      })[0];
+      if (!timer) return;
+      if (button.hasAttribute("data-cook-pause")) {
+        if (timer.end) {
+          timer.left = remaining(timer);
+          timer.end = 0;
+        } else {
+          timer.end = Date.now() + timer.left;
+        }
+      } else {
+        cooking.timers.splice(cooking.timers.indexOf(timer), 1);
+      }
+      cookRows();
+      cookSave();
+      cookRing();
+    } else if (closest(target, "[data-cook-end]")) {
+      cooking.over = true;
+      try {
+        localStorage.removeItem(COOK + cooking.id);
+      } catch (e) {}
+    }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (!cooking || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (document.querySelector("dialog[open]") || closest(event.target, "input, select, textarea")) return;
+    if (event.key === "ArrowRight") cookShow(cooking.step + 1);
+    else if (event.key === "ArrowLeft") cookShow(cooking.step - 1);
+    else return;
+    event.preventDefault();
+  });
+
+  // A swipe across the step: to the left the next one, to the right the
+  // one before, as a page is turned.
+  var swipe = null;
+  document.addEventListener(
+    "touchstart",
+    function (event) {
+      var touch = event.touches[0];
+      swipe = cooking && event.touches.length === 1 && closest(event.target, "[data-step]") ? [touch.clientX, touch.clientY] : null;
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    "touchend",
+    function (event) {
+      if (!swipe) return;
+      var touch = event.changedTouches[0];
+      var dx = touch.clientX - swipe[0];
+      var dy = touch.clientY - swipe[1];
+      swipe = null;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) cookShow(cooking.step + (dx < 0 ? 1 : -1));
+    },
+    { passive: true }
+  );
+
+  function cook() {
+    var root = document.querySelector("[data-cook]");
+    if (!root) return;
+    var ui = root.querySelector("[data-cook-ui]");
+    var id = root.getAttribute("data-cook");
+    var kept = cookKept(id);
+    cooking = {
+      id: id,
+      steps: Array.prototype.slice.call(ui.querySelectorAll("[data-step]")),
+      at: ui.querySelector("[data-cook-at]"),
+      gauge: ui.querySelector("progress"),
+      wake: ui.querySelector(".wake"),
+      box: ui.querySelector(".timers"),
+      list: ui.querySelector("[data-cook-timers]"),
+      row: ui.querySelector("[data-cook-row]"),
+      prev: ui.querySelector("[data-cook-prev]"),
+      next: ui.querySelector("[data-cook-next]"),
+      end: ui.querySelector("[data-cook-end]"),
+      step: 0,
+      timers: (Array.isArray(kept.timers) ? kept.timers : []).filter(function (timer) {
+        return timer && typeof timer.id === "string" && typeof timer.what === "string" && (timer.end > 0 || timer.left > 0 || timer.done);
+      })
+    };
+    root.querySelector("[data-cook-plain]").hidden = true;
+    ui.hidden = false;
+    cookShow(Number(kept.step) || 0);
+    cookRows();
+    cookTick();
+    setInterval(cookTick, 500);
+    cookWake();
+  }
+
   // Loaded from the <head>: the fields are there once the document is. The
   // script comes after the sheet's <link>, so the layout the scroll
   // positions are read from is the styled one. The two scroll fixes run
@@ -1062,6 +1388,9 @@
       restoreScroll();
     } catch (e) {}
     morningHours();
+    try {
+      cook();
+    } catch (e) {}
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", ready);

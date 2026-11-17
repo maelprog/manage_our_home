@@ -115,7 +115,7 @@ pub(super) fn error_text(code: &str) -> Option<&'static str> {
 
 /// One ingredient → a list item with its quantity/unit and optional/seasonal
 /// markers.
-fn ingredient_html(ing: &IngredientResponse) -> String {
+pub(super) fn ingredient_html(ing: &IngredientResponse) -> String {
     let qty = match (ing.quantity, ing.unit.as_deref()) {
         (Some(q), Some(u)) => format!(" — {} {}", fmt_num(q), html_escape(u)),
         (Some(q), None) => format!(" — {}", fmt_num(q)),
@@ -480,12 +480,14 @@ fn page(
     let equipment_html = super::equipment::required_section(&recipe.required_equipment, household);
     // The allergy warning (#825), before « À réaliser »: read before acting.
     let allergy = super::allergy::banner(&recipe.allergy_warning, false, true);
+    let cook_html = cook_link(id);
     let body = format!(
         r#"<h1>{name}</h1>
 {source_html}
 {time_html}
 {allergy}
 {banners}
+{cook_html}
 {selection_html}
 {plan_html}
 {equipment_html}
@@ -598,6 +600,15 @@ fn steps_html(instructions: Option<&str>) -> String {
         .map(|s| format!("<li>{}</li>", html_escape(s)))
         .collect();
     format!("<h2>Étapes</h2><ol>{items}</ol>")
+}
+
+/// « Mode cuisine » (#823), on every recipe: planned or not, dated or not.
+/// After the allergy warning (#825), which is read before cooking.
+fn cook_link(id: Uuid) -> String {
+    format!(
+        r#"<div class="actions"><a class="btn cook-link" href="/recipes/{id}/cook">{chef}Mode cuisine</a></div>"#,
+        chef = crate::icons::icon(crate::icons::Icon::Recipes),
+    )
 }
 
 /// How long the recipe takes (#539), when it says.
@@ -918,6 +929,44 @@ mod tests {
 
     fn render(recipe: &RecipeResponse) -> String {
         page("", recipe, None, None, None, None, false, false, "")
+    }
+
+    #[test]
+    fn mode_cuisine_is_offered_on_a_recipe_neither_planned_nor_dated() {
+        // #823: the cooking mode does not depend on the planning.
+        let recipe = recipe_with(serde_json::json!({}));
+        let html = render(&recipe);
+        let link = format!(
+            r#"<a class="btn cook-link" href="/recipes/{}/cook">"#,
+            recipe.id
+        );
+        let at = html.find(&link).unwrap_or_else(|| panic!("{html}"));
+        assert!(html[at..].contains("Mode cuisine</a>"), "{html}");
+        assert!(!html.contains("Prévue le"), "{html}");
+        // Planned and dated, it is there all the same.
+        let selection = planned(Some(day(2026, 11, 19)), Some("dinner"));
+        let html = page(
+            "",
+            &recipe,
+            None,
+            None,
+            None,
+            Some(&selection),
+            false,
+            false,
+            "",
+        );
+        assert!(html.contains(&link), "{html}");
+    }
+
+    #[test]
+    fn mode_cuisine_comes_after_the_allergy_warning_and_before_a_realiser() {
+        let html = render(&recipe_with(serde_json::json!({
+            "mine": [{"tag": "en:milks", "label": "Laits"}],
+        })));
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        assert!(at(r#"<div class="allergy" role="status">"#) < at("Mode cuisine"));
+        assert!(at("Mode cuisine") < at("À réaliser"));
     }
 
     #[test]
