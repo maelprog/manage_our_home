@@ -1047,8 +1047,11 @@
   // Audio, no file, and a vibration where there is one — until « Arrêter »;
   // never a notification. The step shown and the timers, by the time they
   // end, are kept per recipe in localStorage (`mhome.cuisine.<id>`) so that
-  // leaving the page and coming back finds them; « Terminer » forgets them,
-  // and so does half a day without a change. Storage that throws is left
+  // leaving the page and coming back finds them; « Terminer » forgets them.
+  // So does half a day counted from the later of the last change (`at`,
+  // written on a step moved or a timer started, paused, stopped or ended —
+  // not on a visit) and the end of the last timer; a timer still running or
+  // paused is never forgotten. Storage that throws is left
   // alone: the page works the same, it only forgets. The screen is kept on
   // (Screen Wake Lock) while the page is shown, and released when it is
   // left; without the API, nothing is said and nothing breaks.
@@ -1066,10 +1069,24 @@
     } catch (e) {}
   }
 
+  // When the half day starts for what was kept: its last change or its
+  // last timer's end, whichever is later — never, while a timer runs or
+  // waits in pause.
+  function cookSince(kept) {
+    var since = Number(kept.at) || 0;
+    (Array.isArray(kept.timers) ? kept.timers : []).forEach(function (timer) {
+      if (!timer) return;
+      if (!timer.done && !(timer.end > 0) && timer.left > 0) since = Infinity;
+      else if (timer.end > since) since = timer.end;
+    });
+    return since;
+  }
+
   function cookKept(id) {
     try {
       var kept = JSON.parse(localStorage.getItem(COOK + id));
-      if (kept && Date.now() - kept.at < COOK_KEPT) return kept;
+      if (kept && Date.now() - cookSince(kept) < COOK_KEPT) return kept;
+      if (kept) localStorage.removeItem(COOK + id);
     } catch (e) {}
     return {};
   }
@@ -1091,7 +1108,8 @@
     return h ? h + ":" + rest : rest;
   }
 
-  function cookShow(index) {
+  // `quiet` when the page opens: showing the step kept is no change.
+  function cookShow(index, quiet) {
     var n = cooking.steps.length;
     cooking.step = Math.max(0, Math.min(n - 1, index));
     cooking.steps.forEach(function (step, i) {
@@ -1108,7 +1126,7 @@
     cooking.end.hidden = !last;
     if (focused === cooking.next && last) cooking.end.focus();
     if (focused === cooking.prev && cooking.prev.disabled) cooking.next.focus();
-    cookSave();
+    if (!quiet) cookSave();
   }
 
   // The rows of the timers, written again from `cooking.timers`; the focus
@@ -1357,7 +1375,7 @@
     };
     root.querySelector("[data-cook-plain]").hidden = true;
     ui.hidden = false;
-    cookShow(Number(kept.step) || 0);
+    cookShow(Number(kept.step) || 0, true);
     cookRows();
     cookTick();
     setInterval(cookTick, 500);
