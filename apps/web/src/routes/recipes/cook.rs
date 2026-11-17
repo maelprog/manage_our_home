@@ -99,10 +99,13 @@ fn page(header: &str, recipe: &RecipeResponse, can_edit: bool) -> String {
     )
 }
 
-/// « Temps : 1 h 30. Pour 6 personnes. », as much of it as the recipe says.
-fn facts(recipe: &RecipeResponse) -> String {
+/// « Temps : 1 h 30. Pour 6 personnes. », as much of it as the recipe says
+/// — the time only `with_time`: the ingredients' dialog leaves it out, as
+/// the mock-up does.
+fn facts(recipe: &RecipeResponse, with_time: bool) -> String {
     let time = recipe
         .duration_minutes
+        .filter(|_| with_time)
         .map(|m| format!("Temps : {}.", duration_label(m)));
     let servings = recipe
         .servings
@@ -143,7 +146,7 @@ fn plain_html(recipe: &RecipeResponse, steps: &[String]) -> String {
 </div>"#,
         back = icon(Icon::Previous),
         name = html_escape(&recipe.name),
-        facts = facts(recipe),
+        facts = facts(recipe, true),
         ingredients = ingredient_items(recipe),
     )
 }
@@ -181,7 +184,7 @@ fn stepper_html(recipe: &RecipeResponse, steps: &[String], quit: &str) -> String
         prev = icon(Icon::Previous),
         next = icon(Icon::Next),
         close = icon(Icon::Close),
-        facts = facts(recipe),
+        facts = facts(recipe, false),
         ingredients = ingredient_items(recipe),
     )
 }
