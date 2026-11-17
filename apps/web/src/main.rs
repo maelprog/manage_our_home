@@ -371,6 +371,10 @@ fn build_router(state: AppState) -> Router {
         .route("/recipes", get(routes::recipes::list::get))
         .route("/recipes/week", get(routes::recipes::week::get))
         .route(
+            "/recipes/depart",
+            get(routes::recipes::start::get).post(routes::recipes::start::post),
+        )
+        .route(
             "/recipes/new",
             get(routes::recipes::new::get).post(routes::recipes::new::post),
         )

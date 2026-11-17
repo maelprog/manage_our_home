@@ -2,6 +2,13 @@ import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
 import { fetchMealTastes, fetchVerificationToken } from "../lib/db";
 import { fillIngredients } from "../lib/recipe-form";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Front epic F6 — Grocery list (issue #21): every user journey the epic
 // introduces, happy paths plus the documented error states from

@@ -266,6 +266,7 @@ pub async fn get(
         &fam.header,
         &recipe,
         household.as_deref(),
+        super::start::usual_servings(&headers, fam.gid),
         last,
         planned,
         is_plan_error(query.error.as_deref()),
@@ -407,6 +408,7 @@ fn page(
     header: &str,
     recipe: &RecipeResponse,
     household: Option<&[String]>,
+    usual: Option<i32>,
     last_eaten: Option<NaiveDate>,
     planned: Option<&RecipeSelectionResponse>,
     plan_open: bool,
@@ -468,7 +470,11 @@ fn page(
         .servings
         .map(|s| format!(r#"<p class="muted">Pour {}.</p>"#, servings_label(s)))
         .unwrap_or_default();
-    let selection_html = selection_html(id, recipe.servings, planned.map(|s| s.servings));
+    let selection_html = selection_html(
+        id,
+        super::start::prefill(usual, recipe.servings),
+        planned.map(|s| s.servings),
+    );
     let plan_html = plan_html(id, planned, plan_open, today_paris, "detail");
     let time_html = time_html(recipe.duration_minutes);
     let equipment_html = super::equipment::required_section(&recipe.required_equipment, household);
