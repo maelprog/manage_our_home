@@ -8,8 +8,11 @@
 
 mod common;
 
+use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Duration, Months, Utc};
-use common::{drop_prescribed_role, prescribed_role_pool};
+use common::{
+    assert_status, call, drop_prescribed_role, prescribed_role_pool, test_router_with_outbox,
+};
 use manage_our_home::jobs::retention_purge::{purge, PurgeCounts, RetentionCutoffs};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -231,6 +234,7 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
         PurgeCounts {
             audit_log: 1,
             email_verification_tokens: 1,
+            unverified_accounts: 0,
             password_reset_tokens: 1,
             invitations: 1,
             sessions: 4,
@@ -345,6 +349,185 @@ async fn each_sliding_limit_is_purged_on_its_own_window(db: PgPool) {
             "recipe_import:bb"
         ]
     );
+}
+
+async fn register(router: &axum::Router, email: &str) {
+    let response = call(
+        router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email, "password": "a-long-password1", "display_name": "Inscrit",
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await;
+    assert_status(&response, StatusCode::CREATED);
+}
+
+/// Dates an account's creation, and its verification tokens with it.
+async fn backdate(db: &PgPool, email: &str, created: DateTime<Utc>) -> Uuid {
+    let id: Uuid =
+        sqlx::query_scalar("UPDATE users SET created_at = $2 WHERE email = $1 RETURNING id")
+            .bind(email)
+            .bind(created)
+            .fetch_one(db)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE email_verification_tokens SET created_at = $2 WHERE user_id = $1")
+        .bind(id)
+        .bind(created)
+        .execute(db)
+        .await
+        .unwrap();
+    id
+}
+
+async fn user_ids(db: &PgPool, email: &str) -> Vec<Uuid> {
+    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// #834: an account whose address nobody confirmed goes a week after its
+/// creation — a link mailed since does not push that back —, and its
+/// address registers again as a new account. A verified account goes
+/// nowhere, nor does an unverified one that shows any use or that the
+/// account purge owns.
+#[sqlx::test]
+async fn an_unverified_account_goes_a_week_after_its_creation(db: PgPool) {
+    let (router, _outbox) = test_router_with_outbox(db.clone());
+    let now = Utc::now();
+    let minute = Duration::minutes(1);
+    let week = Duration::days(7);
+    let long_ago = now - Duration::days(400);
+
+    register(&router, "gone@example.test").await;
+    let gone = backdate(&db, "gone@example.test", now - week - minute).await;
+
+    // Created a minute short of the week; its first link is long expired,
+    // so a resend mails a fresh one now.
+    register(&router, "resent@example.test").await;
+    let resent = backdate(&db, "resent@example.test", now - week + minute).await;
+    let resend = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "resent@example.test"})),
+    )
+    .await;
+    assert_status(&resend, StatusCode::OK);
+    let fresh_tokens: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM email_verification_tokens WHERE user_id = $1 AND created_at > $2",
+    )
+    .bind(resent)
+    .bind(now - minute)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(fresh_tokens, 1, "the resend mailed no fresh link");
+
+    register(&router, "verified@example.test").await;
+    let verified = backdate(&db, "verified@example.test", long_ago).await;
+    sqlx::query("UPDATE users SET email_verified = true WHERE id = $1")
+        .bind(verified)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // Unverified and old, but used, or owned by the account purge.
+    let google = insert_user(&db, "google@example.test", false).await;
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'sub-1')",
+    )
+    .bind(google)
+    .execute(&db)
+    .await
+    .unwrap();
+    let member = insert_user(&db, "member@example.test", false).await;
+    let group: Uuid =
+        sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ('G', $1) RETURNING id")
+            .bind(verified)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role)
+         VALUES ($1, $2, 'owner'), ($1, $3, 'standard')",
+    )
+    .bind(group)
+    .bind(verified)
+    .bind(member)
+    .execute(&db)
+    .await
+    .unwrap();
+    let invited = insert_user(&db, "invited@example.test", false).await;
+    let invitation = insert_invitation(&db, group, verified, now).await;
+    sqlx::query("UPDATE invitations SET consumed_at = now(), consumed_by = $2 WHERE id = $1")
+        .bind(invitation)
+        .bind(invited)
+        .execute(&db)
+        .await
+        .unwrap();
+    let deactivated = insert_user(&db, "deactivated@example.test", true).await;
+    let purged = insert_user(&db, "purged@example.test", false).await;
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
+        .bind(purged)
+        .execute(&db)
+        .await
+        .unwrap();
+    for id in [google, member, invited, deactivated, purged] {
+        sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
+            .bind(id)
+            .bind(long_ago)
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
+    assert_eq!(counts.unverified_accounts, 1);
+    assert!(user_ids(&db, "gone@example.test").await.is_empty());
+    let mut left = ids(&db, "SELECT id FROM users").await;
+    left.sort();
+    let mut expected = vec![
+        resent,
+        verified,
+        google,
+        member,
+        invited,
+        deactivated,
+        purged,
+    ];
+    expected.sort();
+    assert_eq!(left, expected);
+
+    // Two minutes on, the week is up for `resent` too, however fresh its
+    // link: counted from the creation, not from the last mail.
+    let later = purge(&db, RetentionCutoffs::at(now + minute * 2))
+        .await
+        .unwrap();
+    assert_eq!(later.unverified_accounts, 1);
+    assert!(user_ids(&db, "resent@example.test").await.is_empty());
+
+    // The address is free again: registering it makes a new account.
+    register(&router, "gone@example.test").await;
+    let again = user_ids(&db, "gone@example.test").await;
+    assert_eq!(again.len(), 1);
+    assert_ne!(again[0], gone);
+    let fresh: (bool, DateTime<Utc>) =
+        sqlx::query_as("SELECT email_verified, created_at FROM users WHERE id = $1")
+            .bind(again[0])
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(!fresh.0, "a new account starts unverified");
+    assert!(fresh.1 > now - minute, "a new account, not the old row");
 }
 
 /// `invitations` is under a forced RLS policy: on a role that does not
