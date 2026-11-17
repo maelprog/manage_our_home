@@ -20,8 +20,9 @@
 //! - **Warning** ([`allergy_warning`]), on every ingredient of a recipe,
 //!   optional ones included: the reader's own allergies it holds, the
 //!   public ones of other members with their name, whether an anonymous
-//!   one of another member matches, and whether an ingredient the
-//!   taxonomy does not know leaves it unverifiable.
+//!   one of another member matches, and the ingredients the taxonomy does
+//!   not know, which leave it unverifiable (named since #825: they are the
+//!   recipe's, which the reader reads anyway).
 //!
 //! Computed at each request, from what the reader may read at that moment:
 //! nothing is stored, cached or logged.
@@ -52,6 +53,15 @@ impl VisibleAllergies {
     }
 }
 
+/// One of the reader's own allergies that a recipe holds.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, utoipa::ToSchema)]
+pub struct AllergenMatch {
+    /// The allergy, an Open Food Facts category.
+    pub tag: String,
+    /// Its first French name in the taxonomy (#825), for the page to say.
+    pub label: String,
+}
+
 /// A public allergy of another member that a recipe holds.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, utoipa::ToSchema)]
 pub struct PublicAllergyMatch {
@@ -59,36 +69,41 @@ pub struct PublicAllergyMatch {
     pub member: String,
     /// The allergy, an Open Food Facts category.
     pub tag: String,
+    /// Its first French name in the taxonomy (#825), for the page to say.
+    pub label: String,
 }
 
 /// What a recipe holds of the allergies the reader may see (#818).
 #[derive(Debug, Default, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct AllergyWarning {
     /// The reader's own allergies the recipe holds, whatever their level,
-    /// sorted.
-    pub mine: Vec<String>,
+    /// sorted by tag.
+    pub mine: Vec<AllergenMatch>,
     /// Allergies another member shares publicly that the recipe holds,
     /// sorted by member then tag. Never the reader.
     pub public: Vec<PublicAllergyMatch>,
     /// Whether an allergy another member shares anonymously matches; which,
     /// and whose, are not said.
     pub anonymous: bool,
-    /// Whether the reader may see an allergy at all and an ingredient of the
-    /// recipe has no category to check it against.
-    pub unverifiable: bool,
+    /// When the reader may see an allergy at all, the ingredients of the
+    /// recipe that have no category to check it against, as the recipe
+    /// names them, sorted, each once (#825); empty otherwise.
+    pub unverifiable: Vec<String>,
 }
 
-/// One ingredient of a recipe as the filters see it: its category, if the
-/// taxonomy knows its name, and whether it is optional.
+/// One ingredient of a recipe as the filters see it: its name, its
+/// category, if the taxonomy knows that name, and whether it is optional.
 #[derive(Clone, Copy)]
-pub(crate) struct Ingredient {
+pub(crate) struct Ingredient<'a> {
+    pub name: &'a str,
     pub tag: Option<TagId>,
     pub optional: bool,
 }
 
-impl Ingredient {
-    pub(crate) fn named(taxonomy: &Taxonomy, name: &str, optional: bool) -> Self {
+impl<'a> Ingredient<'a> {
+    pub(crate) fn named(taxonomy: &Taxonomy, name: &'a str, optional: bool) -> Self {
         Ingredient {
+            name,
             tag: taxonomy.canonical_ingredient(name),
             optional,
         }
@@ -245,11 +260,14 @@ pub(crate) fn allergy_warning(
     let tags: Vec<TagId> = ingredients.iter().filter_map(|i| i.tag).collect();
     let held = |constraint: TagId| tags.iter().any(|&t| taxonomy.satisfies(t, constraint));
 
-    let mut mine: Vec<String> = allergies
+    let mut mine: Vec<AllergenMatch> = allergies
         .mine
         .iter()
         .filter(|&&tag| held(tag))
-        .map(|&tag| taxonomy.id(tag).to_string())
+        .map(|&tag| AllergenMatch {
+            tag: taxonomy.id(tag).to_string(),
+            label: taxonomy.label(tag).to_string(),
+        })
         .collect();
     mine.sort();
     mine.dedup();
@@ -260,15 +278,27 @@ pub(crate) fn allergy_warning(
         .map(|(member, tag)| PublicAllergyMatch {
             member: member.clone(),
             tag: taxonomy.id(*tag).to_string(),
+            label: taxonomy.label(*tag).to_string(),
         })
         .collect();
     public.sort();
     public.dedup();
+    let mut unverifiable: Vec<String> = if allergies.is_empty() {
+        Vec::new()
+    } else {
+        ingredients
+            .iter()
+            .filter(|i| i.tag.is_none())
+            .map(|i| i.name.to_string())
+            .collect()
+    };
+    unverifiable.sort();
+    unverifiable.dedup();
     AllergyWarning {
         mine,
         public,
         anonymous: allergies.anonymous.iter().any(|&tag| held(tag)),
-        unverifiable: !allergies.is_empty() && ingredients.iter().any(|i| i.tag.is_none()),
+        unverifiable,
     }
 }
 
@@ -295,11 +325,11 @@ en:flours\t\tFarines
         t.tag(id).unwrap()
     }
 
-    fn required(t: &Taxonomy, name: &str) -> Ingredient {
+    fn required<'a>(t: &Taxonomy, name: &'a str) -> Ingredient<'a> {
         Ingredient::named(t, name, false)
     }
 
-    fn optional(t: &Taxonomy, name: &str) -> Ingredient {
+    fn optional<'a>(t: &Taxonomy, name: &'a str) -> Ingredient<'a> {
         Ingredient::named(t, name, true)
     }
 
@@ -527,10 +557,18 @@ en:flours\t\tFarines
         allergy_warning(t, a, ingredients)
     }
 
-    fn public(member: &str, tag: &str) -> PublicAllergyMatch {
+    fn public(member: &str, tag: &str, label: &str) -> PublicAllergyMatch {
         PublicAllergyMatch {
             member: member.into(),
             tag: tag.into(),
+            label: label.into(),
+        }
+    }
+
+    fn allergen(tag: &str, label: &str) -> AllergenMatch {
+        AllergenMatch {
+            tag: tag.into(),
+            label: label.into(),
         }
     }
 
@@ -550,7 +588,10 @@ en:flours\t\tFarines
         assert_eq!(
             w,
             AllergyWarning {
-                mine: strings(&["en:milks", "en:peanuts"]),
+                mine: vec![
+                    allergen("en:milks", "Laits"),
+                    allergen("en:peanuts", "Cacahuètes"),
+                ],
                 ..Default::default()
             }
         );
@@ -573,9 +614,9 @@ en:flours\t\tFarines
             w,
             AllergyWarning {
                 public: vec![
-                    public("Léa", "en:eggs"),
-                    public("Léa", "en:milks"),
-                    public("Zoé", "en:eggs"),
+                    public("Léa", "en:eggs", "Œufs"),
+                    public("Léa", "en:milks", "Laits"),
+                    public("Zoé", "en:eggs", "Œufs"),
                 ],
                 ..Default::default()
             }
@@ -613,10 +654,10 @@ en:flours\t\tFarines
         assert_eq!(
             warn(&t, &a, &[required(&t, "cacahuètes")]),
             AllergyWarning {
-                mine: strings(&["en:peanuts"]),
-                public: vec![public("Léa", "en:peanuts")],
+                mine: vec![allergen("en:peanuts", "Cacahuètes")],
+                public: vec![public("Léa", "en:peanuts", "Cacahuètes")],
                 anonymous: true,
-                unverifiable: false,
+                unverifiable: Vec::new(),
             }
         );
     }
@@ -645,16 +686,43 @@ en:flours\t\tFarines
             assert_eq!(
                 warn(&t, &a, &untagged),
                 AllergyWarning {
-                    unverifiable: true,
+                    unverifiable: strings(&["sauce maison"]),
                     ..Default::default()
                 }
             );
             // Every ingredient tagged: verifiable.
-            assert!(!warn(&t, &a, &[required(&t, "farine")]).unverifiable);
+            assert!(warn(&t, &a, &[required(&t, "farine")])
+                .unverifiable
+                .is_empty());
         }
         // An optional ingredient counts as much as a required one.
         let a = mine(&t, &["en:eggs"]);
-        assert!(warn(&t, &a, &[optional(&t, "sauce maison")]).unverifiable);
+        assert_eq!(
+            warn(&t, &a, &[optional(&t, "sauce maison")]).unverifiable,
+            strings(&["sauce maison"])
+        );
+    }
+
+    #[test]
+    fn the_unverifiable_ingredients_are_named_sorted_once_each() {
+        // #825: the warning names what could not be checked, as the recipe
+        // writes it.
+        let t = t();
+        let a = mine(&t, &["en:eggs"]);
+        let w = warn(
+            &t,
+            &a,
+            &[
+                required(&t, "vinaigre balsamique"),
+                required(&t, "farine"),
+                optional(&t, "sauce soja"),
+                required(&t, "sauce soja"),
+            ],
+        );
+        assert_eq!(
+            w.unverifiable,
+            strings(&["sauce soja", "vinaigre balsamique"])
+        );
     }
 
     #[test]
