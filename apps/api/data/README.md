@@ -16,5 +16,5 @@ with the script, never by hand; the same taxonomy gives the same bytes.
 **Licence.** This file is a database derived from Open Food Facts and is
 distributed under the [Open Database License (ODbL)
 1.0](https://opendatacommons.org/licenses/odbl/1-0/), not under the
-repository's MIT licence. Data: © Open Food Facts contributors,
+repository's licence (PolyForm Noncommercial 1.0.0). Data: © Open Food Facts contributors,
 https://world.openfoodfacts.org.

@@ -2,6 +2,7 @@
   "name": "manage_our_home-mobile",
   "private": true,
   "version": "0.1.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "scripts": {
     "test": "node --test scripts/check-shell.test.mjs scripts/release-version.test.mjs scripts/local-reminders.test.mjs scripts/google-sign-in.test.mjs scripts/site-address.test.mjs scripts/site-choice.test.mjs"

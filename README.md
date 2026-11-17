@@ -502,3 +502,26 @@ and `cargo build` before each commit. Enable it once per clone with:
 ```sh
 git config core.hooksPath .githooks
 ```
+
+---
+
+## Licence
+
+The code in this repository is licensed under the
+[PolyForm Noncommercial License 1.0.0](LICENSE)
+(SPDX: `PolyForm-Noncommercial-1.0.0`). You may use, copy, modify and
+distribute it for any **noncommercial** purpose — personal use, study, a
+hobby project, a charity, a school, a public body — as that licence defines
+them. Any commercial use needs a separate licence: ask the maintainer,
+[maelprog](https://github.com/maelprog), through GitHub.
+
+The repository was under the MIT licence before this change. A release
+tagged before the commit that replaced the MIT text in `LICENSE` stays under
+MIT for whoever obtained it: the `LICENSE` file at each tag says which
+licence that tag carries. Everything from that commit on is under PolyForm
+Noncommercial 1.0.0 only.
+
+Third-party works shipped in this repository keep their own licences and are
+not covered by the project's: fonts, icons and the barcode reader are listed
+in [`docs/credits.md`](docs/credits.md), the embedded Open Food Facts data
+(ODbL) in [`apps/api/data/README.md`](apps/api/data/README.md).

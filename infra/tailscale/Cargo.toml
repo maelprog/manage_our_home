@@ -2,6 +2,7 @@
 name = "manage_our_home_tailnet_policy"
 version = "0.1.0"
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
 publish = false
 
 # The tailnet's access policy (`policy.json`, #684) and the test, run by
