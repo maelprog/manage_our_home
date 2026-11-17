@@ -87,6 +87,10 @@ test("Mode cuisine: steps, a timer kept across a visit, the screen kept on then 
   await expect(page.getByText("Étape 1 sur 3", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Étape 1" })).toContainText("Tailler les légumes.");
   await expect(page.getByRole("region", { name: "Étape 2" })).toBeHidden();
+  // The step under « Ingrédients » at --s4, as in the mock-up.
+  const ingredients = (await page.getByRole("link", { name: "Ingrédients" }).boundingBox())!;
+  const step = (await page.getByRole("region", { name: "Étape 1" }).boundingBox())!;
+  expect(Math.round(step.y - ingredients.y - ingredients.height)).toBe(16);
   await expect(page.getByRole("button", { name: "Précédent" })).toBeDisabled();
   await expect(page.getByText("Écran maintenu allumé")).toBeVisible();
   expect(await page.evaluate(() => sessionStorage.getItem("e2e-wake"))).toBe("held");
@@ -132,6 +136,64 @@ test("Mode cuisine: steps, a timer kept across a visit, the screen kept on then 
   await page.getByRole("link", { name: "Mode cuisine" }).click();
   await expect(page.getByText("Étape 1 sur 3", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: "Minuteurs" })).toBeHidden();
+});
+
+// What the page keeps of a cooking (`mhome.cuisine.<id>`), written as if it
+// had been left `hoursAgo` hours ago, then the page opened again.
+async function comeBackTo(
+  page: Page,
+  hoursAgo: number,
+  timers: { what: string; end: number; left: number; done: boolean }[]
+): Promise<void> {
+  const id = /\/recipes\/([0-9a-f-]+)\/cook$/.exec(page.url())![1];
+  await page.evaluate(
+    ([key, hoursAgo, timers]) => {
+      const at = Date.now() - (hoursAgo as number) * 3600_000;
+      const kept = (timers as { end: number }[]).map((timer, i) => ({
+        id: "t" + i,
+        ...timer,
+        end: timer.end ? Date.now() + timer.end : 0,
+      }));
+      localStorage.setItem(key as string, JSON.stringify({ at, step: 1, timers: kept }));
+    },
+    [`mhome.cuisine.${id}`, hoursAgo, timers] as const
+  );
+  await page.reload();
+}
+
+test("a timer not over is never forgotten; the half day starts at the last one's end", async ({ page }) => {
+  await registerAndLogin(page, "e2e-cook-kept");
+  await createRecipe(page);
+  await page.getByRole("link", { name: "Mode cuisine" }).click();
+  const H = 3600_000;
+  const timers = page.getByRole("region", { name: "Minuteurs" });
+
+  // A 24 h timer started 13 h ago: 11 h still to run.
+  await comeBackTo(page, 13, [{ what: "Étape 2 · 24 h", end: 11 * H, left: 0, done: false }]);
+  await expect(page.getByText("Étape 2 sur 3", { exact: true })).toBeVisible();
+  await expect(page.getByRole("timer", { name: "Étape 2 · 24 h" })).toHaveText(/^1[01]:\d\d:\d\d$/);
+
+  // A timer paused a month ago still has its hour to run.
+  await comeBackTo(page, 24 * 30, [{ what: "Étape 2 · 1 h", end: 0, left: H, done: false }]);
+  await expect(page.getByRole("timer", { name: "Étape 2 · 1 h" })).toHaveText("1:00:00");
+
+  // Left a day ago, but the timer ended an hour ago: still there.
+  await comeBackTo(page, 24, [{ what: "Étape 2 · 23 h", end: -H, left: 0, done: false }]);
+  await expect(timers.getByRole("alert")).toContainText("Terminé !");
+
+  // Ended 13 h ago, left as long: forgotten.
+  await comeBackTo(page, 13, [{ what: "Étape 2 · 8 min", end: -13 * H, left: 0, done: true }]);
+  await expect(page.getByText("Étape 1 sur 3", { exact: true })).toBeVisible();
+  await expect(timers).toBeHidden();
+
+  // Coming back is no change: the half day still counts from the leaving.
+  await comeBackTo(page, 11, []);
+  await expect(page.getByText("Étape 2 sur 3", { exact: true })).toBeVisible();
+  const at = await page.evaluate(() => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith("mhome.cuisine."))!;
+    return Date.now() - JSON.parse(localStorage.getItem(key)!).at;
+  });
+  expect(at).toBeGreaterThan(10 * H);
 });
 
 test("a timer that ends says « Terminé ! » until « Arrêter »", async ({ page }) => {
