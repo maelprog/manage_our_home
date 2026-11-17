@@ -2190,15 +2190,16 @@ async fn suggestion_scores(
         .collect()
 }
 
-/// AC (#821): done with taste tags keeps them with the meal and changes the
-/// suggestions. « Aimé » raises the recipe itself (5 points) and, at half
-/// weight, a recipe of the same ingredient categories (2.5); a recipe of
-/// other categories, or sharing them only through optional ingredients, is
-/// unchanged. A later « Pas aimé » on the same recipe
-/// cancels it. « Aimé » with « Pas aimé » is refused, and nothing applied;
-/// an unknown tag is refused too.
+/// AC (#821, amended by #822): done with an opinion keeps it with the meal,
+/// with its note, and changes the suggestions. « Aimé » raises the recipe
+/// itself (5 points) and, at half weight, a recipe of the same ingredient
+/// categories (2.5); a recipe of other categories, or sharing them only
+/// through optional ingredients, is unchanged. A later « Pas aimé » on the
+/// same recipe cancels it; « Neutre » changes nothing. An unknown opinion
+/// (422) and a note above 200 characters (400 `taste_note_too_long`) are
+/// refused, and nothing applied.
 #[sqlx::test]
-async fn done_with_taste_tags_changes_the_suggestions(db: PgPool) {
+async fn done_with_a_taste_changes_the_suggestions(db: PgPool) {
     let router = test_router(db.clone());
     let cookie = register_verify_login(&router, &db, "done-taste@example.test").await;
     let group_id = create_group(&router, &cookie).await;
@@ -2255,39 +2256,45 @@ async fn done_with_taste_tags_changes_the_suggestions(db: PgPool) {
     .await;
     let before = suggestion_scores(&router, &cookie, &group_id).await;
 
-    for tags in [json!(["aime", "pas_aime"]), json!(["delicieux"])] {
+    for taste in ["delicieux", "Aimé", "trop_long"] {
         let refused = post(
             &router,
             &cookie,
             &done_path(&group_id, &flan),
-            json!({"removals": [], "taste_tags": tags}),
+            json!({"removals": [], "taste": taste}),
         )
         .await;
-        assert!(
-            refused.status().is_client_error(),
-            "{tags} must be refused, got {}",
-            refused.status()
-        );
-        if tags[0] == "aime" {
-            assert_status(&refused, StatusCode::BAD_REQUEST);
-            assert_eq!(json_body(refused).await["error"], "conflicting_taste_tags");
-        }
+        assert_status(&refused, StatusCode::UNPROCESSABLE_ENTITY);
     }
+    // 201 characters, counted as characters: 402 bytes.
+    let refused = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &flan),
+        json!({"removals": [], "taste": "aime", "taste_note": "é".repeat(201)}),
+    )
+    .await;
+    assert_status(&refused, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(refused).await["error"], "taste_note_too_long");
     assert_eq!(meals(&router, &cookie, &group_id).await, 0);
     assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 
+    // 200 characters, spaces around: kept, trimmed. Its line break, posted
+    // as a browser posts a textarea's (`\r\n`), counts one and is kept as
+    // `\n`.
+    let note = format!("{}\n{}", "é".repeat(100), "é".repeat(99));
+    let sent = format!(" {}\n", note.replace('\n', "\r\n"));
     let done = post(
         &router,
         &cookie,
         &done_path(&group_id, &flan),
-        json!({"removals": [], "taste_tags": ["trop_long", "aime", "aime"]}),
+        json!({"removals": [], "taste": "aime", "taste_note": sent}),
     )
     .await;
     assert_status(&done, StatusCode::OK);
-    assert_eq!(
-        json_body(done).await["meal"]["taste_tags"],
-        json!(["trop_long", "aime"])
-    );
+    let meal = &json_body(done).await["meal"];
+    assert_eq!(meal["taste"], "aime");
+    assert_eq!(meal["taste_note"], note.as_str());
 
     let liked = suggestion_scores(&router, &cookie, &group_id).await;
     // The flan was just eaten: the variety penalty (30), and its « Aimé ».
@@ -2301,14 +2308,34 @@ async fn done_with_taste_tags_changes_the_suggestions(db: PgPool) {
         &router,
         &cookie,
         &done_path(&group_id, &flan),
-        json!({"removals": [], "taste_tags": ["pas_aime"]}),
+        json!({"removals": [], "taste": "pas_aime", "taste_note": "   "}),
     )
     .await;
     assert_status(&done, StatusCode::OK);
+    let meal = &json_body(done).await["meal"];
+    assert_eq!(meal["taste"], "pas_aime");
+    assert_eq!(meal["taste_note"], serde_json::Value::Null);
     let cancelled = suggestion_scores(&router, &cookie, &group_id).await;
     assert_eq!(cancelled[&flan] - before[&flan], -30.0);
     assert_eq!(cancelled[&creme], before[&creme]);
     assert_eq!(cancelled[&riz], before[&riz]);
+
+    // Without an opinion: « Neutre », which changes nothing.
+    plan_again(&router, &cookie, &group_id, &flan).await;
+    let done = post(
+        &router,
+        &cookie,
+        &done_path(&group_id, &flan),
+        json!({"removals": [], "taste_note": "Rien à dire."}),
+    )
+    .await;
+    assert_status(&done, StatusCode::OK);
+    let meal = &json_body(done).await["meal"];
+    assert_eq!(meal["taste"], "neutre");
+    assert_eq!(meal["taste_note"], "Rien à dire.");
+    let neutral = suggestion_scores(&router, &cookie, &group_id).await;
+    assert_eq!(neutral[&flan], cancelled[&flan]);
+    assert_eq!(neutral[&creme], cancelled[&creme]);
 }
 
 /// AC (#821): an « Aimé » counts whenever the meal was eaten, outside the
@@ -2338,7 +2365,7 @@ async fn an_old_taste_verdict_still_counts(db: PgPool) {
         &router,
         &cookie,
         &done_path(&group_id, &flan),
-        json!({"removals": [], "eaten_on": eaten_on, "taste_tags": ["aime"]}),
+        json!({"removals": [], "eaten_on": eaten_on, "taste": "aime"}),
     )
     .await;
     assert_status(&done, StatusCode::OK);

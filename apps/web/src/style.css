@@ -1023,7 +1023,19 @@ label.list-row.pick + label.list-row.pick { margin-top: var(--s2x); }
 .levels:has(input) input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .level:has(:checked) { color: var(--accent); }
 .level:has(:checked)::after { content: ""; position: absolute; top: var(--s1); right: var(--s1); width: var(--s2x); height: var(--s2x); border-radius: 50%; background: currentColor; }
-.level:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The opinion on a meal (#822, maquette validée le 2026-11-17) is a row of
+   `.pick`s whose radios stay in sight: the pill takes the ring, as a level
+   does. */
+.level:has(:focus-visible), .taste .pick:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Its « Autre avis »: taller only, the column is its width; the count of
+   characters under it, in figures that do not dance as they change. */
+textarea[data-count] { resize: vertical; }
+/* Its card lays its rows --s3 apart, as the maquette does: a `.card` alone
+   is a block, which left the pills touching « Autre avis » and the count
+   1px under the field. The legend sits in the border, out of the flow. */
+.card.opinion { display: flex; flex-direction: column; gap: var(--s3); }
+.opinion > p { margin: 0; }
+.count { font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
 /* What each level means, its name in a column of its own. */
 .key { display: grid; gap: var(--s2x); padding: 0; list-style: none; font-size: var(--t-sm); }
 .key li { display: grid; grid-template-columns: 5.5rem 1fr; gap: var(--s2x); }

@@ -1,6 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchMealTastes, fetchVerificationToken } from "../lib/db";
 import { fillIngredients } from "../lib/recipe-form";
 import { skipMealStart } from "../lib/meal-start";
 
@@ -647,7 +647,7 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
   });
 
   test("marking done with an ingredient at 0 leaves its stock unchanged", async ({ page }) => {
-    await registerAndLogin(page, "e2e-gldone", "Grocery Cook");
+    const email = await registerAndLogin(page, "e2e-gldone", "Grocery Cook");
     await createGroup(page, "Famille Cuisine");
     await createStockItem(page, "Farine", "1000", "g");
     await createStockItem(page, "Lait", "2", "L");
@@ -669,6 +669,12 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await expect(page.getByRole("checkbox", { name: "Retirer Farine du stock" })).toBeChecked();
     await expect(page.getByRole("checkbox", { name: "Retirer Lait du stock" })).toBeChecked();
     await lait.fill("0");
+    // The opinion (#822): « Neutre » unless chosen, a note if wanted.
+    const opinion = page.getByRole("group", { name: "Avis sur le plat", exact: true });
+    await expect(opinion.getByRole("radio", { name: "Neutre" })).toBeChecked();
+    await opinion.getByRole("radio", { name: "Pas aimé" }).check();
+    await page.getByRole("textbox", { name: "Autre avis (facultatif)" }).fill("Trop sec.");
+    await expect(page.getByText("200 caractères au plus · 9 saisis")).toBeVisible();
     await page.getByRole("button", { name: "Marquer comme faite" }).click();
     // Its creator is asked whether the recipe changes (#558): not this time.
     const unused = page.getByRole("checkbox", {
@@ -681,6 +687,8 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await expect(
       page.getByText("Recette faite : le stock est mis à jour et le repas enregistré."),
     ).toBeVisible();
+    // Carried through the update step, the opinion reached apps/api.
+    expect(await fetchMealTastes(email)).toEqual([{ taste: "pas_aime", taste_note: "Trop sec." }]);
 
     await page.goto("/stocks");
     await expect(page.locator("li", { hasText: "Lait" })).toContainText("2 L");

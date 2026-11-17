@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by, taste_tags)\n        VALUES ($1, $2, $3, $4, $5)\n        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste_tags\n        ",
+  "query": "\n        INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by)\n        VALUES ($1, $2, $3, $4)\n        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste, taste_note\n        ",
   "describe": {
     "columns": [
       {
@@ -60,12 +60,23 @@
       },
       {
         "ordinal": 5,
-        "name": "taste_tags",
-        "type_info": "TextArray",
+        "name": "taste",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "meal_history",
-            "name": "taste_tags"
+            "name": "taste"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "taste_note",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "meal_history",
+            "name": "taste_note"
           }
         }
       }
@@ -75,8 +86,7 @@
         "Uuid",
         "Uuid",
         "Date",
-        "Uuid",
-        "TextArray"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -85,8 +95,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "e7365036cf0eb6dc02c70f14e83af68639a5714873cb8e1ca9a9209811c6d738"
+  "hash": "acf621398ca02842a7fdcb5961d2ef6680de72adb25f8b21a02c08dfb12c4475"
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT recipe_id,\n               COUNT(*) FILTER (WHERE $2::text = ANY(taste_tags))\n                 - COUNT(*) FILTER (WHERE $3::text = ANY(taste_tags)) AS \"net!\"\n        FROM meal_history\n        WHERE group_id = $1\n        GROUP BY recipe_id\n        ",
+  "query": "\n        SELECT recipe_id,\n               COUNT(*) FILTER (WHERE taste = $2)\n                 - COUNT(*) FILTER (WHERE taste = $3) AS \"net!\"\n        FROM meal_history\n        WHERE group_id = $1\n        GROUP BY recipe_id\n        ",
   "describe": {
     "columns": [
       {
@@ -33,5 +33,5 @@
       null
     ]
   },
-  "hash": "bdbe4c7af51cdc3abe8ba6c403b360fc2dc83cbaaf482d0613197971931ff274"
+  "hash": "9936a4b37f455d38d02b8e1908338a628e50dc944e0b9105d866d0005b2e0b2a"
 }
