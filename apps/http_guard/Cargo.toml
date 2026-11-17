@@ -2,6 +2,8 @@
 name = "manage_our_home_http_guard"
 version = "0.1.0"
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
 
 # How long a client may take to send a request body, and how many uploads
 # may sit in memory at once (#219). apps/api and apps/web both need exactly
