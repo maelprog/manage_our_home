@@ -1261,7 +1261,9 @@ textarea[data-count] { resize: vertical; }
 .cook-head { margin: var(--s2x) 0 var(--s3); }
 .cook-head .eyebrow { margin: var(--s2x) 0; color: var(--fg); font-size: var(--t-lg); letter-spacing: 0; text-transform: none; }
 .wake { display: flex; align-items: center; gap: var(--s2x); margin: var(--s2x) 0 0; color: var(--muted); font-size: var(--t-sm); }
-.step { padding: var(--s6) var(--s4); }
+/* The step sits under « Ingrédients » at that button's --s4, not at the
+   --s6 a card keeps from what is above it: the mock-up's gap. */
+.step { margin-top: 0; padding: var(--s6) var(--s4); }
 .big { margin: 0 0 var(--s6); font-size: var(--t-2xl); line-height: 1.35; }
 .dur { padding: 0 var(--s1); border-radius: var(--s1); background: var(--accent-soft); font-weight: 600; white-space: nowrap; }
 .timers-start { display: flex; flex-wrap: wrap; gap: var(--s2x); }
