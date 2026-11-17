@@ -388,7 +388,7 @@ fn all_tab_html(
         let rows = suggestions.iter().map(suggestion_html).collect::<String>();
         format!(
             r#"<h2>Suggestions</h2>
-<p class="muted">Classées selon ce que vous avez en stock, la variété (repas récents) et la saison.</p>
+<p class="muted">Classées selon ce que vous avez en stock, la variété (repas récents), la saison et les avis donnés sur les plats déjà faits (Aimé, Pas aimé).</p>
 <ul class="list">{rows}</ul>
 {OFF_ATTRIBUTION}"#,
         )
