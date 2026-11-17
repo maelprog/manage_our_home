@@ -78,7 +78,9 @@
   // `data-count="<id>"` on a field (`recipes::outcome::taste_fieldset`,
   // #822): the hint of that id says how many characters are typed, as the
   // page writes it — « 200 caractères au plus · 40 saisis » —, counted once
-  // trimmed and by code point, as apps/api counts them. Not a live region:
+  // trimmed and by code point. `value` holds each line break as one `\n`,
+  // as `maxlength` counts it; the form posts it as `\r\n`, which apps/web
+  // and apps/api count as one too, so the three agree. Not a live region:
   // the hint is the field's description, read with it. Without JavaScript
   // the count is the one the page was shown with.
   document.addEventListener("input", function (event) {

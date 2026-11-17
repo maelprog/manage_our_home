@@ -754,8 +754,9 @@ pub struct DoneRequest {
     /// « Aimé » and « Pas aimé » feed the suggestions (`recipes::taste`).
     #[serde(default)]
     pub taste: Taste,
-    /// A free note kept with the meal, trimmed; blank is none. Above 200
-    /// characters: 400 `taste_note_too_long`, nothing applied.
+    /// A free note kept with the meal, trimmed, its line breaks as `\n`
+    /// (a `\r\n` counts one); blank is none. Above 200 characters: 400
+    /// `taste_note_too_long`, nothing applied.
     #[serde(default)]
     pub taste_note: Option<String>,
 }

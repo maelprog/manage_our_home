@@ -258,7 +258,8 @@ pub struct MealHistoryEntryResponse {
     pub taste_note: Option<String>,
 }
 
-/// The longest note of a meal (#822), in characters once trimmed: apps/api
+/// The longest note of a meal (#822), in characters once trimmed, a line
+/// break counted as one whether sent as `\n` or `\r\n`: apps/api
 /// refuses a longer one, apps/web says so before sending it.
 pub const TASTE_NOTE_MAX_CHARS: usize = 200;
 

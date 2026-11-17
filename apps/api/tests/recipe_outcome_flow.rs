@@ -2279,13 +2279,16 @@ async fn done_with_a_taste_changes_the_suggestions(db: PgPool) {
     assert_eq!(meals(&router, &cookie, &group_id).await, 0);
     assert_eq!(planned_count(&router, &cookie, &group_id).await, 1);
 
-    // 200 characters, spaces around: kept, trimmed.
-    let note = "é".repeat(200);
+    // 200 characters, spaces around: kept, trimmed. Its line break, posted
+    // as a browser posts a textarea's (`\r\n`), counts one and is kept as
+    // `\n`.
+    let note = format!("{}\n{}", "é".repeat(100), "é".repeat(99));
+    let sent = format!(" {}\n", note.replace('\n', "\r\n"));
     let done = post(
         &router,
         &cookie,
         &done_path(&group_id, &flan),
-        json!({"removals": [], "taste": "aime", "taste_note": format!(" {note}\n")}),
+        json!({"removals": [], "taste": "aime", "taste_note": sent}),
     )
     .await;
     assert_status(&done, StatusCode::OK);

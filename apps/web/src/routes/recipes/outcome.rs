@@ -269,6 +269,13 @@ pub(crate) fn parse_done_form(pairs: &[(String, String)]) -> DoneForm {
 /// twelve significant digits, the rule apps/api compares the stock with
 /// (`grocery_list::planned::without_binary_noise`, decision of 2026-10-25).
 /// A coarser rule would accept here what apps/api refuses.
+/// « Autre avis » as typed: a browser posts a textarea's line breaks as
+/// `\r\n` but its `maxlength` counts each as one character, and so do
+/// apps/api and this page.
+fn note_as_typed(note: &str) -> String {
+    note.replace("\r\n", "\n")
+}
+
 fn without_noise(x: f64) -> f64 {
     format!("{x:.11e}").parse().unwrap_or(x)
 }
@@ -371,7 +378,8 @@ pub(crate) fn validate_done(
         "" => Ok(None),
         d => d.parse::<NaiveDate>().map(Some),
     };
-    let note = form.taste_note.trim();
+    let note = note_as_typed(&form.taste_note);
+    let note = note.trim();
     let note_chars = note.chars().count();
     let note_too_long = (note_chars > TASTE_NOTE_MAX_CHARS).then_some(note_chars);
     // Every field in error at once, the date with the lines.
@@ -1328,7 +1336,7 @@ fn taste_fieldset(taste: Taste, note: &str, too_long: Option<usize>) -> String {
         ),
         None => (String::new(), r#" aria-describedby="taste_note-hint""#),
     };
-    let typed = note.trim().chars().count();
+    let typed = note_as_typed(note).trim().chars().count();
     let count = if typed > 0 {
         format!(" · {typed} saisis")
     } else {
@@ -4345,6 +4353,35 @@ mod tests {
                 taste_note: Some(274),
                 ..Invalid::default()
             }))
+        );
+    }
+
+    #[test]
+    fn a_line_break_sent_as_crlf_counts_one_and_is_sent_as_lf() {
+        // What a browser posts for a textarea its `maxlength` held to 200:
+        // 201 characters in the form, 200 as typed.
+        let as_typed = format!("{}\n{}", "é".repeat(100), "é".repeat(99));
+        let mut typed = proposed();
+        typed.taste_note = as_typed.replace('\n', "\r\n");
+        assert_eq!(
+            validate_done(&typed, &preview(), &[]).map(|r| r.taste_note),
+            Ok(Some(as_typed))
+        );
+        // Too long, the count is the one typed.
+        typed.taste_note = format!("{}\r\n{}", "é".repeat(150), "é".repeat(150));
+        assert_eq!(
+            validate_done(&typed, &preview(), &[]),
+            Err(DoneError::Invalid(Invalid {
+                taste_note: Some(301),
+                ..Invalid::default()
+            }))
+        );
+        // And the hint of the form shown again counts as the browser does.
+        typed.taste_note = "Bon.\r\nÀ refaire.".into();
+        let html = done_page(Some(&typed), &Invalid::default());
+        assert!(
+            html.contains(r#"id="taste_note-hint">200 caractères au plus · 15 saisis</span>"#),
+            "{html}"
         );
     }
 
