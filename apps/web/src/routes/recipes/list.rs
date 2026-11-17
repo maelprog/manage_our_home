@@ -204,6 +204,16 @@ fn slot_banner(slot: Option<&Slot>) -> String {
     )
 }
 
+/// The mark on the page header that has `enhance.js` open the first
+/// questions (#820) once per member — not when the list was opened from a
+/// slot of the planning, which would lose the slot.
+fn start_mark(slot: Option<&Slot>, user: uuid::Uuid) -> String {
+    match slot {
+        None => format!(r#" data-depart="{user}""#),
+        Some(_) => String::new(),
+    }
+}
+
 /// One recipe of the full list. `planned` is its selection when it is
 /// « À réaliser », `None` when it is not. Opened from a slot of the
 /// planning (`slot`, #813), a recipe not planned yet is planned on it by its
@@ -545,14 +555,7 @@ pub async fn get(
         }
     };
 
-    // The first questions (#820), which `enhance.js` opens once per member
-    // from here — not when the list was opened from a slot of the planning,
-    // which would lose the slot.
-    let start = if slot.is_none() {
-        format!(r#" data-depart="{}""#, me.user_id)
-    } else {
-        String::new()
-    };
+    let start = start_mark(slot.as_ref(), me.user_id);
     let body = format!(
         r#"{segment}<div class="page-header"{start}>
 <h1>Recettes</h1>
@@ -765,6 +768,18 @@ mod tests {
             html.contains(r#"<a href="/recipes?vue=possibles">Possibles</a>"#),
             "{html}"
         );
+    }
+
+    #[test]
+    fn the_first_questions_open_from_the_list_but_not_from_a_slot() {
+        let user = Uuid::from_u128(7);
+        assert_eq!(
+            start_mark(None, user),
+            format!(r#" data-depart="{user}""#)
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let slot = Slot::new(today, "dinner", today);
+        assert_eq!(start_mark(Some(&slot), user), "");
     }
 
     #[test]
