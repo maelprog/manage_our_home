@@ -351,9 +351,6 @@ async fn each_sliding_limit_is_purged_on_its_own_window(db: PgPool) {
     );
 }
 
-/// `invitations` is under a forced RLS policy: on a role that does not
-/// bypass it, its `DELETE` would see no row and the pass would report
-/// success. It refuses instead, before deleting anything anywhere.
 async fn register(router: &axum::Router, email: &str) {
     let response = call(
         router,
@@ -533,6 +530,9 @@ async fn an_unverified_account_goes_a_week_after_its_creation(db: PgPool) {
     assert!(fresh.1 > now - minute, "a new account, not the old row");
 }
 
+/// `invitations` is under a forced RLS policy: on a role that does not
+/// bypass it, its `DELETE` would see no row and the pass would report
+/// success. It refuses instead, before deleting anything anywhere.
 #[sqlx::test]
 async fn the_pass_refuses_a_role_that_does_not_bypass_rls(db: PgPool) {
     let now = Utc::now();
