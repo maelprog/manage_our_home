@@ -249,6 +249,16 @@ impl Unit {
             Unit::Second => 1.0,
         }
     }
+
+    /// The unit a number written bare after this one counts: the minutes
+    /// of `1 h 30`, the seconds of `1 min 30`.
+    fn next(self) -> Option<Unit> {
+        match self {
+            Unit::Hour => Some(Unit::Minute),
+            Unit::Minute => Some(Unit::Second),
+            Unit::Second => None,
+        }
+    }
 }
 
 /// The words a duration is written in, the longer before the shorter that
@@ -323,32 +333,47 @@ fn unit(s: &str, i: usize) -> Option<(Unit, usize)> {
     })
 }
 
-/// The minutes after an hour, `30` in `1 h 30`: two digits, or any number
-/// of them with their unit (`1 h 5 min`). Their value and where they end.
-fn minutes_after_hour(s: &str, i: usize) -> Option<(u32, usize)> {
+/// The part of a duration that follows its `last` unit at `i`, `30` in
+/// `1 h 30` or `1 min 30 s`: under 60, with a smaller unit than `last`, or
+/// two digits without one, which count the next unit down. Its seconds, its
+/// unit — `None` when it was bare, which ends the duration — and where it
+/// ends.
+fn part_after(s: &str, i: usize, last: Unit) -> Option<(u32, Option<Unit>, usize)> {
     let at = blanks(s, i);
-    let (m, end) = digits(s, at)?;
-    if m >= 60 {
+    let (n, end) = digits(s, at)?;
+    if n >= 60 {
         return None;
     }
     match unit(s, end) {
-        Some((Unit::Minute, after)) => Some((m, after)),
-        _ => (end - at == 2 && !s[end..].starts_with(char::is_alphanumeric)).then_some((m, end)),
+        Some((u, after)) if u.seconds() < last.seconds() => {
+            Some((n * u.seconds() as u32, Some(u), after))
+        }
+        Some(_) => None,
+        None => {
+            let bare = end - at == 2 && !s[end..].starts_with(char::is_alphanumeric);
+            let u = last.next().filter(|_| bare)?;
+            Some((n * u.seconds() as u32, None, end))
+        }
     }
 }
 
-/// The duration written at `i` — a number and its unit, an hour with its
-/// minutes — in seconds, its unit and where it ends.
+/// The duration written at `i` — a number and its unit, then any smaller
+/// units after it (`1 h 30`, `1 min 30 s`, `2 h 15 secondes`) — in
+/// seconds, its first unit and where it ends.
 fn duration_at(s: &str, i: usize) -> Option<(f64, Unit, usize)> {
     let (n, end) = number(s, i)?;
-    let (unit, end) = unit(s, end)?;
-    let seconds = n * unit.seconds();
-    if unit == Unit::Hour {
-        if let Some((m, end)) = minutes_after_hour(s, end) {
-            return Some((seconds + f64::from(m) * 60.0, unit, end));
+    let (first, mut end) = unit(s, end)?;
+    let mut seconds = n * first.seconds();
+    let mut last = first;
+    while let Some((more, unit, after)) = part_after(s, end, last) {
+        seconds += f64::from(more);
+        end = after;
+        match unit {
+            Some(u) => last = u,
+            None => break,
         }
     }
-    Some((seconds, unit, end))
+    Some((seconds, first, end))
 }
 
 /// Past the word joining the two ends of a range at `i` — a dash, « à »,
@@ -370,7 +395,8 @@ fn range_joint(s: &str, i: usize) -> Option<usize> {
 }
 
 /// The durations written in a step, in order: « 10 min », « 45 secondes »,
-/// « 1 h 30 », « 1h30 », « 1,5 h ». A range counts its low end
+/// « 1 h 30 », « 1h30 », « 1,5 h », « 1 min 30 s » — one timer for one
+/// duration however many units it is written in. A range counts its low end
 /// (arbitrage of 2026-11-17: one can always cook longer, not less):
 /// « 8-10 min », « 8 à 10 minutes », « 1 h à 1 h 30 ». A number that is
 /// not followed by a unit of time is not one (« 2 cm », « 180 °C »), and
@@ -500,11 +526,13 @@ mod tests {
             // Past 59, or a lone digit without its unit, it is not part of
             // the duration before it.
             ("Cuire 1 h 90", &[("1 h", 3600)]),
+            ("Cuire 1 h 60", &[("1 h", 3600)]),
             ("Cuire 1 min 75 s", &[("1 min", 60), ("75 s", 75)]),
             ("Cuire 1 h 3 tomates", &[("1 h", 3600)]),
             ("Cuire 1 min 5", &[("1 min", 60)]),
             // A smaller unit only: « 10 min 2 h » is two durations.
             ("Cuire 10 min 2 h", &[("10 min", 600), ("2 h", 7200)]),
+            ("Cuire 10 min 2 min", &[("10 min", 600), ("2 min", 120)]),
             ("Cuire 1 min 30 à 2 min", &[("1 min 30 à 2 min", 90)]),
         ];
         for (step, want) in cases {
