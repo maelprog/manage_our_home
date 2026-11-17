@@ -2566,7 +2566,7 @@ mod tests {
         ("--fg", "--surface", ".card, header, inputs, a .msg bubble"),
         ("--fg", "--border", ".badge, .chip:hover, .chip.done:hover"),
         ("--fg", "--hover", ".chip, a hovered row, a .thumb's name"),
-        ("--fg", "--accent-soft", ".current"),
+        ("--fg", "--accent-soft", ".current, .dur (#823)"),
         ("--muted", "--bg", ".muted, th, dt, .mini .outside"),
         ("--muted", "--surface", ".muted in a card"),
         ("--muted", "--hover", "a hovered .list-row, .thumb .kind"),
@@ -2615,7 +2615,7 @@ mod tests {
         (
             "--warning",
             "--warning-soft",
-            ".notice.warning, .badge.soon",
+            ".notice.warning, .badge.soon, .trow.ended (#823)",
         ),
         ("--fg", "--warning-soft", ".ad.gen (#793), .allergy (#825)"),
     ];
@@ -3707,11 +3707,11 @@ mod tests {
 
     /// The links #752 sets in bold rather than underlined: every link with
     /// no class of its own, but the kitchen segment's halves, plus the
-    /// four accent links that carry one (`.more`, `.replies`, the « … »
-    /// of « Ce soir », `.more-recipes`, #814, and « Changer ce plat »,
-    /// `.change`, #816).
+    /// accent links that carry one (`.more`, `.replies`, the « … » of
+    /// « Ce soir », `.more-recipes`, #814, « Changer ce plat », `.change`,
+    /// #816, and « Quitter le mode cuisine », `.quit`, #823).
     const TEXT_LINK: &str =
-        ":where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change)";
+        ":where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change, .quit)";
 
     #[test]
     fn a_text_link_is_bold_in_the_accent_and_not_underlined_at_rest() {

@@ -1249,6 +1249,50 @@ textarea[data-count] { resize: vertical; }
 .allergy.sm { gap: var(--s2x); margin: var(--s2x) 0; padding: var(--s2x) var(--s3); font-size: var(--t-xs); }
 .allergy.sm > .icon { margin-top: 0; }
 .allergy-aim { margin: 0 0 var(--s3); font-size: var(--t-xs); }
+/* -- Cooking a recipe (#823, `routes::recipes::cook`) ------------------------
+   Read from the hob: one step at a time in --t-2xl, each duration of it on
+   --accent-soft (the pair of the current tab), a timer button for each. A
+   finished timer takes the pair of .notice.warning and says « Terminé ! »
+   in words. Précédent and Suivant stay at the foot of the screen, over the
+   tab bar on a phone. Without JavaScript, `.nojs-list`: the steps in a
+   larger type. */
+.quit { display: inline-flex; align-items: center; gap: var(--s1); min-height: var(--s12); }
+.cook-title { margin: 0; font-size: var(--t-lg); }
+.cook-head { margin: var(--s2x) 0 var(--s3); }
+.cook-head .eyebrow { margin: var(--s2x) 0; color: var(--fg); font-size: var(--t-lg); letter-spacing: 0; text-transform: none; }
+.wake { display: flex; align-items: center; gap: var(--s2x); margin: var(--s2x) 0 0; color: var(--muted); font-size: var(--t-sm); }
+/* The step sits under « Ingrédients » at that button's --s4, not at the
+   --s6 a card keeps from what is above it: the mock-up's gap. */
+.step { margin-top: 0; padding: var(--s6) var(--s4); }
+.big { margin: 0 0 var(--s6); font-size: var(--t-2xl); line-height: 1.35; }
+.dur { padding: 0 var(--s1); border-radius: var(--s1); background: var(--accent-soft); font-weight: 600; white-space: nowrap; }
+.timers-start { display: flex; flex-wrap: wrap; gap: var(--s2x); }
+.timers-start button { font-size: var(--t-base); }
+.none { margin: 0; color: var(--muted); font-size: var(--t-sm); }
+.ing-btn, .timers { margin-bottom: var(--s4); }
+.timers h2 { margin-top: 0; font-size: var(--t-lg); }
+.trow { display: grid; grid-template-columns: 1fr auto; gap: var(--s1) var(--s3); align-items: center; margin-bottom: var(--s2x); padding: var(--s2x) var(--s4); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow); }
+.trow .what { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: var(--t-sm); }
+.left { font-size: var(--t-xl); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tbtns { display: flex; gap: var(--s2x); }
+.trow.ended, .trow.ended .what { color: var(--warning); }
+.trow.ended { background: var(--warning-soft); box-shadow: none; }
+.trow.ended .left { font-family: "Fraunces", Georgia, serif; }
+.trow.paused .left { color: var(--muted); }
+.cook-nav { position: sticky; bottom: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2x); padding: var(--s3) 0; border-top: 1px solid var(--line); background: var(--bg); }
+.cook-link, .ing-btn, .timers-start button, .cook-nav > * { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2x); }
+.cook-nav > * { min-height: calc(var(--s12) + var(--s2x)); font-size: var(--t-lg); }
+.cook-nav button:disabled { border-color: var(--line); background: var(--surface); color: var(--muted); cursor: default; }
+.nojs-list, .cook-ing ul { font-size: var(--t-lg); }
+.nojs-list li { margin-bottom: var(--s3); }
+/* On a PC, the timers in a column of their own beside the step, and the
+   two buttons under the step's column. */
+@media (min-width: 861px) {
+  .cook-layout { display: grid; grid-template-columns: minmax(0, 1fr) 20rem; gap: var(--s8); align-items: start; }
+  .cook-layout > .timers { grid-column: 2; grid-row: 1; }
+  .cook-layout > div { grid-column: 1; grid-row: 1; }
+  .cook-nav { grid-template-columns: 1fr 2fr; padding-right: calc(20rem + var(--s8)); }
+}
 .avoid { flex-flow: row wrap; align-items: center; gap: var(--s2x) var(--s3); margin: var(--s2x) 0; }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
@@ -1495,8 +1539,8 @@ html { -webkit-tap-highlight-color: transparent; }
    only sign (WCAG 1.4.1): the weight is one, and the underline comes back
    under the pointer and the keyboard — beside the focus ring below. A
    background would box a run of body text. */
-:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change) { color: var(--accent); font-weight: 600; text-decoration: none; }
-:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change):is(:hover, :focus-visible) { text-decoration-line: underline; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change, .quit) { color: var(--accent); font-weight: 600; text-decoration: none; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change, .quit):is(:hover, :focus-visible) { text-decoration-line: underline; }
 /* An underline a link already has (the card title, `.member`) thickens. */
 a:hover { text-decoration-thickness: 2px; }
 /* The password toggle is a `<button>` with no box at all — the primary hover
@@ -1580,6 +1624,8 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   .sheet { margin-inline: calc(var(--s4) * -1); border-radius: var(--r-lg) var(--r-lg) 0 0; }
   /* The send box stuck above the tab bar (#528): its floor is the bar. */
   .content > .composer { padding-bottom: var(--s16); }
+  /* Précédent and Suivant over the tab bar (#823), on the same floor. */
+  .cook-nav { padding-bottom: calc(var(--s3) + var(--s16)); }
 }
 /* Page transitions without JavaScript (#523): a cross-fade from one page to
    the next, for whoever has not asked for less motion. Asked for in the

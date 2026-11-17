@@ -92,6 +92,7 @@ icon_set! {
         Play,
         Document,
         Warning,
+        List,
     }
 }
 
@@ -219,6 +220,10 @@ pub fn icon(icon: Icon) -> &'static str {
         // triangle-alert: an allergy warning on a recipe (#825).
         Icon::Warning => svg!(
             r#"<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>"#
+        ),
+        // list
+        Icon::List => svg!(
+            r#"<path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/>"#
         ),
     }
 }
