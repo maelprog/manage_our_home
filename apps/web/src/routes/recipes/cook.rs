@@ -488,6 +488,31 @@ mod tests {
     }
 
     #[test]
+    fn a_duration_written_in_several_units_is_one_timer() {
+        let cases: &[(&str, &[(&str, u32)])] = &[
+            // The seconds after the minutes, as the minutes after the hour.
+            ("Cuire 1 min 30", &[("1 min 30", 90)]),
+            ("Cuire 1 min 30 s", &[("1 min 30 s", 90)]),
+            ("Cuire 1 min 30 secondes", &[("1 min 30 secondes", 90)]),
+            ("Cuire 1 h 30 min 20 s", &[("1 h 30 min 20 s", 5420)]),
+            // Its unit says what the number after the hour counts.
+            ("Cuire 2 h 15 secondes", &[("2 h 15 secondes", 7215)]),
+            // Past 59, or a lone digit without its unit, it is not part of
+            // the duration before it.
+            ("Cuire 1 h 90", &[("1 h", 3600)]),
+            ("Cuire 1 min 75 s", &[("1 min", 60), ("75 s", 75)]),
+            ("Cuire 1 h 3 tomates", &[("1 h", 3600)]),
+            ("Cuire 1 min 5", &[("1 min", 60)]),
+            // A smaller unit only: « 10 min 2 h » is two durations.
+            ("Cuire 10 min 2 h", &[("10 min", 600), ("2 h", 7200)]),
+            ("Cuire 1 min 30 à 2 min", &[("1 min 30 à 2 min", 90)]),
+        ];
+        for (step, want) in cases {
+            assert_eq!(found(step), *want, "{step}");
+        }
+    }
+
+    #[test]
     fn a_range_counts_its_low_end() {
         // Arbitrage of 2026-11-17: one can always cook longer, never less.
         let cases: &[(&str, &[(&str, u32)])] = &[
