@@ -697,6 +697,13 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<dialog id="cook-ingredients""#), "{html}");
+        // The dialog says for how many, as the mock-up does, not how long.
+        let dialog = &html[at("<dialog")..at("</dialog>")];
+        assert!(
+            dialog.contains(r#"<p class="muted">Pour 6 personnes.</p><ul>"#),
+            "{dialog}"
+        );
+        assert!(!dialog.contains("Temps"), "{dialog}");
         assert!(
             html.contains(&format!(
                 r#"<a class="btn" href="/recipes/{id}" data-cook-end hidden>"#
