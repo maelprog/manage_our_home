@@ -4,10 +4,13 @@
 //! `audit_log`, `email_verification_tokens`, `password_reset_tokens`,
 //! `invitations` and `sessions` all grew without bound, each holding
 //! personal data long after it had any use (`invitations` even holds the
-//! address of a third party who has no account).
+//! address of a third party who has no account). So did `users` itself for
+//! an address never confirmed (#834): such an account cannot log in, and
+//! the token purge left its row in place for good.
 //!
-//! The durations below are the controller's decision of 2026-09-19, not a
-//! technical default, and they are the ones published in
+//! The durations below are the controller's decision of 2026-09-19 unless
+//! their own comment dates a later one, not a technical default, and they
+//! are the ones published in
 //! `docs/privacy-policy.md` and recorded in `docs/registre-traitements.md`.
 //!
 //! The pass also deletes the login lock's counters past their own bound
@@ -34,6 +37,12 @@ pub const AUDIT_LOG_RETENTION_MONTHS: u32 = 6;
 /// Twice the token's own validity: for a day after it expires, a click on
 /// the link still answers "expired" (410) rather than "unknown" (404).
 pub const EMAIL_VERIFICATION_RETENTION_HOURS: i64 = 48;
+/// An email/password account whose address was never confirmed cannot
+/// log in (`auth::login`): past a week, its address, name and hash are
+/// personal data with no purpose left (controller's decision of
+/// 2026-11-13, #834). Counted from the account's creation, not from the
+/// last link mailed.
+pub const UNVERIFIED_ACCOUNT_RETENTION_DAYS: i64 = 7;
 /// A reset token is deleted the moment it is used, so this only catches
 /// the ones nobody clicked. It matches the token's validity exactly.
 pub const PASSWORD_RESET_RETENTION_HOURS: i64 = 1;
@@ -48,7 +57,7 @@ pub const NOTIFICATION_RETENTION_DAYS: i64 = 30;
 /// The instant, per table, before which a row has outlived its retention.
 ///
 /// Computed once per pass in Rust rather than as `now()` inside each
-/// statement, so one pass applies one clock to all six tables — and so
+/// statement, so one pass applies one clock to every table — and so
 /// the durations themselves are testable without a database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetentionCutoffs {
@@ -65,8 +74,46 @@ pub struct RetentionCutoffs {
     /// A session whose `last_seen_at` is older than this has been idle
     /// past `SESSION_IDLE_TIMEOUT_DAYS` and is already refused.
     pub session_idle: DateTime<Utc>,
+    /// `users.created_at` of an unverified account older than this goes.
+    pub unverified_account: DateTime<Utc>,
     /// The pass's clock, against which `expires_at`/`revoked_at` are read.
     pub now: DateTime<Utc>,
+}
+
+/// What the purge reads of an account to decide whether it is one nobody
+/// ever confirmed (#834).
+#[derive(Debug, Clone, Copy)]
+pub struct AccountForRetention {
+    pub created_at: DateTime<Utc>,
+    pub email_verified: bool,
+    /// A row in `oauth_identities`: the Google account that added a
+    /// password is unverified again (`auth::set_password`) but in use.
+    pub google_identity: bool,
+    /// A row in `group_members`.
+    pub group_member: bool,
+    /// An invitation `consumed_by` it.
+    pub accepted_invitation: bool,
+    /// Deactivated by the superadmin: `account_purge` owns it, two years
+    /// with a notice, and the address stays refused to `register`.
+    pub deactivated: bool,
+    /// Already purged and anonymised by `account_purge`.
+    pub deleted: bool,
+}
+
+impl AccountForRetention {
+    /// An unverified account goes once it is strictly older than
+    /// `cutoffs.unverified_account`, counted from its creation whatever
+    /// links were mailed since — unless anything shows it was used or
+    /// another job owns it.
+    pub fn is_purgeable_unverified(&self, cutoffs: &RetentionCutoffs) -> bool {
+        !self.email_verified
+            && self.created_at < cutoffs.unverified_account
+            && !self.google_identity
+            && !self.group_member
+            && !self.accepted_invitation
+            && !self.deactivated
+            && !self.deleted
+    }
 }
 
 impl RetentionCutoffs {
@@ -83,6 +130,7 @@ impl RetentionCutoffs {
             invitation: now - Duration::days(INVITATION_RETENTION_DAYS),
             notification: now - Duration::days(NOTIFICATION_RETENTION_DAYS),
             session_idle: now - Duration::days(SESSION_IDLE_TIMEOUT_DAYS),
+            unverified_account: now - Duration::days(UNVERIFIED_ACCOUNT_RETENTION_DAYS),
             now,
         }
     }
@@ -97,6 +145,9 @@ pub const PURGE_INTERVAL: StdDuration = StdDuration::from_secs(3600);
 pub struct PurgeCounts {
     pub audit_log: u64,
     pub email_verification_tokens: u64,
+    /// Accounts whose address was never confirmed (#834); their tokens go
+    /// with them and are not counted above.
+    pub unverified_accounts: u64,
     pub password_reset_tokens: u64,
     pub invitations: u64,
     pub sessions: u64,
@@ -169,6 +220,50 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
     .await?
     .rows_affected();
 
+    // #834: read first, decided by `AccountForRetention`, then deleted by
+    // id. `FOR UPDATE` holds the rows, so an account cannot be verified,
+    // linked to Google or join a group between the decision and the
+    // delete. The `WHERE` only narrows the read; the rule is the Rust one.
+    let candidates = sqlx::query!(
+        r#"
+        SELECT u.id, u.created_at, u.email_verified,
+               EXISTS (SELECT 1 FROM oauth_identities o WHERE o.user_id = u.id)
+                   AS "google_identity!",
+               EXISTS (SELECT 1 FROM group_members m WHERE m.user_id = u.id)
+                   AS "group_member!",
+               EXISTS (SELECT 1 FROM invitations i WHERE i.consumed_by = u.id)
+                   AS "accepted_invitation!",
+               u.deactivated_at IS NOT NULL AS "deactivated!",
+               u.deleted_at IS NOT NULL AS "deleted!"
+        FROM users u
+        WHERE NOT u.email_verified AND u.created_at < $1
+        FOR UPDATE OF u
+        "#,
+        cutoffs.unverified_account
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let unverified: Vec<uuid::Uuid> = candidates
+        .into_iter()
+        .filter(|u| {
+            AccountForRetention {
+                created_at: u.created_at,
+                email_verified: u.email_verified,
+                google_identity: u.google_identity,
+                group_member: u.group_member,
+                accepted_invitation: u.accepted_invitation,
+                deactivated: u.deactivated,
+                deleted: u.deleted,
+            }
+            .is_purgeable_unverified(&cutoffs)
+        })
+        .map(|u| u.id)
+        .collect();
+    let unverified_accounts = sqlx::query!("DELETE FROM users WHERE id = ANY($1)", &unverified)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
     let password_reset_tokens = sqlx::query!(
         "DELETE FROM password_reset_tokens WHERE created_at < $1",
         cutoffs.password_reset
@@ -239,6 +334,7 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
     Ok(PurgeCounts {
         audit_log,
         email_verification_tokens,
+        unverified_accounts,
         password_reset_tokens,
         invitations,
         sessions,
@@ -329,6 +425,109 @@ mod tests {
             cutoffs.password_reset,
             cutoffs.now - Duration::hours(PASSWORD_RESET_TTL_HOURS)
         );
+    }
+
+    /// An account as `register` leaves it: unverified, password only, in
+    /// no group, live.
+    fn unverified(created_at: DateTime<Utc>) -> AccountForRetention {
+        AccountForRetention {
+            created_at,
+            email_verified: false,
+            google_identity: false,
+            group_member: false,
+            accepted_invitation: false,
+            deactivated: false,
+            deleted: false,
+        }
+    }
+
+    /// #834: the duration as published.
+    #[test]
+    fn unverified_accounts_keep_7_days() {
+        assert_eq!(
+            RetentionCutoffs::at(now()).unverified_account,
+            now() - Duration::days(7)
+        );
+    }
+
+    #[test]
+    fn an_unverified_account_six_days_old_is_kept() {
+        let cutoffs = RetentionCutoffs::at(now());
+        assert!(!unverified(now() - Duration::days(6)).is_purgeable_unverified(&cutoffs));
+    }
+
+    #[test]
+    fn an_unverified_account_past_seven_days_is_purged() {
+        let cutoffs = RetentionCutoffs::at(now());
+        let just_past = now() - Duration::days(7) - Duration::minutes(1);
+        assert!(unverified(just_past).is_purgeable_unverified(&cutoffs));
+    }
+
+    /// Strictly older than the cutoff, as every other table of the pass.
+    #[test]
+    fn an_unverified_account_exactly_at_the_cutoff_is_kept() {
+        let cutoffs = RetentionCutoffs::at(now());
+        assert!(!unverified(cutoffs.unverified_account).is_purgeable_unverified(&cutoffs));
+    }
+
+    #[test]
+    fn a_verified_account_is_never_purged_here() {
+        let cutoffs = RetentionCutoffs::at(now());
+        let account = AccountForRetention {
+            email_verified: true,
+            ..unverified(now() - Duration::days(3650))
+        };
+        assert!(!account.is_purgeable_unverified(&cutoffs));
+    }
+
+    /// Each of these marks an account that has been used, or that another
+    /// job owns: none goes, however old and unverified. A Google account
+    /// that added a password is unverified again (`set_password`), the
+    /// deactivated one has its own two-year purge with notice
+    /// (`account_purge`), and a purged one is already anonymised.
+    #[test]
+    fn a_used_or_otherwise_owned_account_is_never_purged_here() {
+        let cutoffs = RetentionCutoffs::at(now());
+        let old = unverified(now() - Duration::days(3650));
+        for (what, account) in [
+            (
+                "google",
+                AccountForRetention {
+                    google_identity: true,
+                    ..old
+                },
+            ),
+            (
+                "member",
+                AccountForRetention {
+                    group_member: true,
+                    ..old
+                },
+            ),
+            (
+                "invitation",
+                AccountForRetention {
+                    accepted_invitation: true,
+                    ..old
+                },
+            ),
+            (
+                "deactivated",
+                AccountForRetention {
+                    deactivated: true,
+                    ..old
+                },
+            ),
+            (
+                "deleted",
+                AccountForRetention {
+                    deleted: true,
+                    ..old
+                },
+            ),
+        ] {
+            assert!(!account.is_purgeable_unverified(&cutoffs), "{what}");
+        }
     }
 
     /// The idle cutoff dates the end of a session by

@@ -335,6 +335,17 @@ de la purge dépasserait.
   purgé : l'email et le nom sont remplacés, le mot de passe haché est
   effacé, et l'appartenance aux groupes et le rôle sont supprimés (voir
   ci-dessous).
+- **Compte dont l'adresse n'a jamais été confirmée** : un compte ouvert
+  avec un email et un mot de passe ne permet pas de se connecter tant que
+  le lien de vérification envoyé à l'adresse n'a pas été suivi. S'il ne
+  l'a toujours pas été 7 jours après l'inscription, le compte (email, mot
+  de passe haché, nom affiché, déclaration d'âge, acceptation des
+  conditions) est supprimé, avec ses jetons, au premier passage de purge
+  qui suit. Demander un nouveau lien ne repousse pas ce délai, compté
+  depuis l'inscription. L'adresse est alors libre : s'inscrire à nouveau
+  avec elle crée un nouveau compte. Un compte relié à Google, membre d'un
+  groupe ou désactivé par l'administrateur du service n'est jamais
+  supprimé ainsi.
 - **Photo de profil** : jusqu'à ce que vous la remplaciez ou la
   supprimiez, et au plus tard jusqu'à la purge du compte, qui la supprime.
   Le fichier d'une photo remplacée ou supprimée est effacé aussitôt ; si
@@ -399,7 +410,8 @@ de la purge dépasserait.
   supprimé dès qu'il sert. Sinon, un jeton est supprimé au premier passage
   de purge qui suit sa durée de conservation : 48 heures après sa création
   pour la vérification, 1 heure pour la réinitialisation — ou à la purge du
-  compte, si elle vient avant.
+  compte, ou à la suppression d'un compte jamais confirmé (voir
+  ci-dessus), si elle vient avant.
 - **Invitations** : un lien d'invitation est valable 7 jours et ne sert
   qu'une fois. L'invitation, adresse email de la personne invitée comprise,
   est supprimée dès qu'elle est acceptée ; sinon, au premier passage de
