@@ -1030,6 +1030,11 @@ label.list-row.pick + label.list-row.pick { margin-top: var(--s2x); }
 /* Its « Autre avis »: taller only, the column is its width; the count of
    characters under it, in figures that do not dance as they change. */
 textarea[data-count] { resize: vertical; }
+/* Its card lays its rows --s3 apart, as the maquette does: a `.card` alone
+   is a block, which left the pills touching « Autre avis » and the count
+   1px under the field. The legend sits in the border, out of the flow. */
+.card.opinion { display: flex; flex-direction: column; gap: var(--s3); }
+.opinion > p { margin: 0; }
 .count { font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
 /* What each level means, its name in a column of its own. */
 .key { display: grid; gap: var(--s2x); padding: 0; list-style: none; font-size: var(--t-sm); }

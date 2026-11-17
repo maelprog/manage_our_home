@@ -1343,7 +1343,7 @@ fn taste_fieldset(taste: Taste, note: &str, too_long: Option<usize>) -> String {
         String::new()
     };
     format!(
-        r#"<fieldset class="card">
+        r#"<fieldset class="card opinion">
 <legend>Votre avis sur le plat (facultatif)</legend>
 <p class="muted">« Aimé » et « Pas aimé » orientent les prochaines suggestions de recettes. Laissé sur « Neutre », rien ne change.</p>
 <fieldset class="picks plain taste"><legend class="sr-only">Avis sur le plat</legend>{aime}{neutre}{pas_aime}</fieldset>
@@ -4390,7 +4390,7 @@ mod tests {
         let html = done_page(None, &Invalid::default());
         assert!(
             html.contains(
-                "<fieldset class=\"card\">\n<legend>Votre avis sur le plat (facultatif)</legend>"
+                "<fieldset class=\"card opinion\">\n<legend>Votre avis sur le plat (facultatif)</legend>"
             ),
             "{html}"
         );
