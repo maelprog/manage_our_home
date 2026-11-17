@@ -1454,6 +1454,16 @@ fn invalid_banner(invalid: &Invalid) -> String {
     }
 }
 
+/// The banner of the `done` form shown again with `code`: none without
+/// one, [`invalid_banner`] for a form in error, otherwise its [`banner`].
+fn done_banner(code: &str, invalid: &Invalid) -> String {
+    match code {
+        "" => String::new(),
+        "invalid" => invalid_banner(invalid),
+        code => banner(code),
+    }
+}
+
 /// The banner of a form shown again.
 fn banner(code: &str) -> String {
     let text = match code {
@@ -1649,11 +1659,7 @@ pub async fn done_post(
                 invalid: &Invalid,
                 code: &str,
                 others: &Others| {
-        let banner = match code {
-            "" => String::new(),
-            "invalid" => invalid_banner(invalid),
-            code => banner(code),
-        };
+        let banner = done_banner(code, invalid);
         (
             status,
             render(
@@ -4488,6 +4494,26 @@ mod tests {
     }
 
     #[test]
+    fn the_done_page_shown_again_takes_the_banner_of_its_code() {
+        let note_only = Invalid {
+            taste_note: Some(274),
+            ..Invalid::default()
+        };
+        // An invalid form: the banner that says what to correct.
+        assert_eq!(
+            done_banner("invalid", &note_only),
+            invalid_banner(&note_only)
+        );
+        assert_ne!(done_banner("invalid", &note_only), banner("invalid"));
+        // No code, no banner; any other code, its own.
+        assert_eq!(done_banner("", &note_only), "");
+        assert_eq!(
+            done_banner("stock_changed", &Invalid::default()),
+            banner("stock_changed")
+        );
+    }
+
+    #[test]
     fn the_update_step_carries_the_opinion() {
         let mut f = form(vec![line(10, "100", true)]);
         f.taste = Taste::Aime;
@@ -4499,6 +4525,9 @@ mod tests {
         let back = parse_done_form(&hidden_pairs(&html));
         assert_eq!(back.taste, Taste::Aime);
         assert_eq!(back.taste_note, "Les enfants ont redemandé.");
+        f.taste = Taste::PasAime;
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        assert_eq!(parse_done_form(&hidden_pairs(&html)).taste, Taste::PasAime);
         // « Neutre » without a note adds nothing to read back.
         let f = form(vec![line(10, "100", true)]);
         let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
