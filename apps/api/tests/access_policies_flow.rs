@@ -390,3 +390,48 @@ async fn the_group_list_carries_each_family_s_policy(db: PgPool) {
     drop(router);
     drop_prescribed_role(&db, app_db, &role).await;
 }
+
+/// #864: the body is checked before the caller's role, as on the
+/// neighbouring routes — a standard member's malformed body is a 400, not
+/// the 403 a well-formed one gets.
+#[sqlx::test]
+async fn the_body_is_checked_before_the_role(db: PgPool) {
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let router = test_router(app_db.clone());
+    let owner = register_verify_login(&router, &db, "owner@example.test").await;
+    let standard = register_verify_login(&router, &db, "standard@example.test").await;
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner),
+        Some(json!({"name": "Foyer"})),
+    )
+    .await;
+    let group_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    join(&router, &owner, &standard, &group_id).await;
+    let url = format!("/groups/{group_id}/access-policies");
+
+    let write = call(
+        &router,
+        Method::PUT,
+        &url,
+        Some(&standard),
+        Some(json!({"policies": [{"feature": "garage", "min_role": "owner"}]})),
+    )
+    .await;
+    assert_status(&write, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(write).await["error"], "unknown_feature");
+    let write = call(
+        &router,
+        Method::PUT,
+        &url,
+        Some(&standard),
+        Some(json!({"policies": [{"feature": "budget", "min_role": "standard"}]})),
+    )
+    .await;
+    assert_status(&write, StatusCode::FORBIDDEN);
+
+    drop(router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
