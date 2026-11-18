@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO group_access_policies (group_id, feature, min_role)\n           SELECT $1, f, r::group_role FROM UNNEST($2::text[], $3::text[]) AS t(f, r)\n           ON CONFLICT (group_id, feature) DO UPDATE SET min_role = EXCLUDED.min_role",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "99d6ce58d5e67466158a8a64794d7f099271ef5205ace76925a55c154d4e2893"
+}
