@@ -1187,7 +1187,8 @@ mod tests {
                 "{card}"
             );
             assert!(
-                card.contains(r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer la couleur</button></div>"#),
+                card.contains(r#"<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" data-hidden-with-js>Enregistrer la couleur</button>"#),
                 "{card}"
             );
             assert!(!card.contains("Réservé aux"), "{card}");
@@ -1319,7 +1320,8 @@ mod tests {
                 "{card}"
             );
             assert!(
-                card.contains(r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer le calendrier</button></div>"#),
+                card.contains(r#"<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" data-hidden-with-js>Enregistrer le calendrier</button>"#),
                 "{card}"
             );
             assert!(!card.contains("<script"), "{card}");

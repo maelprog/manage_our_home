@@ -140,7 +140,7 @@ mod tests {
                 "{label}"
             );
         }
-        assert!(html.contains(r#"<button type="submit">Enregistrer</button>"#));
+        assert!(html.contains(r#"<button type="submit" data-hidden-with-js>Enregistrer</button>"#));
         assert!(!html.contains("<script"), "{html}");
     }
 
@@ -188,13 +188,20 @@ mod tests {
         );
         assert!(
             html.contains(
-                r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer</button></div>"#
+                r#"<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" data-hidden-with-js>Enregistrer</button>"#
             ),
             "{html}"
         );
-        // The fallback stays inside the form, so it still posts the radios.
+        // The fallback stays inside the form, so it still posts the radios,
+        // and the button is a child of the form itself: no wrapper takes it
+        // out of the form's column, where it spans the width as before.
         let form = &html[html.find("<form").unwrap()..html.find("</form>").unwrap()];
-        assert!(form.contains("<button type=\"submit\">"), "{form}");
+        assert!(
+            form.contains("\n<button type=\"submit\" data-hidden-with-js>Enregistrer</button>\n"),
+            "{form}"
+        );
+        assert!(!form.contains("<div data-hidden-with-js"), "{form}");
     }
 
     #[test]
