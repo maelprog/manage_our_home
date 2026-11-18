@@ -389,6 +389,29 @@ mod tests {
             jow("https://APP.Jow.COM/EC0U?action=recipe&recipeId=6955207b42f666a7dc53cdc2"),
             "https://jow.fr/recipes/6955207b42f666a7dc53cdc2"
         );
+        // The first `recipeId` is the one read.
+        assert_eq!(
+            jow("https://app.jow.com/EC0U?recipeId=6955207b42f666a7dc53cdc2&recipeId=aaaaaaaaaaaaaaaaaaaaaaaa"),
+            "https://jow.fr/recipes/6955207b42f666a7dc53cdc2"
+        );
+    }
+
+    /// The parameter's name is compared with its case.
+    #[test]
+    fn a_recipe_id_named_in_another_case_is_not_read() {
+        let kept = "https://app.jow.com/EC0U?recipeid=6955207b42f666a7dc53cdc2";
+        assert_eq!(jow(kept), kept);
+    }
+
+    /// The rewrite comes before `check_url`: the address checked is the
+    /// recipe's page, whatever the link's scheme.
+    #[test]
+    fn import_url_checks_the_rewritten_address() {
+        assert_eq!(
+            import_url("ftp://app.jow.com/EC0U?recipeId=6955207b42f666a7dc53cdc2")
+                .map(|u| u.to_string()),
+            Ok("https://jow.fr/recipes/6955207b42f666a7dc53cdc2".to_string())
+        );
     }
 
     #[test]
