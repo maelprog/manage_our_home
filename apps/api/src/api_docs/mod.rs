@@ -122,6 +122,8 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::grocery_list::items::get_grocery_item,
         crate::grocery_list::items::list_grocery_items,
         crate::grocery_list::items::update_grocery_item,
+        crate::groups::access::get_access_policies,
+        crate::groups::access::put_access_policies,
         crate::groups::accept_invitation,
         crate::groups::acknowledge_ownership_notice,
         crate::groups::change_role,

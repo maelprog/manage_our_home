@@ -362,6 +362,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/groups/{id}/leave", post(groups::leave_group))
         .route(
+            "/groups/{id}/access-policies",
+            get(groups::access::get_access_policies).put(groups::access::put_access_policies),
+        )
+        .route(
             "/groups/{id}/ownership-notice/seen",
             post(groups::acknowledge_ownership_notice),
         )

@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT feature, min_role as \"min_role: String\" FROM group_access_policies\n           WHERE group_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "feature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_access_policies",
+            "name": "feature"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "min_role: String",
+        "type_info": {
+          "Custom": {
+            "name": "group_role",
+            "kind": {
+              "Enum": [
+                "owner",
+                "admin",
+                "standard"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "group_access_policies",
+            "name": "min_role"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "46684288741b25ba65ed32e88ae74e26e2d4d2f6ec9f0afba59c65405e3edc19"
+}
