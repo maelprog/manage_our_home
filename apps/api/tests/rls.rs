@@ -2157,10 +2157,10 @@ fn sqlstate(result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>) -> Optio
 /// scope, nothing is readable.
 ///
 /// Seeded as the harness role, which bypasses RLS. Checked as a role that
-/// **owns** the table (#864), the shape apps/api/README.md prescribes for
-/// `DATABASE_URL`: only `FORCE ROW LEVEL SECURITY` subjects an owner to its
-/// own policy, so without it every assertion below fails. Each refused
-/// write is asserted on its SQLSTATE, 42501, the policy's refusal.
+/// **owns** the table (#864): only `FORCE ROW LEVEL SECURITY` subjects an
+/// owner to its own policy, so without it the checks below fail, whereas a
+/// role holding mere grants would pass them with or without `FORCE`. Each
+/// refused write is asserted on its SQLSTATE, 42501, the policy's refusal.
 #[sqlx::test]
 async fn group_access_policies_isolated_without_scoping(db: PgPool) {
     let ((_, group_a), (_, group_b)) = two_owned_groups(&db).await;
