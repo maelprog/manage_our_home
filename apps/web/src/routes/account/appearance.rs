@@ -1,8 +1,8 @@
 //! `/account/appearance` (#585, maquette « Mobile — Apparence ») — the
 //! theme: Automatique, Clair or Sombre.
 //!
-//! Three native radio buttons in a POST form, no inline script: the CSP's
-//! `script-src` is unchanged. The choice is a cookie (`crate::theme`), so it
+//! Three native radio buttons in a POST form; the CSP's `script-src` is
+//! unchanged. The choice is a cookie (`crate::theme`), so it
 //! holds for this browser, not for the account — storing it on the account
 //! is out of this issue's scope. Like the family choice of the profile
 //! (#751), a radio applies itself since #844: with JavaScript, picking one
