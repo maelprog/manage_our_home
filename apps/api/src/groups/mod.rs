@@ -161,8 +161,9 @@ pub async fn list_groups(
     .await?;
     // Each family's thresholds (#865), which apps/web reads to leave out
     // what the caller does not reach. The table's RLS shows one family at a
-    // time, so this is two round trips per family, at most
-    // `MAX_GROUPS_PER_USER` of them.
+    // time, so this is two round trips per family the caller belongs to.
+    // Nothing bounds that number: `MAX_GROUPS_PER_USER` is checked only by
+    // `create_group`, and an accepted invitation adds a family past it.
     let mut policies = Vec::with_capacity(groups.len());
     for group in &groups {
         policies.push(access::policies_of_member_group(&mut tx, group.id).await?);
