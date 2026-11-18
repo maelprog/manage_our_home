@@ -188,6 +188,28 @@ pub struct InvitationCreatedResponse {
     pub accept_url: String,
 }
 
+/// One restricted feature of a family and its threshold (#864): `feature`,
+/// one of `budget`, `google_calendar`, `stocks_edit`, `recipes_edit`,
+/// `grocery_edit`, `agenda_edit`, `messagerie_moderate`; `min_role`, the
+/// lowest role admitted, `standard`, `admin` or `owner`. The owner is
+/// always admitted, whatever the threshold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AccessPolicy {
+    pub feature: String,
+    pub min_role: String,
+}
+
+/// `GET /groups/:id/access-policies` and `PUT`'s response (#864): the seven
+/// features, each with its effective threshold (`admin` when the owner has
+/// not set it). `PUT`'s body: the features to change, at least one, each
+/// named once; the others keep theirs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AccessPolicies {
+    pub policies: Vec<AccessPolicy>,
+}
+
 /// `POST /groups/invitations/:token/accept` (200) response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

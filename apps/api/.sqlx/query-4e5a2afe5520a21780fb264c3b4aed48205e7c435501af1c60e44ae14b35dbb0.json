@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT min_role::text as \"min_role!\" FROM group_access_policies\n           WHERE group_id = $1 AND feature = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "min_role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4e5a2afe5520a21780fb264c3b4aed48205e7c435501af1c60e44ae14b35dbb0"
+}

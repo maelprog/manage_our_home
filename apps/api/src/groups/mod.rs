@@ -1,3 +1,4 @@
+pub mod access;
 pub mod succession;
 
 use axum::extract::{Path, State};
