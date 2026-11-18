@@ -13,7 +13,9 @@
 //! belongs to it, so that a reminder from another family does not land on
 //! a « introuvable » page. An invitation has nowhere to go in the
 //! application (its token is only in the e-mail): opening it marks it read
-//! and comes back here.
+//! and comes back here. So does a change another member made to the
+//! agenda (#853) when its event is gone — the deletion it reports, or one
+//! since — and an import's, which names no event.
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -39,7 +41,9 @@ const PAGE_LIMIT: usize = 30;
 
 /// The filters, in the order the row shows them: the API's `kind` (`None`
 /// for every kind) and the label of its pastille.
-const FILTERS: [(Option<&str>, &str); 7] = [
+/// The changes another member made to the agenda (#853) come last, so the
+/// pastilles before keep their places.
+const FILTERS: [(Option<&str>, &str); 8] = [
     (None, "Toutes"),
     (Some("agenda_reminder"), "Agenda"),
     (Some("stock_expiry"), "Stocks"),
@@ -47,6 +51,7 @@ const FILTERS: [(Option<&str>, &str); 7] = [
     (Some("invitation"), "Familles"),
     (Some("grocery_item"), "Courses"),
     (Some("budget_alert"), "Budget"),
+    (Some("agenda_change"), "Changements d’agenda"),
 ];
 
 // -- pure logic (TDD'd below) ------------------------------------------------
@@ -69,6 +74,7 @@ fn kind_label(kind: &str) -> &'static str {
         "invitation" => "Familles",
         "grocery_item" => "Courses",
         "budget_alert" => "Budget",
+        "agenda_change" => "Changement d’agenda",
         _ => "Notification",
     }
 }
@@ -85,7 +91,7 @@ fn family_to_activate(groups: &[GroupSummary], group_id: Uuid) -> Option<Uuid> {
 
 fn kind_icon(kind: &str) -> Icon {
     match kind {
-        "agenda_reminder" => Icon::Calendar,
+        "agenda_reminder" | "agenda_change" => Icon::Calendar,
         "stock_expiry" => Icon::Stocks,
         "message" => Icon::Messages,
         "invitation" => Icon::Members,
@@ -144,8 +150,18 @@ fn target(kind: &str, object_id: Option<Uuid>) -> Option<String> {
         ("message", _) => Some("/messagerie".into()),
         ("grocery_item", _) => Some("/grocery-list".into()),
         ("budget_alert", _) => Some("/budget".into()),
+        // An event added or changed (#853); an import names none.
+        ("agenda_change", Some(id)) => Some(format!("/agenda/{id}")),
         _ => None,
     }
+}
+
+/// Whether the event an agenda change names is gone — deleted by that
+/// change or since — as the API's answer for it says (`None`: no answer).
+/// The entry then stays here: only a 404 says so; anything else still
+/// leads to the event's page, which says what it can.
+fn event_gone(kind: &str, status: Option<reqwest::StatusCode>) -> bool {
+    kind == "agenda_change" && status == Some(reqwest::StatusCode::NOT_FOUND)
 }
 
 /// The count over the title.
@@ -469,6 +485,22 @@ pub async fn open(
     let Some(to) = target(&form.kind, form.object_id) else {
         return Redirect::to("/notifications").into_response();
     };
+    // A change names its event, which may be gone (#853): read and stay.
+    if let (true, Some(event)) = (form.kind == "agenda_change", form.object_id) {
+        let status = api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            &format!("/groups/{}/events/{event}", form.group_id),
+            cookie.as_deref(),
+            None,
+        )
+        .await
+        .ok()
+        .map(|resp| resp.status);
+        if event_gone(&form.kind, status) {
+            return Redirect::to("/notifications").into_response();
+        }
+    }
     // The family it happened in becomes the active one.
     let groups = fetch_groups(&state, cookie.as_deref())
         .await
@@ -562,14 +594,64 @@ mod tests {
         assert_eq!(kind_label("invitation"), "Familles");
         assert_eq!(kind_label("grocery_item"), "Courses");
         assert_eq!(kind_label("budget_alert"), "Budget");
+        assert_eq!(kind_label("agenda_change"), "Changement d’agenda");
         // A kind a newer API adds still lists, under a neutral word.
         assert_eq!(kind_label("something_new"), "Notification");
         assert_eq!(kind_icon("something_new"), Icon::Bell);
         assert_eq!(kind_icon("agenda_reminder"), Icon::Calendar);
-        // An entry is named as its filter is.
+        // A change is about the agenda too: its calendar (#853).
+        assert_eq!(kind_icon("agenda_change"), Icon::Calendar);
+        // An entry is named as its filter is — one change, under the
+        // pastille of the changes (the maquette of #853).
         for (kind, label) in FILTERS.iter().skip(1) {
-            assert_eq!(kind_label(kind.unwrap()), *label);
+            let label = label.replace("Changements", "Changement");
+            assert_eq!(kind_label(kind.unwrap()), label);
         }
+    }
+
+    /// #853: the changes' pastille is the last of the row, after
+    /// « Budget », so the existing ones keep their places.
+    #[test]
+    fn the_agenda_changes_have_the_last_pastille() {
+        assert_eq!(
+            FILTERS.last(),
+            Some(&(Some("agenda_change"), "Changements d’agenda"))
+        );
+        assert_eq!(kind_filter(Some("agenda_change")), Some("agenda_change"));
+        let row = filters_html(Some("agenda_change"));
+        assert!(
+            row.ends_with(
+                r#"<a href="/notifications?kind=agenda_change" aria-current="true">Changements d’agenda</a></nav>"#
+            ),
+            "{row}"
+        );
+    }
+
+    /// An added or changed event opens; a deletion — or an import, about
+    /// no single event — has nowhere to go but back here.
+    #[test]
+    fn a_change_leads_to_its_event_when_it_names_one() {
+        let id = Uuid::from_u128(9);
+        assert_eq!(
+            target("agenda_change", Some(id)).as_deref(),
+            Some(format!("/agenda/{id}").as_str())
+        );
+        assert_eq!(target("agenda_change", None), None);
+    }
+
+    /// The event a change names may be gone — deleted by the change itself
+    /// or since: the entry, marked read, then stays here rather than open
+    /// an « introuvable » page. Only an answer that says so sends it back:
+    /// an API that fails to answer still leads to the event's page.
+    #[test]
+    fn a_change_whose_event_is_gone_stays_here() {
+        use reqwest::StatusCode;
+        assert!(event_gone("agenda_change", Some(StatusCode::NOT_FOUND)));
+        for status in [Some(StatusCode::OK), Some(StatusCode::BAD_GATEWAY), None] {
+            assert!(!event_gone("agenda_change", status), "{status:?}");
+        }
+        // A reminder of a deleted event is not this issue's: unchanged.
+        assert!(!event_gone("agenda_reminder", Some(StatusCode::NOT_FOUND)));
     }
 
     #[test]
