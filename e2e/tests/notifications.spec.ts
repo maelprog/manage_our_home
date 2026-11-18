@@ -68,14 +68,19 @@ test.describe("Reminder notifications", () => {
     // The warning's way out lands on the email choice itself.
     await warning.getByRole("link", { name: "passer aux rappels par email" }).click();
     await expect(page).toHaveURL(/\/account\/notifications#rappels-email$/);
-    await expect(page.getByRole("radio", { name: "Par notification sur mes appareils" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Par notification sur mes appareils" })).toBeChecked();
     await expect(page.locator("#push-warning")).toBeVisible();
 
-    await page.getByRole("radio", { name: "Par email" }).check();
-    await page.getByRole("button", { name: "Enregistrer" }).click();
+    // Two switches since #853, each saved as it changes: email on, then
+    // notifications off.
+    await page.getByRole("switch", { name: "Par email" }).click();
     await expect(page).toHaveURL(/\/account\/notifications\?notice=channel_saved$/);
+    await expect(page.getByRole("switch", { name: "Par email" })).toBeChecked();
+    await page.getByRole("switch", { name: "Par notification sur mes appareils" }).click();
+    await expect(page).toHaveURL(/\/account\/notifications\?notice=channel_saved$/);
+    await expect(page.getByRole("switch", { name: "Par notification sur mes appareils" })).not.toBeChecked();
     await expect(page.getByText("Préférence enregistrée.")).toBeVisible();
-    await expect(page.getByRole("radio", { name: "Par email" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Par email" })).toBeChecked();
     await expect(page.locator("#push-warning")).toHaveCount(0);
 
     // On email, the reminder form no longer warns.
@@ -96,7 +101,7 @@ test.describe("Reminder notifications", () => {
 
   // The hour of the daily recap of the products nearing their expiry date
   // (#700): 9 h for a new account, any hour of the day, saved with the
-  // channel by the same button.
+  // switches as soon as it changes (#853).
   test("the expiry recap's hour is 9 h by default and can be changed", async ({ page }) => {
     await registerAndLogin(page, "notif-digest-hour");
     await page.goto("/account/notifications");
@@ -105,12 +110,12 @@ test.describe("Reminder notifications", () => {
     await expect(hour.locator("option")).toHaveCount(24);
 
     await hour.selectOption({ label: "7 h" });
-    await page.getByRole("button", { name: "Enregistrer" }).click();
     await expect(page).toHaveURL(/\/account\/notifications\?notice=channel_saved$/);
     await expect(page.getByText("Préférence enregistrée.")).toBeVisible();
     await expect(page.getByLabel("Heure du récapitulatif")).toHaveValue("7");
-    // The channel was left as it was.
-    await expect(page.getByRole("radio", { name: "Par notification sur mes appareils" })).toBeChecked();
+    // The switches were left as they were.
+    await expect(page.getByRole("switch", { name: "Par notification sur mes appareils" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Récapitulatif quotidien" })).toBeChecked();
   });
 
   test("the service worker is served from the root and shows a fixed text per kind", async ({
