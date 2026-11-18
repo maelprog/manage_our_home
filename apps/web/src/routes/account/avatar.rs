@@ -17,7 +17,9 @@ use axum::response::{IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::auth::MeResponse;
 
 use super::{account_cookie, service_unavailable_page};
-use crate::app::member_avatar;
+use crate::app::{html_escape, member_avatar};
+use crate::assets::Script;
+use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -88,11 +90,21 @@ pub(crate) fn notice_message(code: &str) -> Option<&'static str> {
     })
 }
 
+/// Framing the photo on the device before it is sent (#860), loaded right
+/// after the section (`assets::Script::AvatarCrop`).
+pub(crate) const CROP_SCRIPT: &str = include_str!("../../avatar-crop.js");
+
 /// The page that serves the caller's own photo.
 pub(crate) const OWN_PHOTO_URL: &str = "/account/avatar";
 
 /// The photo section of `/account`: the icon as the other members see it,
 /// the form to upload or replace the photo, and the one to remove it.
+///
+/// Inside the upload form, `crop_block` (#860, mock-up validated on
+/// 2026-11-18): `hidden`, and revealed by `CROP_SCRIPT` in place of the
+/// field and its button where the browser can frame the photo. Its copy
+/// is written here, for the script to show state by state: an element is
+/// shown in the states its `data-in` lists.
 pub(crate) fn section(me: &MeResponse, has_photo: bool) -> String {
     let icon = member_avatar(
         me.user_id,
@@ -118,13 +130,46 @@ pub(crate) fn section(me: &MeResponse, has_photo: bool) -> String {
     format!(
         r#"<section class="card">
 <h2>Photo de profil</h2>
-<p>{icon} <span class="muted">{state}</span></p>
+<p data-in="empty reading unreadable">{icon} <span class="muted">{state}</span></p>
 <form method="post" action="/account/avatar" enctype="multipart/form-data">
 <label class="field">Photo (JPEG ou PNG, 32 Mo au plus ; recadrée en carré, au centre)
 <input type="file" name="file" accept="image/jpeg,image/png" required></label>
 <button type="submit">{submit}</button>
+{crop}
 </form>{remove}
-</section>"#
+</section>
+{script}"#,
+        crop = crop_block(),
+        script = Script::AvatarCrop.tag(),
+    )
+}
+
+/// The framing of #860, for `CROP_SCRIPT`. Its states: `empty` (a photo to
+/// choose), `reading` (the file being decoded on the device), `unreadable`
+/// (it could not be), `framing` (the square on the photo) and `sending`.
+/// apps/api's refusal brings `framing` back, under the page's own error
+/// banner; one it did not name is told with `data-failed`.
+fn crop_block() -> String {
+    format!(
+        r#"<div class="crop" data-crop data-failed="{failed}" hidden>
+<div class="crop-error" role="alert" data-in="unreadable">{warning}<p><strong>Ce fichier n'est pas une image lisible.</strong></p><p>Choisissez une photo JPEG ou PNG, 32 Mo au plus.</p></div>
+<button type="button" class="secondary" data-crop-choose data-in="empty unreadable">Choisir une photo</button>
+<p class="muted" data-in="empty unreadable">JPEG ou PNG, 32 Mo au plus. Vous cadrerez l'image avant l'envoi.</p>
+<div class="crop-stage" data-crop-stage data-in="reading framing sending">
+<canvas width="300" height="200"></canvas>
+<p class="overlay" data-in="reading"><span class="spin" aria-hidden="true"></span> Lecture de l'image…</p>
+<div class="crop-box" tabindex="0" role="group" aria-roledescription="carré de découpage" aria-label="Carré de découpage de la photo. Flèches pour le déplacer, plus et moins pour le redimensionner." aria-describedby="crop-hint" data-crop-box data-in="framing sending"><span data-corner="nw"></span><span data-corner="ne"></span><span data-corner="sw"></span><span data-corner="se"></span></div>
+</div>
+<p class="muted" data-in="reading">Les grandes photos peuvent prendre quelques secondes.</p>
+<p class="muted" id="crop-hint" data-in="framing sending">Glissez le carré, ou tirez un coin pour l'agrandir. La partie assombrie est écartée.</p>
+<p class="crop-preview" data-in="framing sending"><span aria-hidden="true"><canvas width="128" height="128" data-crop-preview></canvas></span> Aperçu de votre icône, telle que les membres la verront.</p>
+<details class="keys" data-in="framing sending"><summary>Raccourcis clavier</summary>
+<dl><dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Déplacer le carré (Maj : agrandir ou réduire)</dd><dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Agrandir, réduire le carré</dd><dt><kbd>Début</kbd></dt><dd>Recentrer le carré</dd></dl></details>
+<div class="actions stacked" data-in="reading framing sending"><button type="button" data-crop-save>Enregistrer la photo</button><button type="button" class="secondary" data-crop-other>Choisir une autre photo</button></div>
+<p class="sr-only" role="status" aria-live="polite" data-crop-live></p>
+</div>"#,
+        failed = html_escape(error_message("upload_failed").unwrap_or_default()),
+        warning = icon(Icon::Warning),
     )
 }
 
@@ -465,6 +510,110 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("Retirer la photo"), "{html}");
+    }
+
+    /// #860: the framing block sits inside the upload form, `hidden` — the
+    /// form works without it — and the script that reveals it follows the
+    /// section. The native field and its button stay as they were.
+    #[test]
+    fn the_framing_block_is_hidden_in_the_form_and_its_script_follows() {
+        for has_photo in [false, true] {
+            let html = section(&me(), has_photo);
+            let form = html
+                .split(r#"<form method="post" action="/account/avatar" enctype="multipart/form-data">"#)
+                .nth(1)
+                .and_then(|rest| rest.split("</form>").next())
+                .unwrap_or_else(|| panic!("no upload form: {html}"));
+            assert!(
+                form.contains(r#"<div class="crop" data-crop data-failed=""#),
+                "{form}"
+            );
+            let opening = &form[form.find(r#"<div class="crop""#).unwrap()..];
+            let opening = &opening[..opening.find('>').unwrap()];
+            assert!(opening.ends_with(" hidden"), "{opening}");
+            assert!(form.contains(r#"<input type="file" name="file""#), "{form}");
+            assert!(form.contains(r#"<button type="submit">"#), "{form}");
+            assert!(
+                html.trim_end().ends_with(&Script::AvatarCrop.tag()),
+                "{html}"
+            );
+            assert_eq!(html.matches(&Script::AvatarCrop.tag()).count(), 1);
+        }
+    }
+
+    /// A failure that apps/api did not name (a full gate, a lost
+    /// connection) is told with the copy of a failed upload.
+    #[test]
+    fn the_framing_block_carries_the_copy_of_a_failed_upload() {
+        let html = section(&me(), false);
+        let failed = error_message("upload_failed").unwrap();
+        assert!(
+            html.contains(&format!(r#"data-failed="{}""#, html_escape(failed))),
+            "{html}"
+        );
+    }
+
+    /// Every hook the script reads is in the markup, and every state an
+    /// element is shown in is one the script sets.
+    #[test]
+    fn the_script_and_the_markup_name_the_same_hooks_and_states() {
+        let html = section(&me(), true);
+        for hook in [
+            "data-crop-choose",
+            "data-crop-stage",
+            "data-crop-box",
+            "data-crop-preview",
+            "data-crop-save",
+            "data-crop-other",
+            "data-crop-live",
+        ] {
+            assert!(html.contains(hook), "{hook} missing from the markup");
+            assert!(
+                CROP_SCRIPT.contains(&format!("[{hook}]")),
+                "{hook} not read by the script"
+            );
+        }
+        for corner in ["nw", "ne", "sw", "se"] {
+            assert!(
+                html.contains(&format!(r#"data-corner="{corner}""#)),
+                "{corner}"
+            );
+        }
+        let mut states = 0;
+        for piece in html.split(r#"data-in=""#).skip(1) {
+            for state in piece[..piece.find('"').unwrap()].split(' ') {
+                assert!(
+                    CROP_SCRIPT.contains(&format!(r#"setState("{state}")"#)),
+                    "the script never sets {state:?}"
+                );
+                states += 1;
+            }
+        }
+        assert!(states > 0, "{html}");
+    }
+
+    /// WCAG 2.5.7: the square moves and resizes from the keyboard. It takes
+    /// the focus, is named, points at the hint that says how, and the keys
+    /// are listed on the page.
+    #[test]
+    fn the_square_takes_the_focus_and_says_how_to_move_it() {
+        let html = section(&me(), false);
+        let at = html.find("data-crop-box").expect("the square");
+        let start = html[..at].rfind('<').unwrap();
+        let tag = &html[start..start + html[start..].find('>').unwrap()];
+        assert!(tag.contains(r#"tabindex="0""#), "{tag}");
+        assert!(tag.contains(r#"role="group""#), "{tag}");
+        assert!(tag.contains("aria-label=\"Carré de découpage"), "{tag}");
+        assert!(tag.contains(r#"aria-describedby="crop-hint""#), "{tag}");
+        assert!(html.contains(r#"id="crop-hint""#), "{html}");
+        assert!(
+            html.contains("<summary>Raccourcis clavier</summary>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"role="status" aria-live="polite" data-crop-live"#),
+            "{html}"
+        );
     }
 }
 
