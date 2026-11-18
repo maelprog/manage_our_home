@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT e.id, e.category_id,\n                  (SELECT count(*) FROM budget_entry_grocery_items o\n                   WHERE o.entry_id = e.id AND o.group_id = e.group_id) AS \"links!\"\n           FROM budget_entry_grocery_items l\n           JOIN budget_entries e ON e.id = l.entry_id AND e.group_id = l.group_id\n           WHERE l.grocery_item_id = $1 AND l.group_id = $2\n           FOR UPDATE OF e",
+  "query": "SELECT e.id, e.category_id, e.created_by,\n                  (SELECT count(*) FROM budget_entry_grocery_items o\n                   WHERE o.entry_id = e.id AND o.group_id = e.group_id) AS \"links!\"\n           FROM budget_entry_grocery_items l\n           JOIN budget_entries e ON e.id = l.entry_id AND e.group_id = l.group_id\n           WHERE l.grocery_item_id = $1 AND l.group_id = $2\n           FOR UPDATE OF e",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "budget_entries",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "links!",
         "type_info": "Int8",
         "origin": "Expression"
@@ -41,8 +52,9 @@
     "nullable": [
       false,
       true,
+      false,
       null
     ]
   },
-  "hash": "ec5e24d5e9a6c853ea590560e3625e4f84bfc365e859dd8a11aea12ac121a62a"
+  "hash": "e513a66bb0a4952452e79ce1033fb45fcce06e7d34c5a440f69a68ce7e1d52d1"
 }

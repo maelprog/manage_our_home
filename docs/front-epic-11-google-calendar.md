@@ -73,11 +73,15 @@ is "reset it in Google Agenda", not "edit it here".
 ### The stricter permission bar, mirrored
 
 Unlike every other family-scoped epic, `apps/api` puts creating and deleting a
-connection behind **admin/owner** (`can_configure`), because the feed URL is a
-credential for a member's personal Google account rather than household data.
+connection behind the family's `google_calendar` threshold (`can_configure(role,
+min_role)`, #865; **admin/owner** by default, which the owner may lower to
+`standard` or raise to `owner`), because the feed URL is a credential for a
+member's personal Google account rather than household data. Under the
+threshold the answer stays 403.
 Listing connections and triggering an import stay on the normal any-member bar.
 
-`validation::google_calendar::can_configure` mirrors it, in the same spirit as
+`validation::google_calendar::can_configure` is that rule (the API calls the
+same function, with the threshold `GET /groups` hands apps/web), in the same spirit as
 F9's `can_view_admin`: it decides whether the "Ajouter" button and the per-row
 "Supprimer" link render, and the `new`/`delete` handlers bounce a standard member
 to `/agenda/imports?error=forbidden` rather than showing a form they cannot
@@ -212,7 +216,7 @@ the **feed URL blank**.
 | Function | Mirrors / does |
 |---|---|
 | `validate_import_form(label, feed_url)` | `create_calendar_import`'s three guards, in the backend's own order. Returns only the verdict — it never holds or copies the credential |
-| `can_configure(role)` | `google_calendar::mod::can_configure` — the admin/owner bar |
+| `can_configure(role, min_role)` | the rule `apps/api` applies itself — `role_meets` against the family's `google_calendar` threshold (#865; admin/owner by default) |
 | `format_last_imported(Option<DateTime<Utc>>)` | Europe/Paris (F3's `DISPLAY_TZ`), or `jamais importé` |
 | `import_run_summary(imported, updated, skipped)` | The French pluralised sentence; zero and one take the singular |
 

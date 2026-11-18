@@ -63,6 +63,78 @@ pub fn actor_can_act_on(actor_role: &str, target_role: &str) -> bool {
     }
 }
 
+/// A restricted feature of a family (#864), the closed list of
+/// `group_access_policies.feature` (0062's `CHECK`): its owner sets from
+/// which role the members reach it. `apps/api` enforces the threshold,
+/// `apps/web` reads the same one to leave out what the caller cannot reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feature {
+    Budget,
+    GoogleCalendar,
+    StocksEdit,
+    RecipesEdit,
+    GroceryEdit,
+    AgendaEdit,
+    MessagerieModerate,
+}
+
+impl Feature {
+    /// Every feature, in the order the API lists them.
+    pub const ALL: [Feature; 7] = [
+        Feature::Budget,
+        Feature::GoogleCalendar,
+        Feature::StocksEdit,
+        Feature::RecipesEdit,
+        Feature::GroceryEdit,
+        Feature::AgendaEdit,
+        Feature::MessagerieModerate,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Feature::Budget => "budget",
+            Feature::GoogleCalendar => "google_calendar",
+            Feature::StocksEdit => "stocks_edit",
+            Feature::RecipesEdit => "recipes_edit",
+            Feature::GroceryEdit => "grocery_edit",
+            Feature::AgendaEdit => "agenda_edit",
+            Feature::MessagerieModerate => "messagerie_moderate",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Feature> {
+        Feature::ALL.into_iter().find(|f| f.as_str() == value)
+    }
+}
+
+/// The threshold of a feature the family's owner has not set (#864).
+pub const DEFAULT_MIN_ROLE: &str = "admin";
+
+/// The rank of a `group_role`, `standard < admin < owner`; `None` off the
+/// list.
+fn rank(role: &str) -> Option<u8> {
+    match role {
+        "standard" => Some(0),
+        "admin" => Some(1),
+        "owner" => Some(2),
+        _ => None,
+    }
+}
+
+/// Whether a member of role `actor_role` reaches a feature whose threshold
+/// is `min_role` (#864). The owner always does, whatever the threshold says.
+/// A role off the list reaches nothing; a threshold off the list admits the
+/// owner alone.
+pub fn role_meets(actor_role: &str, min_role: &str) -> bool {
+    if actor_role == "owner" {
+        return true;
+    }
+    match (rank(actor_role), rank(min_role)) {
+        (Some(actor), Some(min)) => actor >= min,
+        _ => false,
+    }
+}
+
 /// Why a member became the owner of a group without asking for it (#323),
 /// the value of `group_members.ownership_inherited_reason` (migration 0023):
 /// the member is told by email and by a notice on the home page, which say

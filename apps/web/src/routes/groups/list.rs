@@ -133,6 +133,7 @@ mod tests {
             role: "owner".to_string(),
             accent: "sarcelle".to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         };
         let html = group_row(&g).to_html();
         assert!(

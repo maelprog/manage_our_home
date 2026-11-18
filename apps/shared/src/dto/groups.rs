@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::validation::groups::Accent;
+use crate::validation::groups::{Accent, Feature, DEFAULT_MIN_ROLE};
 
 /// The accent of a family when an older API omits it: the default one, the
 /// accent the theme had before families could choose (#537).
@@ -58,6 +58,22 @@ pub struct GroupSummary {
     /// not acknowledged it yet (#323); `None` otherwise.
     #[serde(default)]
     pub ownership_notice: Option<OwnershipNotice>,
+    /// The family's restricted features with their effective threshold
+    /// (#865), as `GET /groups/:id/access-policies` answers them; read
+    /// through [`GroupSummary::min_role`].
+    #[serde(default)]
+    pub access_policies: Vec<AccessPolicy>,
+}
+
+impl GroupSummary {
+    /// The threshold of `feature` in this family: the one the API sent, or
+    /// [`DEFAULT_MIN_ROLE`] when it sent none for it.
+    pub fn min_role(&self, feature: Feature) -> &str {
+        self.access_policies
+            .iter()
+            .find(|p| p.feature == feature.as_str())
+            .map_or(DEFAULT_MIN_ROLE, |p| p.min_role.as_str())
+    }
 }
 
 /// `GroupSummary::ownership_notice`: why and when the group came to the
@@ -215,4 +231,44 @@ pub struct AccessPolicies {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AcceptInvitationResponse {
     pub group_id: Uuid,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(policies: &[(&str, &str)]) -> GroupSummary {
+        GroupSummary {
+            group_id: Uuid::nil(),
+            name: "F".to_string(),
+            role: "standard".to_string(),
+            accent: default_accent(),
+            ownership_notice: None,
+            access_policies: policies
+                .iter()
+                .map(|(feature, min_role)| AccessPolicy {
+                    feature: feature.to_string(),
+                    min_role: min_role.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn min_role_reads_the_familys_threshold() {
+        let g = summary(&[("google_calendar", "owner"), ("budget", "standard")]);
+        assert_eq!(g.min_role(Feature::Budget), "standard");
+        assert_eq!(g.min_role(Feature::GoogleCalendar), "owner");
+    }
+
+    #[test]
+    fn min_role_falls_back_to_the_default_threshold() {
+        // An API that sends no policy, or not this feature's: `admin`, the
+        // bar a family has until its owner sets another (#864).
+        assert_eq!(summary(&[]).min_role(Feature::Budget), "admin");
+        assert_eq!(
+            summary(&[("stocks_edit", "standard")]).min_role(Feature::Budget),
+            "admin"
+        );
+    }
 }

@@ -415,6 +415,33 @@ export async function seedAgendaChangeNotification(
   }
 }
 
+/**
+ * Sets the threshold of `feature` in the family named `groupName` (#865),
+ * the row `PUT /groups/:id/access-policies` writes for its owner: no page
+ * drives that route yet.
+ */
+export async function setAccessPolicy(
+  groupName: string,
+  feature: string,
+  minRole: string,
+): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `INSERT INTO group_access_policies (group_id, feature, min_role)
+       SELECT id, $2, $3::group_role FROM groups WHERE name = $1
+       ON CONFLICT (group_id, feature) DO UPDATE SET min_role = EXCLUDED.min_role`,
+      [groupName, feature, minRole],
+    );
+    if (rowCount !== 1) {
+      throw new Error(`could not set ${feature} to ${minRole} in ${groupName}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 function requireDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {

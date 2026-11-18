@@ -39,6 +39,7 @@ use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::agenda::{normalize_all_day, paris_start_of_day};
+use manage_our_home_shared::validation::groups::Feature;
 use uuid::Uuid;
 
 use crate::app::{shell, Width};
@@ -56,6 +57,9 @@ pub(crate) struct FamilyContext {
     /// The caller's role in the active family (`owner`/`admin`/`standard`),
     /// used to gate edit/delete controls (`can_modify`).
     pub role: String,
+    /// The family's `google_calendar` threshold (#865), from which role a
+    /// member connects or removes a calendar (`can_configure`).
+    pub calendar_min_role: String,
     /// The family's name, which the event sheet is headed with (#525).
     pub name: String,
     pub header: String,
@@ -114,6 +118,7 @@ pub(crate) async fn family_context_choosing(
         resolve_event_family(&groups, preferred, requested).map(|(g, carried)| FamilyContext {
             gid: g.group_id,
             role: g.role.clone(),
+            calendar_min_role: g.min_role(Feature::GoogleCalendar).to_string(),
             name: g.name.clone(),
             header,
             carried,
@@ -478,6 +483,7 @@ mod tests {
             role: if n == 1 { "owner" } else { "standard" }.to_string(),
             accent: "sarcelle".to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         }
     }
 

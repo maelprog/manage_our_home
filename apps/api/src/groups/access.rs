@@ -1,11 +1,14 @@
 //! A family's access policy (#864): from which role its members reach each
 //! restricted feature, read by every member and set by the owner alone.
-//! The table and its RLS come from #863 (`0062_group_access_policies.sql`);
-//! the modules that apply a threshold come after.
+//! The table and its RLS come from #863 (`0062_group_access_policies.sql`).
+//! The budget and the Google Calendar connections apply their threshold
+//! since #865 (`budget::require_budget_access`,
+//! `google_calendar::imports`); the other modules still hold the bar their
+//! `can_modify` hard-codes.
 //!
-//! A feature with no row has the default threshold, `admin`: the bar the
-//! hard-coded checks (`can_modify` in each module,
-//! `google_calendar::can_configure`, the budget since #531) already hold.
+//! A feature with no row has the default threshold, `admin`: the bar those
+//! hard-coded checks hold, and the one the budget and Google Calendar held
+//! before #865.
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -20,81 +23,16 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
-/// A restricted feature, the closed list of `group_access_policies.feature`
-/// (0062's `CHECK`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Feature {
-    Budget,
-    GoogleCalendar,
-    StocksEdit,
-    RecipesEdit,
-    GroceryEdit,
-    AgendaEdit,
-    MessagerieModerate,
-}
-
-impl Feature {
-    /// Every feature, in the order the API lists them.
-    pub const ALL: [Feature; 7] = [
-        Feature::Budget,
-        Feature::GoogleCalendar,
-        Feature::StocksEdit,
-        Feature::RecipesEdit,
-        Feature::GroceryEdit,
-        Feature::AgendaEdit,
-        Feature::MessagerieModerate,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Feature::Budget => "budget",
-            Feature::GoogleCalendar => "google_calendar",
-            Feature::StocksEdit => "stocks_edit",
-            Feature::RecipesEdit => "recipes_edit",
-            Feature::GroceryEdit => "grocery_edit",
-            Feature::AgendaEdit => "agenda_edit",
-            Feature::MessagerieModerate => "messagerie_moderate",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Feature> {
-        Feature::ALL.into_iter().find(|f| f.as_str() == value)
-    }
-}
-
-/// The threshold of a feature the family's owner has not set.
-pub const DEFAULT_MIN_ROLE: &str = "admin";
-
-/// The rank of a `group_role`, `standard < admin < owner`; `None` off the
-/// list.
-fn rank(role: &str) -> Option<u8> {
-    match role {
-        "standard" => Some(0),
-        "admin" => Some(1),
-        "owner" => Some(2),
-        _ => None,
-    }
-}
+/// The closed list of features, the default threshold and the rule that
+/// compares a role with a threshold live in `apps/shared` (#865), so that
+/// `apps/web` hides exactly what this API refuses.
+pub use manage_our_home_shared::validation::groups::{role_meets, Feature, DEFAULT_MIN_ROLE};
 
 /// The `&'static str` of a `group_role`, `None` off the list.
 fn known_role(role: &str) -> Option<&'static str> {
     ["standard", "admin", "owner"]
         .into_iter()
         .find(|known| *known == role)
-}
-
-/// Whether a member of role `actor_role` reaches a feature whose threshold
-/// is `min_role`. The owner always does, whatever the threshold says. A role
-/// off the list reaches nothing; a threshold off the list admits the owner
-/// alone.
-pub fn role_meets(actor_role: &str, min_role: &str) -> bool {
-    if actor_role == "owner" {
-        return true;
-    }
-    match (rank(actor_role), rank(min_role)) {
-        (Some(actor), Some(min)) => actor >= min,
-        _ => false,
-    }
 }
 
 /// `PUT /groups/:id/access-policies`' body, checked: at least one setting,
@@ -170,6 +108,22 @@ async fn read_policies(
     Ok(AccessPolicies {
         policies: effective_policies(&rows),
     })
+}
+
+/// The effective policy of `group_id` for `GET /groups` (#865), read in
+/// `tx`, a transaction scoped to the caller alone (`user_scoped_tx`), whose
+/// membership of `group_id` the caller has checked. The table's RLS admits
+/// the rows of the family in `app.group_id` only, so the setting is moved
+/// to this family first, for the rest of `tx`.
+pub(crate) async fn policies_of_member_group(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> AppResult<Vec<AccessPolicy>> {
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(read_policies(tx, group_id).await?.policies)
 }
 
 /// `GET /groups/:id/access-policies`: the seven restricted features, each
@@ -321,19 +275,20 @@ mod tests {
 
     #[test]
     fn features_round_trip_and_match_the_migration_list() {
+        // The list of 0062's `CHECK`, read from the migration itself rather
+        // than copied here, so that the two cannot drift apart.
+        let migration = include_str!("../../migrations/0062_group_access_policies.sql");
+        let check = migration
+            .split_once("CHECK (feature IN (")
+            .and_then(|(_, rest)| rest.split_once("))"))
+            .expect("0062 carries the feature CHECK")
+            .0;
+        let from_migration: Vec<&str> = check
+            .split(',')
+            .map(|name| name.trim().trim_matches('\''))
+            .collect();
         let names: Vec<&str> = Feature::ALL.iter().map(|f| f.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "budget",
-                "google_calendar",
-                "stocks_edit",
-                "recipes_edit",
-                "grocery_edit",
-                "agenda_edit",
-                "messagerie_moderate",
-            ]
-        );
+        assert_eq!(names, from_migration);
         for feature in Feature::ALL {
             assert_eq!(Feature::parse(feature.as_str()), Some(feature));
         }
