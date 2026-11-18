@@ -164,6 +164,15 @@ fn event_gone(kind: &str, status: Option<reqwest::StatusCode>) -> bool {
     kind == "agenda_change" && status == Some(reqwest::StatusCode::NOT_FOUND)
 }
 
+/// Where an entry that leads nowhere — or whose event is gone — leaves the
+/// member: the page it was opened from, its filter kept (#853). Only a
+/// kind the page accepts comes back.
+fn stay_href(filter: Option<&str>) -> String {
+    kind_filter(filter).map_or("/notifications".into(), |k| {
+        format!("/notifications?kind={k}")
+    })
+}
+
 /// The count over the title.
 fn unread_line(unread: u64) -> String {
     match unread {
@@ -187,12 +196,16 @@ fn cursor_instant(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
-/// One entry: the button of its form. Unread, it is a card with its text in
-/// bold, a dot for the eye and « Non lue » for the ear.
-fn row_html(n: &NotificationResponse, today: NaiveDate) -> String {
+/// One entry: the button of its form, which carries the page's filter.
+/// Unread, it is a card with its text in bold, a dot for the eye and
+/// « Non lue » for the ear.
+fn row_html(n: &NotificationResponse, today: NaiveDate, filter: Option<&str>) -> String {
     let unread = n.read_at.is_none();
     let object = n.object_id.map_or(String::new(), |id| {
         format!(r#"<input type="hidden" name="object_id" value="{id}"/>"#)
+    });
+    let filter = filter.map_or(String::new(), |k| {
+        format!(r#"<input type="hidden" name="filter" value="{k}"/>"#)
     });
     let (class, text, mark) = if unread {
         (
@@ -204,7 +217,7 @@ fn row_html(n: &NotificationResponse, today: NaiveDate) -> String {
         ("secondary notif", "span", "")
     };
     format!(
-        r#"<li><form method="post" action="/notifications/{id}/open"><input type="hidden" name="group_id" value="{group}"/><input type="hidden" name="kind" value="{kind}"/>{object}<button class="{class}">{icon}<span class="what"><{text}>{body}</{text}> <span class="muted">{label} · {when}</span></span>{mark}</button></form></li>"#,
+        r#"<li><form method="post" action="/notifications/{id}/open"><input type="hidden" name="group_id" value="{group}"/><input type="hidden" name="kind" value="{kind}"/>{object}{filter}<button class="{class}">{icon}<span class="what"><{text}>{body}</{text}> <span class="muted">{label} · {when}</span></span>{mark}</button></form></li>"#,
         id = n.id,
         group = n.group_id,
         kind = html_escape(&n.kind),
@@ -217,7 +230,11 @@ fn row_html(n: &NotificationResponse, today: NaiveDate) -> String {
 
 /// The entries under their group headings, in the order given (newest
 /// first). Nothing for an empty list.
-fn groups_html(notifications: &[NotificationResponse], today: NaiveDate) -> String {
+fn groups_html(
+    notifications: &[NotificationResponse],
+    today: NaiveDate,
+    filter: Option<&str>,
+) -> String {
     let mut html = String::new();
     let mut open: Option<Bucket> = None;
     for n in notifications {
@@ -232,7 +249,7 @@ fn groups_html(notifications: &[NotificationResponse], today: NaiveDate) -> Stri
             ));
             open = Some(here);
         }
-        html.push_str(&row_html(n, today));
+        html.push_str(&row_html(n, today, filter));
     }
     if open.is_some() {
         html.push_str("</ul>");
@@ -328,7 +345,7 @@ fn page_body(
                 ),
                 _ => String::new(),
             };
-            format!("{}{older}", groups_html(&page.notifications, today))
+            format!("{}{older}", groups_html(&page.notifications, today, kind))
         }
     };
     let newest = if paged {
@@ -459,6 +476,8 @@ pub struct OpenForm {
     group_id: Uuid,
     kind: String,
     object_id: Option<Uuid>,
+    /// The filter of the page the entry was opened from.
+    filter: Option<String>,
 }
 
 /// `POST /notifications/:id/open` — marks the entry read, then goes to
@@ -482,8 +501,9 @@ pub async fn open(
     if !matches!(marked, Ok(ref resp) if resp.status == reqwest::StatusCode::NO_CONTENT) {
         return Redirect::to("/notifications?error=open_failed").into_response();
     }
+    let here = stay_href(form.filter.as_deref());
     let Some(to) = target(&form.kind, form.object_id) else {
-        return Redirect::to("/notifications").into_response();
+        return Redirect::to(&here).into_response();
     };
     // A change names its event, which may be gone (#853): read and stay.
     if let (true, Some(event)) = (form.kind == "agenda_change", form.object_id) {
@@ -498,7 +518,7 @@ pub async fn open(
         .ok()
         .map(|resp| resp.status);
         if event_gone(&form.kind, status) {
-            return Redirect::to("/notifications").into_response();
+            return Redirect::to(&here).into_response();
         }
     }
     // The family it happened in becomes the active one.
@@ -654,6 +674,28 @@ mod tests {
         assert!(!event_gone("agenda_reminder", Some(StatusCode::NOT_FOUND)));
     }
 
+    /// « Stays here » is the page the entry was opened from, its filter
+    /// kept: each row's form carries the filter of its page, and only a
+    /// kind the page accepts comes back.
+    #[test]
+    fn an_entry_that_stays_here_keeps_the_page_s_filter() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
+        let n = notification("agenda_change", at, false);
+        let filtered = row_html(&n, friday(), Some("agenda_change"));
+        assert!(
+            filtered.contains(r#"<input type="hidden" name="filter" value="agenda_change"/>"#),
+            "{filtered}"
+        );
+        assert!(!row_html(&n, friday(), None).contains(r#"name="filter""#));
+        assert_eq!(
+            stay_href(Some("agenda_change")),
+            "/notifications?kind=agenda_change"
+        );
+        for raw in [None, Some(""), Some("autre"), Some("agenda_change&x=1")] {
+            assert_eq!(stay_href(raw), "/notifications", "{raw:?}");
+        }
+    }
+
     #[test]
     fn today_the_six_days_before_and_the_rest() {
         let today = friday();
@@ -733,7 +775,7 @@ mod tests {
     #[test]
     fn an_unread_entry_is_marked_for_the_eye_and_the_ear() {
         let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
-        let html = row_html(&notification("agenda_reminder", at, false), friday());
+        let html = row_html(&notification("agenda_reminder", at, false), friday(), None);
         let id = Uuid::from_u128(7);
         assert!(
             html.contains(&format!(
@@ -760,7 +802,7 @@ mod tests {
     #[test]
     fn a_read_entry_carries_no_mark() {
         let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
-        let html = row_html(&notification("message", at, true), friday());
+        let html = row_html(&notification("message", at, true), friday(), None);
         assert!(html.contains(r#"class="secondary notif""#), "{html}");
         assert!(!html.contains("unread"), "{html}");
         assert!(!html.contains("Non lue"), "{html}");
@@ -772,7 +814,7 @@ mod tests {
         let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
         let mut n = notification("grocery_item", at, false);
         n.body = "Sam a ajouté « <b>pain</b> » à la liste de courses.".to_string();
-        let html = row_html(&n, friday());
+        let html = row_html(&n, friday(), None);
         assert!(html.contains("&lt;b&gt;pain&lt;/b&gt;"), "{html}");
         assert!(!html.contains("<b>"), "{html}");
     }
@@ -802,7 +844,7 @@ mod tests {
                 true,
             ),
         ];
-        let html = groups_html(&list, today);
+        let html = groups_html(&list, today, None);
         let at = |needle: &str| {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle}: {html}"))
@@ -823,11 +865,11 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 10, 26, 9, 0, 0).unwrap(),
             false,
         )];
-        let html = groups_html(&list, friday());
+        let html = groups_html(&list, friday(), None);
         assert!(!html.contains("Aujourd’hui"), "{html}");
         assert!(html.contains("Cette semaine"), "{html}");
         assert!(!html.contains("Plus tôt"), "{html}");
-        assert_eq!(groups_html(&[], friday()), "");
+        assert_eq!(groups_html(&[], friday(), None), "");
     }
 
     #[test]

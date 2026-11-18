@@ -175,9 +175,9 @@ test.describe("Agenda changes — notification centre", () => {
     await expect(deleted).toContainText("Non lue");
     await expect(page.getByText("Sam a écrit dans la messagerie.")).toHaveCount(0);
 
-    // A deletion has nowhere to go: read, and the page stays.
+    // A deletion has nowhere to go: read, and the page stays, filter kept.
     await deleted.click();
-    await expect(page).toHaveURL("/notifications");
+    await expect(page).toHaveURL("/notifications?kind=agenda_change");
     await expect(page.getByRole("button", { name: /a supprimé « Piscine »/ })).not.toContainText("Non lue");
 
     // A change opens its event.
