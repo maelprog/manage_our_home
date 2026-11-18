@@ -1264,8 +1264,8 @@ mod tests {
     }
 
     /// Owners and admins choose the zone among A, B, C or none, and tick
-    /// Alsace-Moselle, in a form without JavaScript; the family's settings
-    /// are the ones checked.
+    /// Alsace-Moselle, in a form that posts without JavaScript too; the
+    /// family's settings are the ones checked.
     #[test]
     fn owners_and_admins_set_the_zone_and_alsace_moselle() {
         for who in [OWNER, ADMIN] {
