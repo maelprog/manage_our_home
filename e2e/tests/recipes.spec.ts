@@ -247,7 +247,7 @@ test.describe("Recipes — à réaliser (#470)", () => {
     await page.getByLabel("Personnes").fill("2");
     await page.getByRole("button", { name: "À réaliser" }).click();
     await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_selected$/);
-    await expect(page.getByText("À réaliser · 2 personnes")).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Personnes, Ratatouille" })).toHaveValue("2");
 
     // The list says so too.
     await page.goto("/recipes");
@@ -340,6 +340,93 @@ test.describe("Recipes — jour et repas d'une recette planifiée (#812)", () =>
     await expect(form).toBeHidden();
     await member.goto("/recipes?vue=prevues");
     await expect(member.locator(".badge.accent")).toHaveCount(0);
+    await context.close();
+  });
+});
+
+// #846: the number of people of a planned recipe, changed in its field —
+// on change with JavaScript, by « Appliquer » without — from its page and
+// from the list; the day and the meal stay.
+test.describe("Recipes — personnes d'une recette planifiée (#846)", () => {
+  test("the field applies on change, refuses out of bounds and removes the number once emptied", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-rcpeople", "People Planner");
+    await createGroup(page, "Famille Convives");
+    await createRecipe(page, { name: "Hachis du lundi", ingredients: "Pomme de terre | 4 | pièce" });
+    await page.getByLabel("Personnes").fill("4");
+    await page.getByRole("button", { name: "À réaliser" }).click();
+    await expect(page).toHaveURL(/\?notice=recipe_selected$/);
+
+    // A day and a meal, which none of what follows touches.
+    const day = parisDay(2);
+    const form = page.locator("form.when-form");
+    await page.getByText("Choisir un jour").click();
+    await form.getByLabel("Jour (facultatif)").fill(day);
+    await form.getByRole("radio", { name: "Soir" }).check();
+    await form.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(/\?notice=plan_saved$/);
+
+    // The badge says « À réaliser » alone: the number is in the field.
+    const people = page.getByRole("spinbutton", { name: "Personnes, Hachis du lundi" });
+    await expect(page.locator(".notice .badge")).toHaveText("À réaliser");
+    await expect(people).toHaveValue("4");
+    await expect(page.getByRole("button", { name: "Appliquer" })).toBeHidden();
+
+    await people.fill("6");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\?notice=servings_updated&servings=6$/);
+    await expect(page.getByRole("status").filter({ hasText: "Nombre de personnes mis à jour : 6." })).toBeVisible();
+    await expect(people).toHaveValue("6");
+    await expect(people).toBeFocused();
+    await expect(form.getByLabel("Jour (facultatif)")).toHaveValue(day);
+    await expect(form.getByRole("radio", { name: "Soir" })).toBeChecked();
+
+    // Out of bounds: the existing message, nothing changed.
+    await people.fill("0");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\?error=invalid_servings$/);
+    await expect(page.getByText("Le nombre de personnes doit être un nombre entier de 1 à 50.")).toBeVisible();
+    await expect(people).toHaveValue("6");
+
+    // Emptied: the number goes, the recipe stays planned on its day.
+    await people.fill("");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\?notice=servings_cleared$/);
+    await expect(people).toHaveValue("");
+    await expect(people).toHaveAttribute("placeholder", "Optionnel");
+    await expect(form.getByLabel("Jour (facultatif)")).toHaveValue(day);
+
+    // From the list, « Toutes » then « Prévues », back to each.
+    await page.goto("/recipes");
+    const row = page.getByRole("spinbutton", { name: "Personnes, Hachis du lundi" });
+    await row.fill("3");
+    await row.press("Tab");
+    await expect(page).toHaveURL(/\/recipes\?notice=servings_updated&servings=3$/);
+    await expect(row).toHaveValue("3");
+    await page.goto("/recipes?vue=prevues");
+    await row.fill("5");
+    await row.press("Tab");
+    await expect(page).toHaveURL(/\/recipes\?vue=prevues&notice=servings_updated&servings=5$/);
+    await expect(row).toHaveValue("5");
+    await expect(page.locator(".badge.accent")).toHaveCount(1);
+  });
+
+  test("without JavaScript, « Appliquer » sends the number", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-rcpeoplenojs", "People Without Script");
+    await createGroup(page, "Famille Sans Script");
+    await createRecipe(page, { name: "Potée", ingredients: "Chou | 1 | pièce" });
+    await page.getByRole("button", { name: "À réaliser" }).click();
+    await expect(page).toHaveURL(/\?notice=recipe_selected$/);
+
+    const people = page.getByRole("spinbutton", { name: "Personnes, Potée" });
+    await people.fill("8");
+    await page.getByRole("button", { name: "Appliquer" }).click();
+    await expect(page).toHaveURL(/\?notice=servings_updated&servings=8$/);
+    await expect(page.getByText("Nombre de personnes mis à jour : 8.")).toBeVisible();
+    await expect(people).toHaveValue("8");
     await context.close();
   });
 });

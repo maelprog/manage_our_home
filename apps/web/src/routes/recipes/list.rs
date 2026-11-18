@@ -20,6 +20,10 @@
 //! Since #812 a planned recipe that has a day shows it, with its meal, in
 //! « Prévues » and « Toutes » (`plan_badge`); one without shows nothing more.
 //!
+//! Since #846 a planned recipe of those two tabs ends its actions with the
+//! field of its number of people (`servings_form`), which its badge no
+//! longer repeats.
+//!
 //! Since #825 « Possibles » carries the box « Éviter les recettes contenant
 //! les allergènes de la famille », ticked by default: unticked, the
 //! suggestions are asked with `avoid_allergens=false` for that request, and
@@ -49,6 +53,7 @@ use super::week::{back_window, slot_from_query, week_back, week_href, window_for
 use super::{
     allergy, deselect_form, family_context, outcome_links, plan_badge, planned_badge,
     planned_with_stock, recipes_cookie, select_form, select_form_on, service_unavailable_page,
+    servings_form,
 };
 
 #[derive(serde::Deserialize)]
@@ -66,6 +71,22 @@ pub struct ListQuery {
     /// whether the box was ticked (`allergy::avoid_from`).
     avoid_form: Option<String>,
     avoid_allergens: Option<String>,
+    /// The number of people set (`notice=servings_updated`, #846).
+    servings: Option<String>,
+}
+
+/// The success banner of the URL's `?notice=`, a number of people changed
+/// with the one of `?servings=` (#846).
+fn notice_html(notice: Option<&str>, servings: Option<&str>) -> String {
+    let Some(code) = notice else {
+        return String::new();
+    };
+    super::servings_banner(code, servings)
+        .or_else(|| {
+            notice_text(code)
+                .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
+        })
+        .unwrap_or_default()
 }
 
 fn notice_text(code: &str) -> Option<&'static str> {
@@ -250,11 +271,12 @@ fn recipe_row_for(
     };
     let selection = match planned {
         Some(s) => format!(
-            r#"<span class="actions">{badge}{plan}{outcome}{deselect}</span>"#,
-            badge = planned_badge(s.servings),
+            r#"<div class="actions">{badge}{plan}{outcome}{deselect}{people}</div>"#,
+            badge = planned_badge(),
             plan = plan_badge(s.planned_on, s.meal_slot.as_deref()),
             outcome = outcome_links(r.id, "list"),
             deselect = deselect_form(r.id, "list"),
+            people = servings_form(r.id, s.servings, "list", &r.name),
         ),
         None => match slot {
             Some(slot) => select_form_on(r.id, base, &slot.back, "actions", (slot.day, slot.meal)),
@@ -343,15 +365,10 @@ fn planned_tab_html(planned: &[PlannedSelection]) -> String {
         .iter()
         .map(|p| {
             let s = &p.selection;
-            let people = s
-                .servings
-                .map(|n| format!(r#"<span class="muted">{}</span>"#, servings_label(n)))
-                .unwrap_or_default();
             format!(
                 r#"<li class="list-row">
 <span><a href="/recipes/{id}"><strong>{name}</strong></a>{plan}{use_by}{missing}</span>
-{people}
-<span class="actions">{outcome}{deselect}</span>{dialog}
+<div class="actions">{outcome}{deselect}{people}</div>{dialog}
 </li>"#,
                 id = s.recipe_id,
                 name = html_escape(&s.recipe_name),
@@ -368,6 +385,7 @@ fn planned_tab_html(planned: &[PlannedSelection]) -> String {
                 dialog = missing_dialog(p),
                 outcome = outcome_links(s.recipe_id, "planned"),
                 deselect = deselect_form(s.recipe_id, "planned"),
+                people = servings_form(s.recipe_id, s.servings, "planned", &s.recipe_name),
             )
         })
         .collect();
@@ -543,12 +561,7 @@ pub async fn get(
         }
     };
 
-    let notice = query
-        .notice
-        .as_deref()
-        .and_then(notice_text)
-        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(n)))
-        .unwrap_or_default();
+    let notice = notice_html(query.notice.as_deref(), query.servings.as_deref());
     let error = query
         .error
         .as_deref()
@@ -702,12 +715,16 @@ mod tests {
             Some(&selection(1, "Crêpes", Some(6))),
         );
         let id = Uuid::from_u128(1);
-        assert!(html.contains("À réaliser · 6 personnes"), "{html}");
+        assert!(
+            html.contains(r#"<span class="badge">À réaliser</span>"#),
+            "{html}"
+        );
         assert!(
             html.contains(&format!(r#"action="/recipes/{id}/deselect""#)),
             "{html}"
         );
-        assert!(!html.contains("/select\""), "{html}");
+        // No « À réaliser » form: the recipe is planned already.
+        assert!(!html.contains(">À réaliser</button>"), "{html}");
         // Faite and Abandonner (#474), back to the list.
         assert!(
             html.contains(&format!(r#"href="/recipes/{id}/done?back=list""#)),
@@ -717,6 +734,58 @@ mod tests {
             html.contains(&format!(r#"href="/recipes/{id}/abandon?back=list""#)),
             "{html}"
         );
+    }
+
+    #[test]
+    fn a_planned_recipe_of_the_full_list_changes_its_people_in_its_field() {
+        // #846: after « Retirer », the field of the selection, back to the
+        // list; the badge no longer says the number.
+        let html = recipe_row_html(
+            &recipe(1, "Crêpes", Some(4)),
+            Some(&selection(1, "Crêpes", Some(6))),
+        );
+        let id = Uuid::from_u128(1);
+        assert!(!html.contains("6 personnes"), "{html}");
+        let field = super::super::servings_form(id, Some(6), "list", "Crêpes");
+        let at = html.find(&field).expect(&html);
+        assert!(html.find(">Retirer<").unwrap() < at, "{html}");
+        // The actions are a block: a form may not sit in a `<span>`.
+        assert!(html.contains(r#"<div class="actions">"#), "{html}");
+        assert!(!html.contains(r#"<span class="actions">"#), "{html}");
+        let html = recipe_row_html(
+            &recipe(1, "Crêpes", Some(4)),
+            Some(&selection(1, "Crêpes", None)),
+        );
+        assert!(
+            html.contains(&super::super::servings_form(id, None, "list", "Crêpes")),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_planned_recipe_of_the_planned_tab_changes_its_people_in_its_field() {
+        // The validated mock-up's default: « Prévues » gets the field too,
+        // in place of the muted « 6 personnes ».
+        let html = planned_tab_html(&[with_stock(selection(1, "Crêpes", Some(6)))]);
+        let id = Uuid::from_u128(1);
+        assert!(!html.contains("6 personnes"), "{html}");
+        let field = super::super::servings_form(id, Some(6), "planned", "Crêpes");
+        let at = html.find(&field).expect(&html);
+        assert!(html.find(">Retirer<").unwrap() < at, "{html}");
+        assert!(!html.contains(r#"<span class="actions">"#), "{html}");
+    }
+
+    #[test]
+    fn a_servings_change_is_told_on_the_list() {
+        assert_eq!(
+            notice_html(Some("servings_updated"), Some("8")),
+            r#"<p class="notice success" role="status">Nombre de personnes mis à jour : 8.</p>"#
+        );
+        assert_eq!(
+            notice_html(Some("recipe_deleted"), None),
+            r#"<p class="notice success">Recette supprimée.</p>"#
+        );
+        assert_eq!(notice_html(Some("inconnu"), None), "");
     }
 
     #[test]
@@ -889,7 +958,10 @@ mod tests {
             )),
             "{html}"
         );
-        assert!(html.contains("6 personnes"), "{html}");
+        assert!(
+            html.contains(r#"value="6" aria-label="Personnes, Crêpes""#),
+            "{html}"
+        );
         assert!(html.contains("Soupe &lt;du jour&gt;"), "{html}");
         // Each comes back to this tab.
         assert!(
@@ -1130,7 +1202,7 @@ mod tests {
         );
         assert!(
             html.contains(
-                r#"<span class="badge">À réaliser · 6 personnes</span><span class="badge accent">sam. 21/11</span>"#
+                r#"<span class="badge">À réaliser</span><span class="badge accent">sam. 21/11</span>"#
             ),
             "{html}"
         );
