@@ -3496,6 +3496,64 @@ async fn under_a_lowered_threshold_a_standard_member_edits_their_own_entries_onl
     assert_eq!(json_body(get).await["amount"], 500.0);
 }
 
+/// #865: setting a price again rewrites the expense the item is linked to,
+/// so it is an edit of that expense — under a threshold lowered to
+/// `standard`, a standard member re-prices an item they priced, not one
+/// another member priced (403, the expense untouched).
+#[sqlx::test]
+async fn under_a_lowered_threshold_a_standard_member_re_prices_their_own_items_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, standard, group_id) =
+        owner_admin_and_standard(&router, &db, "reprice").await;
+    set_budget_threshold(&router, &owner, &group_id, "standard").await;
+    let price = |item_id: &str| format!("/groups/{group_id}/grocery-items/{item_id}/price");
+
+    let owners_item = checked_grocery_item(&router, &owner, &group_id, "Lait").await;
+    let res = call(
+        &router,
+        Method::POST,
+        &price(&owners_item),
+        Some(&owner),
+        Some(serde_json::json!({"amount": 2.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let owners_entry = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let res = call(
+        &router,
+        Method::POST,
+        &price(&owners_item),
+        Some(&standard),
+        Some(serde_json::json!({"amount": 99.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/{owners_entry}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(json_body(get).await["amount"], 2.0);
+
+    let own_item = checked_grocery_item(&router, &standard, &group_id, "Pain").await;
+    for amount in [1.0, 1.2] {
+        let res = call(
+            &router,
+            Method::POST,
+            &price(&own_item),
+            Some(&standard),
+            Some(serde_json::json!({"amount": amount})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+        assert_eq!(json_body(res).await["amount"], amount);
+    }
+}
+
 /// AC #865: the RGPD export of a standard member hands back the expenses
 /// they wrote down while the budget was open to them, once the owner has
 /// closed it again; the family's settings follow the threshold, as the

@@ -397,7 +397,9 @@ async fn require_payer(
 /// off/bought (docs/v1-scope.md epic #6). Same bar as creating a manual
 /// entry: the family's `budget` threshold, an owner or an admin by default
 /// (#531, #865); a member under it gets 404, since a price is a budget
-/// entry.
+/// entry. A price set again rewrites the expense the item is linked to, so
+/// it takes `can_modify` on that expense, as an edit does: its creator or
+/// an admin/owner, 403 for another member past the threshold.
 #[utoipa::path(
     post,
     path = "/groups/{id}/grocery-items/{item_id}/price",
@@ -424,7 +426,7 @@ pub async fn set_grocery_item_price(
 ) -> AppResult<impl IntoResponse> {
     // The bar first, as `create_budget_entry`.
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_budget_access(&mut tx, group_id, auth.user_id).await?;
+    let actor_role = require_budget_access(&mut tx, group_id, auth.user_id).await?;
     let Json(body) = body?;
 
     let amount_cents = to_cents(body.amount)?;
@@ -445,7 +447,7 @@ pub async fn set_grocery_item_price(
     // "Set" is idempotent: a price set again on an item updates the expense
     // it is linked to instead of creating a second, double-counted one.
     let existing = sqlx::query!(
-        r#"SELECT e.id, e.category_id,
+        r#"SELECT e.id, e.category_id, e.created_by,
                   (SELECT count(*) FROM budget_entry_grocery_items o
                    WHERE o.entry_id = e.id AND o.group_id = e.group_id) AS "links!"
            FROM budget_entry_grocery_items l
@@ -457,6 +459,13 @@ pub async fn set_grocery_item_price(
     )
     .fetch_optional(&mut *tx)
     .await?;
+    // Re-pricing edits that expense: the same bar as `update_budget_entry`.
+    if existing
+        .as_ref()
+        .is_some_and(|e| !can_modify(&actor_role, e.created_by == auth.user_id))
+    {
+        return Err(AppError::Forbidden);
+    }
     // An expense linked to other items too (#633) is their price as much
     // as this one's: this item's own price would replace it.
     if existing.as_ref().is_some_and(|e| e.links > 1) {
