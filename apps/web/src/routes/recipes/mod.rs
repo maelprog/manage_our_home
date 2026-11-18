@@ -40,7 +40,7 @@ use manage_our_home_shared::dto::recipes::{
     PlannedSelection, PlannedSelectionList, RecipeSelectionResponse, SelectRecipeRequest,
     UpdateSelectionRequest,
 };
-use manage_our_home_shared::validation::recipes::{parse_servings, servings_label, SERVINGS_MAX};
+use manage_our_home_shared::validation::recipes::{parse_servings, SERVINGS_MAX};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell, Width};
@@ -241,13 +241,89 @@ pub(crate) fn outcome_links(recipe_id: Uuid, back: &str) -> String {
     )
 }
 
-/// What a planned recipe shows of its selection: "À réaliser", and for how
-/// many people when the selection says.
-pub(crate) fn planned_badge(servings: Option<i32>) -> String {
-    let people = servings
-        .map(|s| format!(" · {}", servings_label(s)))
-        .unwrap_or_default();
-    format!(r#"<span class="badge">À réaliser{people}</span>"#)
+/// What a planned recipe shows of its selection: "À réaliser". Its number
+/// of people is said by the field beside it ([`servings_form`], #846).
+pub(crate) fn planned_badge() -> String {
+    r#"<span class="badge">À réaliser</span>"#.to_string()
+}
+
+/// The number of people of a planned recipe (#846), at the end of its
+/// actions: sent as soon as it changes (`data-submit-on-change`), by
+/// « Appliquer » without JavaScript. `change=servings` has `select` change
+/// the selection only — never plan the recipe again, nor touch its day or
+/// meal. Blank, with « Optionnel », when the selection says no number;
+/// emptied, it removes the number. `name` is the recipe's: a list holds
+/// one such field per row, the visible « Personnes » opening each name
+/// (WCAG 2.5.3).
+pub(crate) fn servings_form(
+    recipe_id: Uuid,
+    servings: Option<i32>,
+    back: &str,
+    name: &str,
+) -> String {
+    let (value, placeholder) = match servings {
+        Some(n) => (n.to_string(), ""),
+        None => (String::new(), r#" placeholder="Optionnel""#),
+    };
+    format!(
+        r#"<form method="post" action="/recipes/{recipe_id}/select" class="servings-form" data-keep-scroll>
+<input type="hidden" name="back" value="{back}"/>
+<input type="hidden" name="change" value="servings"/>
+<label>Personnes <input type="number" name="servings" min="1" max="{SERVINGS_MAX}" step="1" value="{value}"{placeholder} aria-label="Personnes, {name}" data-submit-on-change/></label>
+<button type="submit" class="secondary" data-hidden-with-js>Appliquer</button>
+</form>"#,
+        back = html_escape(back),
+        name = html_escape(name),
+    )
+}
+
+/// The `PATCH …/selection` of [`servings_form`] (#846): the number typed,
+/// or `null` for a field left empty, which removes it; the day and the
+/// meal are not sent, so they stay. Out of 1–50, or not a whole number,
+/// `invalid_servings`.
+pub(crate) fn servings_request(input: &str) -> Result<UpdateSelectionRequest, &'static str> {
+    Ok(UpdateSelectionRequest {
+        servings: Some(parse_servings(input)?),
+        ..UpdateSelectionRequest::default()
+    })
+}
+
+/// The `notice=` of a number of people changed (#846), with the number.
+pub(crate) fn servings_notice_param(servings: Option<i32>) -> String {
+    match servings {
+        Some(n) => format!("servings_updated&servings={n}"),
+        None => "servings_cleared".to_string(),
+    }
+}
+
+/// The banner of [`servings_notice_param`]'s codes; `servings` is the
+/// URL's, repeated only when it is a number the form could have sent.
+pub(crate) fn servings_notice(code: &str, servings: Option<&str>) -> Option<String> {
+    match code {
+        "servings_updated" => Some(
+            match servings.and_then(|s| parse_servings(s).ok().flatten()) {
+                Some(n) => format!("Nombre de personnes mis à jour : {n}."),
+                None => "Nombre de personnes mis à jour.".to_string(),
+            },
+        ),
+        "servings_cleared" => Some(
+            "Nombre de personnes retiré : les quantités de la recette sont prises telles qu'écrites."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// [`servings_notice`] as its page shows it: a success banner announced
+/// (`role="status"`), the field that sent it applying on change, as the
+/// settings of #844 do.
+pub(crate) fn servings_banner(code: &str, servings: Option<&str>) -> Option<String> {
+    servings_notice(code, servings).map(|n| {
+        format!(
+            r#"<p class="notice success" role="status">{}</p>"#,
+            html_escape(&n)
+        )
+    })
 }
 
 // -- the day and the meal (#812) --------------------------------------------
@@ -372,9 +448,11 @@ pub async fn clear_plan(
     .await
 }
 
-/// The `PATCH …/selection` of [`plan`] and [`clear_plan`], then back to
-/// the page with `notice` or the API's refusal. A selection gone in
-/// between (404, another member was quicker) is `selection_gone`.
+/// The `PATCH …/selection` of [`plan`], [`clear_plan`] and a number of
+/// people changed ([`select`], #846), then back to the page with `notice`
+/// — a code, and the parameters that follow it — or the API's refusal. A
+/// selection gone in between (404, another member was quicker) is
+/// `selection_gone`.
 async fn patch_plan(
     me: MeResponse,
     state: AppState,
@@ -403,6 +481,7 @@ async fn patch_plan(
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
             let code = match resp.body.get("error").and_then(|e| e.as_str()) {
                 Some("invalid_meal_slot") => "invalid_meal_slot",
+                Some("invalid_servings") => "invalid_servings",
                 _ => "invalid_planned_on",
             };
             back_with(back, recipe_id, &format!("error={code}"))
@@ -430,12 +509,18 @@ pub struct SelectForm {
     planned_on: String,
     #[serde(default)]
     meal_slot: String,
+    /// `servings` from the field of a planned recipe (#846).
+    #[serde(default)]
+    change: String,
 }
 
 /// `POST /recipes/:id/select`: plans the recipe (`POST …/selection`), or
 /// changes the number of people of the one already planned — the API is
 /// idempotent on it. Chosen for a slot of the planning (#813), the day and
-/// the meal follow (`PATCH …/selection`, as « Choisir un jour »).
+/// the meal follow (`PATCH …/selection`, as « Choisir un jour »). From the
+/// field of a planned recipe (`change=servings`, #846), the number alone
+/// is changed or removed (`PATCH …/selection`): a selection gone in
+/// between is `selection_gone`, not planned again.
 pub async fn select(
     CurrentUser(me): CurrentUser,
     State(state): State<AppState>,
@@ -444,6 +529,17 @@ pub async fn select(
     Form(form): Form<SelectForm>,
 ) -> Response {
     let back = form.back.as_str();
+    if form.change == "servings" {
+        return match servings_request(&form.servings) {
+            Ok(request) => {
+                let notice = servings_notice_param(request.servings.flatten());
+                patch_plan(me, state, headers, recipe_id, back, request, &notice).await
+            }
+            Err(code) => {
+                Redirect::to(&back_with(back, recipe_id, &format!("error={code}"))).into_response()
+            }
+        };
+    }
     let Some(fam) = family_context(&state, &headers, &me, &back_path(back, recipe_id)).await else {
         return Redirect::to("/groups/new").into_response();
     };
@@ -744,15 +840,108 @@ mod tests {
     }
 
     #[test]
-    fn the_planned_badge_says_for_how_many_people() {
+    fn the_planned_badge_leaves_the_number_to_its_field() {
+        // #846: the number of people is said once, in the field beside it.
+        assert_eq!(planned_badge(), r#"<span class="badge">À réaliser</span>"#);
+    }
+
+    #[test]
+    fn the_servings_form_sends_the_number_of_a_planned_recipe_on_change() {
+        let id = Uuid::from_u128(7);
+        let html = servings_form(id, Some(4), "detail", "Gratin <dauphinois>");
+        assert!(
+            html.contains(&format!(
+                r#"<form method="post" action="/recipes/{id}/select" class="servings-form" data-keep-scroll>"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="back" value="detail"/>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="change" value="servings"/>"#),
+            "{html}"
+        );
+        // The visible « Personnes » opens the accessible name (WCAG 2.5.3).
+        assert!(
+            html.contains(r#"<label>Personnes <input type="number" name="servings" min="1" max="50" step="1" value="4" aria-label="Personnes, Gratin &lt;dauphinois&gt;" data-submit-on-change/></label>"#),
+            "{html}"
+        );
+        // Without JavaScript, the button sends it.
+        assert!(
+            html.contains(
+                r#"<button type="submit" class="secondary" data-hidden-with-js>Appliquer</button>"#
+            ),
+            "{html}"
+        );
+        assert!(!html.contains("placeholder"), "{html}");
+        // A selection that says no number: the field is blank, « Optionnel ».
+        let html = servings_form(id, None, "planned", "Soupe");
+        assert!(
+            html.contains(
+                r#"step="1" value="" placeholder="Optionnel" aria-label="Personnes, Soupe""#
+            ),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="back" value="planned""#), "{html}");
+    }
+
+    #[test]
+    fn a_servings_change_patches_the_number_or_removes_it() {
         assert_eq!(
-            planned_badge(Some(4)),
-            r#"<span class="badge">À réaliser · 4 personnes</span>"#
+            serde_json::to_value(servings_request(" 6 ").unwrap()).unwrap(),
+            serde_json::json!({"servings": 6})
+        );
+        // A field emptied removes the number, rather than being refused.
+        assert_eq!(
+            serde_json::to_value(servings_request("").unwrap()).unwrap(),
+            serde_json::json!({"servings": null})
+        );
+        // Neither the day nor the meal is sent: both stay as they are.
+        let r = servings_request("6").unwrap();
+        assert_eq!((r.planned_on, r.meal_slot), (None, None));
+        for bad in ["0", "51", "quatre", "2.5", "-1"] {
+            assert_eq!(
+                servings_request(bad).unwrap_err(),
+                "invalid_servings",
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_servings_change_is_told_with_its_number() {
+        assert_eq!(
+            servings_notice_param(Some(6)),
+            "servings_updated&servings=6"
+        );
+        assert_eq!(servings_notice_param(None), "servings_cleared");
+        assert_eq!(
+            back_with(
+                "list",
+                Uuid::from_u128(7),
+                &format!("notice={}", servings_notice_param(Some(6)))
+            ),
+            "/recipes?notice=servings_updated&servings=6"
         );
         assert_eq!(
-            planned_badge(None),
-            r#"<span class="badge">À réaliser</span>"#
+            servings_notice("servings_updated", Some("6")).as_deref(),
+            Some("Nombre de personnes mis à jour : 6.")
         );
+        // A number the form could not have sent is not repeated.
+        for odd in [None, Some(""), Some("0"), Some("<b>")] {
+            assert_eq!(
+                servings_notice("servings_updated", odd).as_deref(),
+                Some("Nombre de personnes mis à jour."),
+                "{odd:?}"
+            );
+        }
+        assert_eq!(
+            servings_notice("servings_cleared", None).as_deref(),
+            Some("Nombre de personnes retiré : les quantités de la recette sont prises telles qu'écrites.")
+        );
+        assert_eq!(servings_notice("recipe_selected", Some("6")), None);
     }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {

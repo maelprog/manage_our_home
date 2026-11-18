@@ -1178,6 +1178,14 @@ textarea[data-count] { resize: vertical; }
 .when-form fieldset, fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
 .when-form legend, .plain > legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
 .when-form .when-state { flex: 1 0 100%; }
+/* The number of people of a planned recipe (#846), at the end of its
+   actions: the form, its label and its fallback « Appliquer » on one line,
+   « Personnes » left of the field and never wrapped from it. Wider blank,
+   for its « Optionnel ». */
+.servings-form, .servings-form label { flex-direction: row; align-items: center; gap: var(--s2x); }
+.servings-form label { white-space: nowrap; }
+.servings-form input { width: 5rem; }
+.servings-form input[placeholder] { width: 7rem; }
 /* -- The planning of the meals (#813) ----------------------------------------
    ‹ Aujourd'hui › then the window in words: its own line on a phone, beside
    the arrows on a PC. */

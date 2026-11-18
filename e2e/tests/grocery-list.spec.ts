@@ -198,21 +198,25 @@ test.describe("Grocery list — recipes to cook (#470)", () => {
     await expect(page).toHaveURL(/\/recipes#a-realiser$/);
     await expect(page.getByText("Aucune recette à réaliser.")).toBeVisible();
 
-    // Written for 4, planned for 6: 200 g × 6 / 4 = 300 g.
+    // Written for 4, planned for 6, then changed to 8 in its field (#846):
+    // 200 g × 8 / 4 = 400 g.
     await createRecipe(page, "Crêpes", "Farine | 200 | g", "4");
     await createRecipe(page, "Soupe", "Poireau | 2 | pièce");
     await planRecipe(page, "Crêpes", "6");
     await expect(page.getByText("Recette à réaliser pour les prochaines courses.")).toBeVisible();
     await expect(page.getByText("1 recette prévue pour la liste de courses")).toBeVisible();
-    await expect(
-      page.locator("li", { hasText: "Crêpes" }).getByText("À réaliser · 6 personnes"),
-    ).toBeVisible();
+    const people = page.getByRole("spinbutton", { name: "Personnes, Crêpes" });
+    await expect(people).toHaveValue("6");
+    await people.fill("8");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\/recipes\?notice=servings_updated&servings=8$/);
+    await expect(people).toHaveValue("8");
 
     await page.goto("/grocery-list");
     await page.getByRole("button", { name: "Générer depuis 1 recette et les stocks" }).click();
     await expect(page).toHaveURL(/\/grocery-list\?notice=generated&added=1$/);
     const farine = page.locator("li", { hasText: "Farine" });
-    await expect(farine.getByText("300 g")).toBeVisible();
+    await expect(farine.getByText("400 g")).toBeVisible();
     await expect(farine.getByText("Recette")).toBeVisible();
     await expect(page.locator("li", { hasText: "Poireau" })).toHaveCount(0);
 

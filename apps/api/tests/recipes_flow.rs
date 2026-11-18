@@ -1142,6 +1142,80 @@ async fn any_member_resizes_or_deselects_a_planned_selection(db: PgPool) {
     assert_status(&reselect, StatusCode::CREATED);
 }
 
+/// Issue #846: any member changes the number of people of a planned
+/// selection, or removes it with `"servings": null` — the quantities are
+/// then taken as the recipe writes them. An omitted `servings` leaves it,
+/// a refused one changes nothing, and none of them touches the day or the
+/// meal.
+#[sqlx::test]
+async fn any_member_changes_or_removes_the_number_of_people(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-servings").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Gratin").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+    let day = paris_day(Utc::now())
+        .checked_add_days(Days::new(2))
+        .unwrap();
+    let select = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 4, "planned_on": day, "meal_slot": "dinner"})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+
+    let patch = |body: serde_json::Value| {
+        let router = router.clone();
+        let path = path.clone();
+        let cookie = member_cookie.clone();
+        async move { call(&router, Method::PATCH, &path, Some(&cookie), Some(body)).await }
+    };
+    let stored_servings = || async {
+        sqlx::query_scalar::<_, Option<i32>>(
+            "SELECT servings FROM recipe_selections WHERE recipe_id = $1::uuid",
+        )
+        .bind(&recipe_id)
+        .fetch_one(&db)
+        .await
+        .unwrap()
+    };
+
+    let res = patch(serde_json::json!({"servings": 6})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], 6);
+
+    // Omitted: left as it is.
+    let res = patch(serde_json::json!({})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], 6);
+
+    // Refused: nothing changes.
+    for servings in [0, 51] {
+        let res = patch(serde_json::json!({"servings": servings})).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "invalid_servings");
+    }
+    assert_eq!(stored_servings().await, Some(6));
+
+    // `null` removes it.
+    let res = patch(serde_json::json!({"servings": null})).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert!(body["servings"].is_null(), "{body}");
+    assert_eq!(stored_servings().await, None);
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    assert!(listed[0]["servings"].is_null());
+
+    // The day and the meal were never touched.
+    assert_eq!(
+        stored_plan(&db, &recipe_id).await,
+        (Some(day), Some("dinner".into()))
+    );
+}
+
 /// Issue #469: deselecting only deletes a `planned` selection. A `done` or
 /// `abandoned` one (#473) is history: it is neither listed, nor deleted, nor
 /// resized, and it does not stop the recipe from being planned again.

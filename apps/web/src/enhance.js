@@ -480,6 +480,12 @@
       form.removeAttribute("data-busy");
     });
     Array.prototype.forEach.call(document.querySelectorAll('[aria-busy="true"]'), function (button) {
+      // A number locked while it was sent (#846): unlocked as it was.
+      if (button.type === "number") {
+        button.removeAttribute("aria-busy");
+        button.disabled = false;
+        return;
+      }
       if (button.idleLabel === undefined) return;
       if (button.tagName === "INPUT") button.value = button.idleLabel;
       else button.innerHTML = button.idleLabel;
@@ -529,6 +535,14 @@
     if (input.hasAttribute("data-submit-on-change")) {
       keepScroll(input.form, input);
       input.form.submit();
+      // A number (a planned recipe's people, #846) is locked until the
+      // page comes back: Chrome sends one `change` per click of its
+      // arrows, and a value typed meanwhile would be lost. Disabled after
+      // `submit()`, which has already read the form's data.
+      if (input.type === "number") {
+        input.setAttribute("aria-busy", "true");
+        input.disabled = true;
+      }
     }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).
     else if (input.hasAttribute("data-all-day")) allDay(input);
@@ -946,13 +960,16 @@
   // the top. `field`, a radio or a box sent by `data-submit-on-change`
   // (the profile's families, #751; the theme, the family's colour and
   // calendar, #844): the field of the same name and value gets the focus
-  // back, so the arrow keys go on from it after the reload.
+  // back, so the arrow keys go on from it after the reload. A number (a
+  // planned recipe's people, #846) is found again by its form's action, a
+  // list holding one such field per row, whose value has changed.
   var KEEP_SCROLL = "keep-scroll";
 
   function keepScroll(form, field) {
     if (!form || !form.hasAttribute("data-keep-scroll")) return;
     var kept = { path: location.pathname, y: window.scrollY };
     if (field && (field.type === "radio" || field.type === "checkbox")) kept.focus = [field.name, field.value];
+    else if (field && field.type === "number") kept.focusIn = [form.getAttribute("action"), field.name];
     try {
       sessionStorage.setItem(KEEP_SCROLL, JSON.stringify(kept));
     } catch (e) {}
@@ -973,6 +990,14 @@
         var fields = document.getElementsByName(kept.focus[0]);
         for (var i = 0; i < fields.length; i++) {
           if (fields[i].value === kept.focus[1]) fields[i].focus({ preventScroll: true });
+        }
+      }
+      if (kept.focusIn) {
+        var forms = document.querySelectorAll("form[action]");
+        for (var j = 0; j < forms.length; j++) {
+          if (forms[j].getAttribute("action") !== kept.focusIn[0]) continue;
+          var named = forms[j].elements.namedItem(kept.focusIn[1]);
+          if (named && named.focus) named.focus({ preventScroll: true });
         }
       }
     }

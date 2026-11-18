@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE recipe_selections SET\n            servings = COALESCE($3, servings),\n            planned_on = $4,\n            meal_slot = $5,\n            updated_at = now()\n        WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'\n        RETURNING id, recipe_id, status, servings, planned_on, meal_slot,\n                  created_by, created_at, updated_at\n        ",
+  "query": "\n        UPDATE recipe_selections SET\n            servings = CASE WHEN $6 THEN $3 ELSE servings END,\n            planned_on = $4,\n            meal_slot = $5,\n            updated_at = now()\n        WHERE recipe_id = $1 AND group_id = $2 AND status = 'planned'\n        RETURNING id, recipe_id, status, servings, planned_on, meal_slot,\n                  created_by, created_at, updated_at\n        ",
   "describe": {
     "columns": [
       {
@@ -109,7 +109,8 @@
         "Uuid",
         "Int4",
         "Date",
-        "Text"
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
@@ -124,5 +125,5 @@
       false
     ]
   },
-  "hash": "04bc58d28ac84f48ebab7971ccaca05bb926748d6df5485547d5a6bebf0e75e8"
+  "hash": "c9e6f188fa828e8a5a9f5ce45e7e9d40f8c12838b68a8933227116deea5b0798"
 }

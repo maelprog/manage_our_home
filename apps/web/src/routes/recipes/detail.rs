@@ -3,7 +3,8 @@
 //! and the delete action; full edit lives in `edit.rs`. The « À réaliser » /
 //! « Retirer » forms (#470) plan the recipe for the next grocery list, open
 //! to any member like the selection API; a planned recipe's day and meal
-//! (#812) are set, changed and removed there too, by any member as well.
+//! (#812) are set, changed and removed there too, by any member as well,
+//! and so is its number of people (#846).
 //!
 //! Permission bar: the log-a-meal form renders for **any** family member
 //! (feeding the shared variety history); the edit link and delete button
@@ -37,7 +38,7 @@ use super::missing::{after_stock_change, incomplete_banner, incomplete_count};
 use super::{
     can_modify, deselect_form, family_context, forbidden_page, outcome_links, planned_badge,
     planned_with_stock, recipe_not_found_page, recipes_cookie, select_form,
-    service_unavailable_page,
+    service_unavailable_page, servings_form,
 };
 
 /// Formats an `f64` quantity for display without a trailing `.0` on whole
@@ -83,6 +84,8 @@ pub struct DetailQuery {
     error: Option<String>,
     /// The recipe this one replaced (`notice=recipe_replaced`, #816).
     from: Option<String>,
+    /// The number of people set (`notice=servings_updated`, #846).
+    servings: Option<String>,
 }
 
 pub(super) fn notice_text(code: &str) -> Option<&'static str> {
@@ -246,16 +249,7 @@ pub async fn get(
         }
         _ => None,
     };
-    let notice_html = replaced
-        .or_else(|| {
-            query
-                .notice
-                .as_deref()
-                .and_then(notice_text)
-                .map(str::to_string)
-        })
-        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(&n)))
-        .unwrap_or_default();
+    let notice_html = notice_html(query.notice.as_deref(), query.servings.as_deref(), replaced);
     let error_html = query
         .error
         .as_deref()
@@ -276,23 +270,42 @@ pub async fn get(
     .into_response()
 }
 
+/// The success banner of the URL's `?notice=`: `replaced` when the recipe
+/// was planned in place of another (#816), and a number of people changed
+/// with the one of `?servings=` (#846), announced as the field that sent
+/// it applies on change (`role="status"`, as the settings of #844).
+fn notice_html(notice: Option<&str>, servings: Option<&str>, replaced: Option<String>) -> String {
+    if replaced.is_none() {
+        if let Some(banner) = notice.and_then(|code| super::servings_banner(code, servings)) {
+            return banner;
+        }
+    }
+    replaced
+        .or_else(|| notice.and_then(notice_text).map(str::to_string))
+        .map(|n| format!(r#"<p class="notice success">{}</p>"#, html_escape(&n)))
+        .unwrap_or_default()
+}
+
 /// The recipe's place in the next shopping (#470): « À réaliser » with the
-/// number of people when it is not planned, the badge, « Faite »,
-/// « Abandonner », « Changer ce plat » (#816) and « Retirer » when it is. `planned` is the selection's number of people, `Some(None)` for a
-/// selection that does not say.
-fn selection_html(id: Uuid, base: Option<i32>, planned: Option<Option<i32>>) -> String {
+/// number of people when it is not planned; the badge, « Faite »,
+/// « Abandonner », « Changer ce plat » (#816), « Retirer » and the field of
+/// its number of people (#846) when it is. `planned` is the selection's
+/// number of people, `Some(None)` for a selection that does not say.
+fn selection_html(id: Uuid, name: &str, base: Option<i32>, planned: Option<Option<i32>>) -> String {
     match planned {
         Some(servings) => format!(
             r#"<div class="notice split">
 <span>{badge} Cette recette est prise en compte par la <a href="/grocery-list">liste de courses</a>.</span>
-<span class="actions">{outcome}
+<div class="actions">{outcome}
 <a class="btn secondary" href="{change}">Changer ce plat</a>
-{deselect}</span>
+{deselect}
+{people}</div>
 </div>"#,
-            badge = planned_badge(servings),
+            badge = planned_badge(),
             outcome = outcome_links(id, "detail"),
             change = super::replace::replace_href(id, "detail"),
             deselect = deselect_form(id, "detail"),
+            people = servings_form(id, servings, "detail", name),
         ),
         None => select_form(id, base, "detail", "card inline"),
     }
@@ -472,6 +485,7 @@ fn page(
         .unwrap_or_default();
     let selection_html = selection_html(
         id,
+        &recipe.name,
         super::start::prefill(usual, recipe.servings),
         planned.map(|s| s.servings),
     );
@@ -661,7 +675,7 @@ mod tests {
     #[test]
     fn an_unplanned_recipe_offers_a_realiser_for_its_base() {
         let id = Uuid::from_u128(1);
-        let html = selection_html(id, Some(4), None);
+        let html = selection_html(id, "Gratin", Some(4), None);
         assert!(
             html.contains(&format!(
                 r#"action="/recipes/{id}/select" class="card inline""#
@@ -670,13 +684,17 @@ mod tests {
         );
         assert!(html.contains(r#"name="back" value="detail""#), "{html}");
         assert!(html.contains(r#"value="4""#), "{html}");
+        assert!(!html.contains("servings-form"), "{html}");
     }
 
     #[test]
-    fn a_planned_recipe_shows_its_people_and_retirer() {
+    fn a_planned_recipe_shows_its_badge_and_retirer() {
         let id = Uuid::from_u128(1);
-        let html = selection_html(id, Some(4), Some(Some(6)));
-        assert!(html.contains("À réaliser · 6 personnes"), "{html}");
+        let html = selection_html(id, "Gratin", Some(4), Some(Some(6)));
+        assert!(
+            html.contains(r#"<span class="badge">À réaliser</span>"#),
+            "{html}"
+        );
         assert!(html.contains(r#"href="/grocery-list""#), "{html}");
         assert!(
             html.contains(&format!(r#"action="/recipes/{id}/deselect""#)),
@@ -691,17 +709,50 @@ mod tests {
             html.contains(&format!(r#"href="/recipes/{id}/abandon?back=detail""#)),
             "{html}"
         );
-        let html = selection_html(id, None, Some(None));
+    }
+
+    #[test]
+    fn a_planned_recipe_changes_its_people_in_the_field_after_retirer() {
+        // #846: the number is said once, in the field that changes it.
+        let id = Uuid::from_u128(1);
+        let html = selection_html(id, "Gratin", Some(4), Some(Some(6)));
+        assert!(!html.contains("6 personnes"), "{html}");
+        let field = servings_form(id, Some(6), "detail", "Gratin");
+        let at = html.find(&field).expect(&html);
+        assert!(html.find("Retirer").unwrap() < at, "{html}");
+        // The actions are a block: a form may not sit in a `<span>`.
+        assert!(html.contains(r#"<div class="actions">"#), "{html}");
+        assert!(!html.contains(r#"<span class="actions">"#), "{html}");
+        // A selection that says no number: the field is blank.
+        let html = selection_html(id, "Gratin", Some(4), Some(None));
         assert!(
-            html.contains(r#"<span class="badge">À réaliser</span>"#),
+            html.contains(&servings_form(id, None, "detail", "Gratin")),
             "{html}"
         );
     }
 
     #[test]
+    fn a_servings_change_is_told_on_the_recipe() {
+        assert_eq!(
+            notice_html(Some("servings_updated"), Some("6"), None),
+            r#"<p class="notice success" role="status">Nombre de personnes mis à jour : 6.</p>"#
+        );
+        // Planned in place of another (#816): that banner, whatever else.
+        assert_eq!(
+            notice_html(Some("recipe_replaced"), None, Some("X remplacé.".into())),
+            r#"<p class="notice success">X remplacé.</p>"#
+        );
+        assert_eq!(
+            notice_html(Some("recipe_selected"), Some("6"), None),
+            r#"<p class="notice success">Recette à réaliser pour les prochaines courses.</p>"#
+        );
+        assert_eq!(notice_html(None, Some("6"), None), "");
+    }
+
+    #[test]
     fn a_planned_recipe_offers_changer_ce_plat_between_abandonner_and_retirer() {
         let id = Uuid::from_u128(1);
-        let html = selection_html(id, Some(4), Some(Some(4)));
+        let html = selection_html(id, "Gratin", Some(4), Some(Some(4)));
         let change = format!(
             r#"<a class="btn secondary" href="/recipes/{id}/replace?back=detail">Changer ce plat</a>"#
         );
@@ -709,7 +760,7 @@ mod tests {
         assert!(html.find("Abandonner").unwrap() < at, "{html}");
         assert!(at < html.find("Retirer").unwrap(), "{html}");
         // Not planned: nothing to change.
-        assert!(!selection_html(id, Some(4), None).contains("Changer ce plat"));
+        assert!(!selection_html(id, "Gratin", Some(4), None).contains("Changer ce plat"));
     }
 
     #[test]
