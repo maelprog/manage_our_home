@@ -275,19 +275,20 @@ mod tests {
 
     #[test]
     fn features_round_trip_and_match_the_migration_list() {
+        // The list of 0062's `CHECK`, read from the migration itself rather
+        // than copied here, so that the two cannot drift apart.
+        let migration = include_str!("../../migrations/0062_group_access_policies.sql");
+        let check = migration
+            .split_once("CHECK (feature IN (")
+            .and_then(|(_, rest)| rest.split_once("))"))
+            .expect("0062 carries the feature CHECK")
+            .0;
+        let from_migration: Vec<&str> = check
+            .split(',')
+            .map(|name| name.trim().trim_matches('\''))
+            .collect();
         let names: Vec<&str> = Feature::ALL.iter().map(|f| f.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "budget",
-                "google_calendar",
-                "stocks_edit",
-                "recipes_edit",
-                "grocery_edit",
-                "agenda_edit",
-                "messagerie_moderate",
-            ]
-        );
+        assert_eq!(names, from_migration);
         for feature in Feature::ALL {
             assert_eq!(Feature::parse(feature.as_str()), Some(feature));
         }
