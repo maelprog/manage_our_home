@@ -460,7 +460,6 @@ fn notice_html(notice: Option<&str>) -> String {
 
 fn error_html(error: Option<&str>) -> String {
     let text = match error {
-        Some("invalid_channel") => "Choix invalide, merci de réessayer.",
         Some("invalid_hour") => "Heure invalide : choisissez une heure entre 0 h et 23 h.",
         Some("unavailable") => "Service momentanément indisponible, merci de réessayer.",
         // A switch sent on change (#853): the page comes back from the
@@ -1022,6 +1021,9 @@ mod tests {
             "{failed}"
         );
         assert!(failed.contains("revenu à son état précédent"), "{failed}");
+        // No form sends `invalid_channel` since the switches: any refusal
+        // of the API is `not_saved`.
+        assert_eq!(error_html(Some("invalid_channel")), "");
     }
 
     /// The `<option>`s of the recap's hour, and the value of the selected
