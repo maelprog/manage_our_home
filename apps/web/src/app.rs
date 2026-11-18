@@ -500,11 +500,13 @@ pub(crate) const APPLIES_ON_CHANGE: &str = r#"<p class="muted" data-shown-with-j
 
 /// The other half of `APPLIES_ON_CHANGE`: the form's button and the
 /// sentence that says it sends the choice, which `enhance.js` hides
-/// (`data-hidden-with-js`). Without the script, or when it fails to load,
-/// they stay and the form posts as before.
+/// (`data-hidden-with-js`, on each). Without the script, or when it fails
+/// to load, they stay and the form posts as before. No wrapper: the button
+/// stays a child of the form, whose column stretches it to the full width
+/// like any form's button.
 pub(crate) fn submit_fallback(label: &str) -> String {
     format!(
-        r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">{label}</button></div>"#
+        "<p class=\"muted\" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>\n<button type=\"submit\" data-hidden-with-js>{label}</button>"
     )
 }
 

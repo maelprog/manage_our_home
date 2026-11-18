@@ -140,6 +140,14 @@ test.describe("The theme applies on the click (#844)", () => {
     await noJs.goto("/account/appearance");
     await expect(noJs.getByText("Le choix s'applique dès que vous le touchez.")).toBeHidden();
     await expect(noJs.getByText("Sans JavaScript, le choix s'envoie avec le bouton.")).toBeVisible();
+    // The button spans the form's width, as every form's button does: no
+    // wrapper takes it out of the form's column.
+    for (const width of [390, 1280]) {
+      await noJs.setViewportSize({ width, height: 800 });
+      const button = await noJs.getByRole("button", { name: "Enregistrer", exact: true }).boundingBox();
+      const choices = await noJs.getByRole("radiogroup").boundingBox();
+      expect(Math.abs(button!.width - choices!.width), `${width}px`).toBeLessThan(1);
+    }
     await noJs.getByRole("radio", { name: "Sombre" }).check();
     await expect(noJs).toHaveURL(/\/account\/appearance$/);
     await noJs.getByRole("button", { name: "Enregistrer", exact: true }).click();
