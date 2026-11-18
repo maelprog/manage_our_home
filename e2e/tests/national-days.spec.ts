@@ -49,6 +49,13 @@ async function openSettings(page: Page, family: string): Promise<void> {
   await expect(page.getByRole("heading", { level: 1, name: family })).toBeVisible();
 }
 
+/** The calendar form being posted, which a zone or the box does by itself (#844). */
+function calendarPosted(page: Page) {
+  return page.waitForRequest(
+    (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/settings/calendar"),
+  );
+}
+
 /** A day's cell of the grid, found by its number's link to its day view
  *  (#793; by an anchor `#jAAAA-MM-JJ` before). */
 function dayCell(page: Page, date: string) {
@@ -153,11 +160,18 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await openSettings(page, "Famille Vacances");
     const card = page.locator("section#calendrier");
     await expect(card.getByRole("radio", { name: "Aucune" })).toBeChecked();
+    // The zone applies on the click (#844): « Enregistrer le calendrier »
+    // is the fallback without JavaScript, which hides it.
+    await expect(card.getByRole("button", { name: "Enregistrer le calendrier" })).toBeHidden();
+    let posted = calendarPosted(page);
     await card.getByRole("radio", { name: "Zone B" }).check();
-    await card.getByRole("button", { name: "Enregistrer le calendrier" }).click();
+    await posted;
     await expect(page).toHaveURL(/\/settings\?notice=calendar_changed$/);
-    await expect(page.getByText("Calendrier de la famille enregistré.")).toBeVisible();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Calendrier de la famille enregistré." }),
+    ).toBeVisible();
     await expect(card.getByRole("radio", { name: "Zone B" })).toBeChecked();
+    await expect(card.getByRole("radio", { name: "Zone B" })).toBeFocused();
 
     await page.goto("/agenda?view=month&date=2026-10-15");
     // One bar per week it covers (#836): Saturday 17 and Sunday 18, then
@@ -187,9 +201,12 @@ test.describe("Agenda — jours nationaux (#565)", () => {
     await page.goto("/agenda?view=month&date=2027-03-15");
     await expect(page.getByText("Vendredi saint")).toHaveCount(0);
     await openSettings(page, "Famille Vacances");
+    // The box applies on the click too, and sends the zone with it.
+    posted = calendarPosted(page);
     await page.getByRole("checkbox", { name: "Alsace-Moselle" }).check();
-    await page.getByRole("button", { name: "Enregistrer le calendrier" }).click();
+    expect((await posted).postData()).toBe("school_zone=B&alsace_moselle=on");
     await expect(page).toHaveURL(/\/settings\?notice=calendar_changed$/);
+    await expect(page.getByRole("checkbox", { name: "Alsace-Moselle" })).toBeFocused();
     await page.goto("/agenda?view=month&date=2027-03-15");
     await startsOn(page, bars(page, "Vendredi saint"), "2027-03-26");
     // The zone was kept.

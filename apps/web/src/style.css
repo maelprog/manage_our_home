@@ -1003,6 +1003,11 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .picks { display: flex; flex-wrap: wrap; gap: var(--s2x); }
 .pick { padding: 0 var(--s3) 0 var(--s2x); border: 1px solid var(--border); border-radius: var(--r-sm); accent-color: var(--accent); }
 .pick:has(:checked) { border-color: var(--accent); background: var(--accent-soft); }
+/* The fallback of a setting that applies itself (#844, `app::submit_fallback`):
+   seen only without JavaScript, the sentence and the button framed apart,
+   dashed, as what stands in for the click. */
+.fallback { margin-top: var(--s3); padding: var(--s3); border: 1px dashed var(--border); border-radius: var(--r-sm); }
+.fallback p { margin: 0 0 var(--s2x); }
 /* An allergy's three levels in one family (#819): each says what it does,
    the chosen one alone shown; all three where :has() is unsupported. */
 .share:has([value=public]:not(:checked)) .public, .share:has([value=anonymous]:not(:checked)) .anonymous, .share:has([value=private]:not(:checked)) .private { display: none; }

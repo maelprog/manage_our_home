@@ -5,13 +5,27 @@ import { expect, Page } from "@playwright/test";
 
 export type ThemeChoice = "Automatique" | "Clair" | "Sombre";
 
-/** Picks `choice` on the appearance page and saves it. */
+/** Whether `page` is posting the appearance form. */
+export function appearancePosted(page: Page) {
+  return page.waitForRequest(
+    (request) => request.method() === "POST" && new URL(request.url()).pathname === "/account/appearance",
+  );
+}
+
+/**
+ * Picks `choice` on the appearance page, which saves it by itself (#844):
+ * no button to press. A choice already in force is left as it is — picking
+ * it again changes nothing, so nothing is sent.
+ */
 export async function chooseTheme(page: Page, choice: ThemeChoice): Promise<void> {
   await page.goto("/account/appearance");
-  await page.getByRole("radio", { name: choice }).check();
-  await page.getByRole("button", { name: "Enregistrer", exact: true }).click();
+  const radio = page.getByRole("radio", { name: choice });
+  if (await radio.isChecked()) return;
+  const posted = appearancePosted(page);
+  await radio.check();
+  await posted;
   await expect(page).toHaveURL(/\/account\/appearance\?notice=saved$/);
-  await expect(page.getByRole("radio", { name: choice })).toBeChecked();
+  await expect(radio).toBeChecked();
 }
 
 /** What the page in view resolved: `data-theme`, `--bg` and `color-scheme` of `<html>`. */

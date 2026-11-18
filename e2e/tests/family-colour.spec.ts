@@ -105,15 +105,25 @@ test.describe("The family's colour (#538)", () => {
     await row.getByRole("button", { name: "Changer le rôle" }).click();
     await expect(page.getByText("Rôle mis à jour.")).toBeVisible();
 
-    // The admin picks Océan among the eight.
+    // The admin picks Océan among the eight: the pastille applies itself
+    // (#844), « Enregistrer la couleur » being the fallback without
+    // JavaScript; the banner is announced, the focus back on Océan.
     await openSettings(member, "Foyer Bleu");
     await expect(card.getByRole("radio")).toHaveCount(8);
     await expect(card.getByRole("radio", { name: "Sarcelle" })).toBeChecked();
+    await expect(card.getByRole("button", { name: "Enregistrer la couleur" })).toBeHidden();
+    await expect(card.getByText("Le choix s'applique dès que vous le touchez.")).toBeVisible();
+    const posted = member.waitForRequest(
+      (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/settings/accent"),
+    );
     await card.getByRole("radio", { name: "Océan" }).check();
-    await card.getByRole("button", { name: "Enregistrer la couleur" }).click();
+    await posted;
     await expect(member).toHaveURL(/\/settings\?notice=accent_changed$/);
-    await expect(member.getByText("Couleur de la famille enregistrée.")).toBeVisible();
+    await expect(
+      member.getByRole("status").filter({ hasText: "Couleur de la famille enregistrée." }),
+    ).toBeVisible();
     await expect(card.getByRole("radio", { name: "Océan" })).toBeChecked();
+    await expect(card.getByRole("radio", { name: "Océan" })).toBeFocused();
 
     // Every page of the family, for both its members.
     for (const who of [member, page]) {

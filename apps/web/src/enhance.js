@@ -522,7 +522,8 @@
     var input = event.target;
     if (!input.hasAttribute) return;
     // `data-submit-on-change` (the stocks' barcode photo, #402; the grocery
-    // list's check boxes until #526; the profile's families, #751).
+    // list's check boxes until #526; the profile's families, #751; the
+    // theme, the family's colour and calendar, #844).
     // `form.submit()` fires no `submit` event, hence
     // the explicit `keepScroll`.
     if (input.hasAttribute("data-submit-on-change")) {
@@ -753,13 +754,18 @@
   // without it (a button: the profile's families, #751), or of what a
   // script offers otherwise (the attachments' list and its « Supprimer »,
   // which the viewers carry, #776). Rendered, then hidden here, so that a
-  // page whose script failed to load keeps it.
+  // page whose script failed to load keeps it. `data-shown-with-js`, the
+  // reverse: rendered `hidden`, shown here — the sentence that says a
+  // setting applies on the click (`app::APPLIES_ON_CHANGE`, #844).
   function familySelectors() {
     var buttons = document.querySelectorAll(
       'form[data-families] button[type="submit"], [data-hidden-with-js]'
     );
     Array.prototype.forEach.call(buttons, function (button) {
       button.hidden = true;
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-shown-with-js]"), function (shown) {
+      shown.hidden = false;
     });
   }
 
@@ -937,15 +943,16 @@
   // banner at the top (`?error=…`), which the reader must see, and a
   // redirect elsewhere opens at the top as usual. Kept in sessionStorage,
   // which can be missing or refuse writes: the page then simply opens at
-  // the top. `field`, a radio sent by `data-submit-on-change` (the
-  // profile's families, #751): the field of the same name and value gets
-  // the focus back, so the arrow keys go on from it after the reload.
+  // the top. `field`, a radio or a box sent by `data-submit-on-change`
+  // (the profile's families, #751; the theme, the family's colour and
+  // calendar, #844): the field of the same name and value gets the focus
+  // back, so the arrow keys go on from it after the reload.
   var KEEP_SCROLL = "keep-scroll";
 
   function keepScroll(form, field) {
     if (!form || !form.hasAttribute("data-keep-scroll")) return;
     var kept = { path: location.pathname, y: window.scrollY };
-    if (field && field.type === "radio") kept.focus = [field.name, field.value];
+    if (field && (field.type === "radio" || field.type === "checkbox")) kept.focus = [field.name, field.value];
     try {
       sessionStorage.setItem(KEEP_SCROLL, JSON.stringify(kept));
     } catch (e) {}

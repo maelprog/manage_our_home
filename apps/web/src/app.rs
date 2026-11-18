@@ -491,6 +491,23 @@ pub fn kitchen_segment(current_path: &str) -> String {
 /// until #325, which infra/Caddyfile's CSP no longer runs (`csp.rs`).
 pub(crate) const ENHANCE_SCRIPT: &str = include_str!("enhance.js");
 
+/// A setting that applies itself (#844): its fields carry
+/// `data-submit-on-change` and its form `data-keep-scroll`, so a click
+/// sends it and the page comes back with the focus on that field. This
+/// sentence says so (WCAG 3.2.2); rendered `hidden`, `enhance.js` shows it
+/// (`data-shown-with-js`), since without the script nothing applies itself.
+pub(crate) const APPLIES_ON_CHANGE: &str = r#"<p class="muted" data-shown-with-js hidden>Le choix s'applique dès que vous le touchez.</p>"#;
+
+/// The other half of `APPLIES_ON_CHANGE`: the form's button and the
+/// sentence that says it sends the choice, which `enhance.js` hides
+/// (`data-hidden-with-js`). Without the script, or when it fails to load,
+/// they stay and the form posts as before.
+pub(crate) fn submit_fallback(label: &str) -> String {
+    format!(
+        r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">{label}</button></div>"#
+    )
+}
+
 /// Password `<label>` block shared by login/register/reset-password
 /// (embed via `<div inner_html=...></div>` like `app_header`).
 /// The show/hide toggle is progressive enhancement: with JS disabled the

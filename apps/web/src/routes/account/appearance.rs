@@ -1,11 +1,16 @@
 //! `/account/appearance` (#585, maquette « Mobile — Apparence ») — the
 //! theme: Automatique, Clair or Sombre.
 //!
-//! Three native radio buttons in a POST form, no script: the CSP's
+//! Three native radio buttons in a POST form, no inline script: the CSP's
 //! `script-src` is unchanged. The choice is a cookie (`crate::theme`), so it
 //! holds for this browser, not for the account — storing it on the account
-//! is out of this issue's scope. Like the family choice of the profile, a
-//! radio does not submit by itself (WCAG 3.2.2): the button does.
+//! is out of this issue's scope. Like the family choice of the profile
+//! (#751), a radio applies itself since #844: with JavaScript, picking one
+//! sends the form (`data-submit-on-change`), the page comes back with
+//! « Apparence enregistrée. » and the focus on that radio
+//! (`data-keep-scroll`), and a sentence says the choice applies on the
+//! click (WCAG 3.2.2). « Enregistrer » is the fallback without the script,
+//! which hides it (`app::submit_fallback`).
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
@@ -13,7 +18,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 
 use super::account_header;
-use crate::app::{shell_with_header, Width};
+use crate::app::{shell_with_header, submit_fallback, Width, APPLIES_ON_CHANGE};
 use crate::layout::CurrentUser;
 use crate::state::AppState;
 use crate::theme::{self, Appearance};
@@ -49,7 +54,7 @@ fn choice(appearance: Appearance, current: Appearance) -> String {
         ""
     };
     format!(
-        r#"<label class="list-row"><input type="radio" name="theme" value="{value}"{checked}><span><strong>{label}</strong><br><span class="muted">{hint}</span></span></label>"#,
+        r#"<label class="list-row"><input type="radio" name="theme" value="{value}"{checked} data-submit-on-change><span><strong>{label}</strong><br><span class="muted">{hint}</span></span></label>"#,
         value = appearance.value(),
         label = appearance.label(),
         hint = hint(appearance),
@@ -72,13 +77,15 @@ pub(crate) fn page_body(current: Appearance, saved: bool) -> String {
         r#"<h1>Apparence</h1>
 {notice}<section class="card">
 <h2 id="theme">Thème</h2>
-<form method="post" action="{PATH}">
+<form method="post" action="{PATH}" data-keep-scroll>
+{APPLIES_ON_CHANGE}
 <div role="radiogroup" aria-labelledby="theme">{choices}</div>
-<button type="submit">Enregistrer</button>
+{fallback}
 </form>
 <p class="muted">Ce choix vaut pour ce navigateur, et il est gardé un an.</p>
 </section>
-<p><a href="/account">Retour à mon compte</a></p>"#
+<p><a href="/account">Retour à mon compte</a></p>"#,
+        fallback = submit_fallback("Enregistrer"),
     )
 }
 
@@ -116,7 +123,7 @@ mod tests {
     fn the_three_choices_are_radios_of_one_field_in_a_post_form() {
         let html = page_body(Appearance::Auto, false);
         assert!(
-            html.contains(r#"<form method="post" action="/account/appearance">"#),
+            html.contains(r#"<form method="post" action="/account/appearance""#),
             "{html}"
         );
         for value in ["auto", "light", "dark"] {
@@ -143,7 +150,7 @@ mod tests {
             let html = page_body(current, false);
             assert_eq!(html.matches(" checked").count(), 1, "{html}");
             assert!(
-                html.contains(&format!(r#"value="{}" checked>"#, current.value())),
+                html.contains(&format!(r#"value="{}" checked "#, current.value())),
                 "{current:?}: {html}"
             );
         }
@@ -153,5 +160,46 @@ mod tests {
     fn a_saved_choice_is_confirmed() {
         assert!(page_body(Appearance::Dark, true).contains("Apparence enregistrée."));
         assert!(!page_body(Appearance::Dark, false).contains("Apparence enregistrée."));
+    }
+
+    /// #844: with JavaScript a radio sends the form by itself, the page
+    /// comes back with the focus on it, and the sentence that says so is
+    /// shown; the button and its sentence are the fallback without the
+    /// script, rendered and hidden by it.
+    #[test]
+    fn a_choice_applies_itself_with_the_button_as_fallback() {
+        let html = page_body(Appearance::Light, false);
+        assert!(
+            html.contains(r#"<form method="post" action="/account/appearance" data-keep-scroll>"#),
+            "{html}"
+        );
+        for value in ["auto", "light", "dark"] {
+            let at = html
+                .find(&format!(r#"name="theme" value="{value}""#))
+                .expect(value);
+            let input = &html[at..at + html[at..].find('>').unwrap()];
+            assert!(input.contains(" data-submit-on-change"), "{input}");
+        }
+        assert!(
+            html.contains(
+                r#"<p class="muted" data-shown-with-js hidden>Le choix s'applique dès que vous le touchez.</p>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer</button></div>"#
+            ),
+            "{html}"
+        );
+        // The fallback stays inside the form, so it still posts the radios.
+        let form = &html[html.find("<form").unwrap()..html.find("</form>").unwrap()];
+        assert!(form.contains("<button type=\"submit\">"), "{form}");
+    }
+
+    #[test]
+    fn the_confirmation_is_announced() {
+        assert!(page_body(Appearance::Dark, true)
+            .contains(r#"<p class="notice success" role="status">Apparence enregistrée.</p>"#));
     }
 }
