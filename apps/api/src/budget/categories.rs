@@ -1,6 +1,7 @@
 //! Spending categories and the family's monthly cap (#532). Same bar as the
-//! entries (#531): an owner or an admin, a standard member gets 404 — and the
-//! bar comes before the body is looked at, so a standard member's malformed
+//! entries (#531, #865): the family's `budget` threshold, an owner or an
+//! admin by default; a member under it gets 404 — and the
+//! bar comes before the body is looked at, so that member's malformed
 //! category is a 404 too — be it refused by the validation or unreadable to the
 //! extractor —, never a 400 or 422 that would tell them the route exists.
 //!

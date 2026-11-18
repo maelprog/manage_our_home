@@ -117,7 +117,8 @@ pub async fn create_group(
 }
 
 /// Lists every group the caller belongs to, with the caller's role in each,
-/// in one statement.
+/// in one statement — then each group's access policy (#865), which RLS
+/// lets through one family at a time.
 ///
 /// The membership filter is written in the query, not left to RLS. Under the
 /// role apps/api/README.md prescribes, the policies of 0014 apply the same
@@ -158,17 +159,27 @@ pub async fn list_groups(
     )
     .fetch_all(&mut *tx)
     .await?;
+    // Each family's thresholds (#865), which apps/web reads to leave out
+    // what the caller does not reach. The table's RLS shows one family at a
+    // time, so this is two round trips per family, at most
+    // `MAX_GROUPS_PER_USER` of them.
+    let mut policies = Vec::with_capacity(groups.len());
+    for group in &groups {
+        policies.push(access::policies_of_member_group(&mut tx, group.id).await?);
+    }
     tx.commit().await?;
 
     let out: Vec<_> = groups
         .iter()
-        .map(|group| {
+        .zip(policies)
+        .map(|(group, policies)| {
             json!({
                 "group_id": group.id,
                 "name": group.name,
                 "role": group.role,
                 "accent": group.accent,
                 "created_at": group.created_at,
+                "access_policies": policies,
                 // #323: the caller became this group's owner without asking
                 // for it and has not acknowledged it yet.
                 "ownership_notice": match (

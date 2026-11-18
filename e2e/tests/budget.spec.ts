@@ -1,11 +1,12 @@
 import { expect, Page, test } from "@playwright/test";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchVerificationToken, setAccessPolicy } from "../lib/db";
 
 // Front epic F7 — Budget (issue #22): every user journey the epic introduces,
 // happy paths plus the documented error states from apps/api/src/budget/'s
 // error tables (see docs/front-epic-7-budget.md). Budget is tied to the grocery
 // list: manual price entry (/budget/new) + price-on-checkout on a checked
-// grocery item. Only an owner or an admin reaches the budget (#531): a standard
+// grocery item. By default only an owner or an admin reaches the budget (#531;
+// the family's owner moves that threshold since #865): a standard
 // member sees no link to it, no price field on the grocery list, and a 404 on
 // its pages. Past that bar, the per-row "Modifier" link and the edit/delete
 // screen stay behind can_modify (creator/admin/owner). Set-price upserts on the
@@ -409,6 +410,46 @@ test.describe("Budget — reserved to owners and admins (#531)", () => {
       expect(res?.status(), path).toBe(404);
       expect(await res?.text(), path).toBe(await unknown?.text());
     }
+
+    await context.close();
+  });
+});
+
+test.describe("Budget — the family's threshold (#865)", () => {
+  test("a standard member sees the Budget link once the owner lowers the threshold, and loses it when it is raised back", async ({
+    page,
+    browser,
+  }) => {
+    const family = `Famille Seuil ${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    await registerAndLogin(page, "e2e-budgetthrowner", "Seuil Owner");
+    await createGroup(page, family);
+    const href = await createInvitationLink(page, family);
+
+    const context = await browser.newContext();
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-budgetthrmember", "Seuil Member");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+
+    // The default threshold, `admin`: no link, a 404.
+    await member.goto("/");
+    await expect(member.locator('a[href="/budget"]')).toHaveCount(0);
+
+    // Lowered to `standard`: the sidebar's link and the home card come
+    // back, and the page answers.
+    await setAccessPolicy(family, "budget", "standard");
+    await member.goto("/");
+    await expect(member.locator('a[href="/budget"]').first()).toBeAttached();
+    await expect(member.getByRole("heading", { name: /^Budget d/ })).toHaveCount(1);
+    const open = await member.goto("/budget");
+    expect(open?.status()).toBe(200);
+
+    // Raised back to `admin`: gone again.
+    await setAccessPolicy(family, "budget", "admin");
+    await member.goto("/");
+    await expect(member.locator('a[href="/budget"]')).toHaveCount(0);
+    const closed = await member.goto("/budget");
+    expect(closed?.status()).toBe(404);
 
     await context.close();
   });

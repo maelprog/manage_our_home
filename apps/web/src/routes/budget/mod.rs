@@ -15,9 +15,9 @@
 //! price-on-checkout action wired into `routes/grocery_list/list.rs` (the hook
 //! F6 deferred to F7).
 //!
-//! Access (#531, `can_access_budget`): only an owner or an admin reaches these
-//! pages; a standard member gets the 404 of an unknown path
-//! (`family_context`), as the API answers them.
+//! Access (#531, #865, `can_access_budget`): the family's `budget` threshold,
+//! owners and admins by default, reaches these pages; a member under it gets
+//! the 404 of an unknown path (`family_context`), as the API answers them.
 //!
 //! Permission bar past it (mirrors `apps/api/src/budget/mod.rs::can_modify`):
 //! create, read and set-a-price render for whoever reaches the budget; the
@@ -50,6 +50,7 @@ use crate::state::AppState;
 // module like the Grocery-list/Recipes/Stocks pages do.
 use manage_our_home_shared::validation::budget::can_access_budget;
 pub(crate) use manage_our_home_shared::validation::budget::can_modify;
+use manage_our_home_shared::validation::groups::Feature;
 
 /// Resolved active-family context for a Budget page: the family id every
 /// `/groups/:gid/…` API call is scoped to, the caller's role in it (for the
@@ -75,7 +76,7 @@ pub(crate) async fn family_context(
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     match active {
         None => Err(Box::new(Redirect::to("/groups/new").into_response())),
-        Some(g) if !can_access_budget(&g.role) => {
+        Some(g) if !can_access_budget(&g.role, g.min_role(Feature::Budget)) => {
             Err(Box::new(StatusCode::NOT_FOUND.into_response()))
         }
         Some(g) => Ok(FamilyContext {

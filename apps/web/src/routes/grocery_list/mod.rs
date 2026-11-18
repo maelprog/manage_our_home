@@ -13,8 +13,9 @@
 //! `list::price` renders an inline "Renseigner le prix" form on each checked
 //! item, posting to `POST /grocery-list/:id/price` (see
 //! `docs/front-epic-7-budget.md`). It is purely additive — the check-off
-//! behaviour itself is unchanged. Since #531 the form is drawn for an owner
-//! or an admin only (`can_access_budget`).
+//! behaviour itself is unchanged. Since #531 the form is drawn only for a
+//! member who reaches the budget (`can_access_budget`): the family's `budget`
+//! threshold since #865, owners and admins by default.
 //!
 //! Permission bar (mirrors `apps/api/src/grocery_list/mod.rs::can_modify`):
 //! any family member may add, read, or **check off** an item, so those
@@ -32,6 +33,8 @@ use axum::response::Html;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
+use manage_our_home_shared::validation::budget::can_access_budget;
+use manage_our_home_shared::validation::groups::Feature;
 use uuid::Uuid;
 
 use crate::app::{shell, Width};
@@ -51,6 +54,9 @@ pub(crate) use manage_our_home_shared::validation::grocery_list::can_modify;
 pub(crate) struct FamilyContext {
     pub gid: Uuid,
     pub role: String,
+    /// Whether `role` meets the family's `budget` threshold (#865), which
+    /// draws the price field (`can_access_budget`).
+    pub reaches_budget: bool,
     pub header: String,
 }
 
@@ -66,6 +72,7 @@ pub(crate) async fn family_context(
     active.map(|g| FamilyContext {
         gid: g.group_id,
         role: g.role.clone(),
+        reaches_budget: can_access_budget(&g.role, g.min_role(Feature::Budget)),
         header,
     })
 }

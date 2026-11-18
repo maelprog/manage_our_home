@@ -92,6 +92,7 @@ mod tests {
                 reason: r.to_string(),
                 inherited_at: Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 0).unwrap(),
             }),
+            access_policies: Vec::new(),
         }
     }
 

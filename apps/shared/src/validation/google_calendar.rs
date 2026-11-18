@@ -9,11 +9,11 @@
 //!   order, so those never round-trip. It deliberately returns nothing but the
 //!   verdict: the feed URL is a credential and this module never holds, copies
 //!   or formats it.
-//! - `can_configure` mirrors `apps/api/src/google_calendar/mod.rs::can_configure`
-//!   — the admin/owner bar on creating and deleting a connection, stricter than
-//!   the "any member" bar the rest of Agenda uses. A gate mirror in the same
-//!   spirit as F9's `can_view_admin`: it decides which controls render, the
-//!   backend stays the authority.
+//! - `can_configure` is the bar on creating and deleting a connection: the
+//!   family's `google_calendar` threshold (#865), owners and admins by
+//!   default, stricter than the "any member" bar the rest of Agenda uses.
+//!   The backend uses this very function (`apps/api/src/google_calendar/`);
+//!   here it decides which controls render.
 //! - `format_last_imported` renders a UTC instant in **Europe/Paris**, the fixed
 //!   v1 display timezone (F3's `DISPLAY_TZ`), with an explicit "jamais importé"
 //!   for a connection whose feed has never been pulled.
@@ -25,6 +25,8 @@
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Europe::Paris;
+
+use super::groups::role_meets;
 
 /// Why a connect-a-calendar form was rejected. Ordered to match the backend's
 /// check order (`create_calendar_import` → `validate_feed_url`).
@@ -58,14 +60,17 @@ pub fn validate_import_form(label: &str, feed_url: &str) -> Result<(), ImportFor
     Ok(())
 }
 
-/// Mirror of `apps/api/src/google_calendar/mod.rs::can_configure`: only an
-/// owner or admin may connect or remove a calendar, a stricter bar than the
-/// rest of Agenda because the feed URL is a bearer credential for a member's
-/// Google account rather than household data. Listing connections and
-/// triggering an on-demand import stay open to any member and so have no mirror
-/// here. The backend still 403s a forged request.
-pub fn can_configure(role: &str) -> bool {
-    role == "owner" || role == "admin"
+/// Whether a member of the given role may connect or remove a calendar,
+/// `min_role` being the family's `google_calendar` threshold (#865,
+/// `role_meets`). By default (`admin`) only an owner or admin may, a stricter
+/// bar than the rest of Agenda because the feed URL is a bearer credential
+/// for a member's Google account rather than household data; the owner may
+/// lower it to `standard` or raise it to `owner`. Listing connections and
+/// triggering an on-demand import stay open to any member and so are not
+/// gated here. `apps/api/src/google_calendar/` applies this very function
+/// (403 under the threshold); `apps/web` reads it to render the controls.
+pub fn can_configure(role: &str, min_role: &str) -> bool {
+    role_meets(role, min_role)
 }
 
 /// The "importé pour la dernière fois le …" cell for a connection, in
@@ -212,20 +217,38 @@ mod tests {
     // -- can_configure -------------------------------------------------------
 
     #[test]
-    fn owner_and_admin_can_configure() {
-        assert!(can_configure("owner"));
-        assert!(can_configure("admin"));
+    fn the_default_threshold_keeps_configuring_to_owners_and_admins() {
+        // A family whose owner has not set `google_calendar` (#865).
+        assert!(can_configure("owner", "admin"));
+        assert!(can_configure("admin", "admin"));
+        assert!(!can_configure("standard", "admin"));
     }
 
     #[test]
-    fn a_standard_member_cannot_configure() {
-        assert!(!can_configure("standard"));
+    fn configuring_follows_the_familys_threshold() {
+        // (role, threshold, may connect or remove a calendar), #865.
+        let cases = [
+            ("standard", "standard", true),
+            ("admin", "standard", true),
+            ("standard", "owner", false),
+            ("admin", "owner", false),
+            ("owner", "owner", true),
+        ];
+        for (role, min_role, expected) in cases {
+            assert_eq!(
+                can_configure(role, min_role),
+                expected,
+                "{role} against {min_role}"
+            );
+        }
     }
 
     #[test]
     fn an_unknown_role_cannot_configure() {
-        assert!(!can_configure(""));
-        assert!(!can_configure("Owner"));
+        for min_role in ["standard", "admin", "owner"] {
+            assert!(!can_configure("", min_role), "{min_role}");
+            assert!(!can_configure("Owner", min_role), "{min_role}");
+        }
     }
 
     // -- format_last_imported ------------------------------------------------

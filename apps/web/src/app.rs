@@ -11,7 +11,7 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
 use manage_our_home_shared::validation::budget::can_access_budget;
-use manage_our_home_shared::validation::groups::Accent;
+use manage_our_home_shared::validation::groups::{Accent, Feature};
 use uuid::Uuid;
 
 use crate::icons::{icon, Icon as Glyph};
@@ -331,8 +331,9 @@ pub(crate) fn expiring_badge(expiring: u64) -> String {
 /// through its card on the home page. Cuisine is a link of its own rather
 /// than a second label of Stocks: it stands for the stocks and the recipes
 /// both, so it is the current tab on either (`app_header`), where the PC
-/// lights Stocks or Recettes. Budget is left out for a standard member of
-/// the active family (#531, `can_access_budget`). Notifications (#535) is
+/// lights Stocks or Recettes. Budget is left out for a member under the
+/// active family's `budget` threshold (#531, #865, `can_access_budget`):
+/// a standard member by default. Notifications (#535) is
 /// on a PC only: a phone reaches the centre through the home's bell.
 ///
 /// `/admin/users` is appended for the single technical superadmin only,
@@ -403,7 +404,7 @@ pub fn app_header(
     expiring_stocks: u64,
 ) -> String {
     // No family yet: the link stays, `/budget` sends to `/groups/new`.
-    let budget = active.is_none_or(|g| can_access_budget(&g.role));
+    let budget = active.is_none_or(|g| can_access_budget(&g.role, g.min_role(Feature::Budget)));
     let links: String = NAV
         .iter()
         .copied()
@@ -1517,6 +1518,7 @@ mod tests {
             role: "owner".to_string(),
             accent: "sarcelle".to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         }
     }
 
@@ -1691,6 +1693,27 @@ mod tests {
         let mut admin = family("Famille Martin");
         admin.role = "admin".to_string();
         let header = app_header(&me(false), Some(&admin), "/", 0, 0, 0);
+        assert!(header.contains(r#"href="/budget""#), "{header}");
+    }
+
+    #[test]
+    fn the_budget_link_follows_the_familys_threshold() {
+        // #865: the owner lowers the budget to `standard`, or raises it to
+        // `owner`.
+        let with = |role: &str, min_role: &str| {
+            let mut g = family("Famille Martin");
+            g.role = role.to_string();
+            g.access_policies = vec![manage_our_home_shared::dto::groups::AccessPolicy {
+                feature: "budget".to_string(),
+                min_role: min_role.to_string(),
+            }];
+            app_header(&me(false), Some(&g), "/", 0, 0, 0)
+        };
+        let header = with("standard", "standard");
+        assert!(header.contains(r#"href="/budget""#), "{header}");
+        let header = with("admin", "owner");
+        assert!(!header.contains("/budget"), "{header}");
+        let header = with("owner", "owner");
         assert!(header.contains(r#"href="/budget""#), "{header}");
     }
 
