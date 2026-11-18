@@ -1,8 +1,8 @@
 //! `/account/appearance` (#585, maquette « Mobile — Apparence ») — the
 //! theme: Automatique, Clair or Sombre.
 //!
-//! Three native radio buttons in a POST form, no inline script: the CSP's
-//! `script-src` is unchanged. The choice is a cookie (`crate::theme`), so it
+//! Three native radio buttons in a POST form; the CSP's `script-src` is
+//! unchanged. The choice is a cookie (`crate::theme`), so it
 //! holds for this browser, not for the account — storing it on the account
 //! is out of this issue's scope. Like the family choice of the profile
 //! (#751), a radio applies itself since #844: with JavaScript, picking one
@@ -140,7 +140,7 @@ mod tests {
                 "{label}"
             );
         }
-        assert!(html.contains(r#"<button type="submit">Enregistrer</button>"#));
+        assert!(html.contains(r#"<button type="submit" data-hidden-with-js>Enregistrer</button>"#));
         assert!(!html.contains("<script"), "{html}");
     }
 
@@ -188,13 +188,20 @@ mod tests {
         );
         assert!(
             html.contains(
-                r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer</button></div>"#
+                r#"<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" data-hidden-with-js>Enregistrer</button>"#
             ),
             "{html}"
         );
-        // The fallback stays inside the form, so it still posts the radios.
+        // The fallback stays inside the form, so it still posts the radios,
+        // and the button is a child of the form itself: no wrapper takes it
+        // out of the form's column, where it spans the width as before.
         let form = &html[html.find("<form").unwrap()..html.find("</form>").unwrap()];
-        assert!(form.contains("<button type=\"submit\">"), "{form}");
+        assert!(
+            form.contains("\n<button type=\"submit\" data-hidden-with-js>Enregistrer</button>\n"),
+            "{form}"
+        );
+        assert!(!form.contains("<div data-hidden-with-js"), "{form}");
     }
 
     #[test]
