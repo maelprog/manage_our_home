@@ -21,7 +21,8 @@ async fn migrate_to(db: &PgPool, target: Option<i64>) {
 
 /// Each account keeps for the three switches what it had chosen for the one
 /// setting they replace; the channel and the recap's hour are untouched,
-/// and may then be `none` and NULL.
+/// the recap is on, and the channel may then be `none` and the recap off
+/// with its hour kept.
 #[sqlx::test(migrations = false)]
 async fn each_account_keeps_its_choice_for_the_three_switches(db: PgPool) {
     migrate_to(&db, Some(NOTIFICATION_SWITCHES - 1)).await;
@@ -40,9 +41,9 @@ async fn each_account_keeps_its_choice_for_the_three_switches(db: PgPool) {
 
     migrate_to(&db, None).await;
 
-    let rows: Vec<(String, bool, bool, bool, String, Option<i16>)> = sqlx::query_as(
+    let rows: Vec<(String, bool, bool, bool, String, i16, bool)> = sqlx::query_as(
         "SELECT email, notify_agenda_added, notify_agenda_changed, notify_agenda_deleted,
-                reminder_channel, expiry_digest_hour
+                reminder_channel, expiry_digest_hour, expiry_digest_enabled
          FROM users ORDER BY email",
     )
     .fetch_all(&db)
@@ -57,7 +58,8 @@ async fn each_account_keeps_its_choice_for_the_three_switches(db: PgPool) {
                 false,
                 false,
                 "both".into(),
-                Some(18)
+                18,
+                true
             ),
             (
                 "on@example.test".into(),
@@ -65,25 +67,32 @@ async fn each_account_keeps_its_choice_for_the_three_switches(db: PgPool) {
                 true,
                 true,
                 "both".into(),
-                Some(18)
+                18,
+                true
             ),
         ]
     );
-    // A new account: the three on.
-    let new: (bool, bool, bool) = sqlx::query_as(
+    // A new account: the three on, the recap on at 9.
+    let new: (bool, bool, bool, bool, i16) = sqlx::query_as(
         "INSERT INTO users (email, password_hash, display_name)
          VALUES ('new@example.test', 'x', 'New')
-         RETURNING notify_agenda_added, notify_agenda_changed, notify_agenda_deleted",
+         RETURNING notify_agenda_added, notify_agenda_changed, notify_agenda_deleted,
+                   expiry_digest_enabled, expiry_digest_hour",
     )
     .fetch_one(&db)
     .await
     .unwrap();
-    assert_eq!(new, (true, true, true));
+    assert_eq!(new, (true, true, true, true, 9));
     sqlx::query(
-        "UPDATE users SET reminder_channel = 'none', expiry_digest_hour = NULL
+        "UPDATE users SET reminder_channel = 'none', expiry_digest_enabled = false
          WHERE email = 'on@example.test'",
     )
     .execute(&db)
     .await
     .unwrap();
+    // The hour stays one of the day's, recap on or off.
+    let refused = sqlx::query("UPDATE users SET expiry_digest_hour = NULL")
+        .execute(&db)
+        .await;
+    assert!(refused.is_err());
 }

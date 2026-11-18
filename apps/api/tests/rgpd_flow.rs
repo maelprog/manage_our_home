@@ -150,9 +150,10 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     // match. Move each to an instant of its own before exporting.
     // #700: the recap's hour is a setting held about the person; moved off
     // its default of 9 so that the export shows the value on file. #853:
-    // the agenda switches likewise, one off its default of true.
+    // the agenda and recap switches likewise, off their default of true.
     sqlx::query(
-        "UPDATE users SET expiry_digest_hour = 18, notify_agenda_changed = false
+        "UPDATE users SET expiry_digest_hour = 18, expiry_digest_enabled = false,
+                          notify_agenda_changed = false
          WHERE email = 'export-owner@example.test'",
     )
     .execute(&db)
@@ -186,6 +187,7 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
 
     assert_eq!(doc["profile"]["email"], "export-owner@example.test");
     assert_eq!(doc["profile"]["expiry_digest_hour"], 18);
+    assert_eq!(doc["profile"]["expiry_digest_enabled"], false);
     assert_eq!(doc["profile"]["notify_agenda_added"], true);
     assert_eq!(doc["profile"]["notify_agenda_changed"], false);
     assert_eq!(doc["profile"]["notify_agenda_deleted"], true);

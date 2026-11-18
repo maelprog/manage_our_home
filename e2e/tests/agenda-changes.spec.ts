@@ -89,6 +89,9 @@ test.describe("Agenda changes — settings", () => {
     await expect(toggle(page, "Par notification sur mes appareils")).not.toBeChecked();
     await toggle(page, "Récapitulatif quotidien").click();
     await expect(page).toHaveURL(SAVED);
+    // The recap off, its hour is still changed, and kept.
+    await page.getByLabel("Heure du récapitulatif").selectOption("18");
+    await expect(page).toHaveURL(SAVED);
 
     // Read back from the server, not from the page left behind.
     await page.goto("/account/notifications");
@@ -98,12 +101,14 @@ test.describe("Agenda changes — settings", () => {
     await expect(toggle(page, "Par notification sur mes appareils")).not.toBeChecked();
     await expect(toggle(page, "Par email")).not.toBeChecked();
     await expect(toggle(page, "Récapitulatif quotidien")).not.toBeChecked();
-    // The recap off, the hour shown is the default one; on again, it is
-    // the recap's hour.
-    await expect(page.getByLabel("Heure du récapitulatif")).toHaveValue("9");
+    // The recap off, the hour shown is the one chosen while it was off; on
+    // again, the recap comes at that hour.
+    await expect(page.getByLabel("Heure du récapitulatif")).toHaveValue("18");
     await toggle(page, "Récapitulatif quotidien").click();
     await expect(page).toHaveURL(SAVED);
+    await page.goto("/account/notifications");
     await expect(toggle(page, "Récapitulatif quotidien")).toBeChecked();
+    await expect(page.getByLabel("Heure du récapitulatif")).toHaveValue("18");
   });
 
   test("without JavaScript, the switches are sent by « Enregistrer »", async ({ browser }) => {

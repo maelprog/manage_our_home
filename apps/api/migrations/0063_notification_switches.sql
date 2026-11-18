@@ -27,6 +27,7 @@ ALTER TABLE users DROP CONSTRAINT users_reminder_channel_check;
 ALTER TABLE users ADD CONSTRAINT users_reminder_channel_check
     CHECK (reminder_channel IN ('push', 'email', 'both', 'none'));
 
--- The daily expiry recap (#700) is a switch: no hour, no recap. Its CHECK
--- (0049) holds for the hours that remain; NULL passes it.
-ALTER TABLE users ALTER COLUMN expiry_digest_hour DROP NOT NULL;
+-- The daily expiry recap (#700) is a switch, on by default, every account
+-- included. Off, the recap is not sent, and its hour is kept: still shown,
+-- still changed, it is the hour the recap comes back at.
+ALTER TABLE users ADD COLUMN expiry_digest_enabled BOOLEAN NOT NULL DEFAULT true;

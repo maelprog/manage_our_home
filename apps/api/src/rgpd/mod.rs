@@ -54,7 +54,7 @@ pub async fn export_account(
     let profile = sqlx::query!(
         r#"SELECT id, email, email_verified, display_name, created_at, age_declared_at,
                   terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,
-                  expiry_digest_hour, notify_agenda_added, notify_agenda_changed,
+                  expiry_digest_hour, expiry_digest_enabled, notify_agenda_added, notify_agenda_changed,
                   notify_agenda_deleted, avatar_key,
                   (password_hash IS NOT NULL) AS "has_password!"
            FROM users WHERE id = $1"#,
@@ -84,9 +84,10 @@ pub async fn export_account(
         // #306: how their reminders reach them — `push`, `email`, `both`
         // or `none` (#853).
         "reminder_channel": profile.reminder_channel,
-        // #700: the Paris hour of their daily expiry recap, 0 to 23;
-        // `null` with the recap off (#853).
+        // #700: the Paris hour of their daily expiry recap, 0 to 23, kept
+        // with the recap off; #853: whether it is sent.
         "expiry_digest_hour": profile.expiry_digest_hour,
+        "expiry_digest_enabled": profile.expiry_digest_enabled,
         // #853: whether they are told when another member adds, changes
         // or deletes an event (one setting for the three since #848).
         "notify_agenda_added": profile.notify_agenda_added,

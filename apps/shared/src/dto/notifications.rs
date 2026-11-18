@@ -23,9 +23,12 @@ pub struct NotificationSettings {
     /// server has notifications turned off (no `VAPID_PRIVATE_KEY`).
     pub vapid_public_key: Option<String>,
     /// The Paris hour, 0 to 23, of the daily recap of the stock items
-    /// nearing their expiry date (`users.expiry_digest_hour`, #700);
-    /// `None` when the member turned the recap off (#853).
-    pub expiry_digest_hour: Option<i16>,
+    /// nearing their expiry date (`users.expiry_digest_hour`, #700); kept
+    /// while the recap is off.
+    pub expiry_digest_hour: i16,
+    /// Whether that recap is sent (`users.expiry_digest_enabled`, #853):
+    /// on by default.
+    pub expiry_digest_enabled: bool,
     /// Whether this account is told when another member adds an event it
     /// sees (`users.notify_agenda_added`, #853): on by default. This switch
     /// or the next lets an import's notice through (#852).
@@ -36,17 +39,6 @@ pub struct NotificationSettings {
     pub notify_agenda_deleted: bool,
 }
 
-/// Serde reads an explicit `null` and a missing key both as `None`: this
-/// `deserialize_with`, which runs only when the key is present, makes
-/// `Some(None)` reachable. Twin of `dto/grocery_list.rs`'s.
-fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
-
 /// `PUT /account/notifications`. Every field but the channel may be left
 /// out, and is then left as it is: the settings' form sends them all
 /// (#853), each switch saved as soon as it changes.
@@ -54,14 +46,13 @@ where
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateNotificationSettings {
     pub reminder_channel: String,
-    /// The recap's hour, 0 to 23 (#700): `null` turns the recap off
-    /// (#853); left as it is when absent.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_some",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub expiry_digest_hour: Option<Option<i64>>,
+    /// The recap's hour, 0 to 23 (#700); left as it is when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_digest_hour: Option<i64>,
+    /// The recap on or off (#853), its hour kept either way; left as it is
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_digest_enabled: Option<bool>,
     /// The three agenda switches (#853); each left as it is when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_agenda_added: Option<bool>,

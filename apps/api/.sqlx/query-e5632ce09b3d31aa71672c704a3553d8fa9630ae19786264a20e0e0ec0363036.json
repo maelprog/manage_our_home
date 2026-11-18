@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, expiry_digest_hour AS \"expiry_digest_hour!\", expiry_digest_sent_on\n           FROM users\n           WHERE expiry_digest_hour <= $1\n             AND expiry_digest_sent_on IS DISTINCT FROM $2\n             AND deactivated_at IS NULL AND deleted_at IS NULL\n           ORDER BY id\n           FOR UPDATE",
+  "query": "SELECT id, expiry_digest_hour, expiry_digest_sent_on FROM users\n           WHERE expiry_digest_enabled AND expiry_digest_hour <= $1\n             AND expiry_digest_sent_on IS DISTINCT FROM $2\n             AND deactivated_at IS NULL AND deleted_at IS NULL\n           ORDER BY id\n           FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "expiry_digest_hour!",
+        "name": "expiry_digest_hour",
         "type_info": "Int2",
         "origin": {
           "Table": {
@@ -45,9 +45,9 @@
     },
     "nullable": [
       false,
-      true,
+      false,
       true
     ]
   },
-  "hash": "1ea469d51d52dab73fbc1d17c1ebb63f31aa862e1f6195e75bf7b7f3200efc5b"
+  "hash": "e5632ce09b3d31aa71672c704a3553d8fa9630ae19786264a20e0e0ec0363036"
 }

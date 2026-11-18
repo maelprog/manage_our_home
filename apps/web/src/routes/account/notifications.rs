@@ -82,10 +82,6 @@ fn channel_of(push: bool, email: bool) -> &'static str {
     }
 }
 
-/// The recap's hour of a new account (migration 0049), shown while the
-/// recap is off (#853).
-const DEFAULT_DIGEST_HOUR: i16 = 9;
-
 /// The recap's hour as the form sends it, if it is one of the day's, 0 to
 /// 23 — the API checks it too (`invalid_expiry_digest_hour`, #700).
 pub(crate) fn parse_digest_hour(text: &str) -> Option<i64> {
@@ -533,15 +529,18 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
     let recap = switch(
         "expiry_digest",
         "Récapitulatif quotidien",
-        settings.expiry_digest_hour.is_some(),
+        settings.expiry_digest_enabled,
         "",
     );
-    // The recap off, the hour shown is the default one: the hour it comes
-    // back at when switched on again.
-    let shown_hour = settings.expiry_digest_hour.unwrap_or(DEFAULT_DIGEST_HOUR);
+    // The recap off, its hour is kept, and may be changed: the hour it
+    // comes back at when switched on again.
     let hours: String = (0..24)
         .map(|hour| {
-            let selected = if hour == shown_hour { " selected" } else { "" };
+            let selected = if hour == settings.expiry_digest_hour {
+                " selected"
+            } else {
+                ""
+            };
             format!(r#"<option value="{hour}"{selected}>{hour} h</option>"#)
         })
         .collect();
@@ -644,22 +643,19 @@ pub struct SettingsForm {
 }
 
 /// What the form asks of the API: the whole of it, each switch on or off,
-/// and the recap's hour — `null` with the recap off. `Err` holds the error
-/// of the page: a recap on without an hour of the day.
+/// and the recap's hour, kept and saved while the recap is off. `Err`
+/// holds the error of the page: an hour sent that is not one of the day's.
 fn settings_update(form: &SettingsForm) -> Result<UpdateNotificationSettings, &'static str> {
-    let expiry_digest_hour = if form.expiry_digest.is_some() {
-        let hour = form
-            .expiry_digest_hour
-            .as_deref()
-            .and_then(parse_digest_hour);
-        Some(Some(hour.ok_or("invalid_hour")?))
-    } else {
-        Some(None)
-    };
+    let expiry_digest_hour = form
+        .expiry_digest_hour
+        .as_deref()
+        .map(|text| parse_digest_hour(text).ok_or("invalid_hour"))
+        .transpose()?;
     Ok(UpdateNotificationSettings {
         reminder_channel: channel_of(form.reminder_push.is_some(), form.reminder_email.is_some())
             .to_string(),
         expiry_digest_hour,
+        expiry_digest_enabled: Some(form.expiry_digest.is_some()),
         notify_agenda_added: Some(form.notify_agenda_added.is_some()),
         notify_agenda_changed: Some(form.notify_agenda_changed.is_some()),
         notify_agenda_deleted: Some(form.notify_agenda_deleted.is_some()),
@@ -764,7 +760,8 @@ mod tests {
             reminder_channel: channel.into(),
             push_subscriptions: devices,
             vapid_public_key: Some("BKey-_0".into()),
-            expiry_digest_hour: Some(9),
+            expiry_digest_enabled: true,
+            expiry_digest_hour: 9,
             notify_agenda_added: true,
             notify_agenda_changed: true,
             notify_agenda_deleted: true,
@@ -800,7 +797,8 @@ mod tests {
     }
 
     /// The whole form goes to the API on every change: every switch, on or
-    /// off, and the recap's hour — `null` when the recap is off.
+    /// off, and the recap's hour — kept, and changed, while the recap is
+    /// off.
     #[test]
     fn the_whole_form_is_one_update() {
         let all = form(
@@ -816,7 +814,10 @@ mod tests {
         );
         let update = settings_update(&all).unwrap();
         assert_eq!(update.reminder_channel, "both");
-        assert_eq!(update.expiry_digest_hour, Some(Some(21)));
+        assert_eq!(
+            (update.expiry_digest_enabled, update.expiry_digest_hour),
+            (Some(true), Some(21))
+        );
         assert_eq!(
             (
                 update.notify_agenda_added,
@@ -826,9 +827,12 @@ mod tests {
             (Some(true), Some(true), Some(true))
         );
 
-        let none = settings_update(&form(&[], Some("9"))).unwrap();
+        let none = settings_update(&form(&[], Some("18"))).unwrap();
         assert_eq!(none.reminder_channel, "none");
-        assert_eq!(none.expiry_digest_hour, Some(None));
+        assert_eq!(
+            (none.expiry_digest_enabled, none.expiry_digest_hour),
+            (Some(false), Some(18))
+        );
         assert_eq!(
             (
                 none.notify_agenda_added,
@@ -841,7 +845,10 @@ mod tests {
         let some =
             settings_update(&form(&["reminder_email", "notify_agenda_changed"], None)).unwrap();
         assert_eq!(some.reminder_channel, "email");
-        assert_eq!(some.expiry_digest_hour, Some(None));
+        assert_eq!(
+            (some.expiry_digest_enabled, some.expiry_digest_hour),
+            (Some(false), None)
+        );
         assert_eq!(
             (
                 some.notify_agenda_added,
@@ -852,22 +859,22 @@ mod tests {
         );
     }
 
-    /// With the recap on, its hour must be one of the day's.
+    /// An hour sent, recap on or off, must be one of the day's; an hour
+    /// left out is left as it is.
     #[test]
-    fn a_recap_on_needs_an_hour_of_the_day() {
-        for hour in [Some("24"), Some(""), Some("neuf"), None] {
-            assert_eq!(
-                settings_update(&form(&["expiry_digest"], hour)).unwrap_err(),
-                "invalid_hour",
-                "{hour:?}"
-            );
+    fn an_hour_sent_is_one_of_the_day_s() {
+        for on in [&["expiry_digest"][..], &[]] {
+            for hour in ["24", "", "neuf", "-1"] {
+                assert_eq!(
+                    settings_update(&form(on, Some(hour))).unwrap_err(),
+                    "invalid_hour",
+                    "{on:?} {hour:?}"
+                );
+            }
+            let update = |hour| settings_update(&form(on, hour)).unwrap().expiry_digest_hour;
+            assert_eq!(update(Some("0")), Some(0), "{on:?}");
+            assert_eq!(update(None), None, "{on:?}");
         }
-        assert_eq!(
-            settings_update(&form(&["expiry_digest"], Some("0")))
-                .unwrap()
-                .expiry_digest_hour,
-            Some(Some(0))
-        );
     }
 
     /// The input of the switch named `name`, up to its `>`.
@@ -937,15 +944,21 @@ mod tests {
         assert!(checked(&s, "reminder_push") && checked(&s, "reminder_email"));
         s = settings("none", 0);
         assert!(!checked(&s, "reminder_push") && !checked(&s, "reminder_email"));
-        s.expiry_digest_hour = None;
+        s.expiry_digest_enabled = false;
+        s.expiry_digest_hour = 18;
         s.notify_agenda_changed = false;
         assert!(!checked(&s, "expiry_digest"));
         assert!(checked(&s, "notify_agenda_added"));
         assert!(!checked(&s, "notify_agenda_changed"));
         assert!(checked(&s, "notify_agenda_deleted"));
-        // The recap off, the hour shown is the default one.
-        let (_, selected) = hour_options(&page_body(&s, "", ""));
-        assert_eq!(selected, ["9"]);
+        // The recap off, the hour shown is the member's, and may be changed.
+        let body = page_body(&s, "", "");
+        let (_, selected) = hour_options(&body);
+        assert_eq!(selected, ["18"]);
+        assert!(
+            body.contains(r#"<select name="expiry_digest_hour" data-submit-on-change>"#),
+            "{body}"
+        );
     }
 
     /// No « Enregistrer » with JavaScript (#853): a sentence says each
@@ -1034,7 +1047,7 @@ mod tests {
     fn the_page_offers_every_hour_and_selects_the_members() {
         for hour in [0, 9, 23] {
             let mut s = settings("push", 0);
-            s.expiry_digest_hour = Some(hour);
+            s.expiry_digest_hour = hour;
             let (count, selected) = hour_options(&page_body(&s, "", ""));
             assert_eq!(count, 24, "{hour}");
             assert_eq!(selected, [hour.to_string()], "{hour}");

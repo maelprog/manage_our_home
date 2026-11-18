@@ -811,16 +811,18 @@ async fn the_recap_skips_a_deactivated_or_purged_member(db: PgPool) {
     assert_eq!(notified, [owner]);
 }
 
-/// A member who turned the recap off (no hour, #853) gets none, at any
-/// hour of the day; the other gets theirs.
+/// A member who turned the recap off (#853) gets none, at any hour of the
+/// day, though their hour is kept; the other gets theirs.
 #[sqlx::test]
 async fn the_recap_skips_a_member_who_turned_it_off(db: PgPool) {
     let f = family(&db).await;
     let owner = user_id(&db, "owner@example.test").await;
-    sqlx::query("UPDATE users SET expiry_digest_hour = NULL WHERE email = 'member@example.test'")
-        .execute(&db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE users SET expiry_digest_enabled = false WHERE email = 'member@example.test'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
     let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
     stock_item(&db, &f.group, "Lait", 1.0, today).await;
 
@@ -1177,7 +1179,7 @@ async fn an_agenda_change_is_a_kind_the_schema_takes(db: PgPool) {
 
 /// Every account is told of the agenda changes unless it says otherwise:
 /// the three switches (#853) are on for an account just made, each can be
-/// turned off, none can be NULL.
+/// turned off, none can be NULL. So is the expiry recap's (#853).
 #[sqlx::test]
 async fn an_account_is_told_of_the_agenda_changes_by_default(db: PgPool) {
     family(&db).await;
@@ -1185,6 +1187,7 @@ async fn an_account_is_told_of_the_agenda_changes_by_default(db: PgPool) {
         "notify_agenda_added",
         "notify_agenda_changed",
         "notify_agenda_deleted",
+        "expiry_digest_enabled",
     ] {
         let on: Vec<bool> =
             sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {column} FROM users")))
@@ -1216,12 +1219,12 @@ async fn an_account_is_told_of_the_agenda_changes_by_default(db: PgPool) {
     }
 }
 
-/// Both reminder switches off is `none` (#853); the recap's hour may be
-/// NULL (no recap), and still no hour outside the day.
+/// Both reminder switches off is `none` (#853); the recap may be off, its
+/// hour kept: never NULL, never outside the day.
 #[sqlx::test]
 async fn the_reminders_may_reach_the_centre_alone_and_the_recap_be_off(db: PgPool) {
     family(&db).await;
-    sqlx::query("UPDATE users SET reminder_channel = 'none', expiry_digest_hour = NULL")
+    sqlx::query("UPDATE users SET reminder_channel = 'none', expiry_digest_enabled = false")
         .execute(&db)
         .await
         .unwrap();
@@ -1233,18 +1236,22 @@ async fn the_reminders_may_reach_the_centre_alone_and_the_recap_be_off(db: PgPoo
         refused.as_database_error().unwrap().constraint(),
         Some("users_reminder_channel_check")
     );
-    let refused = sqlx::query("UPDATE users SET expiry_digest_hour = 24")
+    for hour in ["24", "NULL"] {
+        let refused = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET expiry_digest_hour = {hour}"
+        )))
         .execute(&db)
         .await;
-    assert!(refused.is_err());
+        assert!(refused.is_err(), "{hour}");
+    }
 }
 
 /// The settings are read and written by `/account/notifications`: the
 /// three agenda switches (#853) on by default, each turned off and on
 /// again alone, left as they are by a request without them, anything but
 /// a boolean refused; the whole form in one request, both reminder
-/// switches off (`none`) and the recap off (`null`) included; and only
-/// the caller's own account is changed.
+/// switches off (`none`) and the recap off included — its hour kept, and
+/// changed while it is off; and only the caller's own account is changed.
 #[sqlx::test]
 async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     let f = family(&db).await;
@@ -1279,7 +1286,10 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     let state = |s: Value| {
         (
             s["reminder_channel"].clone(),
-            s["expiry_digest_hour"].clone(),
+            (
+                s["expiry_digest_enabled"].clone(),
+                s["expiry_digest_hour"].clone(),
+            ),
             [
                 s["notify_agenda_added"].clone(),
                 s["notify_agenda_changed"].clone(),
@@ -1287,10 +1297,11 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
             ],
         )
     };
+    let recap = |on: bool, hour: i64| (json!(on), json!(hour));
     let switches = |a: bool, c: bool, d: bool| [json!(a), json!(c), json!(d)];
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("push"), json!(9), switches(true, true, true))
+        (json!("push"), recap(true, 9), switches(true, true, true))
     );
     set_digest_hour(&db, "owner@example.test", 18).await;
 
@@ -1299,7 +1310,7 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("both"), json!(18), switches(true, false, true))
+        (json!("both"), recap(true, 18), switches(true, false, true))
     );
 
     // Without them, the switches stay as they are.
@@ -1307,13 +1318,14 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("email"), json!(7), switches(true, false, true))
+        (json!("email"), recap(true, 7), switches(true, false, true))
     );
 
     for field in [
         "notify_agenda_added",
         "notify_agenda_changed",
         "notify_agenda_deleted",
+        "expiry_digest_enabled",
     ] {
         for wrong in [json!("no"), json!(0), json!(null)] {
             let res = put(json!({"reminder_channel": "email", field: wrong})).await;
@@ -1327,13 +1339,15 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     }
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("email"), json!(7), switches(true, false, true))
+        (json!("email"), recap(true, 7), switches(true, false, true))
     );
 
-    // The whole form, as the page sends it on each change: everything off.
+    // The whole form, as the page sends it on each change: everything off,
+    // the recap's hour kept.
     let res = put(json!({
         "reminder_channel": "none",
-        "expiry_digest_hour": null,
+        "expiry_digest_enabled": false,
+        "expiry_digest_hour": 7,
         "notify_agenda_added": false,
         "notify_agenda_changed": false,
         "notify_agenda_deleted": false,
@@ -1342,18 +1356,21 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("none"), json!(null), switches(false, false, false))
+        (json!("none"), recap(false, 7), switches(false, false, false))
     );
-    // Without the hour, the recap stays off; with one, it is on again.
-    let res = put(json!({"reminder_channel": "push"})).await;
+    // The recap off, its hour is changed and kept; switched on again, the
+    // recap comes at that hour.
+    let res = put(json!({
+        "reminder_channel": "none",
+        "expiry_digest_enabled": false,
+        "expiry_digest_hour": 21,
+    }))
+    .await;
     assert_status(&res, StatusCode::NO_CONTENT);
-    assert_eq!(
-        settings(f.owner.clone()).await["expiry_digest_hour"],
-        json!(null)
-    );
+    assert_eq!(state(settings(f.owner.clone()).await).1, recap(false, 21));
     let res = put(json!({
         "reminder_channel": "both",
-        "expiry_digest_hour": 21,
+        "expiry_digest_enabled": true,
         "notify_agenda_added": true,
         "notify_agenda_changed": true,
         "notify_agenda_deleted": false,
@@ -1362,7 +1379,7 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("both"), json!(21), switches(true, true, false))
+        (json!("both"), recap(true, 21), switches(true, true, false))
     );
 
     // The member turns theirs off: the owner's stay as they are.
@@ -1373,7 +1390,7 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
         Some(&f.member),
         Some(json!({
             "reminder_channel": "none",
-            "expiry_digest_hour": null,
+            "expiry_digest_enabled": false,
             "notify_agenda_added": false,
         })),
     )
@@ -1381,11 +1398,11 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.member.clone()).await),
-        (json!("none"), json!(null), switches(false, true, true))
+        (json!("none"), recap(false, 9), switches(false, true, true))
     );
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("both"), json!(21), switches(true, true, false))
+        (json!("both"), recap(true, 21), switches(true, true, false))
     );
 }
 
