@@ -1204,6 +1204,12 @@ textarea[data-count] { resize: vertical; }
 .keys dl { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); margin: 0 0 var(--s3); font-size: var(--t-sm); }
 .keys dd { margin: 0; color: var(--muted); }
 kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var(--s1); background: var(--bg); font: inherit; font-size: var(--t-xs); }
+/* Waiting: « Enregistrer la photo » while the file is read, « Choisir une
+   autre photo » while the square is sent, dimmed with the tokens of a
+   disabled control; the square, locked, is out of the pointer's reach and
+   faded as the mock-up has it. */
+.crop button:disabled { border-color: var(--line); background: var(--hover); color: var(--muted); cursor: default; }
+.crop[data-state="sending"] .crop-box { pointer-events: none; opacity: 0.85; }
 /* The day and the meal of a planned recipe (#812): a `.card.inline` whose
    meals are `.picks` in a fieldset, which draws no box of its own here, its
    legend the size of a field's label; the line that says the day takes the

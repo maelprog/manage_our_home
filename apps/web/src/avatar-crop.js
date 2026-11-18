@@ -176,6 +176,7 @@ var MHomeAvatarCrop = (function () {
 
   function setState(next) {
     state = next;
+    root.setAttribute("data-state", next);
     var shown = section.querySelectorAll("[data-in]");
     for (var i = 0; i < shown.length; i++) {
       shown[i].hidden = shown[i].getAttribute("data-in").split(" ").indexOf(next) < 0;
