@@ -3,7 +3,9 @@
 //! schema.org JSON-LD (`jsonld`), else its schema.org microdata
 //! (`microdata`), else its prose (`prose`, #475): an « Ingrédients »
 //! heading over a list. The draft's `source_url` is the address without
-//! its tracking parameters (`without_tracking`).
+//! its tracking parameters (`without_tracking`). A Jow share link, which
+//! opens the app only, is read on its recipe's public page
+//! (`jow_recipe_page`, #899).
 //! It creates nothing — the reviewed recipe goes through
 //! `POST /groups/:id/recipes`, with the page as `source_url`. Open to any
 //! member, like creating a recipe.
@@ -155,12 +157,35 @@ fn draft_of(page: &str, source_url: String) -> Option<RecipeDraft> {
 
 /// The address to fetch: a URL `valid_source_url` accepts once parsed (so
 /// that the draft's `source_url` can be saved as is), which `check_url`
-/// lets through.
+/// lets through. A Jow share link is read on its recipe's page
+/// (`jow_recipe_page`), checked like any other address.
 fn import_url(raw: &str) -> Result<Url, ImportFailure> {
     let url = Url::parse(raw.trim()).map_err(|_| ImportFailure::InvalidUrl)?;
+    let url = jow_recipe_page(url);
     check_url(&url).map_err(refused)?;
     valid_source_url(url.as_str()).ok_or(ImportFailure::InvalidUrl)?;
     Ok(url)
+}
+
+/// A Jow share link (`https://app.jow.com/<code>?action=recipe&recipeId=<id>`)
+/// opens the app only: its redirect lands on a page without the recipe's
+/// JSON-LD. The recipe's public page, `https://jow.fr/recipes/<id>`,
+/// publishes it (#899). An address of host `app.jow.com` or `jow.fr` whose query names a
+/// `recipeId` of 24 hexadecimal digits becomes that page; any other is
+/// returned as it is.
+fn jow_recipe_page(url: Url) -> Url {
+    let jow = matches!(url.host_str(), Some("app.jow.com" | "jow.fr"));
+    let recipe_id = url
+        .query_pairs()
+        .find(|(name, _)| name == "recipeId")
+        .map(|(_, id)| id.into_owned())
+        .filter(|id| id.len() == 24 && id.bytes().all(|b| b.is_ascii_hexdigit()));
+    match recipe_id {
+        Some(id) if jow => {
+            Url::parse(&format!("https://jow.fr/recipes/{id}")).expect("a valid URL")
+        }
+        _ => url,
+    }
 }
 
 fn refused(refusal: Refused) -> ImportFailure {
@@ -340,6 +365,125 @@ mod tests {
         assert_eq!(
             import_url(" https://www.750g.com/r.htm ").map(|u| u.to_string()),
             Ok("https://www.750g.com/r.htm".to_string())
+        );
+    }
+
+    fn jow(url: &str) -> String {
+        jow_recipe_page(Url::parse(url).unwrap()).to_string()
+    }
+
+    /// A Jow share link opens the app only; its `recipeId` names the
+    /// public page (#899).
+    #[test]
+    fn a_jow_share_link_becomes_its_recipe_page() {
+        assert_eq!(
+            jow("https://app.jow.com/EC0U?action=recipe&recipeId=6955207b42f666a7dc53cdc2&source=jow"),
+            "https://jow.fr/recipes/6955207b42f666a7dc53cdc2"
+        );
+        assert_eq!(
+            jow("https://jow.fr/recipes?recipeId=6955207b42f666a7dc53cdc2"),
+            "https://jow.fr/recipes/6955207b42f666a7dc53cdc2"
+        );
+        // Hosts are compared without case.
+        assert_eq!(
+            jow("https://APP.Jow.COM/EC0U?action=recipe&recipeId=6955207b42f666a7dc53cdc2"),
+            "https://jow.fr/recipes/6955207b42f666a7dc53cdc2"
+        );
+        // The first `recipeId` is the one read.
+        assert_eq!(
+            jow("https://app.jow.com/EC0U?recipeId=6955207b42f666a7dc53cdc2&recipeId=aaaaaaaaaaaaaaaaaaaaaaaa"),
+            "https://jow.fr/recipes/6955207b42f666a7dc53cdc2"
+        );
+    }
+
+    /// The parameter's name is compared with its case.
+    #[test]
+    fn a_recipe_id_named_in_another_case_is_not_read() {
+        let kept = "https://app.jow.com/EC0U?recipeid=6955207b42f666a7dc53cdc2";
+        assert_eq!(jow(kept), kept);
+    }
+
+    /// The rewrite comes before `check_url`: the address checked is the
+    /// recipe's page, whatever the link's scheme.
+    #[test]
+    fn import_url_checks_the_rewritten_address() {
+        assert_eq!(
+            import_url("ftp://app.jow.com/EC0U?recipeId=6955207b42f666a7dc53cdc2")
+                .map(|u| u.to_string()),
+            Ok("https://jow.fr/recipes/6955207b42f666a7dc53cdc2".to_string())
+        );
+    }
+
+    #[test]
+    fn other_addresses_are_left_as_they_are() {
+        for kept in [
+            // No `recipeId`.
+            "https://app.jow.com/EC0U?action=recipe&source=jow",
+            "https://app.jow.com/EC0U",
+            // A malformed one: too short, too long, not hexadecimal, empty.
+            "https://app.jow.com/EC0U?recipeId=6955207b42f666a7dc53cdc",
+            "https://app.jow.com/EC0U?recipeId=6955207b42f666a7dc53cdc2a",
+            "https://app.jow.com/EC0U?recipeId=6955207b42f666a7dc53cdcz",
+            "https://app.jow.com/EC0U?recipeId=",
+            // Another host carrying one.
+            "https://e.fr/r?recipeId=6955207b42f666a7dc53cdc2",
+            "https://www.app.jow.com.e.fr/r?recipeId=6955207b42f666a7dc53cdc2",
+            // The public page, already canonical.
+            "https://jow.fr/recipes/enchiladas-au-poulet-et-la-vache-qui-rit-98wi0ocilmqyb1hv14n6",
+        ] {
+            assert_eq!(jow(kept), kept);
+        }
+    }
+
+    #[test]
+    fn import_url_reads_a_jow_share_link_on_its_recipe_page() {
+        let url = import_url(
+            "https://app.jow.com/EC0U?action=recipe&recipeId=6955207b42f666a7dc53cdc2&source=jow",
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://jow.fr/recipes/6955207b42f666a7dc53cdc2"
+        );
+        assert_eq!(without_tracking(&url), url);
+    }
+
+    /// The JSON-LD of `jow.fr/recipes/6955207b42f666a7dc53cdc2` (#899),
+    /// without its images, video, rating nor nutrition.
+    #[test]
+    fn the_jow_page_gives_a_draft() {
+        let page = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/recipe_pages/jow_enchiladas.html"
+        ));
+        let draft = draft(page).unwrap();
+        assert_eq!(draft.name, "Enchiladas au poulet & La Vache qui rit®");
+        let ingredients: Vec<_> = draft
+            .ingredients
+            .iter()
+            .map(|i| (i.quantity, i.unit.as_deref(), i.name.as_str()))
+            .collect();
+        assert_eq!(
+            ingredients,
+            [
+                (Some(2.0), None, "Tortilla (maïs)"),
+                (Some(1.0), None, "Poulet (escalope)"),
+                (Some(0.5), None, "Oignon jaune"),
+                (Some(1.0), None, "Fromage triangle"),
+                (Some(65.0), Some("g"), "Sauce tomate (basilic)"),
+                (Some(20.0), Some("g"), "Mozzarella (râpée)"),
+                (Some(0.25), Some("c. à café"), "Mélange épices mexicaines"),
+            ]
+        );
+        assert_eq!(draft.steps.len(), 8);
+        assert_eq!(
+            draft.steps[0],
+            "Préchauffez le four à 200°C. Épluchez puis émincez les oignons."
+        );
+        assert!(
+            draft.steps[7].ends_with("C’est prêt !"),
+            "{}",
+            draft.steps[7]
         );
     }
 
