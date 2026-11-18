@@ -1356,7 +1356,11 @@ async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("none"), recap(false, 7), switches(false, false, false))
+        (
+            json!("none"),
+            recap(false, 7),
+            switches(false, false, false)
+        )
     );
     // The recap off, its hour is changed and kept; switched on again, the
     // recap comes at that hour.

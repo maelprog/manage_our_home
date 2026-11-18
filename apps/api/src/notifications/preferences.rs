@@ -323,12 +323,10 @@ mod tests {
             (left.expiry_digest_enabled, left.expiry_digest_hour),
             (None, None)
         );
-        assert!(
-            serde_json::from_str::<UpdateNotificationSettings>(&format!(
-                r#"{{{base},"expiry_digest_enabled":"no"}}"#
-            ))
-            .is_err()
-        );
+        assert!(serde_json::from_str::<UpdateNotificationSettings>(&format!(
+            r#"{{{base},"expiry_digest_enabled":"no"}}"#
+        ))
+        .is_err());
     }
 
     /// What the web sends is what the API reads: a field left as it is goes

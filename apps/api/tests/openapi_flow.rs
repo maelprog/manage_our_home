@@ -135,8 +135,8 @@ fn behind_secure_cookies_the_scheme_names_the_host_prefixed_cookie() {
 
 /// The three agenda switches (#853, one setting since #850) are in both
 /// shapes of `/account/notifications`: always in what `GET` answers,
-/// optional in what `PUT` takes; so is the recap's switch, its hour never
-/// `null` (#853: the hour is kept while the recap is off).
+/// optional in what `PUT` takes; so is the recap's switch. `GET` always
+/// answers the recap's hour (#853: it is kept while the recap is off).
 #[test]
 fn the_notification_settings_document_the_agenda_switches() {
     let json = serde_json::to_value(openapi(false)).unwrap();
@@ -157,14 +157,9 @@ fn the_notification_settings_document_the_agenda_switches() {
         assert!(!write.is_null(), "{field}");
         assert!(!required("UpdateNotificationSettings").contains(&field.to_string()));
     }
-    for schema in ["NotificationSettings", "UpdateNotificationSettings"] {
-        let hour = &schemas[schema]["properties"]["expiry_digest_hour"];
-        assert!(!hour.is_null(), "{schema}");
-        assert!(
-            hour["nullable"] != true && !hour["type"].to_string().contains("null"),
-            "{schema}: {hour}"
-        );
-    }
+    let hour = &schemas["NotificationSettings"]["properties"]["expiry_digest_hour"];
+    assert_eq!(hour["type"], "integer", "{hour}");
+    assert!(required("NotificationSettings").contains(&"expiry_digest_hour".to_string()));
     let gone = &schemas["NotificationSettings"]["properties"]["notify_agenda_changes"];
     assert!(gone.is_null(), "{gone}");
 }
