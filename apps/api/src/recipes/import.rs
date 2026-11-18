@@ -168,9 +168,9 @@ fn import_url(raw: &str) -> Result<Url, ImportFailure> {
 }
 
 /// A Jow share link (`https://app.jow.com/<code>?action=recipe&recipeId=<id>`)
-/// opens the app only: its redirect loses the `recipeId`. The recipe's
-/// public page, `https://jow.fr/recipes/<id>`, publishes it in JSON-LD
-/// (#899). An address of host `app.jow.com` or `jow.fr` whose query names a
+/// opens the app only: its redirect lands on a page without the recipe's
+/// JSON-LD. The recipe's public page, `https://jow.fr/recipes/<id>`,
+/// publishes it (#899). An address of host `app.jow.com` or `jow.fr` whose query names a
 /// `recipeId` of 24 hexadecimal digits becomes that page; any other is
 /// returned as it is.
 fn jow_recipe_page(url: Url) -> Url {
