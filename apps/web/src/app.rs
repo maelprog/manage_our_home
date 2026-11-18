@@ -504,7 +504,7 @@ pub(crate) const APPLIES_ON_CHANGE: &str = r#"<p class="muted" data-shown-with-j
 /// they stay and the form posts as before.
 pub(crate) fn submit_fallback(label: &str) -> String {
     format!(
-        r#"<div data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">{label}</button></div>"#
+        r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">{label}</button></div>"#
     )
 }
 

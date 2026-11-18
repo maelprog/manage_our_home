@@ -188,7 +188,7 @@ mod tests {
         );
         assert!(
             html.contains(
-                r#"<div data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer</button></div>"#
+                r#"<div class="fallback" data-hidden-with-js><p class="muted">Sans JavaScript, le choix s'envoie avec le bouton.</p><button type="submit">Enregistrer</button></div>"#
             ),
             "{html}"
         );
