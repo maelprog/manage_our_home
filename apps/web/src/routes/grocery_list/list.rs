@@ -25,7 +25,7 @@ use manage_our_home_shared::dto::grocery_list::{
 };
 use manage_our_home_shared::dto::recipes::RecipeSelectionResponse;
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
-use manage_our_home_shared::validation::budget::{can_access_budget, validate_entry_form};
+use manage_our_home_shared::validation::budget::validate_entry_form;
 use manage_our_home_shared::validation::grocery_list::{
     can_modify, quantity_label, source_label, validate_item_form,
 };
@@ -158,8 +158,9 @@ fn error_html(error: Option<&str>) -> String {
 /// `POST /grocery-list/:id/price`. A re-tap updates the expense the item is
 /// linked to rather than double-counting — unless that expense carries
 /// other items too (#633), which only the budget page corrects. `can_price` is
-/// `can_access_budget` of the caller's role (#531): a standard member gets no
-/// price field, an owner or an admin adds the spend later.
+/// `can_access_budget` of the caller's role against the family's `budget`
+/// threshold (#531, #865): a member under it gets no price field, one who
+/// reaches the budget adds the spend later.
 fn item_row(item: &GroceryItemResponse, can_edit: bool, can_price: bool) -> String {
     let next = !item.checked;
     let (toggle_label, tick_class, tick_icon, name_class) = if item.checked {
@@ -452,7 +453,7 @@ pub async fn get(
         generate = generate_html(planned_count(planned.as_deref())),
         progress = progress_html(checked, items.len()),
         plus = icon(Icon::Plus),
-        list = sections_html(&items, can_access_budget(&fam.role), |item| can_modify(
+        list = sections_html(&items, fam.reaches_budget, |item| can_modify(
             &fam.role,
             item.created_by == me.user_id
         )),

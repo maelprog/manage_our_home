@@ -311,3 +311,127 @@ async fn access_policies_are_read_by_members_and_set_by_the_owner(db: PgPool) {
     drop(router);
     drop_prescribed_role(&db, app_db, &role).await;
 }
+
+/// The `(feature, min_role)` pairs `GET /groups` gives the caller for the
+/// group named `name`.
+async fn listed_policies(router: &axum::Router, cookie: &str, name: &str) -> Vec<(String, String)> {
+    let list = call(router, Method::GET, "/groups", Some(cookie), None).await;
+    assert_status(&list, StatusCode::OK);
+    let groups = json_body(list).await;
+    let group = groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["name"] == name)
+        .unwrap_or_else(|| panic!("{name} not in GET /groups"));
+    pairs(&json!({"policies": group["access_policies"]}))
+}
+
+/// #865: `GET /groups` hands a member of two families each one's own
+/// thresholds — read through the RLS of 0062, one family at a time.
+#[sqlx::test]
+async fn the_group_list_carries_each_family_s_policy(db: PgPool) {
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let router = test_router(app_db.clone());
+    let first = register_verify_login(&router, &db, "first@example.test").await;
+    let second = register_verify_login(&router, &db, "second@example.test").await;
+    let member = register_verify_login(&router, &db, "member@example.test").await;
+    let mut ids = Vec::new();
+    for (owner, name) in [(&first, "Premier"), (&second, "Second")] {
+        let create = call(
+            &router,
+            Method::POST,
+            "/groups",
+            Some(owner),
+            Some(json!({"name": name})),
+        )
+        .await;
+        assert_status(&create, StatusCode::CREATED);
+        let id = json_body(create).await["id"].as_str().unwrap().to_string();
+        join(&router, owner, &member, &id).await;
+        ids.push(id);
+    }
+    for (owner, id, body) in [
+        (
+            &first,
+            &ids[0],
+            json!({"policies": [{"feature": "budget", "min_role": "standard"}]}),
+        ),
+        (
+            &second,
+            &ids[1],
+            json!({"policies": [{"feature": "google_calendar", "min_role": "owner"}]}),
+        ),
+    ] {
+        let write = call(
+            &router,
+            Method::PUT,
+            &format!("/groups/{id}/access-policies"),
+            Some(owner),
+            Some(body),
+        )
+        .await;
+        assert_status(&write, StatusCode::OK);
+    }
+
+    assert_eq!(
+        listed_policies(&router, &member, "Premier").await,
+        expected(&[("budget", "standard")])
+    );
+    assert_eq!(
+        listed_policies(&router, &member, "Second").await,
+        expected(&[("google_calendar", "owner")])
+    );
+    assert_eq!(
+        listed_policies(&router, &first, "Premier").await,
+        expected(&[("budget", "standard")])
+    );
+
+    drop(router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}
+
+/// #864: the body is checked before the caller's role, as on the
+/// neighbouring routes — a standard member's malformed body is a 400, not
+/// the 403 a well-formed one gets.
+#[sqlx::test]
+async fn the_body_is_checked_before_the_role(db: PgPool) {
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let router = test_router(app_db.clone());
+    let owner = register_verify_login(&router, &db, "owner@example.test").await;
+    let standard = register_verify_login(&router, &db, "standard@example.test").await;
+    let create = call(
+        &router,
+        Method::POST,
+        "/groups",
+        Some(&owner),
+        Some(json!({"name": "Foyer"})),
+    )
+    .await;
+    let group_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    join(&router, &owner, &standard, &group_id).await;
+    let url = format!("/groups/{group_id}/access-policies");
+
+    let write = call(
+        &router,
+        Method::PUT,
+        &url,
+        Some(&standard),
+        Some(json!({"policies": [{"feature": "garage", "min_role": "owner"}]})),
+    )
+    .await;
+    assert_status(&write, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(write).await["error"], "unknown_feature");
+    let write = call(
+        &router,
+        Method::PUT,
+        &url,
+        Some(&standard),
+        Some(json!({"policies": [{"feature": "budget", "min_role": "standard"}]})),
+    )
+    .await;
+    assert_status(&write, StatusCode::FORBIDDEN);
+
+    drop(router);
+    drop_prescribed_role(&db, app_db, &role).await;
+}

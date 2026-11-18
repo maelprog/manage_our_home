@@ -804,6 +804,7 @@ mod tests {
             role: "member".to_string(),
             accent: "sarcelle".to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         }
     }
 

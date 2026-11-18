@@ -12,12 +12,13 @@
 //! rest of Agenda; the family-settings page carries a cross-link for people who
 //! go looking under settings.
 //!
-//! **Permission bar** (`validation::google_calendar::can_configure`, mirror of
-//! `apps/api/src/google_calendar/mod.rs`): connecting and removing a calendar is
-//! admin/owner only — the feed URL is a bearer credential for a member's Google
+//! **Permission bar** (`validation::google_calendar::can_configure`, the
+//! function `apps/api/src/google_calendar/` applies): connecting and removing a
+//! calendar takes the family's `google_calendar` threshold (#865), admin by
+//! default — the feed URL is a bearer credential for a member's Google
 //! account, not household data. Listing and triggering an import stay open to
-//! any member. The controls are hidden for a standard member and the handlers
-//! bounce them defensively; the backend stays the authority.
+//! any member. The controls are hidden for a member under the threshold and
+//! the handlers bounce them defensively; the backend stays the authority.
 //!
 //! **The feed URL is a credential.** It is submitted once, by POST body only. It
 //! never enters a query string or a PRG parameter, is never re-rendered into a
@@ -224,7 +225,7 @@ pub async fn get(
         .map(|g| g.members)
         .unwrap_or_default();
 
-    let may_configure = can_configure(&fam.role);
+    let may_configure = can_configure(&fam.role, &fam.calendar_min_role);
     let body = format!(
         r#"<div class="page-header">
 <h1>Agendas Google</h1>
@@ -384,7 +385,7 @@ pub async fn new_get(
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/imports/new").await else {
         return Redirect::to("/groups/new").into_response();
     };
-    if !can_configure(&fam.role) {
+    if !can_configure(&fam.role, &fam.calendar_min_role) {
         return Redirect::to("/agenda/imports?error=forbidden").into_response();
     }
     Html(shell_with_header(
@@ -405,7 +406,7 @@ pub async fn create(
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/imports/new").await else {
         return Redirect::to("/groups/new").into_response();
     };
-    if !can_configure(&fam.role) {
+    if !can_configure(&fam.role, &fam.calendar_min_role) {
         return Redirect::to("/agenda/imports?error=forbidden").into_response();
     }
 
@@ -592,7 +593,7 @@ pub async fn delete_get(
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/imports").await else {
         return Redirect::to("/groups/new").into_response();
     };
-    if !can_configure(&fam.role) {
+    if !can_configure(&fam.role, &fam.calendar_min_role) {
         return Redirect::to("/agenda/imports?error=forbidden").into_response();
     }
     let cookie = agenda_cookie(&headers);
@@ -621,7 +622,7 @@ pub async fn delete_post(
     let Some(fam) = family_context(&state, &headers, &me, "/agenda/imports").await else {
         return Redirect::to("/groups/new").into_response();
     };
-    if !can_configure(&fam.role) {
+    if !can_configure(&fam.role, &fam.calendar_min_role) {
         return Redirect::to("/agenda/imports?error=forbidden").into_response();
     }
     let delete_events = wants_event_deletion(form.delete_events.as_deref());

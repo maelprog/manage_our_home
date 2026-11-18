@@ -1,7 +1,8 @@
 //! The budget's cap alerts (#536): an expense that takes the month's
 //! spending of the family to 80 % of its cap, to its cap, or past the cap
-//! of its category writes a notification to the owners and the admins of
-//! the family (`can_access_budget`), each threshold once per month and per
+//! of its category writes a notification to the members of the family who
+//! reach the budget (`can_access_budget` and the family's threshold, #865:
+//! owners and admins by default), each threshold once per month and per
 //! scope (`budget_alerts`, migration 0037).
 //!
 //! What counts is the month's total before the write and after it, read
@@ -29,6 +30,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::budget::{can_access_budget, require_budget_access};
 use crate::error::{AppError, AppResult};
+use crate::groups::access::{min_role_for, Feature};
 use crate::jobs::scheduled_notifications::push_devices;
 use crate::notifications::center::{self, Event, NewNotification};
 use crate::notifications::{push, ReminderChannel};
@@ -296,8 +298,9 @@ impl Watch {
     }
 
     /// One alert, unless this family already had it this month
-    /// (`budget_alerts`): a notification for each owner and admin whose
-    /// account is active, the author of the expense included — the alert
+    /// (`budget_alerts`): a notification for each member who reaches the
+    /// budget (the family's threshold, #865: owners and admins by default)
+    /// and whose account is active, the author of the expense included — the alert
     /// is about the month's spending, not about their own action. Returns
     /// them, none when the alert went already.
     async fn send(
@@ -322,6 +325,7 @@ impl Watch {
         if !first {
             return Ok(Vec::new());
         }
+        let min_role = min_role_for(tx, self.group_id, Feature::Budget).await?;
         let recipients: Vec<Uuid> = sqlx::query!(
             r#"SELECT gm.user_id, gm.role::text AS "role!"
                FROM group_members gm
@@ -333,7 +337,7 @@ impl Watch {
         .fetch_all(&mut **tx)
         .await?
         .into_iter()
-        .filter(|m| can_access_budget(&m.role))
+        .filter(|m| can_access_budget(&m.role, &min_role))
         .map(|m| m.user_id)
         .collect();
         let event = match (category, threshold) {

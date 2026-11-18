@@ -14,6 +14,7 @@ use manage_our_home_shared::dto::messagerie::{MessageList, MessageResponse};
 use manage_our_home_shared::dto::recipes::{PlannedSelection, RecipeList};
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
 use manage_our_home_shared::validation::budget::{can_access_budget, format_euros, month_name_fr};
+use manage_our_home_shared::validation::groups::Feature;
 use manage_our_home_shared::validation::messagerie::author_name;
 use manage_our_home_shared::validation::recipes::duration_label;
 use uuid::Uuid;
@@ -156,12 +157,13 @@ fn truncate_message(content: &str, max_chars: usize) -> String {
 /// authenticated header (nav + family switcher, #17). Built the same way as
 /// every other family-scoped route (`routes/agenda`, `routes/stocks`, …);
 /// `None` means the user has no group yet, handled separately by `get`
-/// before this is even called. `role` is the caller's in that family, which
-/// decides the budget card (#531); `unread_notifications`, the bell's
-/// count (#535).
+/// before this is even called. `reaches_budget` is whether the caller's
+/// role in that family meets its `budget` threshold, which decides the
+/// budget card (#531, #865); `unread_notifications`, the bell's count
+/// (#535).
 struct FamilyContext {
     gid: Uuid,
-    role: String,
+    reaches_budget: bool,
     header: String,
     unread_notifications: Option<u64>,
 }
@@ -176,7 +178,7 @@ async fn family_context(
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     let fam = active.map(|g| FamilyContext {
         gid: g.group_id,
-        role: g.role.clone(),
+        reaches_budget: can_access_budget(&g.role, g.min_role(Feature::Budget)),
         header: header.clone(),
         unread_notifications,
     });
@@ -1011,7 +1013,7 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    let budget = if can_access_budget(&fam.role) {
+    let budget = if fam.reaches_budget {
         let budget_summary: BudgetSummary = match api_request_auth(
             &state,
             reqwest::Method::GET,
