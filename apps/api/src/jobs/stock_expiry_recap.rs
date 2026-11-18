@@ -2,7 +2,8 @@
 //! at the hour each member chose (#700).
 //!
 //! Every member has a recap hour, Europe/Paris (`users.expiry_digest_hour`,
-//! 9 by default, migration 0049). From that hour on, once a day
+//! 9 by default, migration 0049), unless they turned the recap off (NULL,
+//! #853): they get none. From that hour on, once a day
 //! ([`member_due`], `users.expiry_digest_sent_on`), the member gets, for
 //! each of their families with items of quantity > 0 whose « à consommer
 //! jusqu'au » date is at most `EXPIRY_SOON_DAYS` days ahead — expired ones
@@ -149,7 +150,8 @@ pub async fn recap(pool: &PgPool, today: NaiveDate, hour: u32) -> anyhow::Result
     // The candidates; `member_due` decides. Locked, so that a second pass
     // waits for this one and then finds them done.
     let candidates = sqlx::query!(
-        r#"SELECT id, expiry_digest_hour, expiry_digest_sent_on FROM users
+        r#"SELECT id, expiry_digest_hour AS "expiry_digest_hour!", expiry_digest_sent_on
+           FROM users
            WHERE expiry_digest_hour <= $1
              AND expiry_digest_sent_on IS DISTINCT FROM $2
              AND deactivated_at IS NULL AND deleted_at IS NULL

@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct NotificationSettings {
-    /// `push`, `email` or `both` (`users.reminder_channel`).
+    /// `push`, `email`, `both` or `none` (`users.reminder_channel`; `none`
+    /// since #853: the reminders reach the notification centre alone).
     pub reminder_channel: String,
     /// Devices currently subscribed for this account, whatever their
     /// browser. Expired ones are deleted as soon as a push service says so.
@@ -22,26 +23,52 @@ pub struct NotificationSettings {
     /// server has notifications turned off (no `VAPID_PRIVATE_KEY`).
     pub vapid_public_key: Option<String>,
     /// The Paris hour, 0 to 23, of the daily recap of the stock items
-    /// nearing their expiry date (`users.expiry_digest_hour`, #700).
-    pub expiry_digest_hour: i16,
-    /// Whether this account is told when another member adds, changes,
-    /// deletes or imports an event it sees (`users.notify_agenda_changes`,
-    /// #848): on by default.
-    pub notify_agenda_changes: bool,
+    /// nearing their expiry date (`users.expiry_digest_hour`, #700);
+    /// `None` when the member turned the recap off (#853).
+    pub expiry_digest_hour: Option<i16>,
+    /// Whether this account is told when another member adds an event it
+    /// sees (`users.notify_agenda_added`, #853): on by default. This switch
+    /// or the next lets an import's notice through (#852).
+    pub notify_agenda_added: bool,
+    /// … changes one (`users.notify_agenda_changed`): on by default.
+    pub notify_agenda_changed: bool,
+    /// … deletes one (`users.notify_agenda_deleted`): on by default.
+    pub notify_agenda_deleted: bool,
 }
 
-/// `PUT /account/notifications`.
+/// Serde reads an explicit `null` and a missing key both as `None`: this
+/// `deserialize_with`, which runs only when the key is present, makes
+/// `Some(None)` reachable. Twin of `dto/grocery_list.rs`'s.
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// `PUT /account/notifications`. Every field but the channel may be left
+/// out, and is then left as it is: the settings' form sends them all
+/// (#853), each switch saved as soon as it changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateNotificationSettings {
     pub reminder_channel: String,
-    /// The recap's hour, 0 to 23 (#700); left as it is when absent.
+    /// The recap's hour, 0 to 23 (#700): `null` turns the recap off
+    /// (#853); left as it is when absent.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_some",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expiry_digest_hour: Option<Option<i64>>,
+    /// The three agenda switches (#853); each left as it is when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expiry_digest_hour: Option<i64>,
-    /// Whether to be told of the agenda changes (#850); left as it is
-    /// when absent.
+    pub notify_agenda_added: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_agenda_changes: Option<bool>,
+    pub notify_agenda_changed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_agenda_deleted: Option<bool>,
 }
 
 /// `POST /account/push-subscriptions`: the endpoint of the browser's

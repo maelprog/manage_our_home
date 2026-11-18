@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT u.reminder_channel, u.expiry_digest_hour, u.notify_agenda_changes,\n                  (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS \"subscriptions!\"\n           FROM users u WHERE u.id = $1",
+  "query": "SELECT u.reminder_channel, u.expiry_digest_hour, u.notify_agenda_added,\n                  u.notify_agenda_changed, u.notify_agenda_deleted,\n                  (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS \"subscriptions!\"\n           FROM users u WHERE u.id = $1",
   "describe": {
     "columns": [
       {
@@ -27,17 +27,39 @@
       },
       {
         "ordinal": 2,
-        "name": "notify_agenda_changes",
+        "name": "notify_agenda_added",
         "type_info": "Bool",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "notify_agenda_changes"
+            "name": "notify_agenda_added"
           }
         }
       },
       {
         "ordinal": 3,
+        "name": "notify_agenda_changed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_changed"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "notify_agenda_deleted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_deleted"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "subscriptions!",
         "type_info": "Int8",
         "origin": "Expression"
@@ -50,10 +72,12 @@
     },
     "nullable": [
       false,
+      true,
+      false,
       false,
       false,
       null
     ]
   },
-  "hash": "f9e39949ea8e692e165a9c942cf87aabee2bba1d1c6feb1f996a04a5b892e55c"
+  "hash": "58a2fec1c1f2b776bc2c9f433565870897d63380e2859e7d61adf21ddba9b0de"
 }
