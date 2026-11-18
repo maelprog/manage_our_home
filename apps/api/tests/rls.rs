@@ -2140,13 +2140,27 @@ async fn food_constraints_are_their_holders_alone(db: PgPool) {
     assert_eq!(kept, 5, "the holder's rows are untouched");
 }
 
+/// The SQLSTATE a statement was refused with; `None` when it was not
+/// refused, or not by the database.
+fn sqlstate(result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>) -> Option<String> {
+    result.err().and_then(|e| {
+        e.as_database_error()
+            .and_then(|d| d.code())
+            .map(|c| c.into_owned())
+    })
+}
+
 /// Issue #863: a family's access policy (`group_access_policies`, 0062) is
 /// read by its members, and by nobody else — even through a query with no
 /// `WHERE` at all. A member scoped to their own family can neither read,
 /// change, delete nor add a row of another family's policy; with no family
 /// scope, nothing is readable.
 ///
-/// Seeded as the harness role, which bypasses RLS.
+/// Seeded as the harness role, which bypasses RLS. Checked as a role that
+/// **owns** the table (#864), the shape apps/api/README.md prescribes for
+/// `DATABASE_URL`: only `FORCE ROW LEVEL SECURITY` subjects an owner to its
+/// own policy, so without it every assertion below fails. Each refused
+/// write is asserted on its SQLSTATE, 42501, the policy's refusal.
 #[sqlx::test]
 async fn group_access_policies_isolated_without_scoping(db: PgPool) {
     let ((_, group_a), (_, group_b)) = two_owned_groups(&db).await;
@@ -2167,10 +2181,16 @@ async fn group_access_policies_isolated_without_scoping(db: PgPool) {
         .unwrap();
     }
 
+    let harness_role: String = sqlx::query_scalar("SELECT current_user::text")
+        .fetch_one(&db)
+        .await
+        .unwrap();
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
     for statement in [
         format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
-        format!("GRANT SELECT, INSERT, UPDATE, DELETE ON group_access_policies TO {role}"),
+        // A new table owner must hold CREATE on the schema.
+        format!("GRANT USAGE, CREATE ON SCHEMA public TO {role}"),
+        format!("ALTER TABLE group_access_policies OWNER TO {role}"),
     ] {
         sqlx::query(sqlx::AssertSqlSafe(statement))
             .execute(&db)
@@ -2246,7 +2266,11 @@ async fn group_access_policies_isolated_without_scoping(db: PgPool) {
             .bind(group_b)
             .execute(&mut *tx)
             .await;
-    assert!(moved.is_err(), "a row of A cannot be moved to B");
+    assert_eq!(
+        sqlstate(moved).as_deref(),
+        Some("42501"),
+        "a row of A cannot be moved to B"
+    );
     sqlx::query("ROLLBACK TO SAVEPOINT moved")
         .execute(&mut *tx)
         .await
@@ -2260,11 +2284,16 @@ async fn group_access_policies_isolated_without_scoping(db: PgPool) {
     .bind(group_b)
     .execute(&mut *tx)
     .await;
-    assert!(inserted.is_err(), "group A's scope cannot write B's policy");
+    assert_eq!(
+        sqlstate(inserted).as_deref(),
+        Some("42501"),
+        "group A's scope cannot write B's policy"
+    );
     tx.rollback().await.unwrap();
 
     for statement in [
-        format!("REVOKE ALL ON group_access_policies FROM {role}"),
+        format!("ALTER TABLE group_access_policies OWNER TO {harness_role}"),
+        format!("REVOKE ALL ON SCHEMA public FROM {role}"),
         format!("DROP ROLE {role}"),
     ] {
         sqlx::query(sqlx::AssertSqlSafe(statement))
