@@ -46,12 +46,29 @@ test("le carré de départ ne descend pas sous le côté minimal", () => {
 
 // -- le côté minimal ---------------------------------------------------------
 
-test("le côté minimal : 160 px, ou le cinquième du petit côté s'il est plus grand", () => {
-  assert.equal(C.minSide(1200, 800), 160);
-  assert.equal(C.minSide(4000, 3000), 600);
+// `k` : les pixels de la photo par pixel de l'écran, à la taille où la
+// scène la montre.
+test("le côté minimal : 160 px de la photo, et 48 px à l'écran", () => {
+  // 1200 px montrés sur 400 : 48 px d'écran font 144 px de photo, 160 tient.
+  assert.equal(C.minSide(1200, 800, 3), 160);
+  // 4000 px montrés sur 400 : 48 px d'écran font 480 px de photo.
+  assert.equal(C.minSide(4000, 3000, 10), 480);
   // Une photo plus petite que 160 px ne se recadre pas : le carré est son
   // petit côté.
-  assert.equal(C.minSide(300, 100), 100);
+  assert.equal(C.minSide(300, 100, 1), 100);
+});
+
+test("un panorama de 12000 × 1000 : le carré ne devient pas plus petit que ses poignées", () => {
+  // Montré sur 600 px, un pixel d'écran vaut 20 px de photo : le côté
+  // minimal est de 960 px de photo, 48 px d'écran — et non le cinquième du
+  // petit côté (200 px de photo, 10 px d'écran).
+  assert.equal(C.minSide(12000, 1000, 20), 960);
+  assert.deepEqual(plain(C.clamp(sq(0, 0, 10), 12000, 1000, 20)), sq(0, 0, 960));
+  assert.deepEqual(plain(C.resize(sq(0, 0, 1000), "se", -5000, -5000, 12000, 1000, 20)), sq(0, 0, 960));
+  assert.deepEqual(plain(C.grow(sq(0, 0, 1000), -5000, 12000, 1000, 20)), sq(20, 20, 960));
+  assert.deepEqual(plain(C.initialSquare(12000, 1000, 20)), sq(5520, 20, 960));
+  // Montré sur 300 px, 48 px d'écran dépassent la hauteur : le carré la prend.
+  assert.equal(C.minSide(12000, 1000, 40), 1000);
 });
 
 // -- les bornes --------------------------------------------------------------

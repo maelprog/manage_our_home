@@ -11,29 +11,32 @@
 // reste `hidden` et le champ fichier natif fait ce qu'il faisait.
 //
 // `MHomeAvatarCrop` porte les calculs, sans DOM : un carré est
-// `{ x, y, side }` en pixels de la photo, de largeur `w` et de hauteur `h`.
+// `{ x, y, side }` en pixels de la photo, de largeur `w` et de hauteur `h` ;
+// `k` est le nombre de pixels de la photo par pixel de l'écran, à la taille
+// où la scène la montre.
 // `e2e/lib/avatar-crop.test.ts` les lit dans un contexte sans `document`.
 var MHomeAvatarCrop = (function () {
   "use strict";
 
   // Le carré envoyé : apps/api le réduit de toute façon à son `AVATAR_SIDE`.
   var OUTPUT_SIDE = 256;
-  // Le côté minimal, en pixels de la photo (maquette validée le 2026-11-18),
-  // porté au cinquième du petit côté sur une grande photo : sinon le carré
-  // y deviendrait plus petit que ses poignées.
+  // Le côté minimal, en pixels de la photo (maquette validée le 2026-11-18)…
   var MIN_SIDE = 160;
+  // … et à l'écran : la cible d'une poignée, `--s12`. Sans lui, une grande
+  // photo montrée petite (un panorama de 12000 × 1000 sur 600 px) laissait
+  // le carré devenir plus petit que ses poignées.
+  var MIN_SCREEN = 48;
 
   function bound(value, low, high) {
     return Math.min(high, Math.max(low, value));
   }
 
-  function minSide(w, h) {
-    var short = Math.min(w, h);
-    return Math.min(short, Math.max(MIN_SIDE, Math.ceil(short / 5)));
+  function minSide(w, h, k) {
+    return Math.min(w, h, Math.max(MIN_SIDE, Math.ceil(MIN_SCREEN * (k || 0))));
   }
 
-  function clamp(sq, w, h) {
-    var side = bound(sq.side, minSide(w, h), Math.min(w, h));
+  function clamp(sq, w, h, k) {
+    var side = bound(sq.side, minSide(w, h, k), Math.min(w, h));
     return {
       x: bound(sq.x, 0, w - side),
       y: bound(sq.y, 0, h - side),
@@ -43,37 +46,37 @@ var MHomeAvatarCrop = (function () {
 
   // Centré, à 80 % du petit côté : la photo reste visible tout autour, et
   // les poignées des coins ne sont pas coupées par le bord de la scène.
-  function initialSquare(w, h) {
-    var side = Math.max(minSide(w, h), Math.min(w, h) * 0.8);
+  function initialSquare(w, h, k) {
+    var side = Math.max(minSide(w, h, k), Math.min(w, h) * 0.8);
     return { x: (w - side) / 2, y: (h - side) / 2, side: side };
   }
 
-  function move(sq, dx, dy, w, h) {
-    return clamp({ x: sq.x + dx, y: sq.y + dy, side: sq.side }, w, h);
+  function move(sq, dx, dy, w, h, k) {
+    return clamp({ x: sq.x + dx, y: sq.y + dy, side: sq.side }, w, h, k);
   }
 
   // `corner` : "nw", "ne", "sw" ou "se". Le coin opposé reste où il est ; le
   // côté suit la moyenne des deux composantes du geste, vers l'extérieur.
-  function resize(sq, corner, dx, dy, w, h) {
+  function resize(sq, corner, dx, dy, w, h, k) {
     var east = corner.charAt(1) === "e";
     var south = corner.charAt(0) === "s";
     var ax = east ? sq.x : sq.x + sq.side;
     var ay = south ? sq.y : sq.y + sq.side;
     var room = Math.min(east ? w - ax : ax, south ? h - ay : ay);
     var wanted = sq.side + ((east ? dx : -dx) + (south ? dy : -dy)) / 2;
-    var side = bound(wanted, minSide(w, h), Math.min(room, w, h));
+    var side = bound(wanted, minSide(w, h, k), Math.min(room, w, h));
     return { x: east ? ax : ax - side, y: south ? ay : ay - side, side: side };
   }
 
-  function grow(sq, delta, w, h) {
-    var side = bound(sq.side + delta, minSide(w, h), Math.min(w, h));
+  function grow(sq, delta, w, h, k) {
+    var side = bound(sq.side + delta, minSide(w, h, k), Math.min(w, h));
     var cx = sq.x + sq.side / 2;
     var cy = sq.y + sq.side / 2;
-    return clamp({ x: cx - side / 2, y: cy - side / 2, side: side }, w, h);
+    return clamp({ x: cx - side / 2, y: cy - side / 2, side: side }, w, h, k);
   }
 
-  function center(sq, w, h) {
-    return clamp({ x: (w - sq.side) / 2, y: (h - sq.side) / 2, side: sq.side }, w, h);
+  function center(sq, w, h, k) {
+    return clamp({ x: (w - sq.side) / 2, y: (h - sq.side) / 2, side: sq.side }, w, h, k);
   }
 
   function keyStep(w, h) {
@@ -209,6 +212,11 @@ var MHomeAvatarCrop = (function () {
     ctx.drawImage(image, square.x, square.y, square.side, square.side, 0, 0, preview.width, preview.height);
   }
 
+  // Les pixels de la photo par pixel de l'écran, à la taille de la scène.
+  function photoPixels() {
+    return stage.clientWidth ? W / stage.clientWidth : 0;
+  }
+
   function choose() {
     input.value = "";
     input.click();
@@ -228,8 +236,8 @@ var MHomeAvatarCrop = (function () {
     // de l'écran d'un téléphone.
     stage.style.aspectRatio = W + " / " + H;
     stage.style.maxWidth = "calc(70vh * " + (W / H).toFixed(4) + ")";
-    square = C.initialSquare(W, H);
     setState("framing");
+    square = C.initialSquare(W, H, photoPixels());
     draw();
     box.focus({ preventScroll: true });
     say("Photo chargée. Le carré de découpage est sur la photo, " + sizeText() + ".");
@@ -345,7 +353,7 @@ var MHomeAvatarCrop = (function () {
       x: e.clientX,
       y: e.clientY,
       start: square,
-      k: W / stage.clientWidth,
+      k: photoPixels(),
     };
     e.preventDefault();
   });
@@ -354,8 +362,8 @@ var MHomeAvatarCrop = (function () {
     var dx = (e.clientX - drag.x) * drag.k;
     var dy = (e.clientY - drag.y) * drag.k;
     square = drag.corner
-      ? C.resize(drag.start, drag.corner, dx, dy, W, H)
-      : C.move(drag.start, dx, dy, W, H);
+      ? C.resize(drag.start, drag.corner, dx, dy, W, H, drag.k)
+      : C.move(drag.start, dx, dy, W, H, drag.k);
     draw();
   });
   function release() {
@@ -373,14 +381,15 @@ var MHomeAvatarCrop = (function () {
     if (!action) return;
     e.preventDefault();
     var step = C.keyStep(W, H);
+    var k = photoPixels();
     if (action.move) {
-      square = C.move(square, action.move[0] * step, action.move[1] * step, W, H);
+      square = C.move(square, action.move[0] * step, action.move[1] * step, W, H, k);
       say("Carré déplacé " + DIRECTIONS[action.move.join(",")] + ".");
     } else if (action.grow) {
-      square = C.grow(square, action.grow * step, W, H);
+      square = C.grow(square, action.grow * step, W, H, k);
       say("Carré " + (action.grow > 0 ? "agrandi" : "réduit") + ", " + sizeText() + ".");
     } else {
-      square = C.center(square, W, H);
+      square = C.center(square, W, H, k);
       say("Carré recentré.");
     }
     draw();
