@@ -199,6 +199,8 @@ async fn serve_stylesheet() -> Response {
 ///   right after the button it drives (#670).
 /// - `LiveScan`: the barcode block of `/stocks/new`, right after it (#807);
 ///   it loads the vendored reader (`Vendored`) itself, when it needs it.
+/// - `AvatarCrop`: the photo section of `/account`, right after it (#860);
+///   the photo is framed on the device before it is sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Script {
     Enhance,
@@ -208,10 +210,11 @@ pub enum Script {
     LocalReminders,
     GoogleSignIn,
     LiveScan,
+    AvatarCrop,
 }
 
 impl Script {
-    pub const ALL: [Script; 7] = [
+    pub const ALL: [Script; 8] = [
         Script::Enhance,
         Script::ResetPassword,
         Script::MessagerieLive,
@@ -219,6 +222,7 @@ impl Script {
         Script::LocalReminders,
         Script::GoogleSignIn,
         Script::LiveScan,
+        Script::AvatarCrop,
     ];
 
     fn stem(self) -> &'static str {
@@ -230,6 +234,7 @@ impl Script {
             Script::LocalReminders => "local-reminders",
             Script::GoogleSignIn => "google-sign-in",
             Script::LiveScan => "live-scan",
+            Script::AvatarCrop => "avatar-crop",
         }
     }
 
@@ -243,6 +248,7 @@ impl Script {
             Script::LocalReminders => crate::routes::account::notifications::LOCAL_REMINDERS_SCRIPT,
             Script::GoogleSignIn => crate::routes::auth::GOOGLE_SIGN_IN_SCRIPT,
             Script::LiveScan => crate::routes::stocks::new::LIVE_SCAN_SCRIPT,
+            Script::AvatarCrop => crate::routes::account::avatar::CROP_SCRIPT,
         }
     }
 
