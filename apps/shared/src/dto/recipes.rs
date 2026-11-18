@@ -345,13 +345,13 @@ pub struct SelectRecipeRequest {
 
 /// `PATCH /groups/:id/recipes/:recipe_id/selection` request body (#469).
 /// Mirrors `UpdateSelectionRequest`. Each field is left as it is when
-/// omitted (`None`); `planned_on` and `meal_slot` (#811) are removed by
-/// `Some(None)`, sent as `null`.
+/// omitted (`None`); `servings` (#846), `planned_on` and `meal_slot`
+/// (#811) are removed by `Some(None)`, sent as `null`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateSelectionRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub servings: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servings: Option<Option<i32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_on: Option<Option<NaiveDate>>,
     /// `lunch` or `dinner`, only with a `planned_on`.

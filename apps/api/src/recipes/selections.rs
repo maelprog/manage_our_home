@@ -167,7 +167,10 @@ where
 /// Each field is left as it is when omitted.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateSelectionRequest {
-    pub servings: Option<i32>,
+    /// Number of people; `null` removes it (#846), the quantities then
+    /// taken as the recipe writes them.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub servings: Option<Option<i32>>,
     /// Day the recipe is meant to be cooked, at most 366 days from today;
     /// `null` removes it, and must remove the meal with it.
     #[serde(default, deserialize_with = "deserialize_some")]
@@ -364,7 +367,10 @@ pub async fn update_selection(
     Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<UpdateSelectionRequest>,
 ) -> AppResult<impl IntoResponse> {
-    let servings = body.servings.map(validate_servings).transpose()?;
+    let servings = body
+        .servings
+        .map(|s| s.map(validate_servings).transpose())
+        .transpose()?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
@@ -397,7 +403,7 @@ pub async fn update_selection(
     let row = sqlx::query!(
         r#"
         UPDATE recipe_selections SET
-            servings = COALESCE($3, servings),
+            servings = CASE WHEN $6 THEN $3 ELSE servings END,
             planned_on = $4,
             meal_slot = $5,
             updated_at = now()
@@ -407,9 +413,10 @@ pub async fn update_selection(
         "#,
         recipe_id,
         group_id,
-        servings,
+        servings.flatten(),
         plan.planned_on,
         plan.meal_slot.map(MealSlot::as_str),
+        servings.is_some(),
     )
     .fetch_one(&mut *tx)
     .await?;
