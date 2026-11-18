@@ -928,7 +928,8 @@ sans signification.
 
 L'extraction (#68) a eu besoin de quelques classes que le tableau ci-dessus ne
 nommait pas — chacune remplace un motif recopié dans plusieurs routes, et
-aucune n'introduit de valeur hors des échelles :
+aucune n'introduit de valeur hors des échelles, `.switch` excepté, dont la
+ligne dit lesquelles et d'où elles viennent :
 
 | Classe | Rôle |
 |---|---|
@@ -938,7 +939,7 @@ aucune n'introduit de valeur hors des échelles :
 | `.list-row.stacked` | une ligne dont le contenu s'empile (une recette et son résumé) |
 | `.card.inline` | la même carte disposée en une seule ligne de champs (formulaires « ajouter un article ») |
 | `.field.inline` | l'étiquette d'une case à cocher, à côté de son texte |
-| `.switch` | un réglage activé ou désactivé (#853), sur `/account/notifications` : un `<input type="checkbox" role="switch">` natif dessiné en piste de 52 × 32 px et bouton rond de 24 px, à gauche de son libellé sur une ligne de 48 px — la ligne entière est le `<label>`, donc la cible ; aucun texte d'état, `role="switch"` et `checked` le disent, et le bouton change de côté, donc la couleur ne le dit jamais seule (WCAG 1.4.1). Désactivé : piste `--hover`, liseré et bouton `--muted` ; activé : piste `--accent`, bouton `--accent-fg`. Focus : anneau `--accent` de 2 px, décalé de 2 px. Aucun mouvement du bouton, donc aucune règle `prefers-reduced-motion` ; en couleurs forcées, le bouton prend `CanvasText`. Le formulaire porte `data-lock-on-change` : le temps de l'envoi, ses champs sont `disabled` (opacité 0,6) et lui `aria-busy` |
+| `.switch` | un réglage activé ou désactivé (#853), sur `/account/notifications` : un `<input type="checkbox" role="switch">` natif dessiné en piste de 52 × 32 px et bouton rond de 24 px (`--r-sm`, la moitié de son diamètre), à gauche de son libellé sur une ligne de 48 px — la ligne entière est le `<label>`, donc la cible ; aucun texte d'état, `role="switch"` et `checked` le disent, et le bouton change de côté, donc la couleur ne le dit jamais seule (WCAG 1.4.1). Désactivé : piste `--hover`, liseré et bouton `--muted` ; activé : piste `--accent`, bouton `--accent-fg`. Focus : anneau `--accent` de 2 px, décalé de 2 px. Aucun mouvement du bouton, donc aucune règle `prefers-reduced-motion` ; en couleurs forcées, le bouton prend `CanvasText`. Le formulaire porte `data-lock-on-change` : le temps de l'envoi, ses champs sont `disabled` (opacité 0,6) et lui `aria-busy`. Trois valeurs sortent des échelles, reprises de la maquette v7 validée de #853 : la largeur de la piste, 52 px ; le retrait du bouton dans la piste, 3 px ; sa position allumée, 23 px du bord gauche (52 − 24 − 3 − 2 × 1 px de liseré) |
 | `.done` | ce qui est déjà traité : tâche complétée, article coché |
 | `.pack` | dans `.what` d'une ligne de courses (#824), les paquets à acheter après la quantité exacte, en `--fg` et en 600 sur le `--muted` de la ligne |
 | `.multiline` | un texte dont les retours à la ligne sont ceux de l'auteur (message, méthode d'une recette) |
