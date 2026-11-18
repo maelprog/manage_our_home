@@ -325,6 +325,39 @@ test.describe("Framing the profile photo (#860)", () => {
     expectColour(await storedPhotoCentre(page), RED);
   });
 
+  // A refusal replaces the page's own response banners (`p.notice`), not
+  // the panel of a scheduled deletion (`section.notice.error`), which says
+  // the account is about to go and holds the button that cancels it.
+  test("a failed send is told under the profile head, and a scheduled deletion's panel stays", async ({ page }) => {
+    await registerAndLogin(page, "e2e-photo-pending", "Cadre Suppression");
+    await page.goto("/account/delete");
+    page.once("dialog", (d) => d.accept());
+    await page.getByRole("textbox", { name: "Mot de passe actuel" }).fill(PASSWORD);
+    await page.getByRole("checkbox").check();
+    await page.getByRole("button", { name: "Demander la suppression de mon compte" }).click();
+    await expect(page).toHaveURL("/account?notice=deletion_requested");
+    const panel = page.locator("section.notice.error");
+    await expect(panel).toContainText("Suppression de compte programmée");
+    const done = page.locator("p.notice.success");
+    await expect(done).toBeVisible();
+
+    // The send fails before apps/api: a gateway with no answer.
+    await page.route("**/account/avatar", (route) =>
+      route.request().method() === "POST" ? route.fulfill({ status: 502, body: "" }) : route.continue(),
+    );
+    await photoInput(page).setInputFiles({ name: "moi.png", mimeType: "image/png", buffer: png(400, 200, RED, BLUE) });
+    await expect(square(page)).toBeVisible();
+    await page.getByRole("button", { name: "Enregistrer la photo" }).click();
+
+    await expect(page.getByRole("alert").filter({ hasText: "La photo n'a pas pu être envoyée. Merci de réessayer." })).toBeVisible();
+    await expect(panel).toContainText("Suppression de compte programmée");
+    await expect(panel.getByRole("button", { name: "Annuler la demande de suppression" })).toBeVisible();
+    // The banner of the previous answer is gone; the framing stays, to retry.
+    await expect(done).toHaveCount(0);
+    await expect(square(page)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Enregistrer la photo" })).toBeEnabled();
+  });
+
   test("a file the browser cannot read is said so, and another can be chosen", async ({ page }) => {
     await registerAndLogin(page, "e2e-photo-unreadable", "Cadre Illisible");
     await page.goto("/account");

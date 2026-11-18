@@ -254,7 +254,10 @@ var MHomeAvatarCrop = (function () {
   function fail(text) {
     setState("framing");
     var main = section.parentNode;
-    var old = main.querySelectorAll(":scope > .notice");
+    // Seuls les bandeaux d'une réponse, des `p.notice`, s'en vont : le
+    // panneau d'une suppression programmée et l'avis des CGU, des
+    // `section.notice`, restent.
+    var old = main.querySelectorAll(":scope > p.notice");
     for (var i = 0; i < old.length; i++) old[i].remove();
     notice = document.createElement("p");
     notice.className = "notice error";
