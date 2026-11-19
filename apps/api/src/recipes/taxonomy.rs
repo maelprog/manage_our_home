@@ -775,6 +775,7 @@ en:potatoes\t\tPommes de terre
             .expect("crème fraîche has a tag");
         assert_eq!(t.canonical_ingredient("Crèmes fraîches"), Some(tag));
         assert_eq!(t.canonical_ingredient("creme fraiche"), Some(tag));
+        assert_eq!(t.canonical_ingredient("crème fraîche entière"), Some(tag));
         for id in [
             "en:fermented-creams",
             "en:cremes-fraiches",
