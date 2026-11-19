@@ -11,9 +11,12 @@
 //! The recipe's required ingredients are first brought to the selection's
 //! number of people and merged by name as the grocery list does
 //! (`grocery_list::planned::plan_lines`). An ingredient is then matched to
-//! the stock lines of its name (`article_key`) holding more than 0, and,
-//! when it has a quantity, of its unit too: there is no conversion, as for
-//! `outcome::propose` (#473).
+//! the stock lines holding more than 0 of its name (`article_key`) or of its
+//! category (#900): a line whose categories — its scanned product's, else
+//! its name's (`suggestions::stock_entry`) — are the one the ingredient's
+//! name maps to or descend from it, as the suggestions match the stock. When
+//! the ingredient has a quantity, the line must be of its unit too: there is
+//! no conversion, as for `outcome::propose` (#473).
 
 use chrono::NaiveDate;
 use manage_our_home_shared::validation::stocks::{article_key, expiry_status, ExpiryStatus};
@@ -25,6 +28,8 @@ use crate::grocery_list::planned::{
     plan_lines, without_binary_noise, PlannedIngredient, PlannedLine,
 };
 use crate::recipes::outcome::StockLine;
+use crate::recipes::suggestions::{tagged_stock, StockArticle};
+use crate::recipes::taxonomy::{taxonomy, TagId};
 
 /// One ingredient of a planned recipe, as written.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,34 +65,73 @@ pub(crate) fn needs(
     )
 }
 
-/// The stock lines a need is matched to: those of its name holding more
-/// than 0 and, when it has a quantity, of its unit.
-fn lines_for<'a, 's>(
-    need: &PlannedLine,
-    stock: &'a [StockLine<'s>],
-) -> impl Iterator<Item = &'a StockLine<'s>> {
+/// A stock line as a need is matched to it: the line, and whether its
+/// categories reach a given one.
+pub(crate) trait Matched {
+    fn line(&self) -> StockLine<'_>;
+    /// Whether the line's categories are `tag` or descend from it
+    /// (`Taxonomy::satisfies`, never the reverse).
+    fn satisfies(&self, tag: TagId) -> bool;
+}
+
+/// A line without categories: matched by its name only.
+impl Matched for StockLine<'_> {
+    fn line(&self) -> StockLine<'_> {
+        *self
+    }
+
+    fn satisfies(&self, _: TagId) -> bool {
+        false
+    }
+}
+
+/// A line with its categories ([`crate::recipes::suggestions::stock_entry`]).
+impl Matched for StockArticle {
+    fn line(&self) -> StockLine<'_> {
+        StockLine {
+            id: self.id,
+            name: &self.name,
+            unit: &self.unit,
+            quantity: self.quantity,
+            expires_on: self.expires_on,
+        }
+    }
+
+    fn satisfies(&self, tag: TagId) -> bool {
+        // `entry.tags` holds each category with all its ancestors.
+        self.entry.tags.contains(&tag)
+    }
+}
+
+/// The stock lines a need is matched to: those holding more than 0, of its
+/// name or whose categories reach the one its name maps to
+/// (`canonical_ingredient`, #900), and, when it has a quantity, of its unit.
+fn lines_for<'a, S: Matched>(need: &PlannedLine, stock: &'a [S]) -> impl Iterator<Item = &'a S> {
     let name = article_key(&need.name);
+    let tag = taxonomy().canonical_ingredient(&need.name);
     let unit = need
         .quantity
         .map(|_| article_key(need.unit.as_deref().unwrap_or("")));
     stock.iter().filter(move |s| {
-        s.quantity > 0.0
-            && article_key(s.name) == name
-            && unit.as_ref().is_none_or(|u| article_key(s.unit) == *u)
+        let l = s.line();
+        l.quantity > 0.0
+            && (article_key(l.name) == name || tag.is_some_and(|t| s.satisfies(t)))
+            && unit.as_ref().is_none_or(|u| article_key(l.unit) == *u)
     })
 }
 
 /// What the lines hold together, without its binary noise.
-fn total<'a, 's: 'a>(lines: impl Iterator<Item = &'a StockLine<'s>>) -> f64 {
-    lines.fold(0.0, |sum, s| without_binary_noise(sum + s.quantity))
+fn total<'a, S: Matched + 'a>(lines: impl Iterator<Item = &'a S>) -> f64 {
+    lines.fold(0.0, |sum, s| without_binary_noise(sum + s.line().quantity))
 }
 
 /// What the stock lacks of each need, in the need's unit:
 /// - a need with a quantity lacks that quantity less what the lines of its
-///   name and unit hold together; it is left out when they cover it;
-/// - a need without a quantity lacks entirely when no line of its name holds
-///   anything, whatever the unit, and is left out otherwise.
-pub(crate) fn missing(needs: &[PlannedLine], stock: &[StockLine<'_>]) -> Vec<PlannedLine> {
+///   name or category, and of its unit, hold together; it is left out when
+///   they cover it;
+/// - a need without a quantity lacks entirely when no line of its name or
+///   category holds anything, whatever the unit, and is left out otherwise.
+pub(crate) fn missing<S: Matched>(needs: &[PlannedLine], stock: &[S]) -> Vec<PlannedLine> {
     needs
         .iter()
         .filter_map(|need| match need.quantity {
@@ -119,19 +163,19 @@ fn expiring(line: &StockLine<'_>, today: NaiveDate) -> bool {
 /// is past or within `EXPIRY_SOON_DAYS` of `today` (`expiry_status`), no
 /// longer cover it — and at least one such line exists. The date is the
 /// nearest among the expiring lines of the pressing needs.
-pub(crate) fn use_by(
+pub(crate) fn use_by<S: Matched>(
     needs: &[PlannedLine],
-    stock: &[StockLine<'_>],
+    stock: &[S],
     today: NaiveDate,
 ) -> Option<NaiveDate> {
     needs
         .iter()
         .filter_map(|need| {
             let nearest = lines_for(need, stock)
-                .filter(|s| expiring(s, today))
-                .filter_map(|s| s.expires_on)
+                .filter(|s| expiring(&s.line(), today))
+                .filter_map(|s| s.line().expires_on)
                 .min()?;
-            let mut lasting = lines_for(need, stock).filter(|s| !expiring(s, today));
+            let mut lasting = lines_for(need, stock).filter(|s| !expiring(&s.line(), today));
             let covered = match need.quantity {
                 None => lasting.next().is_some(),
                 Some(wanted) => total(lasting) >= wanted,
@@ -164,15 +208,6 @@ struct PlannedIngredientRow {
     is_optional: bool,
     recipe_servings: Option<i32>,
     selection_servings: Option<i32>,
-}
-
-/// A stock line as the availability reads it.
-struct StockRow {
-    id: Uuid,
-    name: String,
-    unit: String,
-    quantity: f64,
-    expires_on: Option<NaiveDate>,
 }
 
 /// What the stock holds of one planned selection.
@@ -227,23 +262,7 @@ pub(crate) async fn planned_availability(
     )
     .fetch_all(&mut **tx)
     .await?;
-    let stock = sqlx::query_as!(
-        StockRow,
-        "SELECT id, name, unit, quantity, expires_on FROM stock_items WHERE group_id = $1",
-        group_id,
-    )
-    .fetch_all(&mut **tx)
-    .await?;
-    let lines: Vec<StockLine<'_>> = stock
-        .iter()
-        .map(|s| StockLine {
-            id: s.id,
-            name: &s.name,
-            unit: &s.unit,
-            quantity: s.quantity,
-            expires_on: s.expires_on,
-        })
-        .collect();
+    let lines = tagged_stock(tx, group_id).await?;
 
     let mut result = Vec::new();
     // The rows come grouped by selection.
@@ -495,6 +514,140 @@ mod tests {
                 need("Oeufs", Some(3.0), Some("unité")),
                 need("Lait", Some(1.0), Some("L")),
             ]
+        );
+    }
+
+    // -- by category (#900) --------------------------------------------------
+
+    /// A stock line with its categories: those of its scanned product
+    /// (`off`), else those of its name, as `planned_availability` reads it.
+    fn article(
+        id: u128,
+        name: &str,
+        quantity: f64,
+        unit: &str,
+        expires_on: Option<NaiveDate>,
+        off: &[&str],
+    ) -> StockArticle {
+        let off: Vec<String> = off.iter().map(|s| s.to_string()).collect();
+        StockArticle {
+            id: Uuid::from_u128(id),
+            name: name.into(),
+            unit: unit.into(),
+            quantity,
+            expires_on,
+            entry: crate::recipes::suggestions::stock_entry(
+                crate::recipes::taxonomy::taxonomy(),
+                name,
+                &off,
+            ),
+        }
+    }
+
+    #[test]
+    fn parmesan_is_covered_by_parmigiano_reggiano() {
+        // Both names are the taxonomy's en:parmigiano-reggiano.
+        let stock = [article(1, "Parmigiano Reggiano", 150.0, "g", None, &[])];
+        assert_eq!(
+            missing(&[need("Parmesan", Some(100.0), Some("g"))], &stock),
+            vec![]
+        );
+        assert_eq!(missing(&[need("parmesan", None, None)], &stock), vec![]);
+        // Short: one line, under the need's name and unit.
+        assert_eq!(
+            missing(&[need("Parmesan", Some(200.0), Some("g"))], &stock),
+            vec![need("Parmesan", Some(50.0), Some("g"))]
+        );
+    }
+
+    #[test]
+    fn milk_is_covered_by_a_scanned_semi_skimmed_milk() {
+        let stock = [article(
+            1,
+            "Lactel",
+            1.0,
+            "L",
+            None,
+            &["en:dairies", "en:milks", "en:semi-skimmed-milks"],
+        )];
+        assert_eq!(
+            missing(&[need("Lait", Some(1.0), Some("L"))], &stock),
+            vec![]
+        );
+        assert_eq!(
+            missing(&[need("Lait demi-écrémé", None, None)], &stock),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn a_category_never_covers_a_narrower_one() {
+        // Whole milk is not semi-skimmed milk.
+        let whole = [
+            article(1, "Lait entier", 1.0, "L", None, &[]),
+            article(2, "Candia", 1.0, "L", None, &["en:whole-milks"]),
+        ];
+        assert_eq!(
+            missing(&[need("Lait demi-écrémé", None, None)], &whole),
+            vec![need("Lait demi-écrémé", None, None)]
+        );
+        // Plain milk is not semi-skimmed milk either: only a line whose
+        // category is the need's or descends from it covers it.
+        let plain = [article(1, "Lait", 1.0, "L", None, &[])];
+        assert_eq!(
+            missing(&[need("Lait demi-écrémé", Some(1.0), Some("L"))], &plain),
+            vec![need("Lait demi-écrémé", Some(1.0), Some("L"))]
+        );
+    }
+
+    #[test]
+    fn the_lines_of_a_category_add_up_in_the_needs_unit_only() {
+        let stock = [
+            article(1, "Lait", 0.5, "L", None, &[]),
+            article(2, "Lactel", 1.0, "L", None, &["en:semi-skimmed-milks"]),
+            // Another unit: not counted, no conversion.
+            article(3, "Candia", 6.0, "bouteille", None, &["en:whole-milks"]),
+        ];
+        assert_eq!(
+            missing(&[need("Lait", Some(2.0), Some("L"))], &stock),
+            vec![need("Lait", Some(0.5), Some("L"))]
+        );
+        assert_eq!(
+            missing(&[need("Lait", Some(1.5), Some("L"))], &stock),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn a_need_no_line_matches_still_lacks() {
+        let stock = [
+            article(1, "Lactel", 1.0, "L", None, &["en:semi-skimmed-milks"]),
+            article(2, "Parmigiano Reggiano", 0.0, "g", None, &[]),
+        ];
+        assert_eq!(
+            missing(&[need("Beurre", Some(1.0), Some("plaquette"))], &stock),
+            vec![need("Beurre", Some(1.0), Some("plaquette"))]
+        );
+        // An empty line of the category holds nothing.
+        assert_eq!(
+            missing(&[need("Parmesan", None, None)], &stock),
+            vec![need("Parmesan", None, None)]
+        );
+    }
+
+    #[test]
+    fn an_expiring_line_of_the_category_dates_the_recipe() {
+        let stock = [article(
+            1,
+            "Lactel",
+            1.0,
+            "L",
+            Some(in_days(1)),
+            &["en:semi-skimmed-milks"],
+        )];
+        assert_eq!(
+            use_by(&[need("Lait", Some(1.0), Some("L"))], &stock, today()),
+            Some(in_days(1))
         );
     }
 
