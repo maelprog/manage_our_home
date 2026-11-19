@@ -21,6 +21,7 @@ use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::notifications::center;
 use crate::recipes::availability::planned_availability;
+use crate::recipes::suggestions::{tagged_stock, StockEntry};
 use crate::recipes::taxonomy::taxonomy;
 use crate::stocks::items::today;
 use crate::AppState;
@@ -474,7 +475,8 @@ struct LowStockRow {
 
 /// Generates new grocery items from the two automated sources named in
 /// docs/v1-scope.md epic #5: the required, not-in-stock ingredients of the
-/// recipes planned for the next shopping (#470), and stock items at/below
+/// recipes planned for the next shopping (#470) — in stock by name or by
+/// category (#900) —, and stock items at/below
 /// their reorder threshold. A recipe counts only while it has a `planned`
 /// selection (`recipe_selections`, #469); its quantities are scaled to the
 /// selection's number of people, and an ingredient several planned recipes
@@ -508,15 +510,16 @@ pub async fn generate_grocery_items(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
-    let stock_names: HashSet<String> = sqlx::query_scalar!(
-        "SELECT name FROM stock_items WHERE group_id = $1 AND quantity > 0",
-        group_id,
-    )
-    .fetch_all(&mut *tx)
-    .await?
-    .into_iter()
-    .map(|n| n.trim().to_lowercase())
-    .collect();
+    // The stock lines holding something, with their categories: an
+    // ingredient is in stock by its name or by its category (#900), as in
+    // the suggestions and the planned recipes' missing ingredients.
+    let stock: Vec<StockEntry> = tagged_stock(&mut tx, group_id)
+        .await?
+        .into_iter()
+        .filter(|s| s.quantity > 0.0)
+        .map(|s| s.entry)
+        .collect();
+    let taxonomy = taxonomy();
 
     // Oldest selection first, so the "first recipe" a shared ingredient is
     // attributed to is the one planned first.
@@ -536,7 +539,13 @@ pub async fn generate_grocery_items(
     .fetch_all(&mut *tx)
     .await?
     .into_iter()
-    .filter(|i| !stock_names.contains(&i.name.trim().to_lowercase()));
+    .filter(|i| {
+        let name = i.name.trim().to_lowercase();
+        let tag = taxonomy.canonical_ingredient(&i.name);
+        !stock
+            .iter()
+            .any(|s| s.name == name || tag.is_some_and(|t| s.tags.contains(&t)))
+    });
     let missing_lines = plan_lines(planned_ingredients);
 
     let low_stock_items = sqlx::query_as!(

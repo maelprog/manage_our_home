@@ -1815,6 +1815,18 @@ async fn planned_missing_match_the_stock_by_category(db: PgPool) {
         .map(|i| i["name"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(created, vec!["Beurre"]);
+
+    // Generating the list matches the stock the same way: nothing more.
+    assert_eq!(
+        generate_grocery_list(&router, &member_cookie, &group_id).await,
+        0
+    );
+    let names: Vec<String> = grocery_lines(&router, &member_cookie, &group_id)
+        .await
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, vec!["Beurre"]);
 }
 
 /// Issue #559: a line past its date still counts, but dates the recipe
