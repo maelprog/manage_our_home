@@ -177,12 +177,16 @@ possibles sont :
   navigateurs qui en dérivent, de Mozilla pour Firefox, d'Apple pour
   Safari, de Microsoft pour Edge. Ce n'est pas le service qui le choisit,
   c'est votre navigateur. À chaque rappel, le serveur lui envoie un message
-  **vide** à l'adresse d'abonnement de votre appareil : ni le titre de
-  l'événement, ni sa date, ni aucun identifiant de l'événement ou de votre
-  compte. Ce service de notification apprend donc que ce serveur a envoyé
-  un message à cet appareil, à cette heure. Une alerte de budget, le
-  récapitulatif ou un changement de l'agenda arrivent de la même façon,
-  message vide compris. Pour choisir le texte à afficher,
+  à l'adresse d'abonnement de votre appareil, qui ne porte que le numéro
+  opaque, tiré au hasard, de la notification correspondante dans votre
+  centre de notifications, **chiffré pour votre navigateur seul** : ni le
+  titre de l'événement, ni sa date, ni aucun identifiant de l'événement ou
+  de votre compte, et le service de notification ne peut pas lire ce
+  numéro. Il apprend donc que ce serveur a envoyé un message à cet
+  appareil, à cette heure. Quand vous touchez la notification, votre
+  appareil demande au site, avec votre session, de marquer ce numéro lu
+  dans votre centre de notifications. Une alerte de budget, le
+  récapitulatif ou un changement de l'agenda arrivent de la même façon. Pour choisir le texte à afficher,
   votre appareil demande au site, avec votre session et son adresse
   d'abonnement, le type du message qu'il vient de recevoir ; le serveur
   tient pour cela, par appareil, le compte des messages envoyés et pas
@@ -285,11 +289,11 @@ plus que ce qui est établi. Voici où en est chacun des cinq cas.
   de votre navigateur (Google, Mozilla, Apple ou Microsoft), dont
   l'infrastructure est pour partie hors de l'Union européenne. Ce qu'il
   reçoit se limite à l'adresse d'abonnement de votre appareil et à l'heure
-  d'un message vide (voir plus haut). Le mécanisme qui encadre ce transfert
+  d'un message chiffré qu'il ne peut pas lire (voir plus haut). Le mécanisme qui encadre ce transfert
   sera indiqué ici avant l'ouverture du service : [transferts hors UE des
   services de notification — à renseigner avant la mise en ligne]. Les
   alertes de budget et le récapitulatif quotidien des articles bientôt
-  périmés passent par le même chemin, message vide aussi. Si vos
+  périmés passent par le même chemin, de la même façon. Si vos
   rappels vous parviennent par email seulement, rien ne part vers eux.
 - **Tailscale**, pour les seuls appareils inscrits au serveur de test :
   Tailscale déclare héberger ses données au Canada, en Allemagne, aux

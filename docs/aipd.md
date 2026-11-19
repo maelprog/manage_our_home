@@ -70,8 +70,10 @@ recettes, et le service n'est pas à grande échelle (section 1).
   transactionnels (adresse, objet, corps), traités dans l'UE.
 - Google, pour la connexion avec Google et, le cas échéant, l'hébergement
   d'un flux iCal importé.
-- Les services de notification des navigateurs, qui reçoivent un message
-  vide à chaque rappel par notification.
+- Les services de notification des navigateurs, qui reçoivent à chaque
+  rappel par notification un message dont la seule charge utile,
+  l'identifiant opaque de l'entrée du centre de notifications, est
+  chiffrée pour le navigateur (#862).
 - Le navigateur de chaque membre.
 
 ## 3. Principes fondamentaux
