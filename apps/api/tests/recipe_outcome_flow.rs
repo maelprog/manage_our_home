@@ -2408,3 +2408,54 @@ async fn who_may_change_the_recipe_follows_the_family_s_threshold(db: PgPool) {
         }
     }
 }
+
+/// AC #866: who may send `recipe_updates` with done follows the family's
+/// `recipes_edit` threshold, as the preview says: raised to `owner`, an
+/// admin who did not create the recipe gets 403 and nothing is applied;
+/// lowered to `standard`, a standard member's update goes through.
+#[sqlx::test]
+async fn who_may_update_the_recipe_on_done_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let fam = common::thresholds::family(&router, &db, "outcome-update-threshold").await;
+    let (recipe, farine, _, _) = crepes(&router, &fam.owner, &fam.group_id).await;
+    let lines = done_preview(&router, &fam.owner, &fam.group_id, &recipe).await;
+    let done = |quantity: f64| {
+        json!({
+            "removals": [{"stock_item_id": farine, "quantity": 100.0}],
+            "recipe_updates": [
+                {"ingredient_id": ingredient_id(&lines, "Farine"), "action": "set_quantity", "quantity": quantity}
+            ]
+        })
+    };
+
+    common::thresholds::set_threshold(&router, &fam, "recipes_edit", "owner").await;
+    let res = post(
+        &router,
+        &fam.admin,
+        &done_path(&fam.group_id, &recipe),
+        done(150.0),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(
+        stock_quantity(&router, &fam.owner, &fam.group_id, &farine).await,
+        500.0
+    );
+    assert_eq!(planned_count(&router, &fam.owner, &fam.group_id).await, 1);
+
+    common::thresholds::set_threshold(&router, &fam, "recipes_edit", "standard").await;
+    let res = post(
+        &router,
+        &fam.standard,
+        &done_path(&fam.group_id, &recipe),
+        done(250.0),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert!(
+        recipe_lines(&router, &fam.owner, &fam.group_id, &recipe)
+            .await
+            .contains(&("Farine".into(), Some(250.0), false)),
+        "the standard member's update is applied"
+    );
+}
