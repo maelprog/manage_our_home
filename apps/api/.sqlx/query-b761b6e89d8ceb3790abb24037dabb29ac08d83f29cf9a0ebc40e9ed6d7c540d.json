@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT l.tag AS \"tag?\", l.created_by AS \"created_by?\",\n                  o.categories_tags AS \"categories_tags?\"\n           FROM (SELECT 1) AS one\n           LEFT JOIN ingredient_links l ON l.group_id = $1 AND l.name_key = $2\n           LEFT JOIN off_products o ON o.code = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ingredient_links",
+            "name": "tag"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_by?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "ingredient_links",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "categories_tags?",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "categories_tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "b761b6e89d8ceb3790abb24037dabb29ac08d83f29cf9a0ebc40e9ed6d7c540d"
+}

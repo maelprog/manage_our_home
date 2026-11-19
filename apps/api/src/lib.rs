@@ -425,6 +425,10 @@ pub fn build_router(state: AppState) -> Router {
             get(stocks::reception::get_reception).post(stocks::reception::receive),
         )
         .route(
+            "/groups/{id}/stock-items/{item_id}/ingredient",
+            get(stocks::ingredient_links::get_item_ingredient),
+        )
+        .route(
             "/groups/{id}/ingredient-links",
             get(stocks::ingredient_links::list_ingredient_links),
         )

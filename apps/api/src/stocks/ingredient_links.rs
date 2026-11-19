@@ -26,6 +26,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::groups::require_role;
+use crate::recipes::suggestions::stock_entry;
 use crate::recipes::taxonomy::{normalize, taxonomy, TagId, Taxonomy};
 use crate::stocks::can_modify;
 use crate::AppState;
@@ -122,6 +123,118 @@ pub struct IngredientLink {
 pub struct IngredientLinkList {
     /// By name.
     pub links: Vec<IngredientLink>,
+}
+
+/// What an article counts as for the recipes (#904), for its page: whether
+/// it has a category at all, and the family's link for its name.
+#[derive(Debug, PartialEq, Serialize, utoipa::ToSchema)]
+pub struct ItemIngredient {
+    /// Whether the article has a category, through the family's link for
+    /// its name, its scanned product's or its name's
+    /// (`suggestions::stock_entry`). Without one it covers no recipe by
+    /// category: the page offers to link it.
+    pub recognized: bool,
+    /// The family's link for the article's name, when the taxonomy knows
+    /// its category.
+    pub link: Option<ItemLink>,
+}
+
+/// The link an article's name has, as its page shows it.
+#[derive(Debug, PartialEq, Serialize, utoipa::ToSchema)]
+pub struct ItemLink {
+    pub tag: String,
+    /// The category's French name.
+    pub label: String,
+    /// Who set the link last: with admins and the owner, the one who may
+    /// delete it.
+    pub created_by: Uuid,
+}
+
+/// An article's [`ItemIngredient`], from its name, the family's link for
+/// that name (category id and author) and its scanned product's
+/// categories. A link to a category the taxonomy no longer has is no link.
+pub(crate) fn item_ingredient(
+    taxonomy: &Taxonomy,
+    name: &str,
+    link: Option<(&str, Uuid)>,
+    off_categories: &[String],
+) -> ItemIngredient {
+    let link = link.and_then(|(id, created_by)| {
+        let tag = taxonomy.tag(id)?;
+        Some(ItemLink {
+            tag: taxonomy.id(tag).to_string(),
+            label: taxonomy.label(tag).to_string(),
+            created_by,
+        })
+    });
+    let entry = stock_entry(
+        taxonomy,
+        name,
+        link.as_ref().map(|l| l.tag.as_str()),
+        off_categories,
+    );
+    ItemIngredient {
+        recognized: !entry.tags.is_empty(),
+        link,
+    }
+}
+
+/// What an article counts as for the recipes (#904): whether it has a
+/// category, and the family's link for its name. For the article's page,
+/// which offers to link an article without a category, or shows the link
+/// with « Changer ».
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/stock-items/{item_id}/ingredient",
+    tag = "stocks",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("item_id" = uuid::Uuid, Path, description = "Stock item id"),
+    ),
+    responses(
+        (status = 200, description = "The article's category, and its name's link", body = ItemIngredient),
+        (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn get_item_ingredient(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, item_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+    let item = sqlx::query!(
+        "SELECT name, barcode FROM stock_items WHERE group_id = $1 AND id = $2",
+        group_id,
+        item_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    // `off_products` is the public Open Food Facts cache (no RLS, see
+    // migration 0026), as in `suggestions::tagged_stock`.
+    let found = sqlx::query!(
+        r#"SELECT l.tag AS "tag?", l.created_by AS "created_by?",
+                  o.categories_tags AS "categories_tags?"
+           FROM (SELECT 1) AS one
+           LEFT JOIN ingredient_links l ON l.group_id = $1 AND l.name_key = $2
+           LEFT JOIN off_products o ON o.code = $3"#,
+        group_id,
+        link_key(&item.name),
+        item.barcode,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    let link = found.tag.as_deref().zip(found.created_by);
+    Ok(Json(item_ingredient(
+        taxonomy(),
+        &item.name,
+        link,
+        &found.categories_tags.unwrap_or_default(),
+    )))
 }
 
 struct LinkRow {
@@ -337,6 +450,84 @@ mod tests {
         assert_eq!(link_key(""), "");
         assert_eq!(link_key("  - ' "), "");
         assert_eq!(link_key("de"), "");
+    }
+
+    // -- item_ingredient (#904) -------------------------------------------
+
+    fn uid() -> Uuid {
+        Uuid::from_u128(7)
+    }
+
+    #[test]
+    fn a_name_the_taxonomy_does_not_know_has_no_category() {
+        assert_eq!(
+            item_ingredient(taxonomy(), "Mon p'tit plaisir", None, &[]),
+            ItemIngredient {
+                recognized: false,
+                link: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_name_the_taxonomy_knows_is_recognized_without_a_link() {
+        assert_eq!(
+            item_ingredient(taxonomy(), "Lait demi-écrémé", None, &[]),
+            ItemIngredient {
+                recognized: true,
+                link: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_scanned_product_s_category_is_recognized() {
+        let off = vec!["en:fermented-creams".to_string()];
+        assert!(item_ingredient(taxonomy(), "Mon p'tit plaisir", None, &off).recognized);
+        // A category the taxonomy lacks gives none.
+        let off = vec!["en:not-a-category".to_string()];
+        assert!(!item_ingredient(taxonomy(), "Mon p'tit plaisir", None, &off).recognized);
+    }
+
+    #[test]
+    fn a_link_is_shown_with_its_label_and_author() {
+        let t = taxonomy();
+        let label = t.label(t.tag("en:fermented-creams").unwrap()).to_string();
+        assert_eq!(
+            item_ingredient(
+                t,
+                "Mon p'tit plaisir",
+                Some(("en:fermented-creams", uid())),
+                &[]
+            ),
+            ItemIngredient {
+                recognized: true,
+                link: Some(ItemLink {
+                    tag: "en:fermented-creams".to_string(),
+                    label,
+                    created_by: uid(),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_lost_category_is_no_link() {
+        assert_eq!(
+            item_ingredient(
+                taxonomy(),
+                "Mon p'tit plaisir",
+                Some(("en:not-a-category", uid())),
+                &[]
+            ),
+            ItemIngredient {
+                recognized: false,
+                link: None
+            }
+        );
+        // The name's own category still counts.
+        let lait = item_ingredient(taxonomy(), "Lait", Some(("en:not-a-category", uid())), &[]);
+        assert!(lait.recognized && lait.link.is_none(), "{lait:?}");
     }
 
     fn checked(name: &str, tag: &str) -> Result<(String, String, String), &'static str> {

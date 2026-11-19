@@ -1045,7 +1045,21 @@ pub async fn post(
 
     match result {
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
-            Redirect::to("/stocks?notice=item_created").into_response()
+            let created = resp
+                .body
+                .get("id")
+                .and_then(|id| id.as_str())
+                .and_then(|id| id.parse::<Uuid>().ok());
+            let scanned = req.barcode.is_some();
+            let recognized = match created {
+                Some(id) if scanned => {
+                    super::detail::fetch_ingredient(&state, fam.gid, id, cookie.as_deref())
+                        .await
+                        .map(|i| i.recognized)
+                }
+                _ => None,
+            };
+            Redirect::to(&created_target(created, scanned, recognized)).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
             // The shared pre-validation should have caught these; map the
@@ -1078,6 +1092,22 @@ pub async fn post(
             forbidden_page().into_response()
         }
         Ok(_) | Err(_) => render_error("unavailable"),
+    }
+}
+
+/// Where a created article lands (#904): a scanned one that no category
+/// recognizes — `recognized`, as its page's API says it — on its page,
+/// which asks which ingredient it is; any other on the list, as before.
+pub(crate) fn created_target(
+    created: Option<Uuid>,
+    scanned: bool,
+    recognized: Option<bool>,
+) -> String {
+    match created {
+        Some(id) if scanned && recognized == Some(false) => {
+            format!("/stocks/{id}?notice=item_created")
+        }
+        _ => "/stocks?notice=item_created".to_string(),
     }
 }
 
@@ -1514,6 +1544,33 @@ mod tests {
         let script = crate::app::ENHANCE_SCRIPT;
         assert!(script.contains(r#"input[name="no_expiry"]"#));
         assert!(script.contains("[data-expiry-note]"));
+    }
+
+    /// #904: a scanned article no category recognizes lands on its page,
+    /// which asks which ingredient it is; anything else, on the list.
+    #[test]
+    fn a_scanned_article_without_a_category_lands_on_its_page() {
+        let id = Uuid::from_u128(5);
+        assert_eq!(
+            created_target(Some(id), true, Some(false)),
+            format!("/stocks/{id}?notice=item_created")
+        );
+        for (scanned, recognized) in [
+            (true, Some(true)),
+            (true, None),
+            (false, Some(false)),
+            (false, None),
+        ] {
+            assert_eq!(
+                created_target(Some(id), scanned, recognized),
+                "/stocks?notice=item_created",
+                "{scanned} {recognized:?}"
+            );
+        }
+        assert_eq!(
+            created_target(None, true, Some(false)),
+            "/stocks?notice=item_created"
+        );
     }
 
     #[test]

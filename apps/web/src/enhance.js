@@ -795,6 +795,151 @@
     comboOn(combo, next);
   });
 
+  // `data-ing-search` (`stocks::detail::ingredient_html`, #904): which
+  // ingredient an article is, suggested as one types. Without JavaScript
+  // the form posts the term and the page comes back with the results as
+  // radios (`data-ing-picks`); here that same page is fetched as one
+  // types, its radios read and offered in a `.combo-list` under the field,
+  // a combobox whose focus stays in the field: ↓ ↑ move, Entrée links the
+  // one shown, a click too, Échap closes. The count, or that nothing
+  // matched, is said in the card's `role="status"` line, its wheel turning
+  // while the page is on its way.
+  function ingSearch(form) {
+    var input = form.elements.q;
+    var hidden = form.elements.ingredient;
+    var status = form.parentNode.querySelector(".status");
+    if (!input || !hidden || !status) return;
+    var list = document.createElement("ul");
+    list.className = "combo-list";
+    list.id = "ing-l";
+    list.setAttribute("role", "listbox");
+    list.setAttribute("aria-label", "Ingrédients");
+    list.hidden = true;
+    input.parentNode.parentNode.appendChild(list);
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-controls", list.id);
+    input.setAttribute("aria-expanded", "false");
+    var timer = 0;
+    var asked = 0;
+
+    function close() {
+      list.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+    }
+    function on(item) {
+      Array.prototype.forEach.call(list.children, function (other) {
+        other.setAttribute("aria-selected", other === item ? "true" : "false");
+      });
+      input.setAttribute("aria-activedescendant", item.id);
+      if (item.scrollIntoView) item.scrollIntoView({ block: "nearest" });
+    }
+    function open() {
+      list.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      on(list.firstElementChild);
+    }
+    function pick(item) {
+      input.value = item.textContent;
+      hidden.value = item.getAttribute("data-value");
+      close();
+      if (form.requestSubmit) form.requestSubmit();
+      else form.submit();
+    }
+    function say(text, busy) {
+      if (busy) status.setAttribute("data-busy-status", "");
+      else status.removeAttribute("data-busy-status");
+      status.textContent = text;
+    }
+    function search() {
+      var term = input.value.trim();
+      var mine = ++asked;
+      if (term.length < 2) {
+        close();
+        list.replaceChildren();
+        say("", false);
+        return;
+      }
+      say("Recherche en cours…", true);
+      fetch(form.action, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "q=" + encodeURIComponent(term)
+      })
+        .then(function (answer) {
+          if (!answer.ok) throw new Error(answer.status);
+          return answer.text();
+        })
+        .then(function (html) {
+          if (mine !== asked) return;
+          var page = new DOMParser().parseFromString(html, "text/html");
+          var radios = page.querySelectorAll("[data-ing-picks] input");
+          list.replaceChildren();
+          Array.prototype.forEach.call(radios, function (radio, i) {
+            var item = document.createElement("li");
+            item.id = "ing-o" + i;
+            item.setAttribute("role", "option");
+            item.setAttribute("data-value", radio.value);
+            item.textContent = radio.parentNode.textContent.trim();
+            list.appendChild(item);
+          });
+          var n = radios.length;
+          if (n) {
+            open();
+            say((n > 1 ? n + " ingrédients trouvés." : "1 ingrédient trouvé.") + " Flèches haut et bas pour choisir.", false);
+          } else {
+            close();
+            var none = page.querySelector(".ing .status");
+            say((none && none.textContent) || "Aucun ingrédient ne correspond.", false);
+          }
+        })
+        .catch(function () {
+          if (mine !== asked) return;
+          close();
+          say("Suggestions indisponibles pour le moment.", false);
+        });
+    }
+
+    input.addEventListener("input", function () {
+      hidden.value = "";
+      clearTimeout(timer);
+      timer = setTimeout(search, 250);
+    });
+    input.addEventListener("keydown", function (event) {
+      var items = list.children;
+      if (list.hidden) {
+        if (event.key === "ArrowDown" && items.length) {
+          event.preventDefault();
+          open();
+        }
+        return;
+      }
+      var at = Array.prototype.indexOf.call(items, list.querySelector('[aria-selected="true"]'));
+      if (event.key === "ArrowDown") on(items[(at + 1) % items.length]);
+      else if (event.key === "ArrowUp") on(items[(at - 1 + items.length) % items.length]);
+      else if (event.key === "Enter" && at >= 0) pick(items[at]);
+      else if (event.key === "Escape") close();
+      else return;
+      event.preventDefault();
+    });
+    input.addEventListener("blur", close);
+    // A press on an option keeps the focus in the field: the blur would
+    // close the list before the click.
+    list.addEventListener("mousedown", function (event) {
+      event.preventDefault();
+    });
+    list.addEventListener("click", function (event) {
+      var item = closest(event.target, "[role=option]");
+      if (item) pick(item);
+    });
+  }
+
+  function ingSearches() {
+    Array.prototype.forEach.call(document.querySelectorAll("form[data-ing-search]"), ingSearch);
+  }
+
   // `data-hidden-with-js`: the fallback of a form that sends itself
   // without it (a button: the profile's families, #751), or of what a
   // script offers otherwise (the attachments' list and its « Supprimer »,
@@ -1460,6 +1605,7 @@
     bounds();
     recurringBoxes();
     combos();
+    ingSearches();
     familySelectors();
     viewers();
     try {

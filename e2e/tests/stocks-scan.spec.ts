@@ -362,7 +362,11 @@ test.describe("Stocks — barcode scan without JavaScript", () => {
     await expect(page.getByText("Aucune fiche produit pour ce code")).toBeVisible();
     await page.getByLabel("Nom").fill("Surligneurs");
     await page.getByRole("button", { name: "Ajouter l'article" }).click();
-    await expect(page).toHaveURL(/\/stocks\?notice=item_created$/);
+    // No category for a scanned article (#904): its page asks which
+    // ingredient it is, instead of the list.
+    await expect(page).toHaveURL(/\/stocks\/[0-9a-f-]+\?notice=item_created$/);
+    await expect(page.getByText("Article ajouté au stock.")).toBeVisible();
+    await expect(page.getByText("Cet article ne compte pour aucune recette.")).toBeVisible();
 
     await page.goto("/stocks/new");
     await page.getByLabel("Code-barres").fill(UNKNOWN);

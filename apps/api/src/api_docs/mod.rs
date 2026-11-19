@@ -190,6 +190,7 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::rgpd::privacy_policy,
         crate::rgpd::terms_of_service,
         crate::stocks::ingredient_links::delete_ingredient_link,
+        crate::stocks::ingredient_links::get_item_ingredient,
         crate::stocks::ingredient_links::list_ingredient_links,
         crate::stocks::ingredient_links::put_ingredient_link,
         crate::stocks::items::create_stock_item,

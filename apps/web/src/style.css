@@ -1098,8 +1098,31 @@ textarea[data-count] { resize: vertical; }
 /* -- The stocks (#527) ----------------------------------------------------
    The search field draws its magnifier inside the box, so the box is the
    label and the input inside it loses its own edge. */
-.search label { flex-direction: row; align-items: center; gap: var(--s2x); padding-left: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--muted); }
-.search input { flex: 1; min-width: 0; border: 0; }
+.search label, .ing-box { display: flex; flex-direction: row; align-items: center; gap: var(--s2x); padding-left: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--muted); }
+.search input, .ing-box input { flex: 1; min-width: 0; border: 0; }
+/* An article's ingredient (#904, maquette validée le 2026-11-19): a card
+   marked by an --accent rule on its left edge alone — no fill, no alert
+   colour (DESIGN.md → Composants). Its field is the box of `.search`
+   under a visible label; the suggestions, a `.combo-list` under it; the
+   results without JavaScript, `label.list-row.pick`s. Linked, a line of
+   the article's facts, « Retirer » a text in --error. */
+.ing { border-left: 4px solid var(--accent); }
+.ing .lead { margin: 0 0 var(--s3); font-size: var(--t-sm); }
+.ing .help { margin: 0; font-size: var(--t-xs); color: var(--muted); }
+.ing .status { margin: var(--s2x) 0 0; color: var(--muted); }
+/* « Annuler » closes the card under its own 48 px target: no paragraph
+   margin below it, as in the maquette (état 8). */
+.ing .cancel { margin: var(--s2x) 0 0; }
+.ing-field { position: relative; display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
+.ing-picks { margin-top: var(--s4); }
+/* Up to twenty suggestions: five and a half options shown, the half one
+   saying that the rest scrolls, rather than a list running over the
+   phone's navigation bar. */
+.ing .combo-list { max-height: calc(5.5 * var(--s12)); overflow-y: auto; overscroll-behavior: contain; }
+/* « Retirer » keeps only its --error text: `button.secondary.danger`
+   draws a box (0,2,1), so the type is named to outweigh it; its hover,
+   later and as heavy, still lays --error-soft. */
+.ing-row button.secondary.danger { border-color: transparent; background: none; }
 /* The filters, a row of pills: every place, « Stock bas », the order. The
    one shown takes the accent, as a current tab does. */
 .filters { display: flex; flex-wrap: wrap; gap: var(--s2x); margin: var(--s4) 0; }
@@ -1250,7 +1273,7 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 .access legend + * { clear: both; }
 .access fieldset > p { margin: 0 0 var(--s2x); }
 .access fieldset > .status { margin: var(--s2x) 0 0; }
-.access .status:empty { min-height: 0; margin: 0; }
+.access .status:empty, .ing .status:empty { min-height: 0; margin: 0; }
 /* The number of people of a planned recipe (#846), at the end of its
    actions: the form, its label and its fallback « Appliquer » on one line,
    « Personnes » left of the field and never wrapped from it. Wider blank,
