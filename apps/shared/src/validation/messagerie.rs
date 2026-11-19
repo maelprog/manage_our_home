@@ -8,7 +8,8 @@
 //!   non-empty, ≤ 4000 **chars** — not bytes), so the composer rejects locally
 //!   with the copy a defensively-mapped backend 400 would produce.
 //! - `can_modify` mirrors `apps/api/src/messagerie/mod.rs::can_modify`: the
-//!   message's author, or a group owner/admin, may edit or delete it. Reading
+//!   message's author, or a member whose role meets the family's
+//!   `messagerie_moderate` threshold (#866), may edit or delete it. Reading
 //!   and posting are open to any member and are *not* gated here.
 //! - `clamp_limit` / `older_page_query` mirror the cursor-pagination contract
 //!   (`before_created_at` + `before_id`, default 50, max 100) — the cursor keeps
@@ -31,6 +32,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Europe::Paris;
 use uuid::Uuid;
+
+use super::groups::role_meets;
 
 use crate::dto::groups::GroupMember;
 use crate::dto::messagerie::MessageResponse;
@@ -78,12 +81,14 @@ pub fn validate_content(content: &str) -> Result<&str, ContentError> {
 }
 
 /// Mirror of `apps/api/src/messagerie/mod.rs::can_modify`: the message's
-/// author, or a group owner/admin, may edit or delete it. Used to decide
+/// author, or a member whose role meets `min_role`, the family's
+/// `messagerie_moderate` threshold (#866, `admin` by default), may edit or
+/// delete it. Used to decide
 /// whether to render a row's edit/delete controls (the backend still 403s a
 /// forged request). Reading the thread and posting are open to any member and
 /// are *not* gated by this.
-pub fn can_modify(role: &str, is_author: bool) -> bool {
-    is_author || role == "owner" || role == "admin"
+pub fn can_modify(role: &str, min_role: &str, is_author: bool) -> bool {
+    is_author || role_meets(role, min_role)
 }
 
 /// Formats a message timestamp in Europe/Paris (`24/07/2026 à 14:05`). The API
@@ -299,20 +304,39 @@ mod tests {
 
     // -- can_modify ----------------------------------------------------------
 
-    #[test]
-    fn author_can_modify_own_message_regardless_of_role() {
-        assert!(can_modify("standard", true));
-    }
+    /// Every role × threshold × authorship (#866), written out rather than
+    /// derived: the author always may; anyone else when their role meets
+    /// the family's threshold, the owner whatever it says.
+    const CAN_MODIFY_CASES: [(&str, &str, bool, bool); 18] = [
+        ("standard", "standard", false, true),
+        ("standard", "admin", false, false),
+        ("standard", "owner", false, false),
+        ("admin", "standard", false, true),
+        ("admin", "admin", false, true),
+        ("admin", "owner", false, false),
+        ("owner", "standard", false, true),
+        ("owner", "admin", false, true),
+        ("owner", "owner", false, true),
+        ("standard", "standard", true, true),
+        ("standard", "admin", true, true),
+        ("standard", "owner", true, true),
+        ("admin", "standard", true, true),
+        ("admin", "admin", true, true),
+        ("admin", "owner", true, true),
+        ("owner", "standard", true, true),
+        ("owner", "admin", true, true),
+        ("owner", "owner", true, true),
+    ];
 
     #[test]
-    fn owner_and_admin_can_modify_others_messages() {
-        assert!(can_modify("owner", false));
-        assert!(can_modify("admin", false));
-    }
-
-    #[test]
-    fn standard_member_cannot_modify_another_members_message() {
-        assert!(!can_modify("standard", false));
+    fn can_modify_follows_the_threshold_and_spares_the_author() {
+        for (role, min_role, author, expected) in CAN_MODIFY_CASES {
+            assert_eq!(
+                can_modify(role, min_role, author),
+                expected,
+                "{role} under {min_role}, author: {author}"
+            );
+        }
     }
 
     // -- format_message_time -------------------------------------------------

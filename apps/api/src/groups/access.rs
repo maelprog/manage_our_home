@@ -3,12 +3,14 @@
 //! The table and its RLS come from #863 (`0062_group_access_policies.sql`).
 //! The budget and the Google Calendar connections apply their threshold
 //! since #865 (`budget::require_budget_access`,
-//! `google_calendar::imports`); the other modules still hold the bar their
-//! `can_modify` hard-codes.
+//! `google_calendar::imports`); since #866 the `can_modify` of stocks,
+//! recipes, the grocery list, the agenda and the messagerie admits, besides
+//! the creator, a member whose role meets the threshold of `stocks_edit`,
+//! `recipes_edit`, `grocery_edit`, `agenda_edit` or `messagerie_moderate`.
 //!
 //! A feature with no row has the default threshold, `admin`: the bar those
-//! hard-coded checks hold, and the one the budget and Google Calendar held
-//! before #865.
+//! checks hard-coded before #866, and the one the budget and Google
+//! Calendar held before #865.
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;

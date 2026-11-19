@@ -695,3 +695,6 @@ pub async fn drop_prescribed_role(db: &PgPool, pool: PgPool, role: &str) {
             .unwrap();
     }
 }
+
+/// The family threshold of the edit bars (#866).
+pub mod thresholds;

@@ -543,7 +543,7 @@ fn page(
             message_row(
                 m,
                 members,
-                can_modify(&fam.role, mine),
+                can_modify(&fam.role, &fam.edit_min_role, mine),
                 mine,
                 replies.get(&m.id).copied(),
             )
@@ -982,7 +982,13 @@ async fn rerender_with_edit_error(
             if m.id == message_id {
                 edit_error_row(m, &members, submitted, error_message(code), mine, answers)
             } else {
-                message_row(m, &members, can_modify(&fam.role, mine), mine, answers)
+                message_row(
+                    m,
+                    &members,
+                    can_modify(&fam.role, &fam.edit_min_role, mine),
+                    mine,
+                    answers,
+                )
             }
         })
         .collect::<String>();

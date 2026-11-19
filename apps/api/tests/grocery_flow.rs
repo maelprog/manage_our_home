@@ -1,6 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use common::thresholds::{assert_edit_follows_the_threshold, Editable};
 use common::{assert_status, call, json_body, set_cookie, test_router};
 use sqlx::PgPool;
 
@@ -1284,4 +1285,22 @@ async fn the_list_counts_lines_in_packs_of_scanned_articles(db: PgPool) {
             ("Lait".to_string(), Some(40.0)),
         ]
     );
+}
+
+/// AC #866: the edit and the delete of a grocery item follow the family's `grocery_edit` threshold, the creator
+/// keeping the hand on what they wrote (`common::thresholds`).
+#[sqlx::test]
+async fn editing_a_grocery_item_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_edit_follows_the_threshold(
+        &router,
+        &db,
+        Editable {
+            feature: "grocery_edit",
+            collection: "grocery-items",
+            create: serde_json::json!({"name": "Farine", "quantity": 1.0, "unit": "kg"}),
+            edit: serde_json::json!({"name": "Sucre"}),
+        },
+    )
+    .await;
 }

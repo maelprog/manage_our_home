@@ -2,6 +2,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use chrono::{Duration, Utc};
+use common::thresholds::{assert_edit_follows_the_threshold, Editable};
 use common::{assert_status, call, json_body, set_cookie, test_router};
 use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
@@ -1228,4 +1229,66 @@ async fn an_adjustment_to_zero_removes_an_article_without_a_threshold(db: PgPool
     let res = patch_item(r, g, &vide, &member, serde_json::json!({})).await;
     assert!(res.get("removed").is_none(), "{res}");
     assert_eq!(item_status(r, g, &vide, &owner).await, StatusCode::OK);
+}
+
+/// AC #866: the full edit and the delete of a stock item follow the family's `stocks_edit` threshold, the creator
+/// keeping the hand on what they wrote (`common::thresholds`).
+#[sqlx::test]
+async fn editing_a_stock_item_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_edit_follows_the_threshold(
+        &router,
+        &db,
+        Editable {
+            feature: "stocks_edit",
+            collection: "stock-items",
+            create: serde_json::json!({"name": "Pâtes", "quantity": 5.0}),
+            edit: serde_json::json!({"name": "Riz"}),
+        },
+    )
+    .await;
+}
+
+/// AC #866: a quantity-only adjustment stays open to every member whatever
+/// the `stocks_edit` threshold, as since #39, while the full edit follows
+/// it.
+#[sqlx::test]
+async fn a_quantity_adjustment_stays_open_whatever_the_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let fam = common::thresholds::family(&router, &db, "stocks-quantity").await;
+    common::thresholds::set_threshold(&router, &fam, "stocks_edit", "owner").await;
+    let group_id = &fam.group_id;
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&fam.owner),
+        Some(serde_json::json!({"name": "Pâtes", "quantity": 5.0})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let item_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let uri = format!("/groups/{group_id}/stock-items/{item_id}");
+
+    for (who, cookie, quantity) in [("standard", &fam.standard, 4.0), ("admin", &fam.admin, 3.0)] {
+        let adjust = call(
+            &router,
+            Method::PATCH,
+            &uri,
+            Some(cookie),
+            Some(serde_json::json!({"quantity": quantity})),
+        )
+        .await;
+        assert_status(&adjust, StatusCode::OK);
+        assert_eq!(json_body(adjust).await["quantity"], quantity, "{who}");
+        let full = call(
+            &router,
+            Method::PATCH,
+            &uri,
+            Some(cookie),
+            Some(serde_json::json!({"name": "Riz"})),
+        )
+        .await;
+        assert_eq!(full.status(), StatusCode::FORBIDDEN, "{who}'s full edit");
+    }
 }

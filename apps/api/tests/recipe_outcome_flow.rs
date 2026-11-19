@@ -2373,3 +2373,89 @@ async fn an_old_taste_verdict_still_counts(db: PgPool) {
     let after = suggestion_scores(&router, &cookie, &group_id).await;
     assert_eq!(after[&flan] - before[&flan], 5.0);
 }
+
+/// AC #866: the preview's `can_edit_recipe` follows the family's
+/// `recipes_edit` threshold, as `PATCH` does: lowered to `standard`, a
+/// standard member may change the owner's recipe; raised to `owner`, an
+/// admin may not.
+#[sqlx::test]
+async fn who_may_change_the_recipe_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let fam = common::thresholds::family(&router, &db, "outcome-threshold").await;
+    let (recipe, _, _, _) = crepes(&router, &fam.owner, &fam.group_id).await;
+
+    for (min_role, expected) in [
+        ("standard", [true, true, true]),
+        ("admin", [true, true, false]),
+        ("owner", [true, false, false]),
+    ] {
+        common::thresholds::set_threshold(&router, &fam, "recipes_edit", min_role).await;
+        for ((who, cookie), may) in [
+            ("owner", &fam.owner),
+            ("admin", &fam.admin),
+            ("standard", &fam.standard),
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            let res = get(&router, cookie, &done_path(&fam.group_id, &recipe)).await;
+            assert_status(&res, StatusCode::OK);
+            assert_eq!(
+                json_body(res).await["can_edit_recipe"],
+                may,
+                "{who} under {min_role}"
+            );
+        }
+    }
+}
+
+/// AC #866: who may send `recipe_updates` with done follows the family's
+/// `recipes_edit` threshold, as the preview says: raised to `owner`, an
+/// admin who did not create the recipe gets 403 and nothing is applied;
+/// lowered to `standard`, a standard member's update goes through.
+#[sqlx::test]
+async fn who_may_update_the_recipe_on_done_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let fam = common::thresholds::family(&router, &db, "outcome-update-threshold").await;
+    let (recipe, farine, _, _) = crepes(&router, &fam.owner, &fam.group_id).await;
+    let lines = done_preview(&router, &fam.owner, &fam.group_id, &recipe).await;
+    let done = |quantity: f64| {
+        json!({
+            "removals": [{"stock_item_id": farine, "quantity": 100.0}],
+            "recipe_updates": [
+                {"ingredient_id": ingredient_id(&lines, "Farine"), "action": "set_quantity", "quantity": quantity}
+            ]
+        })
+    };
+
+    common::thresholds::set_threshold(&router, &fam, "recipes_edit", "owner").await;
+    let res = post(
+        &router,
+        &fam.admin,
+        &done_path(&fam.group_id, &recipe),
+        done(150.0),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(
+        stock_quantity(&router, &fam.owner, &fam.group_id, &farine).await,
+        500.0
+    );
+    assert_eq!(planned_count(&router, &fam.owner, &fam.group_id).await, 1);
+
+    common::thresholds::set_threshold(&router, &fam, "recipes_edit", "standard").await;
+    let res = post(
+        &router,
+        &fam.standard,
+        &done_path(&fam.group_id, &recipe),
+        done(250.0),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert!(
+        recipe_lines(&router, &fam.owner, &fam.group_id, &recipe)
+            .await
+            .contains(&("Farine".into(), Some(250.0), false)),
+        "the standard member's update is applied"
+    );
+}

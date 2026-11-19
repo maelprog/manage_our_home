@@ -40,8 +40,9 @@
 //! name and unit, the quantity used brought back to the recipe's number of
 //! people, unless the recipe already has an ingredient of that name
 //! (`article_key`), so that replaying adds it once. Changing the recipe
-//! stays for its creator, an admin or the owner (`can_modify`, as for
-//! `PATCH`): anyone else gets 403 for an `add_to_recipe` that adds
+//! stays for its creator or a member whose role meets the family's
+//! `recipes_edit` threshold (#866; `can_modify`, as for `PATCH`): anyone
+//! else gets 403 for an `add_to_recipe` that adds
 //! something (products the recipe already names add nothing), and the
 //! preview says whether the caller may (`can_edit_recipe`).
 //!
@@ -67,8 +68,9 @@
 //! two applications at once end with one 200 and one 404. Any member may
 //! apply either action, like logging a meal. Removing from the stock is a
 //! quantity-only adjustment, already open to any member (#39). Removing
-//! grocery items is not otherwise: deleting one directly is for its creator,
-//! an admin or the owner (`grocery_list::can_modify`). Through an abandon it
+//! grocery items is not otherwise: deleting one directly is for its creator
+//! or a member whose role meets the family's `grocery_edit` threshold
+//! (`grocery_list::can_modify`, #866). Through an abandon it
 //! is open to any member, by user arbitration of 2026-10-25, as for the
 //! reception of the groceries (#471), and `can_modify` is deliberately not
 //! called: only unchecked items generated for the abandoned recipe can go,
@@ -87,6 +89,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::planned::{scale_quantity, without_binary_noise};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::recipes::can_modify;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
@@ -666,7 +669,12 @@ pub async fn preview_done(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, false).await?;
-    let can_edit_recipe = can_modify(&role, selection.recipe_created_by == auth.user_id);
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    let can_edit_recipe = can_modify(
+        &role,
+        &min_role,
+        selection.recipe_created_by == auth.user_id,
+    );
     let rows = ingredients(&mut tx, group_id, recipe_id).await?;
     let stock = sqlx::query_as!(
         StockItemRow,
@@ -804,7 +812,12 @@ pub async fn apply_done(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, true).await?;
-    let may_change = can_modify(&role, selection.recipe_created_by == auth.user_id);
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    let may_change = can_modify(
+        &role,
+        &min_role,
+        selection.recipe_created_by == auth.user_id,
+    );
     if !body.recipe_updates.is_empty() && !may_change {
         return Err(AppError::Forbidden);
     }

@@ -1,6 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use common::thresholds::{assert_edit_follows_the_threshold, Editable};
 use common::{assert_status, call, json_body, set_cookie, test_router, test_state};
 use futures::StreamExt;
 use sqlx::{Connection, PgPool};
@@ -2048,4 +2049,22 @@ async fn deleting_the_parent_keeps_the_reply_without_its_parent(db: PgPool) {
             .await
             .unwrap();
     assert!(link.is_none());
+}
+
+/// AC #866: the edit and the delete of a message follow the family's `messagerie_moderate` threshold, the creator
+/// keeping the hand on what they wrote (`common::thresholds`).
+#[sqlx::test]
+async fn editing_a_message_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_edit_follows_the_threshold(
+        &router,
+        &db,
+        Editable {
+            feature: "messagerie_moderate",
+            collection: "messages",
+            create: serde_json::json!({"content": "Bonjour"}),
+            edit: serde_json::json!({"content": "Bonsoir"}),
+        },
+    )
+    .await;
 }

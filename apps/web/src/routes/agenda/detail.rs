@@ -266,7 +266,11 @@ pub async fn get(
         .map(|g| g.members)
         .unwrap_or_default();
 
-    let can_edit = can_modify(&fam.role, event.created_by == me.user_id);
+    let can_edit = can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        event.created_by == me.user_id,
+    );
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
     let reminder = query.rid.map(|rid| (rid, query.offset.unwrap_or(0)));
@@ -401,7 +405,8 @@ fn page(
         String::new()
     };
 
-    // Edit/delete controls (creator or owner/admin only).
+    // Edit/delete controls (creator, or a role meeting the family's
+    // `agenda_edit` threshold, #866).
     let controls_html = if can_edit {
         format!(
             r#"<div class="actions">
@@ -995,7 +1000,11 @@ pub async fn delete_confirm(
         }
         _ => return service_unavailable_page().into_response(),
     };
-    if !can_modify(&fam.role, event.created_by == me.user_id) {
+    if !can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        event.created_by == me.user_id,
+    ) {
         return forbidden_page().into_response();
     }
     let Some(occurrence_at) = query.occ.filter(|_| event.rrule.is_some()) else {

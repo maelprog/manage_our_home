@@ -5,7 +5,9 @@ import { fetchVerificationToken } from "../lib/db";
 // introduces, happy paths plus the documented error states from
 // apps/api/src/messagerie/'s error tables (see docs/front-epic-8-messagerie.md).
 // One thread per family, text only. Any member reads/posts; the per-row
-// "Modifier"/"Supprimer" controls stay behind can_modify (author/admin/owner).
+// "Modifier"/"Supprimer" controls stay behind can_modify (the author, or a role
+// meeting the family's `messagerie_moderate` threshold, #866 — admin/owner by
+// default).
 // The WebSocket is push-only and an enhancement: a message posted from one
 // session appears live in a second session's thread without it reloading (the
 // journey backend epic #7 explicitly deferred here). Send/edit/delete also work

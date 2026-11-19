@@ -17,6 +17,7 @@ use crate::grocery_list::planned::{
     count_against_list, count_missing_against_list, plan_lines, ListChange, ListedLine,
     PlannedIngredient,
 };
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::notifications::center;
 use crate::recipes::availability::planned_availability;
@@ -288,7 +289,8 @@ pub async fn list_grocery_items(
 
 /// Any member may check/uncheck an item off the shared list — this is a
 /// lighter permission bar than `update_grocery_item`, which only the
-/// creator or a group admin/owner may use to edit name/quantity/unit.
+/// creator or a member whose role meets the family's `grocery_edit`
+/// threshold (#866) may use to edit name/quantity/unit.
 #[utoipa::path(
     post,
     path = "/groups/{id}/grocery-items/{item_id}/check",
@@ -370,7 +372,8 @@ pub async fn update_grocery_item(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::GroceryEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -448,7 +451,8 @@ pub async fn delete_grocery_item(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::GroceryEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 

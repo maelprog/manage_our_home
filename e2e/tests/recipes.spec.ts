@@ -15,7 +15,8 @@ test.beforeEach(async ({ context }) => {
 // apps/api/src/recipes/'s error tables (see docs/front-epic-5-recipes.md).
 // Permission bar mirrors Stocks: any member may create/read a recipe or log a
 // meal, so every member sees the log-a-meal form; the edit link and delete
-// button stay behind can_modify (creator/admin/owner). The suggestion view
+// button stay behind can_modify (the creator, or a role meeting the family's
+// `recipes_edit` threshold, #866 — admin/owner by default). The suggestion view
 // renders the ranked order + derived signals (stock summary, missing
 // ingredients), never the raw internal score.
 

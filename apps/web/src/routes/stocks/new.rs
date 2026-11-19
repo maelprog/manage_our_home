@@ -838,7 +838,7 @@ async fn scanned(
             _ => None,
         };
         let proposal = date_to_propose(read, item.expires_on);
-        let may_edit = can_modify(&fam.role, item.created_by == user_id);
+        let may_edit = can_modify(&fam.role, &fam.edit_min_role, item.created_by == user_id);
         return Html(already_in_stock_page(
             &fam.header,
             item,
