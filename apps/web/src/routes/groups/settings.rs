@@ -467,7 +467,9 @@ const THRESHOLDS: [(&str, &str); 3] = [
 /// A radio sends the whole form by itself (#844), the seven thresholds
 /// together, and the form is locked while it is sent
 /// (`data-lock-on-change`), its fieldset saying so in its `data-busy-status`
-/// line; the button is the fallback without JavaScript. No form when the
+/// line; the button is the fallback without JavaScript, `submit_fallback`'s
+/// markup with a name (`SENT_BY_BUTTON`) so that its post is told from a
+/// radio's (`access_redirect`). No form when the
 /// thresholds could not be read: it would send seven defaults.
 fn access_card(group_id: Uuid, my_role: &str, access: &Access) -> String {
     if my_role != "owner" {
@@ -520,9 +522,11 @@ fn access_card(group_id: Uuid, my_role: &str, access: &Access) -> String {
             format!(
                 r#"<form method="post" action="/groups/{group_id}/settings/access" data-keep-scroll data-lock-on-change>
 {APPLIES_ON_CHANGE}
-{fieldsets}{fallback}
+{fieldsets}<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" name="{sent}" value="{by}" data-hidden-with-js>Enregistrer l'accès</button>
 </form>"#,
-                fallback = submit_fallback("Enregistrer l'accès"),
+                sent = SENT_BY_BUTTON.0,
+                by = SENT_BY_BUTTON.1,
             )
         }
     };
@@ -540,9 +544,33 @@ fn access_card(group_id: Uuid, my_role: &str, access: &Access) -> String {
 /// each feature's threshold, in the order posted. A feature or a threshold
 /// off the lists, a feature twice, or nothing at all is refused here,
 /// before apps/api, which would refuse it too (400).
+/// The name and value « Enregistrer l'accès » posts, which a radio's post
+/// (`form.submit()`, no submitter) does not carry.
+const SENT_BY_BUTTON: (&str, &str) = ("sent", "button");
+
+/// The query, and the anchor, the page comes back with after a post of
+/// « Accès ». A radio's post goes back to the page as it was: `enhance.js`
+/// puts the reader and the focus back on the radio (`data-keep-scroll`),
+/// which an anchor would take away from it. The button's post, without
+/// JavaScript, and any failure — which `data-keep-scroll` leaves at the
+/// top — go to the card, whose banner says how it went.
+fn access_redirect(pairs: &[(String, String)], query: &str) -> String {
+    let by_button = pairs
+        .iter()
+        .any(|(k, v)| (k.as_str(), v.as_str()) == SENT_BY_BUTTON);
+    if by_button || query.starts_with("error=") {
+        format!("?{query}#acces")
+    } else {
+        format!("?{query}")
+    }
+}
+
 fn access_request(pairs: &[(String, String)]) -> Result<AccessPolicies, &'static str> {
     let mut policies: Vec<AccessPolicy> = Vec::with_capacity(pairs.len());
     for (key, value) in pairs {
+        if key == SENT_BY_BUTTON.0 {
+            continue;
+        }
         let feature = Feature::parse(key).ok_or("invalid_access")?;
         if !THRESHOLDS.iter().any(|(t, _)| t == value) {
             return Err("invalid_access");
@@ -732,8 +760,8 @@ pub async fn get(
 }
 
 /// « Enregistrer l'accès » (#867): `PUT /groups/:id/access-policies` with
-/// the seven thresholds the form holds. The page comes back at the card
-/// (`#acces`), whose banner says how it went.
+/// the seven thresholds the form holds. Where the page comes back:
+/// `access_redirect`.
 pub async fn access(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
@@ -742,11 +770,10 @@ pub async fn access(
     Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     let settings_url = format!("/groups/{group_id}/settings");
+    let back = |query: &str| format!("{settings_url}{}", access_redirect(&pairs, query));
     let body = match access_request(&pairs) {
         Ok(body) => body,
-        Err(code) => {
-            return Redirect::to(&format!("{settings_url}?error={code}#acces")).into_response()
-        }
+        Err(code) => return Redirect::to(&back(&format!("error={code}"))).into_response(),
     };
 
     let cookie = cookie_of(&headers);
@@ -760,19 +787,16 @@ pub async fn access(
     .await;
 
     let target = match result {
-        Ok(resp) if resp.status == reqwest::StatusCode::OK => {
-            format!("{settings_url}?notice=access_saved#acces")
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => back("notice=access_saved"),
+        // The page's own banner, at the top: no card for a non-owner.
         Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
             format!("{settings_url}?error=forbidden")
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
-            format!("{settings_url}?error=invalid_access#acces")
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => back("error=invalid_access"),
         Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
             return group_not_found_page().into_response()
         }
-        Ok(_) | Err(_) => format!("{settings_url}?error=access_failed#acces"),
+        Ok(_) | Err(_) => back("error=access_failed"),
     };
     Redirect::to(&target).into_response()
 }
@@ -2029,12 +2053,42 @@ mod tests {
             card.contains("Supprimer les messages des autres membres."),
             "{card}"
         );
-        // #844: applies on the click, the button being the fallback.
+        // #844: applies on the click, the button being the fallback; it
+        // names itself, so that its post is told from a radio's.
         assert!(card.contains(APPLIES_ON_CHANGE), "{card}");
         assert!(
-            card.contains(&submit_fallback("Enregistrer l'accès")),
+            card.contains(r#"<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" name="sent" value="button" data-hidden-with-js>Enregistrer l'accès</button>"#),
             "{card}"
         );
+    }
+
+    /// Where the page comes back: a radio's post (JavaScript, which puts
+    /// the reader and the focus back by itself) to the page as it was; the
+    /// button's, or a failure, to the card (`#acces`), whose banner says it.
+    #[test]
+    fn the_page_comes_back_at_the_card_after_the_button_or_a_failure() {
+        let by = |sent: bool| {
+            let mut p = vec![("budget".to_string(), "admin".to_string())];
+            if sent {
+                p.push(("sent".to_string(), "button".to_string()));
+            }
+            p
+        };
+        assert_eq!(
+            access_redirect(&by(false), "notice=access_saved"),
+            "?notice=access_saved"
+        );
+        assert_eq!(
+            access_redirect(&by(true), "notice=access_saved"),
+            "?notice=access_saved#acces"
+        );
+        for sent in [false, true] {
+            assert_eq!(
+                access_redirect(&by(sent), "error=access_failed"),
+                "?error=access_failed#acces"
+            );
+        }
     }
 
     /// Placed between « Équipements de la cuisine » and the Google
@@ -2151,7 +2205,21 @@ mod tests {
             ]}))
         );
         // Nothing to send.
+        // The button's own name is not a feature.
+        assert_eq!(
+            access_request(&pairs(&[("budget", "owner"), ("sent", "button")])),
+            Ok(AccessPolicies {
+                policies: vec![AccessPolicy {
+                    feature: "budget".into(),
+                    min_role: "owner".into()
+                }]
+            })
+        );
         assert_eq!(access_request(&pairs(&[])), Err("invalid_access"));
+        assert_eq!(
+            access_request(&pairs(&[("sent", "button")])),
+            Err("invalid_access")
+        );
         // A threshold off the list, a feature twice, a feature unknown.
         for bad in [
             &[("budget", "member")][..],

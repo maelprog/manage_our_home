@@ -92,20 +92,31 @@ test.describe("The family's access settings (#867)", () => {
     await expect(card.getByText("Le choix s'applique dès que vous le touchez.")).toBeVisible();
 
     // While it is sent, the form waits: every radio locked, the budget's
-    // fieldset saying so. The post is held until that is seen.
-    let release: () => void = () => {};
-    const held = new Promise<void>((resolve) => (release = resolve));
-    await page.route("**/settings/access", async (route) => {
-      await held;
-      await route.continue();
+    // fieldset saying so. The page is gone before a locator could read
+    // it, so a listener of the page's own `change`, run after enhance.js's,
+    // notes what it shows in sessionStorage, which outlives the page.
+    await page.evaluate(() => {
+      document.addEventListener("change", () => {
+        const card = document.getElementById("acces")!;
+        const radios = Array.from(card.querySelectorAll<HTMLInputElement>('input[type="radio"]'));
+        const budget = card.querySelector("fieldset")!;
+        sessionStorage.setItem(
+          "e2e-access-waiting",
+          JSON.stringify({
+            form: card.querySelector("form")!.getAttribute("aria-busy"),
+            fieldset: budget.getAttribute("aria-busy"),
+            status: budget.querySelector('[role="status"]')!.textContent,
+            disabled: radios.filter((r) => r.disabled).length,
+          }),
+        );
+      });
     });
     await budget.getByRole("radio", { name: "Tous les membres" }).check();
-    await expect(budget.getByRole("status")).toHaveText("Enregistrement…");
-    await expect(card.locator("form")).toHaveAttribute("aria-busy", "true");
-    await expect(card.getByRole("radio", { name: "Propriétaire seul" }).first()).toBeDisabled();
-    release();
-    await expect(page).toHaveURL(/\/settings\?notice=access_saved#acces$/);
-    await page.unroute("**/settings/access");
+    // Back where it was sent from (`data-keep-scroll`), the focus on the
+    // radio: no anchor, which would take the focus away.
+    await expect(page).toHaveURL(/\/settings\?notice=access_saved$/);
+    const waiting = await page.evaluate(() => JSON.parse(sessionStorage.getItem("e2e-access-waiting") ?? "null"));
+    expect(waiting).toEqual({ form: "true", fieldset: "true", status: "Enregistrement…", disabled: 21 });
     await expect(
       card.getByRole("status").filter({
         hasText: "Accès enregistré. Les membres voient le changement à leur prochaine page.",
