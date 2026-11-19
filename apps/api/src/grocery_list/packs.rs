@@ -40,7 +40,7 @@ impl ScannedPack {
     ) -> Self {
         ScannedPack {
             id,
-            entry: stock_entry(taxonomy, name, off_categories),
+            entry: stock_entry(taxonomy, name, None, off_categories),
             pack,
         }
     }

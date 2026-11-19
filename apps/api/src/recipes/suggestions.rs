@@ -16,6 +16,7 @@ use crate::recipes::dietary_filter::{
 };
 use crate::recipes::taste::{taste_score, Rated, Taste};
 use crate::recipes::taxonomy::{taxonomy, TagId, Taxonomy};
+use crate::stocks::ingredient_links::{family_links, link_key};
 use crate::stocks::items::today;
 use crate::AppState;
 
@@ -42,8 +43,9 @@ use crate::AppState;
 /// Ingredient/stock matching goes through Open Food Facts' category
 /// taxonomy (#406, `recipes::taxonomy`): an article covers an ingredient
 /// when its category is the ingredient's or descends from it. An article
-/// takes its categories from its scanned product (`off_products`), else
-/// from its name; an ingredient from its name. Equal names (case-insensitive,
+/// takes its categories from the family's link for its name (#903), else
+/// from its scanned product (`off_products`), else from its name; an
+/// ingredient from its name. Equal names (case-insensitive,
 /// trimmed) match too, whether or not either side has a category. It stays a
 /// heuristic, not an exact reservation check (unit conversion is out of
 /// scope, same as the low_stock heuristic in stocks::items).
@@ -363,18 +365,24 @@ pub(crate) struct StockEntry {
     pub(crate) tags: HashSet<TagId>,
 }
 
-/// The categories come first from Open Food Facts' `categories_tags` of a
+/// The categories come first from the family's link for the article's name
+/// (`linked`, #903, `stocks::ingredient_links`), when the taxonomy knows
+/// its category; otherwise from Open Food Facts' `categories_tags` of a
 /// scanned article (#402), the ones the taxonomy knows; otherwise from the
 /// article's name.
 pub(crate) fn stock_entry(
     taxonomy: &Taxonomy,
     name: &str,
+    linked: Option<&str>,
     off_categories: &[String],
 ) -> StockEntry {
-    let mut direct: Vec<TagId> = off_categories
-        .iter()
-        .filter_map(|id| taxonomy.tag(id))
-        .collect();
+    let mut direct: Vec<TagId> = match linked.and_then(|id| taxonomy.tag(id)) {
+        Some(tag) => vec![tag],
+        None => off_categories
+            .iter()
+            .filter_map(|id| taxonomy.tag(id))
+            .collect(),
+    };
     if direct.is_empty() {
         direct.extend(taxonomy.canonical_ingredient(name));
     }
@@ -398,7 +406,8 @@ pub(crate) struct StockArticle {
 }
 
 /// Every stock line of the group, empty ones included, with its categories:
-/// those of its scanned product, else those of its name ([`stock_entry`]).
+/// those of the family's link for its name (#903), else those of its
+/// scanned product, else those of its name ([`stock_entry`]).
 /// Shared by the suggestions and what the planned recipes lack
 /// (`availability::planned_availability`, #900).
 pub(crate) async fn tagged_stock(
@@ -409,6 +418,7 @@ pub(crate) async fn tagged_stock(
     // migration 0026); the family's rows come from `stock_items`. A cached
     // record past its TTL still names the product's categories.
     let taxonomy = taxonomy();
+    let links = family_links(tx, group_id).await?;
     Ok(sqlx::query!(
         r#"
         SELECT s.id, s.name, s.unit, s.quantity, s.expires_on,
@@ -423,7 +433,12 @@ pub(crate) async fn tagged_stock(
     .await?
     .into_iter()
     .map(|r| StockArticle {
-        entry: stock_entry(taxonomy, &r.name, &r.categories_tags.unwrap_or_default()),
+        entry: stock_entry(
+            taxonomy,
+            &r.name,
+            links.get(&link_key(&r.name)).map(String::as_str),
+            &r.categories_tags.unwrap_or_default(),
+        ),
         id: r.id,
         name: r.name,
         unit: r.unit,
@@ -563,8 +578,62 @@ mod tests {
     }
 
     fn entry(name: &str, off: &[&str]) -> StockEntry {
+        linked_entry(name, None, off)
+    }
+
+    fn linked_entry(name: &str, link: Option<&str>, off: &[&str]) -> StockEntry {
         let off: Vec<String> = off.iter().map(|s| s.to_string()).collect();
-        stock_entry(taxonomy(), name, &off)
+        stock_entry(taxonomy(), name, link, &off)
+    }
+
+    // -- the family's link first (#903) --------------------------------------
+
+    #[test]
+    fn a_link_gives_a_category_to_a_name_the_taxonomy_does_not_know() {
+        // The issue's example: « mon p'tit plaisir » is crème fraîche.
+        assert!(!covered(
+            "crème fraîche",
+            &[entry("Mon p'tit plaisir", &[])]
+        ));
+        let stock = [linked_entry(
+            "Mon p'tit plaisir",
+            Some("en:fermented-creams"),
+            &[],
+        )];
+        assert!(covered("crème fraîche", &stock));
+        // With the category's ancestors: crème covers « crème ».
+        assert!(covered("crème", &stock));
+        assert!(!covered("beurre", &stock));
+    }
+
+    #[test]
+    fn a_link_comes_before_the_scanned_categories_and_the_name() {
+        // Scanned as milk, linked to oat drinks: the link wins, the scan's
+        // categories no longer count.
+        let stock = [linked_entry(
+            "Boisson",
+            Some("en:oat-based-drinks"),
+            &["en:milks"],
+        )];
+        assert!(!covered("lait", &stock));
+        // A name the taxonomy reads as milk, linked elsewhere: the link wins.
+        let stock = [linked_entry("Lait", Some("en:butters"), &[])];
+        assert!(covered("beurre", &stock));
+        assert!(!covered("lait demi-écrémé", &stock));
+        // The same name still matches by name, link or not.
+        assert!(covered("lait", &stock));
+    }
+
+    #[test]
+    fn a_link_to_a_category_the_taxonomy_lost_is_no_link() {
+        let stock = [linked_entry(
+            "Lait demi-écrémé Lactel",
+            Some("en:gone"),
+            &["en:semi-skimmed-milks"],
+        )];
+        assert!(covered("lait", &stock));
+        let stock = [linked_entry("Lait", Some("en:gone"), &[])];
+        assert!(covered("laits", &stock));
     }
 
     fn covered(ingredient: &str, stock: &[StockEntry]) -> bool {

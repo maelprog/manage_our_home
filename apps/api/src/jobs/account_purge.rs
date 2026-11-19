@@ -18,8 +18,9 @@
 //!   `account_reactivation_requests` (#289), `push_subscriptions` (#306),
 //!   `notifications` (#534) — those it received, and those it caused,
 //!   whose text may carry its display name, `stock_expiry_announcements`
-//!   (#700), `user_allergies`, `allergy_sharing`, `user_dislikes` (#817);
-//!   and the
+//!   (#700), `user_allergies`, `allergy_sharing`, `user_dislikes` (#817),
+//!   `ingredient_links` (#903, with the memberships its key is onto); and
+//!   the
 //!   personal rows among the others: the account's own `audit_log`
 //!   entries, the `invitations` it sent (with the third-party addresses
 //!   they hold) and its `calendar_imports` (with their `feed_url`, a

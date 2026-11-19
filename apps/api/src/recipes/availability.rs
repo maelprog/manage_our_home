@@ -539,6 +539,7 @@ mod tests {
             entry: crate::recipes::suggestions::stock_entry(
                 crate::recipes::taxonomy::taxonomy(),
                 name,
+                None,
                 &off,
             ),
         }
