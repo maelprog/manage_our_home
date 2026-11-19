@@ -18,3 +18,21 @@ distributed under the [Open Database License (ODbL)
 1.0](https://opendatacommons.org/licenses/odbl/1-0/), not under the
 repository's licence (PolyForm Noncommercial 1.0.0). Data: © Open Food Facts contributors,
 https://world.openfoodfacts.org.
+
+## `ingredient-aliases-fr.tsv`
+
+French ingredient names that Open Food Facts' taxonomy lacks (#901), each
+mapped to one of its category ids. One line per alias:
+
+    <name as a recipe writes it> TAB <Open Food Facts category id>
+
+Read by `Taxonomy::parse_with_aliases` (`apps/api/src/recipes/taxonomy.rs`)
+when the embedded taxonomy loads, and embedded with `include_str!`; the
+build script and `off-categories-fr.tsv.gz` are unchanged. An alias is one
+more French name of its category, under the same rules as Open Food Facts'
+names: a name two unrelated categories share is still no tag. A test fails
+when a line names a category the taxonomy lacks, repeats a name the taxonomy
+already gives that category, or does not end up naming its category.
+
+**Origin.** These aliases are written for manage_our_home, not taken from
+Open Food Facts; only the category ids they point to are Open Food Facts'.
