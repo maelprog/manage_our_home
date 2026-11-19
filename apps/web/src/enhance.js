@@ -480,6 +480,14 @@
       form.removeAttribute("data-busy");
     });
     Array.prototype.forEach.call(document.querySelectorAll('[aria-busy="true"]'), function (button) {
+      // A form of switches locked while it was sent (#853): unlocked.
+      if (button.hasAttribute("data-lock-on-change")) {
+        button.removeAttribute("aria-busy");
+        Array.prototype.forEach.call(button.querySelectorAll("[data-submit-on-change]"), function (field) {
+          field.disabled = false;
+        });
+        return;
+      }
       // A number locked while it was sent (#846): unlocked as it was.
       if (button.type === "number") {
         button.removeAttribute("aria-busy");
@@ -542,6 +550,15 @@
       if (input.type === "number") {
         input.setAttribute("aria-busy", "true");
         input.disabled = true;
+      }
+      // `data-lock-on-change` (the notification settings' switches,
+      // #853): the whole form waits, each field sent on change disabled,
+      // so that a second switch is not flipped while the first is saved.
+      if (input.form.hasAttribute("data-lock-on-change")) {
+        input.form.setAttribute("aria-busy", "true");
+        Array.prototype.forEach.call(input.form.querySelectorAll("[data-submit-on-change]"), function (field) {
+          field.disabled = true;
+        });
       }
     }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).

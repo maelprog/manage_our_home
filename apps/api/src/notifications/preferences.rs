@@ -36,7 +36,9 @@ pub async fn get_settings(
     auth: AuthUser,
 ) -> AppResult<Json<NotificationSettings>> {
     let row = sqlx::query!(
-        r#"SELECT u.reminder_channel, u.expiry_digest_hour, u.notify_agenda_changes,
+        r#"SELECT u.reminder_channel, u.expiry_digest_hour, u.expiry_digest_enabled,
+                  u.notify_agenda_added,
+                  u.notify_agenda_changed, u.notify_agenda_deleted,
                   (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS "subscriptions!"
            FROM users u WHERE u.id = $1"#,
         auth.user_id
@@ -48,14 +50,18 @@ pub async fn get_settings(
         push_subscriptions: row.subscriptions,
         vapid_public_key: state.push.as_ref().map(|v| v.public_key().to_string()),
         expiry_digest_hour: row.expiry_digest_hour,
-        notify_agenda_changes: row.notify_agenda_changes,
+        expiry_digest_enabled: row.expiry_digest_enabled,
+        notify_agenda_added: row.notify_agenda_added,
+        notify_agenda_changed: row.notify_agenda_changed,
+        notify_agenda_deleted: row.notify_agenda_deleted,
     }))
 }
 
 /// `PUT /account/notifications` — 204, or 400 `invalid_reminder_channel`,
 /// or 400 `invalid_expiry_digest_hour` for a recap hour outside 0..23
-/// (`parse_expiry_digest_hour`, #700). Without `expiry_digest_hour`, the
-/// recap's hour stays as it is.
+/// (`parse_expiry_digest_hour`, #700). A field left out — the recap's
+/// hour or switch, any of the three agenda switches (#853) — stays as it
+/// is; the recap off, its hour is kept, and may still be changed.
 #[utoipa::path(
     put,
     path = "/account/notifications",
@@ -85,12 +91,18 @@ pub async fn update_settings(
     sqlx::query!(
         r#"UPDATE users SET reminder_channel = $2,
                   expiry_digest_hour = COALESCE($3, expiry_digest_hour),
-                  notify_agenda_changes = COALESCE($4, notify_agenda_changes)
+                  expiry_digest_enabled = COALESCE($4, expiry_digest_enabled),
+                  notify_agenda_added = COALESCE($5, notify_agenda_added),
+                  notify_agenda_changed = COALESCE($6, notify_agenda_changed),
+                  notify_agenda_deleted = COALESCE($7, notify_agenda_deleted)
            WHERE id = $1"#,
         auth.user_id,
         channel.as_str(),
         digest_hour,
-        body.notify_agenda_changes,
+        body.expiry_digest_enabled,
+        body.notify_agenda_added,
+        body.notify_agenda_changed,
+        body.notify_agenda_deleted,
     )
     .execute(&state.db)
     .await?;
@@ -284,4 +296,63 @@ pub async fn unsubscribe_all(
     .execute(&state.db)
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(json: &str) -> UpdateNotificationSettings {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// #853: the recap's switch and its hour are each set or left as they
+    /// are; the hour is never cleared, and is kept while the recap is off.
+    #[test]
+    fn the_recap_switch_and_hour_are_each_set_or_left() {
+        let base = r#""reminder_channel":"push""#;
+        let off = read(&format!(
+            r#"{{{base},"expiry_digest_enabled":false,"expiry_digest_hour":7}}"#
+        ));
+        assert_eq!(
+            (off.expiry_digest_enabled, off.expiry_digest_hour),
+            (Some(false), Some(7))
+        );
+        let left = read(&format!("{{{base}}}"));
+        assert_eq!(
+            (left.expiry_digest_enabled, left.expiry_digest_hour),
+            (None, None)
+        );
+        assert!(serde_json::from_str::<UpdateNotificationSettings>(&format!(
+            r#"{{{base},"expiry_digest_enabled":"no"}}"#
+        ))
+        .is_err());
+    }
+
+    /// What the web sends is what the API reads: a field left as it is goes
+    /// out as nothing at all.
+    #[test]
+    fn the_update_round_trips() {
+        for (on, hour) in [(Some(false), Some(21)), (Some(true), None), (None, None)] {
+            let sent = UpdateNotificationSettings {
+                reminder_channel: "none".into(),
+                expiry_digest_enabled: on,
+                expiry_digest_hour: hour,
+                notify_agenda_added: Some(true),
+                notify_agenda_changed: None,
+                notify_agenda_deleted: Some(false),
+            };
+            let json = serde_json::to_string(&sent).unwrap();
+            let back = read(&json);
+            assert_eq!(
+                (back.expiry_digest_enabled, back.expiry_digest_hour),
+                (on, hour),
+                "{json}"
+            );
+            assert_eq!(back.notify_agenda_added, Some(true));
+            assert_eq!(back.notify_agenda_changed, None);
+            assert_eq!(back.notify_agenda_deleted, Some(false));
+            assert!(!json.contains("null"), "{json}");
+        }
+    }
 }

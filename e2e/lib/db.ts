@@ -380,6 +380,42 @@ export async function seedMessageNotification(
 }
 
 /**
+ * Writes an unread `agenda_change` notification for `email` in
+ * `groupName` (#849's rows), as apps/api does when another member adds,
+ * changes or deletes an event: about the family's event titled
+ * `eventTitle`, or, with `null`, about an event that no longer exists (a
+ * deletion). The suite would otherwise need a second account in the family.
+ */
+export async function seedAgendaChangeNotification(
+  email: string,
+  groupName: string,
+  body: string,
+  eventTitle: string | null,
+): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `INSERT INTO notifications (user_id, group_id, kind, object_id, body)
+       SELECT u.id, g.id, 'agenda_change',
+              CASE WHEN $4::text IS NULL THEN gen_random_uuid()
+                   ELSE (SELECT e.id FROM events e WHERE e.group_id = g.id AND e.title = $4) END,
+              $3
+         FROM users u
+         JOIN group_members m ON m.user_id = u.id
+         JOIN groups g ON g.id = m.group_id
+        WHERE u.email = $1 AND g.name = $2`,
+      [email, groupName, body, eventTitle],
+    );
+    if (rowCount !== 1) {
+      throw new Error(`could not notify ${email} in ${groupName}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * Sets the threshold of `feature` in the family named `groupName` (#865),
  * the row `PUT /groups/:id/access-policies` writes for its owner: no page
  * drives that route yet.

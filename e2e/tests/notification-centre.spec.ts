@@ -121,9 +121,9 @@ test.describe("Notification centre", () => {
     // The filter keeps the reminders and says which one is on.
     await page.goto("/notifications");
     const filters = page.getByRole("navigation", { name: "Filtres" });
-    await filters.getByRole("link", { name: "Agenda" }).click();
+    await filters.getByRole("link", { name: "Agenda", exact: true }).click();
     await expect(page).toHaveURL("/notifications?kind=agenda_reminder");
-    await expect(filters.getByRole("link", { name: "Agenda" })).toHaveAttribute("aria-current", "true");
+    await expect(filters.getByRole("link", { name: "Agenda", exact: true })).toHaveAttribute("aria-current", "true");
     await expect(page.getByRole("button", { name: /Rappel : « Dentiste »/ })).toBeVisible();
     await filters.getByRole("link", { name: "Messages" }).click();
     await expect(page.getByText("Aucune notification ici.")).toBeVisible();

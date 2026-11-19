@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,\n                  expiry_digest_hour, notify_agenda_changes, avatar_key,\n                  (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
+  "query": "SELECT id, email, email_verified, display_name, created_at, age_declared_at,\n                  terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,\n                  expiry_digest_hour, expiry_digest_enabled, notify_agenda_added, notify_agenda_changed,\n                  notify_agenda_deleted, avatar_key,\n                  (password_hash IS NOT NULL) AS \"has_password!\"\n           FROM users WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -137,17 +137,50 @@
       },
       {
         "ordinal": 12,
-        "name": "notify_agenda_changes",
+        "name": "expiry_digest_enabled",
         "type_info": "Bool",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "notify_agenda_changes"
+            "name": "expiry_digest_enabled"
           }
         }
       },
       {
         "ordinal": 13,
+        "name": "notify_agenda_added",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_added"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "notify_agenda_changed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_changed"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "notify_agenda_deleted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_deleted"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
         "name": "avatar_key",
         "type_info": "Text",
         "origin": {
@@ -158,7 +191,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 17,
         "name": "has_password!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -183,9 +216,12 @@
       false,
       false,
       false,
+      false,
+      false,
+      false,
       true,
       null
     ]
   },
-  "hash": "0790352b28bc65e1aaeb31cbe13a0f2e8d5d53631cdcdd461c20875ca4c4ec5b"
+  "hash": "0acb6021847e88058db44b60c25af2bcc56c17a893e47726fc11642a54b443e1"
 }

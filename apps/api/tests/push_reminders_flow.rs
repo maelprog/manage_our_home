@@ -96,7 +96,13 @@ async fn a_new_account_starts_on_notifications_without_a_device(db: PgPool) {
     let s = settings(&router, &cookie).await;
     assert_eq!(s["reminder_channel"], "push");
     assert_eq!(s["push_subscriptions"], 0);
-    assert_eq!(s["notify_agenda_changes"], true);
+    for switch in [
+        "notify_agenda_added",
+        "notify_agenda_changed",
+        "notify_agenda_deleted",
+    ] {
+        assert_eq!(s[switch], true, "{switch}");
+    }
     let key = s["vapid_public_key"].as_str().unwrap();
     // An uncompressed P-256 point: 65 bytes, 87 characters of base64url.
     assert_eq!(key.len(), 87, "{key}");
@@ -659,6 +665,28 @@ async fn a_member_on_notifications_without_a_device_gets_nothing_and_no_email(db
         notification(&db, due).await,
         ("failed".into(), 0, Some(NO_PUSH_SUBSCRIPTION.into()))
     );
+}
+
+/// Both switches off (`none`, #853): no push to the devices the member
+/// still has, no email; the reminder is in their centre, and sent.
+#[sqlx::test]
+async fn a_member_with_both_switches_off_gets_the_reminder_in_the_centre_alone(db: PgPool) {
+    let member = insert_user(&db, "none@example.test", "none").await;
+    add_device(&db, member, FCM).await;
+    let due = due_reminder(&db, member).await;
+
+    let (emails, pushes) = pass(&db, |_| PushOutcome::Delivered).await;
+
+    assert!(emails.is_empty(), "{emails:?}");
+    assert!(pushes.is_empty(), "{pushes:?}");
+    assert_eq!(notification(&db, due).await, ("sent".into(), 0, None));
+    let centre: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM notifications WHERE user_id = $1")
+            .bind(member)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(centre, ["agenda_reminder"]);
 }
 
 /// Every device expired: forgotten, and the reminder retired like for a

@@ -420,7 +420,7 @@ where
     )
     .await?;
 
-    // The column's CHECK (0020) admits nothing else.
+    // The column's CHECK (0020, 0063) admits nothing else.
     let channel = ReminderChannel::parse(&recipient.reminder_channel).ok_or_else(|| {
         anyhow::anyhow!("unknown reminder_channel {:?}", recipient.reminder_channel)
     })?;
@@ -476,6 +476,11 @@ where
                 ttl,
             )
             .await?;
+        }
+        // Both switches off (`none`, #853): the centre's row, written
+        // above, is all the member asked for — sent, not a device missing.
+        if !reached.push && reached.email.is_none() {
+            return mark_sent(pool, id).await;
         }
         match settle(reached.email, &pushed) {
             Settlement::Sent => mark_sent(pool, id).await,

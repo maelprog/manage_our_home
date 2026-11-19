@@ -33,7 +33,7 @@ use crate::AppState;
     path = "/account/reminders/upcoming",
     tag = "notifications",
     responses(
-        (status = 200, description = "The caller's upcoming reminders, soonest first, 64 at most; empty on the `email` channel", body = Vec<UpcomingReminder>),
+        (status = 200, description = "The caller's upcoming reminders, soonest first, 64 at most; empty on the `email` and `none` channels", body = Vec<UpcomingReminder>),
         crate::api_docs::SessionErrors,
     ),
     security(("session_cookie" = [])),
@@ -51,7 +51,7 @@ pub async fn list_upcoming(
     )
     .fetch_one(&mut *tx)
     .await?;
-    // The column's CHECK (0020) admits nothing else.
+    // The column's CHECK (0020, 0063) admits nothing else.
     let channel = ReminderChannel::parse(&channel)
         .ok_or_else(|| anyhow::anyhow!("unknown reminder_channel {channel:?}"))?;
     if !channel.includes_push() {
