@@ -63,7 +63,7 @@ jobs:
       # workspace has no doctest today, so none needs Postgres or MinIO.
       - run: cargo test --doc --workspace
 
-  # Every tracked shell script, at warning level and above: the repo's
+  # Every tracked `*.sh` plus the hand-written .githooks/pre-commit, at warning level and above: the repo's
   # scripts are clean there today (the info/style notes are not enforced).
   # ubuntu-latest ships shellcheck. Added for infra/attack-bench/bench.sh
   # (#915), whose host guard is the only thing keeping the bench local.
@@ -71,7 +71,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: git ls-files -z '*.sh' | xargs -0 shellcheck --severity=warning
+      - run: |
+          { git ls-files -z '*.sh'; printf '%s\0' .githooks/pre-commit; } \
+            | xargs -0 -r shellcheck --severity=warning
 
   audit:
     runs-on: ubuntu-latest
