@@ -119,41 +119,62 @@ fn one_line(
 pub(crate) fn plan_lines(
     ingredients: impl IntoIterator<Item = PlannedIngredient>,
 ) -> Vec<PlannedLine> {
-    let mut lines: Vec<(IngredientKey, PlannedLine)> = Vec::new();
-    for ing in ingredients {
-        let key = IngredientKey::of(&ing.name);
+    let scaled = ingredients.into_iter().map(|ing| {
         let quantity = scale_quantity(ing.quantity, ing.recipe_servings, ing.selection_servings);
-        // A quantity without a unit gets the default one (#458), before the
-        // units are compared.
-        let unit = normalize_unit(quantity, ing.unit.as_deref());
-        let own = (quantity, unit.as_deref());
-        let fits = |(k, l): &(IngredientKey, PlannedLine)| {
-            one_line(k, (l.quantity, l.unit.as_deref()), &key, own)
+        PlannedLine {
+            recipe_id: ing.recipe_id,
+            name: ing.name.trim().to_string(),
+            quantity,
+            // A quantity without a unit gets the default one (#458),
+            // before the units are compared.
+            unit: normalize_unit(quantity, ing.unit.as_deref()),
+        }
+    });
+    group_lines(scaled).into_iter().map(|g| g.line).collect()
+}
+
+/// One line `plan_lines` makes, and the lines merged into it, the first
+/// included, in their order.
+struct Group {
+    line: PlannedLine,
+    members: Vec<PlannedLine>,
+}
+
+/// `plan_lines`' merge, on lines already scaled and of a normalized unit.
+fn group_lines(lines: impl IntoIterator<Item = PlannedLine>) -> Vec<Group> {
+    let mut groups: Vec<(IngredientKey, Group)> = Vec::new();
+    for l in lines {
+        let key = IngredientKey::of(&l.name);
+        let own = (l.quantity, l.unit.as_deref());
+        let fits = |(k, g): &(IngredientKey, Group)| {
+            one_line(k, (g.line.quantity, g.line.unit.as_deref()), &key, own)
         };
-        let at = lines
+        let at = groups
             .iter()
-            .position(|e| fits(e) && !units_conflict((e.1.quantity, e.1.unit.as_deref()), own))
-            .or_else(|| lines.iter().position(fits));
-        match at.map(|i| &mut lines[i]) {
-            Some((_, line)) => {
-                if let (Some(sum), Some(q)) = (line.quantity, quantity) {
-                    if same_unit(line.unit.as_deref(), unit.as_deref()) {
+            .position(|e| {
+                fits(e) && !units_conflict((e.1.line.quantity, e.1.line.unit.as_deref()), own)
+            })
+            .or_else(|| groups.iter().position(fits));
+        match at.map(|i| &mut groups[i].1) {
+            Some(group) => {
+                let line = &mut group.line;
+                if let (Some(sum), Some(q)) = (line.quantity, l.quantity) {
+                    if same_unit(line.unit.as_deref(), l.unit.as_deref()) {
                         line.quantity = Some(add_quantities(sum, q));
                     }
                 }
+                group.members.push(l);
             }
-            None => lines.push((
+            None => groups.push((
                 key,
-                PlannedLine {
-                    recipe_id: ing.recipe_id,
-                    name: ing.name.trim().to_string(),
-                    quantity,
-                    unit,
+                Group {
+                    line: l.clone(),
+                    members: vec![l],
                 },
             )),
         }
     }
-    lines.into_iter().map(|(_, line)| line).collect()
+    groups.into_iter().map(|(_, g)| g).collect()
 }
 
 /// An unchecked line already on the grocery list, as the generation
@@ -237,68 +258,50 @@ pub(crate) fn count_against_list(
         .collect()
 }
 
-/// What `recipe_id` lacks (`missing` of the planned recipes, each weighed
-/// alone against the stock, `recipes::availability`), plus what the other
-/// planned recipes lack of the same ingredients (by name or by tag, #902),
-/// merged as `plan_lines` does with the recipe's own lines first: the need
+/// The lines `plan_lines` makes of what the planned recipes lack
+/// (`missing`, each recipe weighed alone against the stock,
+/// `recipes::availability`, in the order the recipes were planned) that
+/// `recipe_id` has a part in, each with the lines merged into it: the need
 /// the list is counted against when only that recipe's missing ingredients
-/// are added (#842). An ingredient the recipe does not lack stays out.
-pub(crate) fn with_other_planned(
+/// are added (#842). The lines are merged across every planned recipe, in
+/// their order, as the generation merges them: whether two names of one
+/// tag make one line depends on the lines met before them (#902), so
+/// merging the recipe's own lines first would make other lines than the
+/// generation's, and adding the missing ingredients after a generation
+/// would change the list. An ingredient the recipe does not lack stays out.
+fn with_other_planned(
     recipe_id: Uuid,
     missing: impl IntoIterator<Item = PlannedLine>,
-) -> Vec<PlannedLine> {
-    let (own, others): (Vec<_>, Vec<_>) =
-        missing.into_iter().partition(|l| l.recipe_id == recipe_id);
-    let keys: Vec<(IngredientKey, Option<f64>, Option<String>)> = own
-        .iter()
-        .map(|l| (IngredientKey::of(&l.name), l.quantity, l.unit.clone()))
-        .collect();
-    // An other recipe's line counts when `plan_lines` would merge it into
-    // one of the recipe's own.
-    let others = others.into_iter().filter(|l| {
-        let key = IngredientKey::of(&l.name);
-        keys.iter()
-            .any(|(k, q, u)| one_line(k, (*q, u.as_deref()), &key, (l.quantity, l.unit.as_deref())))
-    });
-    plan_lines(own.into_iter().chain(others).map(|l| PlannedIngredient {
-        recipe_id: l.recipe_id,
-        name: l.name,
-        quantity: l.quantity,
-        unit: l.unit,
-        recipe_servings: None,
-        selection_servings: None,
-    }))
+) -> impl Iterator<Item = Group> {
+    group_lines(missing)
+        .into_iter()
+        .filter(move |g| g.members.iter().any(|m| m.recipe_id == recipe_id))
 }
 
 /// What adding `recipe_id`'s missing ingredients does to the list (#842):
 /// a recipe line already there is counted against what every planned
-/// recipe lacks of its name (`with_other_planned`), but a line created
-/// carries only what `recipe_id` lacks.
+/// recipe lacks of the ingredient (`with_other_planned`), but the lines
+/// created carry only what `recipe_id` lacks: its own lines merged into
+/// that need.
 pub(crate) fn count_missing_against_list(
     recipe_id: Uuid,
     missing: impl IntoIterator<Item = PlannedLine>,
     listed: &[ListedLine],
 ) -> Vec<ListChange> {
-    let missing: Vec<PlannedLine> = missing.into_iter().collect();
-    let own = with_other_planned(
-        recipe_id,
-        missing.iter().filter(|l| l.recipe_id == recipe_id).cloned(),
-    );
-    count_against_list(with_other_planned(recipe_id, missing), listed)
-        .into_iter()
-        .map(|change| match change {
-            // `with_other_planned` keeps one line per name of the recipe's
-            // own lines, so the need always has its own counterpart.
-            ListChange::Add(need) => {
-                let key = need.name.trim().to_lowercase();
-                ListChange::Add(
-                    own.iter()
-                        .find(|l| l.name.trim().to_lowercase() == key)
-                        .cloned()
-                        .unwrap_or(need),
-                )
-            }
-            raise => raise,
+    with_other_planned(recipe_id, missing)
+        .flat_map(|group| {
+            let own: Vec<PlannedLine> = group
+                .members
+                .into_iter()
+                .filter(|m| m.recipe_id == recipe_id)
+                .collect();
+            count_against_list([group.line], listed)
+                .into_iter()
+                .flat_map(move |change| match change {
+                    ListChange::Add(_) => own.iter().cloned().map(ListChange::Add).collect(),
+                    raise => vec![raise],
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -594,9 +597,18 @@ mod tests {
 
     // -- with_other_planned (#842) -------------------------------------------
 
+    fn other_planned_lines(
+        recipe: Uuid,
+        missing: impl IntoIterator<Item = PlannedLine>,
+    ) -> Vec<PlannedLine> {
+        with_other_planned(recipe, missing)
+            .map(|g| g.line)
+            .collect()
+    }
+
     #[test]
     fn the_recipe_needs_add_what_other_planned_recipes_lack_of_them() {
-        let lines = with_other_planned(
+        let lines = other_planned_lines(
             Uuid::from_u128(2),
             [
                 line(1, "Farine", Some(200.0), Some("g")),
@@ -606,12 +618,13 @@ mod tests {
                 line(3, "Farine", Some(1.0), Some("kg")),
             ],
         );
-        // The recipe's own lines first, in its units; the sugar it does not
-        // call for stays out, the kilogram does not add to grams.
+        // The lines the generation makes, in the planned order (#902); the
+        // sugar the recipe does not call for stays out, the kilogram does
+        // not add to grams.
         assert_eq!(
             lines,
             vec![
-                line(2, "farine", Some(500.0), Some("g")),
+                line(1, "Farine", Some(500.0), Some("g")),
                 line(2, "Oeufs", Some(2.0), Some("pièce")),
             ]
         );
@@ -652,7 +665,7 @@ mod tests {
 
     #[test]
     fn a_recipe_lacking_nothing_has_no_need() {
-        let lines = with_other_planned(
+        let lines = other_planned_lines(
             Uuid::from_u128(2),
             [line(1, "Farine", Some(200.0), Some("g"))],
         );
@@ -789,7 +802,7 @@ mod tests {
 
     #[test]
     fn other_planned_recipes_count_by_ingredient_not_by_name() {
-        let lines = with_other_planned(
+        let lines = other_planned_lines(
             Uuid::from_u128(2),
             [
                 line(1, "Parmigiano Reggiano", Some(50.0), Some("g")),
@@ -797,7 +810,10 @@ mod tests {
                 line(3, "parmigiano reggiano", Some(1.0), Some("kg")),
             ],
         );
-        assert_eq!(lines, vec![line(2, "parmesan", Some(150.0), Some("g"))]);
+        assert_eq!(
+            lines,
+            vec![line(1, "Parmigiano Reggiano", Some(150.0), Some("g"))]
+        );
         // The line created carries the recipe's own quantity, under its name.
         let changes = count_missing_against_list(
             Uuid::from_u128(2),
@@ -811,5 +827,142 @@ mod tests {
             changes,
             vec![ListChange::Add(line(2, "parmesan", Some(100.0), Some("g")))]
         );
+    }
+
+    // -- replaying changes nothing, whatever the order (#902) ---------------
+
+    /// The grocery list the changes are written to, as `apply_list_changes`
+    /// writes them: a line added is a recipe line, a raise sets the
+    /// quantity.
+    fn apply(list: &mut Vec<ListedLine>, changes: Vec<ListChange>) {
+        for change in changes {
+            match change {
+                ListChange::Add(l) => list.push(ListedLine {
+                    id: Uuid::from_u128(1000 + list.len() as u128),
+                    name: l.name,
+                    quantity: l.quantity,
+                    unit: l.unit,
+                    source: "recipe".into(),
+                }),
+                ListChange::Raise { id, quantity } => {
+                    let line = list.iter_mut().find(|l| l.id == id).unwrap();
+                    line.quantity = Some(quantity);
+                }
+            }
+        }
+    }
+
+    /// What `recipes::availability::missing` hands the grocery list with
+    /// an empty stock: each recipe's needs, merged recipe by recipe.
+    fn missing_of(recipes: &[Vec<PlannedIngredient>]) -> Vec<PlannedLine> {
+        recipes
+            .iter()
+            .flat_map(|r| plan_lines(r.iter().cloned()))
+            .collect()
+    }
+
+    fn generate(recipes: &[Vec<PlannedIngredient>], list: &[ListedLine]) -> Vec<ListChange> {
+        count_against_list(plan_lines(recipes.iter().flatten().cloned()), list)
+    }
+
+    fn add_missing(
+        recipes: &[Vec<PlannedIngredient>],
+        recipe: usize,
+        list: &[ListedLine],
+    ) -> Vec<ListChange> {
+        count_missing_against_list(Uuid::from_u128(recipe as u128), missing_of(recipes), list)
+    }
+
+    #[test]
+    fn adding_the_missing_after_a_generation_changes_nothing() {
+        // A « parmesan 3 kg », B « parmesan 4 » (unité), C « Parmesan râpé
+        // 4 » (unité), all three the taxonomy's en:parmigiano-reggiano.
+        let recipes = vec![
+            vec![ing(0, "parmesan", Some(3.0), Some("kg"), None, None)],
+            vec![ing(1, "parmesan", Some(4.0), None, None, None)],
+            vec![ing(2, "Parmesan râpé", Some(4.0), None, None, None)],
+        ];
+        let mut list = Vec::new();
+        apply(&mut list, generate(&recipes, &[]));
+        let generated = list.clone();
+        for r in [0, 1, 2, 2] {
+            assert_eq!(add_missing(&recipes, r, &list), vec![], "recipe {r}");
+        }
+        assert_eq!(list, generated);
+        assert_eq!(generate(&recipes, &list), vec![]);
+    }
+
+    /// A small deterministic generator (xorshift), enough to draw recipes.
+    struct Draw(u64);
+
+    impl Draw {
+        fn next(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    fn draw_recipes(d: &mut Draw) -> Vec<Vec<PlannedIngredient>> {
+        const NAMES: [&str; 6] = [
+            "parmesan",
+            "Parmigiano Reggiano",
+            "Parmesan râpé",
+            "Farine",
+            "farine",
+            "sauce maison",
+        ];
+        const UNITS: [Option<&str>; 3] = [None, Some("g"), Some("kg")];
+        (0..1 + d.next(4))
+            .map(|r| {
+                (0..1 + d.next(3))
+                    .map(|_| {
+                        let quantity = [None, Some(1.0), Some(2.0), Some(4.0)][d.next(4)];
+                        let name = NAMES[d.next(NAMES.len())];
+                        let unit = UNITS[d.next(UNITS.len())];
+                        ing(r as u128, name, quantity, unit, None, None)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replaying_the_generation_or_the_missing_changes_nothing() {
+        let mut d = Draw(0x9e37_79b9_7f4a_7c15);
+        for case in 0..20_000 {
+            let recipes = draw_recipes(&mut d);
+            let n = recipes.len();
+            // Generated, then each recipe's missing added: nothing to add.
+            let mut list = Vec::new();
+            apply(&mut list, generate(&recipes, &[]));
+            assert_eq!(generate(&recipes, &list), vec![], "{case}: {recipes:?}");
+            for r in 0..n {
+                assert_eq!(
+                    add_missing(&recipes, r, &list),
+                    vec![],
+                    "{case}: recipe {r} after the generation: {recipes:?}"
+                );
+            }
+            // Each recipe's missing added, in a drawn order: added again,
+            // nothing changes. (A generation then may still raise a line:
+            // `recipes::availability` merges each recipe's lines before
+            // they are merged across recipes, the generation merges them
+            // all at once, as before #902.)
+            let mut list = Vec::new();
+            let order: Vec<usize> = (0..n).map(|_| d.next(n)).chain(0..n).collect();
+            for &r in &order {
+                let changes = add_missing(&recipes, r, &list);
+                apply(&mut list, changes);
+            }
+            for r in 0..n {
+                assert_eq!(
+                    add_missing(&recipes, r, &list),
+                    vec![],
+                    "{case}: recipe {r} replayed after {order:?}: {recipes:?}"
+                );
+            }
+        }
     }
 }

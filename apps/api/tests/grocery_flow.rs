@@ -1152,6 +1152,67 @@ async fn generate_merges_the_names_of_one_ingredient(db: PgPool) {
     assert_eq!(unchecked_lines(&db).await, lines);
 }
 
+/// Issue #902: whether two names of one ingredient make one line depends on
+/// the lines met before them; adding each recipe's missing ingredients
+/// after a generation merges them as it did, so it changes nothing, played
+/// once or twice.
+#[sqlx::test]
+async fn adding_the_missing_after_a_generation_changes_nothing(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-canonical-replay@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let mut recipes = Vec::new();
+    for (name, ingredient) in [
+        (
+            "Pates",
+            serde_json::json!({"name": "parmesan", "quantity": 3.0, "unit": "kg"}),
+        ),
+        (
+            "Gratin",
+            serde_json::json!({"name": "parmesan", "quantity": 4.0}),
+        ),
+        (
+            "Salade",
+            serde_json::json!({"name": "Parmesan râpé", "quantity": 4.0}),
+        ),
+    ] {
+        let id = create_recipe(
+            &router,
+            &cookie,
+            &group_id,
+            serde_json::json!({"name": name, "ingredients": [ingredient]}),
+        )
+        .await;
+        select(&router, &cookie, &group_id, &id, None).await;
+        recipes.push(id);
+    }
+
+    assert_eq!(generate(&router, &cookie, &group_id).await.len(), 2);
+    let lines = unchecked_lines(&db).await;
+    let mut sorted = counted(&lines);
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    assert_eq!(
+        sorted,
+        vec![
+            ("Parmesan râpé", Some(4.0), Some("unité"), "recipe"),
+            ("parmesan", Some(3.0), Some("kg"), "recipe"),
+        ]
+    );
+    for recipe in recipes.iter().chain(recipes.last()) {
+        let path = format!("/groups/{group_id}/recipes/{recipe}/selection/missing");
+        let res = call(&router, Method::POST, &path, Some(&cookie), None).await;
+        assert_status(&res, StatusCode::CREATED);
+        assert!(json_body(res).await["items"].as_array().unwrap().is_empty());
+    }
+    assert_eq!(unchecked_lines(&db).await, lines);
+}
+
 /// Issue #902: a manual line under another name of the ingredient is the
 /// planned recipe's need already on the list: no line is added.
 #[sqlx::test]
