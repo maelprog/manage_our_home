@@ -481,10 +481,11 @@ struct LowStockRow {
 /// selection (`recipe_selections`, #469); its quantities are scaled to the
 /// selection's number of people, and an ingredient several planned recipes
 /// share makes one line (`planned::plan_lines`). Each recipe line names the
-/// first recipe that calls for it in `source_recipe_id`. Matching against
-/// existing rows is name-based (case-insensitive, trimmed), same heuristic
-/// as recipes::suggestions and stocks' low_stock — an item already present
-/// and unchecked is not duplicated; a recipe line of the same unit that
+/// first recipe that calls for it in `source_recipe_id`. A recipe line is
+/// matched against existing rows by name (case-insensitive, trimmed) or by
+/// the tag the taxonomy maps its name to (#902); a low-stock line by name
+/// only — an item already present and unchecked is not duplicated; a
+/// recipe line of the same unit that
 /// counts less than the planned recipes now call for is raised to it, never
 /// lowered (`planned::count_against_list`, #842), so re-running this is
 /// idempotent. Only the items created are returned, not the raised ones.
