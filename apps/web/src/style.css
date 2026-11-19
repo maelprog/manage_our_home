@@ -363,10 +363,10 @@ label, .field { display: flex; flex-direction: column; gap: var(--s1); font-size
 .switch input:checked { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
 .switch input:checked::after { left: 23px; background: var(--accent-fg); }
 .switch :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.switch input:disabled { opacity: 0.6; cursor: progress; }
-/* Locked while its form is sent: the whole pill fades, words with the
-   radio, as the mock-up of #867 draws the family's thresholds. */
-.pick:has(:disabled) { opacity: 0.6; cursor: progress; }
+/* Locked while its form is sent: the whole row fades, words with the
+   control, as the mock-ups of #853 and #867 draw it — a switch, or a pill
+   of the family's thresholds. */
+.switch:has(:disabled), .pick:has(:disabled) { opacity: 0.6; cursor: progress; }
 @media (forced-colors: active) { .switch input::after { background: CanvasText; } }
 input, select, textarea {
   font-size: var(--t-base);
