@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, unit, quantity, expires_on FROM stock_items WHERE group_id = $1",
+  "query": "\n        SELECT s.id, s.name, s.unit, s.quantity, s.expires_on,\n               o.categories_tags AS \"categories_tags?\"\n        FROM stock_items s\n        LEFT JOIN off_products o ON o.code = s.barcode\n        WHERE s.group_id = $1\n        ",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "expires_on"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "categories_tags?",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "categories_tags"
+          }
+        }
       }
     ],
     "parameters": {
@@ -69,8 +80,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "e4d2c55f35f24fd712c1efd214590d517d9328718529d7c650704bdcb96f3526"
+  "hash": "16c24c0495fd99990f116dd3313c8c6af603ac1ea8a6f676e2495304f90de2de"
 }

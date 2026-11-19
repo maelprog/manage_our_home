@@ -1746,6 +1746,89 @@ async fn planned_selections_list_what_the_stock_lacks(db: PgPool) {
     );
 }
 
+/// Issue #900: a planned recipe's ingredient is covered by a stock line of
+/// its category, as the suggestions match the stock — « Parmesan » by
+/// « Parmigiano Reggiano » (same taxonomy tag), « Lait » by a scanned
+/// semi-skimmed milk — so neither is listed as missing nor added to the
+/// grocery list with what the recipe lacks; « Beurre » still is.
+#[sqlx::test]
+async fn planned_missing_match_the_stock_by_category(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-category").await;
+
+    // What a scan would have cached (#402), written directly: the test
+    // must not reach Open Food Facts.
+    sqlx::query("INSERT INTO off_products (code, name, categories_tags) VALUES ($1, $2, $3)")
+        .bind("4006381333931")
+        .bind("Lactel")
+        .bind(vec!["en:dairies", "en:milks", "en:semi-skimmed-milks"])
+        .execute(&db)
+        .await
+        .unwrap();
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Lactel", "quantity": 1.0, "unit": "L", "barcode": "4006381333931"}),
+    )
+    .await;
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Parmigiano Reggiano", "quantity": 150.0, "unit": "g"}),
+    )
+    .await;
+    let recipe_id = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([
+            {"name": "Parmesan", "quantity": 100.0, "unit": "g", "is_optional": false},
+            {"name": "Lait", "quantity": 0.5, "unit": "L", "is_optional": false},
+            {"name": "Beurre", "quantity": 1.0, "unit": "plaquette", "is_optional": false}
+        ]),
+    )
+    .await;
+
+    let listed = planned_selections(&router, &member_cookie, &group_id).await;
+    assert_eq!(
+        listed[0]["missing"],
+        serde_json::json!([{"name": "Beurre", "quantity": 1.0, "unit": "plaquette"}])
+    );
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{recipe_id}/selection/missing"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let created: Vec<_> = json_body(res).await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(created, vec!["Beurre"]);
+
+    // Generating the list matches the stock the same way: nothing more.
+    assert_eq!(
+        generate_grocery_list(&router, &member_cookie, &group_id).await,
+        0
+    );
+    let names: Vec<String> = grocery_lines(&router, &member_cookie, &group_id)
+        .await
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, vec!["Beurre"]);
+}
+
 /// Issue #559: a line past its date still counts, but dates the recipe
 /// (`use_by`, negative `days_left`); a line due in 2 days dates it only
 /// when the line due in 30 days does not suffice alone; the dated recipes

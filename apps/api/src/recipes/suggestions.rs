@@ -181,24 +181,13 @@ pub(crate) async fn score_recipes(
     .fetch_all(&mut **tx)
     .await?;
 
-    // `off_products` is the public Open Food Facts cache (no RLS, see
-    // migration 0026); the family's rows come from `stock_items`. A cached
-    // record past its TTL still names the product's categories.
     let taxonomy = taxonomy();
-    let stock: Vec<StockEntry> = sqlx::query!(
-        r#"
-        SELECT s.name, o.categories_tags AS "categories_tags?"
-        FROM stock_items s
-        LEFT JOIN off_products o ON o.code = s.barcode
-        WHERE s.group_id = $1 AND s.quantity > 0
-        "#,
-        group_id,
-    )
-    .fetch_all(&mut **tx)
-    .await?
-    .into_iter()
-    .map(|r| stock_entry(taxonomy, &r.name, &r.categories_tags.unwrap_or_default()))
-    .collect();
+    let stock: Vec<StockEntry> = tagged_stock(tx, group_id)
+        .await?
+        .into_iter()
+        .filter(|a| a.quantity > 0.0)
+        .map(|a| a.entry)
+        .collect();
 
     let recent_meals: Vec<(Uuid, NaiveDate)> = sqlx::query!(
         r#"
@@ -396,6 +385,52 @@ pub(crate) fn stock_entry(
             .flat_map(|tag| taxonomy.ancestors_or_self(tag))
             .collect(),
     }
+}
+
+/// A stock line of the group with its categories ([`stock_entry`]).
+pub(crate) struct StockArticle {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) unit: String,
+    pub(crate) quantity: f64,
+    pub(crate) expires_on: Option<NaiveDate>,
+    pub(crate) entry: StockEntry,
+}
+
+/// Every stock line of the group, empty ones included, with its categories:
+/// those of its scanned product, else those of its name ([`stock_entry`]).
+/// Shared by the suggestions and what the planned recipes lack
+/// (`availability::planned_availability`, #900).
+pub(crate) async fn tagged_stock(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> AppResult<Vec<StockArticle>> {
+    // `off_products` is the public Open Food Facts cache (no RLS, see
+    // migration 0026); the family's rows come from `stock_items`. A cached
+    // record past its TTL still names the product's categories.
+    let taxonomy = taxonomy();
+    Ok(sqlx::query!(
+        r#"
+        SELECT s.id, s.name, s.unit, s.quantity, s.expires_on,
+               o.categories_tags AS "categories_tags?"
+        FROM stock_items s
+        LEFT JOIN off_products o ON o.code = s.barcode
+        WHERE s.group_id = $1
+        "#,
+        group_id,
+    )
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .map(|r| StockArticle {
+        entry: stock_entry(taxonomy, &r.name, &r.categories_tags.unwrap_or_default()),
+        id: r.id,
+        name: r.name,
+        unit: r.unit,
+        quantity: r.quantity,
+        expires_on: r.expires_on,
+    })
+    .collect())
 }
 
 /// Whether some article in stock covers a recipe's ingredient: by name
