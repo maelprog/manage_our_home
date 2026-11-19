@@ -28,7 +28,7 @@
 //! and the system prompt opens on that click only.
 //!
 //! The service worker is [`SERVICE_WORKER`], served at `/sw.js`. A push
-//! carries nothing: the worker asks [`last_push`] which kind of push its
+//! carries no text (#862: only the ids of its entries, for the click to mark them read): the worker asks [`last_push`] which kind of push its
 //! device got and shows that kind's fixed text — « Rappel d'un événement à
 //! venir » for a reminder, never the event's title, the same choice as the
 //! reminder emails' subject (#146); « Alerte de budget » for a budget alert
@@ -153,7 +153,7 @@ pub(crate) fn push_block(settings: &NotificationSettings, always: bool) -> Strin
 /// - No Push API: reveals `#push-unsupported` (when warnings apply).
 /// - Permission refused: reveals `#push-blocked` (when warnings apply).
 /// - Permission granted: makes sure this device is subscribed and its
-///   endpoint stored (`POST /account/notifications/subscription`), with no
+///   endpoint and keys stored (`POST /account/notifications/subscription`), with no
 ///   prompt, and hides `#push-warning` once it is.
 /// - Never asked: reveals the button; the browser's prompt opens on its
 ///   click only. A prompt dismissed without an answer leaves the
@@ -214,7 +214,8 @@ pub(crate) const PUSH_SCRIPT: &str = r#"
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ endpoint: sub.endpoint })
+          // The keys (#862): a push's payload is encrypted with them.
+          body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys })
         });
       })
       .then(function (res) {
@@ -355,7 +356,7 @@ pub(crate) fn pushed_kind(answer: &serde_json::Value) -> Option<&'static str> {
 const PUSH_ENDPOINT_HEADER: &str = "x-push-endpoint";
 
 /// `POST /account/notifications/last-push`, `{"kind": …}`: what the service
-/// worker asks on each push, which carries no payload, to choose its text.
+/// worker asks on each push, which carries no text, to choose its text.
 /// It names its device ([`PUSH_ENDPOINT_HEADER`]); the API answers the
 /// kind of the push this device got (`POST
 /// /account/push-subscriptions/received`): `null` when pushes of two kinds
@@ -378,6 +379,7 @@ pub async fn last_push(
     if let Some(endpoint) = endpoint {
         let body = serde_json::to_value(PushSubscriptionRequest {
             endpoint: endpoint.to_string(),
+            keys: None,
         })
         .ok();
         kind = api_request_auth(
@@ -1428,8 +1430,38 @@ mod tests {
         assert!(SERVICE_WORKER.contains(r#"title: "Produits bientôt périmés""#));
         // Neither the event's title nor its author: the family's agenda.
         assert!(SERVICE_WORKER.contains(r#"title: "Agenda de la famille modifié""#));
-        // It never reads the push's data: there is none, and there must not
-        // be any title to show.
-        assert!(!SERVICE_WORKER.contains("event.data"));
+        // Of the push's data, the identifiers of its entries alone (#862):
+        // the text shown is always one of the fixed ones above.
+        assert!(SERVICE_WORKER.contains("pushedEntries(event.data)"));
+        assert_eq!(SERVICE_WORKER.matches("event.data").count(), 1);
+        assert!(SERVICE_WORKER.contains("showNotification(text.title, {"));
+    }
+
+    /// A click on a push marks the entries it named read (#862), in a
+    /// `POST` of JSON to the route that does it, before the page opens.
+    #[test]
+    fn a_click_on_a_push_marks_its_entries_read_before_opening() {
+        assert!(SERVICE_WORKER.contains(r#"fetch("/notifications/pushed/read""#));
+        assert!(SERVICE_WORKER.contains(r#""Content-Type": "application/json""#));
+        let click = SERVICE_WORKER
+            .find(r#"addEventListener("notificationclick""#)
+            .unwrap();
+        let handler = &SERVICE_WORKER[click..];
+        let marked = handler.find("markRead(data.entries)").unwrap();
+        let opened = handler.find("openWindow(").unwrap();
+        assert!(marked < opened);
+        // As many as the API puts in a push at most.
+        assert!(SERVICE_WORKER.contains(&format!(
+            "var MAX_ENTRIES = {};",
+            crate::routes::notifications::MAX_PUSHED_ENTRIES
+        )));
+    }
+
+    /// The page registers the subscription's keys with its endpoint (#862):
+    /// without them no payload can be encrypted for the device.
+    #[test]
+    fn the_subscription_is_registered_with_its_keys() {
+        assert!(PUSH_SCRIPT
+            .contains("JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys })"));
     }
 }

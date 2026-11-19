@@ -4,7 +4,7 @@
 // member made to the agenda (#851). Served at /sw.js by
 // apps/web/src/routes/account/notifications.rs, out of the binary.
 //
-// A push carries no payload (apps/api/src/notifications/push.rs). The
+// A push carries no text (apps/api/src/notifications/push.rs). The
 // worker asks the site which kind of push this device got (a POST to
 // /account/notifications/last-push, since the answer takes the push off
 // the device's count (#783); the member's session going along, the device
@@ -14,6 +14,13 @@
 // in the application, once the click has opened it. When the site cannot
 // tell — pushes of two kinds on their way to this device at once, no
 // session, no network — the text is a neutral one.
+//
+// What a push may carry (#862): the identifiers of the entries of the
+// notification centre it stands for, `{"entries": [...]}`, encrypted for
+// this browser alone. Never a text: the worker shows none of it. On the
+// click, it asks the site to mark them read (POST /notifications/pushed/read)
+// before it opens the page, so that the count the page shows is already
+// down.
 "use strict";
 
 var TEXTS = {
@@ -47,6 +54,28 @@ var NEUTRAL = {
   url: "/",
 };
 
+// Of the push's payload, the identifiers it names, at most MAX_ENTRIES —
+// the API never sends more: [] for anything else (no payload, a device
+// registered without its keys, a payload that is not one).
+var MAX_ENTRIES = 20;
+var ENTRY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function pushedEntries(data) {
+  var payload = null;
+  try {
+    payload = data ? data.json() : null;
+  } catch (e) {
+    return [];
+  }
+  var entries = payload && payload.entries;
+  if (!Array.isArray(entries) || entries.length > MAX_ENTRIES) {
+    return [];
+  }
+  return entries.filter(function (id) {
+    return typeof id === "string" && ENTRY_ID.test(id);
+  });
+}
+
 function lastPushedKind() {
   return self.registration.pushManager.getSubscription()
     .then(function (subscription) {
@@ -74,20 +103,46 @@ function lastPushedKind() {
 }
 
 self.addEventListener("push", function (event) {
+  var entries = pushedEntries(event.data);
   event.waitUntil(
     lastPushedKind().then(function (kind) {
       var text = Object.prototype.hasOwnProperty.call(TEXTS, kind) ? TEXTS[kind] : NEUTRAL;
       return self.registration.showNotification(text.title, {
         body: text.body,
         lang: "fr",
-        data: { url: text.url },
+        data: { url: text.url, entries: entries },
       });
     })
   );
 });
 
+// Marks the entries read, giving up waiting after READ_WAIT_MS: a browser
+// lets a click open a window only for a moment after it (Firefox: one
+// second), and the page must open whatever the network does.
+var READ_WAIT_MS = 700;
+
+function markRead(entries) {
+  if (!entries || !entries.length) {
+    return Promise.resolve();
+  }
+  var marked = fetch("/notifications/pushed/read", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entries: entries }),
+  }).catch(function () {});
+  var late = new Promise(function (resolve) {
+    setTimeout(resolve, READ_WAIT_MS);
+  });
+  return Promise.race([marked, late]);
+}
+
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
-  var data = event.notification.data;
-  event.waitUntil(self.clients.openWindow((data && data.url) || "/"));
+  var data = event.notification.data || {};
+  event.waitUntil(
+    markRead(data.entries).then(function () {
+      return self.clients.openWindow(data.url || "/");
+    })
+  );
 });
