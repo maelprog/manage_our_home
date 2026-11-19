@@ -10,8 +10,14 @@
 //! one stands (decisions of 2026-10-24). Those lines are then counted
 //! against the recipe lines already on the list (`count_against_list`,
 //! #842).
-
-use std::collections::HashSet;
+//!
+//! Two names are one ingredient (#902) when they read the same once
+//! trimmed, whatever the case, or when the taxonomy maps both to one tag
+//! (`Taxonomy::canonical_ingredient`: « parmesan » and « Parmigiano
+//! Reggiano »). Names without a tag are never matched by a word they share.
+//! Two different names of one tag are still two lines when both carry a
+//! quantity and their units differ: there is no conversion, so neither
+//! line's quantity would stand for the other's.
 
 use manage_our_home_shared::validation::grocery_list::normalize_unit;
 // Shared with the recipe edit form (#845), which scales the quantities of a
@@ -20,6 +26,8 @@ pub(crate) use manage_our_home_shared::validation::recipes::{
     scale_quantity, without_binary_noise,
 };
 use uuid::Uuid;
+
+use crate::recipes::taxonomy::{taxonomy, TagId};
 
 /// One required ingredient of a planned recipe, with the two numbers of
 /// people its quantity is scaled between.
@@ -61,20 +69,72 @@ fn same_unit(a: Option<&str>, b: Option<&str>) -> bool {
     }
 }
 
+/// What an ingredient's name is matched by (#902): the name trimmed and
+/// lowercased, and the tag the taxonomy maps it to, if any.
+#[derive(Debug, Clone, PartialEq)]
+struct IngredientKey {
+    name: String,
+    tag: Option<TagId>,
+}
+
+impl IngredientKey {
+    fn of(name: &str) -> Self {
+        Self {
+            name: name.trim().to_lowercase(),
+            tag: taxonomy().canonical_ingredient(name),
+        }
+    }
+
+    /// Whether the two names are one ingredient: the same name, or the
+    /// same tag.
+    fn same_ingredient(&self, other: &Self) -> bool {
+        self.name == other.name || self.tag.is_some_and(|t| other.tag == Some(t))
+    }
+}
+
+/// Two quantities whose units differ cannot stand for each other; a side
+/// without a quantity conflicts with nothing.
+fn units_conflict(a: (Option<f64>, Option<&str>), b: (Option<f64>, Option<&str>)) -> bool {
+    a.0.is_some() && b.0.is_some() && !same_unit(a.1, b.1)
+}
+
+/// Whether a line already made and an ingredient of the two keys make one
+/// line (#902): the same name always does, as before, whatever the units;
+/// two names of one tag do when their units do not conflict.
+fn one_line(
+    a: &IngredientKey,
+    a_qty: (Option<f64>, Option<&str>),
+    b: &IngredientKey,
+    b_qty: (Option<f64>, Option<&str>),
+) -> bool {
+    a.name == b.name || (a.same_ingredient(b) && !units_conflict(a_qty, b_qty))
+}
+
 /// The lines the planned ingredients make, in the order of their first
 /// appearance. Names are matched trimmed and case-insensitively, as
-/// everywhere else in the generation.
+/// everywhere else in the generation, or by their tag (#902): an
+/// ingredient goes to the first line it makes one line with
+/// (`one_line`), preferring one whose units do not conflict with its own,
+/// so that its quantity can add up.
 pub(crate) fn plan_lines(
     ingredients: impl IntoIterator<Item = PlannedIngredient>,
 ) -> Vec<PlannedLine> {
-    let mut lines: Vec<(String, PlannedLine)> = Vec::new();
+    let mut lines: Vec<(IngredientKey, PlannedLine)> = Vec::new();
     for ing in ingredients {
-        let key = ing.name.trim().to_lowercase();
+        let key = IngredientKey::of(&ing.name);
         let quantity = scale_quantity(ing.quantity, ing.recipe_servings, ing.selection_servings);
         // A quantity without a unit gets the default one (#458), before the
         // units are compared.
         let unit = normalize_unit(quantity, ing.unit.as_deref());
-        match lines.iter_mut().find(|(k, _)| *k == key) {
+        let own = (quantity, unit.as_deref());
+        let fits = |(k, l): &(IngredientKey, PlannedLine)| {
+            one_line(k, (l.quantity, l.unit.as_deref()), &key, own)
+        };
+        let at = lines
+            .iter()
+            .position(|e| fits(e) && !units_conflict((e.1.quantity, e.1.unit.as_deref()), own))
+            .or_else(|| lines.iter().position(fits));
+        match at.map(|i| &mut lines[i]) {
             Some((_, line)) => {
                 if let (Some(sum), Some(q)) = (line.quantity, quantity) {
                     if same_unit(line.unit.as_deref(), unit.as_deref()) {
@@ -117,11 +177,14 @@ pub(crate) enum ListChange {
     Raise { id: Uuid, quantity: f64 },
 }
 
-/// What the needs of the planned recipes (`plan_lines`, one per name) do
-/// to the unchecked lines already on the list, names matched trimmed and
-/// case-insensitively:
-/// - no line of its name: the need is added;
-/// - only recipe lines of its name, each with a quantity in the need's unit
+/// What the needs of the planned recipes (`plan_lines`, one per
+/// ingredient) do to the unchecked lines already on the list. A line is the
+/// need's when its name is the need's, trimmed and case-insensitively, or
+/// when both names map to one tag (#902) — except a recipe line of another
+/// name whose quantity's unit conflicts with the need's: `plan_lines` keeps
+/// such a line apart, so it does not count for the need.
+/// - no line of the need: the need is added;
+/// - only recipe lines of the need, each with a quantity in the need's unit
 ///   (`normalize_unit`, no conversion): when they count less than the need
 ///   together, the first is raised by what they lack. A line is never
 ///   lowered, so counting again after a raise changes nothing;
@@ -134,10 +197,19 @@ pub(crate) fn count_against_list(
     needs
         .into_iter()
         .filter_map(|need| {
-            let key = need.name.trim().to_lowercase();
+            let key = IngredientKey::of(&need.name);
+            let wanted_unit = (need.quantity, need.unit.as_deref());
             let lines: Vec<&ListedLine> = listed
                 .iter()
-                .filter(|l| l.name.trim().to_lowercase() == key)
+                .filter(|l| {
+                    let unit = normalize_unit(l.quantity, l.unit.as_deref());
+                    let line_key = IngredientKey::of(&l.name);
+                    if l.source == "recipe" {
+                        one_line(&line_key, (l.quantity, unit.as_deref()), &key, wanted_unit)
+                    } else {
+                        line_key.same_ingredient(&key)
+                    }
+                })
                 .collect();
             let Some(first) = lines.first() else {
                 return Some(ListChange::Add(need));
@@ -167,20 +239,27 @@ pub(crate) fn count_against_list(
 
 /// What `recipe_id` lacks (`missing` of the planned recipes, each weighed
 /// alone against the stock, `recipes::availability`), plus what the other
-/// planned recipes lack of the same ingredients, merged by name as
-/// `plan_lines` does with the recipe's own lines first: the need the list
-/// is counted against when only that recipe's missing ingredients are
-/// added (#842). An ingredient the recipe does not lack stays out.
+/// planned recipes lack of the same ingredients (by name or by tag, #902),
+/// merged as `plan_lines` does with the recipe's own lines first: the need
+/// the list is counted against when only that recipe's missing ingredients
+/// are added (#842). An ingredient the recipe does not lack stays out.
 pub(crate) fn with_other_planned(
     recipe_id: Uuid,
     missing: impl IntoIterator<Item = PlannedLine>,
 ) -> Vec<PlannedLine> {
     let (own, others): (Vec<_>, Vec<_>) =
         missing.into_iter().partition(|l| l.recipe_id == recipe_id);
-    let names: HashSet<String> = own.iter().map(|l| l.name.trim().to_lowercase()).collect();
-    let others = others
-        .into_iter()
-        .filter(|l| names.contains(&l.name.trim().to_lowercase()));
+    let keys: Vec<(IngredientKey, Option<f64>, Option<String>)> = own
+        .iter()
+        .map(|l| (IngredientKey::of(&l.name), l.quantity, l.unit.clone()))
+        .collect();
+    // An other recipe's line counts when `plan_lines` would merge it into
+    // one of the recipe's own.
+    let others = others.into_iter().filter(|l| {
+        let key = IngredientKey::of(&l.name);
+        keys.iter()
+            .any(|(k, q, u)| one_line(k, (*q, u.as_deref()), &key, (l.quantity, l.unit.as_deref())))
+    });
     plan_lines(own.into_iter().chain(others).map(|l| PlannedIngredient {
         recipe_id: l.recipe_id,
         name: l.name,
@@ -583,5 +662,154 @@ mod tests {
     #[test]
     fn nothing_planned_makes_no_line() {
         assert_eq!(plan_lines([]), vec![]);
+    }
+
+    // -- one key per canonical ingredient (#902) -----------------------------
+
+    #[test]
+    fn two_names_of_one_ingredient_in_one_unit_make_one_line() {
+        // Both are the taxonomy's en:parmigiano-reggiano.
+        let lines = plan_lines([
+            ing(1, "parmesan", Some(100.0), Some("g"), None, None),
+            ing(2, "Parmigiano Reggiano", Some(50.0), Some("g"), None, None),
+        ]);
+        assert_eq!(lines, vec![line(1, "parmesan", Some(150.0), Some("g"))]);
+        // The spelling with or without its accent, too (#901's alias).
+        let lines = plan_lines([
+            ing(1, "crème fraîche", Some(20.0), Some("cl"), None, None),
+            ing(2, "Crème fraiche", Some(10.0), Some("cl"), None, None),
+        ]);
+        assert_eq!(
+            lines,
+            vec![line(1, "crème fraîche", Some(30.0), Some("cl"))]
+        );
+    }
+
+    #[test]
+    fn two_names_of_one_ingredient_in_two_units_make_two_lines() {
+        let lines = plan_lines([
+            ing(1, "parmesan", Some(100.0), Some("g"), None, None),
+            ing(2, "Parmigiano Reggiano", Some(1.0), Some("kg"), None, None),
+            // A third, in the second line's unit, adds up with it.
+            ing(3, "parmesan", Some(0.5), Some("kg"), None, None),
+        ]);
+        assert_eq!(
+            lines,
+            vec![
+                line(1, "parmesan", Some(100.0), Some("g")),
+                line(2, "Parmigiano Reggiano", Some(1.5), Some("kg")),
+            ]
+        );
+        // Without a quantity, a unit conflicts with nothing.
+        let lines = plan_lines([
+            ing(1, "parmesan", None, None, None, None),
+            ing(2, "Parmigiano Reggiano", Some(50.0), Some("g"), None, None),
+        ]);
+        assert_eq!(lines, vec![line(1, "parmesan", None, None)]);
+    }
+
+    #[test]
+    fn names_without_a_tag_are_not_guessed_together() {
+        let t = crate::recipes::taxonomy::taxonomy();
+        for name in ["sauce maison", "sauce maison épicée"] {
+            assert_eq!(t.canonical_ingredient(name), None, "{name}");
+        }
+        let lines = plan_lines([
+            ing(1, "Sauce maison", Some(1.0), Some("pot"), None, None),
+            ing(2, "sauce maison épicée", Some(1.0), Some("pot"), None, None),
+        ]);
+        assert_eq!(
+            lines,
+            vec![
+                line(1, "Sauce maison", Some(1.0), Some("pot")),
+                line(2, "sauce maison épicée", Some(1.0), Some("pot")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_manual_line_of_another_name_of_the_ingredient_is_seen() {
+        for unit in [None, Some("kg")] {
+            let changes = count_against_list(
+                [line(1, "parmesan", Some(100.0), Some("g"))],
+                &[listed(
+                    9,
+                    "parmigiano reggiano",
+                    unit.map(|_| 1.0),
+                    unit,
+                    "manual",
+                )],
+            );
+            assert_eq!(changes, vec![], "{unit:?}");
+        }
+    }
+
+    #[test]
+    fn a_recipe_line_of_another_name_of_the_ingredient_is_counted() {
+        let changes = count_against_list(
+            [line(1, "parmesan", Some(150.0), Some("g"))],
+            &[listed(
+                9,
+                "Parmigiano Reggiano",
+                Some(100.0),
+                Some("g"),
+                "recipe",
+            )],
+        );
+        assert_eq!(changes, vec![raise(9, 150.0)]);
+        // In another unit, it is another line, as `plan_lines` keeps it.
+        let need = line(1, "parmesan", Some(150.0), Some("g"));
+        let changes = count_against_list(
+            [need.clone()],
+            &[listed(
+                9,
+                "Parmigiano Reggiano",
+                Some(1.0),
+                Some("kg"),
+                "recipe",
+            )],
+        );
+        assert_eq!(changes, vec![ListChange::Add(need)]);
+    }
+
+    #[test]
+    fn the_lines_two_names_made_count_as_they_are() {
+        // What `plan_lines` made of two names in two units, then counted
+        // against the list they were written to: nothing changes.
+        let needs = plan_lines([
+            ing(1, "parmesan", Some(100.0), Some("g"), None, None),
+            ing(2, "Parmigiano Reggiano", Some(1.0), Some("kg"), None, None),
+        ]);
+        let list = [
+            listed(8, "parmesan", Some(100.0), Some("g"), "recipe"),
+            listed(9, "Parmigiano Reggiano", Some(1.0), Some("kg"), "recipe"),
+        ];
+        assert_eq!(count_against_list(needs, &list), vec![]);
+    }
+
+    #[test]
+    fn other_planned_recipes_count_by_ingredient_not_by_name() {
+        let lines = with_other_planned(
+            Uuid::from_u128(2),
+            [
+                line(1, "Parmigiano Reggiano", Some(50.0), Some("g")),
+                line(2, "parmesan", Some(100.0), Some("g")),
+                line(3, "parmigiano reggiano", Some(1.0), Some("kg")),
+            ],
+        );
+        assert_eq!(lines, vec![line(2, "parmesan", Some(150.0), Some("g"))]);
+        // The line created carries the recipe's own quantity, under its name.
+        let changes = count_missing_against_list(
+            Uuid::from_u128(2),
+            [
+                line(1, "Parmigiano Reggiano", Some(50.0), Some("g")),
+                line(2, "parmesan", Some(100.0), Some("g")),
+            ],
+            &[],
+        );
+        assert_eq!(
+            changes,
+            vec![ListChange::Add(line(2, "parmesan", Some(100.0), Some("g")))]
+        );
     }
 }
