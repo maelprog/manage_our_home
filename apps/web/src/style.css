@@ -1112,7 +1112,10 @@ textarea[data-count] { resize: vertical; }
 .ing .status { margin: var(--s2x) 0 0; color: var(--muted); }
 .ing-field { position: relative; display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
 .ing-picks { margin-top: var(--s4); }
-.ing-row .danger { border-color: transparent; background: none; }
+/* « Retirer » keeps only its --error text: `button.secondary.danger`
+   draws a box (0,2,1), so the type is named to outweigh it; its hover,
+   later and as heavy, still lays --error-soft. */
+.ing-row button.secondary.danger { border-color: transparent; background: none; }
 /* The filters, a row of pills: every place, « Stock bas », the order. The
    one shown takes the accent, as a current tab does. */
 .filters { display: flex; flex-wrap: wrap; gap: var(--s2x); margin: var(--s4) 0; }
