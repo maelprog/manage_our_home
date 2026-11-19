@@ -2,6 +2,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use chrono::{Days, NaiveDate, Utc};
+use common::thresholds::{assert_edit_follows_the_threshold, Editable};
 use common::{assert_status, call, json_body, set_cookie, test_router};
 use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
@@ -2820,4 +2821,22 @@ async fn a_replacement_leaves_checked_items_and_follows_unchecked_required_ones(
             ("Sel".to_string(), Some(soupe.clone())),
         ]
     );
+}
+
+/// AC #866: the edit and the delete of a recipe follow the family's `recipes_edit` threshold, the creator
+/// keeping the hand on what they wrote (`common::thresholds`).
+#[sqlx::test]
+async fn editing_a_recipe_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_edit_follows_the_threshold(
+        &router,
+        &db,
+        Editable {
+            feature: "recipes_edit",
+            collection: "recipes",
+            create: serde_json::json!({"name": "Tarte", "ingredients": []}),
+            edit: serde_json::json!({"name": "Quiche"}),
+        },
+    )
+    .await;
 }

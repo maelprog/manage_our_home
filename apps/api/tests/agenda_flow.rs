@@ -2,6 +2,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use common::thresholds::{assert_edit_follows_the_threshold, Editable};
 use common::{
     assert_status, call, call_upload, drop_prescribed_role, json_body, prescribed_role_pool,
     real_minio_from_env, set_cookie, test_router, test_router_with_storage,
@@ -5698,4 +5699,28 @@ async fn an_attachment_is_not_served_outside_its_family(db: PgPool) {
     );
     let res = get_ranged(&f.router, &uri, &f.member, None).await;
     assert_status(&res, StatusCode::NOT_FOUND);
+}
+
+/// AC #866: the edit and the delete of a shared event follow the family's
+/// `agenda_edit` threshold, the creator keeping the hand on what they wrote
+/// (`common::thresholds`).
+#[sqlx::test]
+async fn editing_an_event_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let starts_at = Utc::now() + Duration::days(1);
+    assert_edit_follows_the_threshold(
+        &router,
+        &db,
+        Editable {
+            feature: "agenda_edit",
+            collection: "events",
+            create: serde_json::json!({
+                "title": "Dentiste",
+                "starts_at": starts_at,
+                "ends_at": starts_at + Duration::hours(1),
+            }),
+            edit: serde_json::json!({"title": "Orthodontiste"}),
+        },
+    )
+    .await;
 }

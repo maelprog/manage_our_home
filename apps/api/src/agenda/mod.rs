@@ -9,22 +9,22 @@ pub mod thumbnail;
 
 use uuid::Uuid;
 
+use crate::groups::access::role_meets;
+
 /// Any member of the group may create/read the events they can see. Only
-/// the event's creator or a group admin/owner may update or delete it,
-/// mirroring the actor/target role checks already used in
-/// `groups::actor_can_act_on` — plus, on a private event (#620), any of its
+/// the event's creator or a member whose role meets `min_role`, the
+/// family's `agenda_edit` threshold (#866, `admin` by default), may update
+/// or delete it — plus, on a private event (#620), any of its
 /// participants: such an event is only ever visible to them
 /// (`events_isolation`, migration 0044), and one of them unable to correct
 /// it would leave nobody but its creator who could.
 pub(crate) fn can_modify(
     actor_role: &str,
+    min_role: &str,
     actor_is_creator: bool,
     actor_is_private_participant: bool,
 ) -> bool {
-    actor_is_creator
-        || actor_role == "owner"
-        || actor_role == "admin"
-        || actor_is_private_participant
+    actor_is_creator || role_meets(actor_role, min_role) || actor_is_private_participant
 }
 
 /// The participants of an event (#620): its creator and the members of its
@@ -60,25 +60,46 @@ mod tests {
 
     // -- can_modify -------------------------------------------------------
 
+    /// Every role × threshold × authorship (#866), written out rather than
+    /// derived: the creator always may; anyone else when their role meets
+    /// the family's threshold, the owner whatever it says.
+    const CASES: [(&str, &str, bool, bool); 18] = [
+        ("standard", "standard", false, true),
+        ("standard", "admin", false, false),
+        ("standard", "owner", false, false),
+        ("admin", "standard", false, true),
+        ("admin", "admin", false, true),
+        ("admin", "owner", false, false),
+        ("owner", "standard", false, true),
+        ("owner", "admin", false, true),
+        ("owner", "owner", false, true),
+        ("standard", "standard", true, true),
+        ("standard", "admin", true, true),
+        ("standard", "owner", true, true),
+        ("admin", "standard", true, true),
+        ("admin", "admin", true, true),
+        ("admin", "owner", true, true),
+        ("owner", "standard", true, true),
+        ("owner", "admin", true, true),
+        ("owner", "owner", true, true),
+    ];
+
     #[test]
-    fn the_creator_may_modify() {
-        assert!(can_modify("standard", true, false));
+    fn can_modify_follows_the_threshold_and_spares_the_creator() {
+        for (role, min_role, creator, expected) in CASES {
+            assert_eq!(
+                can_modify(role, min_role, creator, false),
+                expected,
+                "{role} under {min_role}, creator: {creator}"
+            );
+        }
     }
 
     #[test]
-    fn an_admin_or_owner_may_modify_a_shared_event() {
-        assert!(can_modify("admin", false, false));
-        assert!(can_modify("owner", false, false));
-    }
-
-    #[test]
-    fn a_plain_member_may_not_modify_someone_elses_shared_event() {
-        assert!(!can_modify("standard", false, false));
-    }
-
-    #[test]
-    fn a_participant_of_a_private_event_may_modify_it() {
-        assert!(can_modify("standard", false, true));
+    fn a_participant_of_a_private_event_may_modify_it_whatever_the_threshold() {
+        for min_role in ["standard", "admin", "owner"] {
+            assert!(can_modify("standard", min_role, false, true), "{min_role}");
+        }
     }
 
     // -- is_participant ---------------------------------------------------

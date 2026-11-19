@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::messagerie::{can_modify, notify, Change, Notification};
 use crate::notifications::center;
@@ -536,7 +537,8 @@ pub async fn update_message(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::MessagerieModerate).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -613,7 +615,8 @@ pub async fn delete_message(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::MessagerieModerate).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 

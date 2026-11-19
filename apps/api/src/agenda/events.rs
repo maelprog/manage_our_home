@@ -16,6 +16,7 @@ use crate::agenda::{
 };
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::AppState;
 
@@ -755,8 +756,10 @@ pub async fn update_event(
         .unwrap_or_default();
     let actor_is_participant =
         is_participant(auth.user_id, existing.created_by, &current_assignees);
+    let min_role = min_role_for(&mut tx, group_id, Feature::AgendaEdit).await?;
     if !can_modify(
         &actor_role,
+        &min_role,
         existing.created_by == auth.user_id,
         existing.is_private && actor_is_participant,
     ) {
@@ -1527,8 +1530,10 @@ pub async fn delete_event(
         .await?
         .remove(&event_id)
         .unwrap_or_default();
+    let min_role = min_role_for(&mut tx, group_id, Feature::AgendaEdit).await?;
     if !can_modify(
         &actor_role,
+        &min_role,
         existing.created_by == auth.user_id,
         existing.is_private && is_participant(auth.user_id, existing.created_by, &assignees),
     ) {

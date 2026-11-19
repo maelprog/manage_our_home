@@ -2373,3 +2373,38 @@ async fn an_old_taste_verdict_still_counts(db: PgPool) {
     let after = suggestion_scores(&router, &cookie, &group_id).await;
     assert_eq!(after[&flan] - before[&flan], 5.0);
 }
+
+/// AC #866: the preview's `can_edit_recipe` follows the family's
+/// `recipes_edit` threshold, as `PATCH` does: lowered to `standard`, a
+/// standard member may change the owner's recipe; raised to `owner`, an
+/// admin may not.
+#[sqlx::test]
+async fn who_may_change_the_recipe_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let fam = common::thresholds::family(&router, &db, "outcome-threshold").await;
+    let (recipe, _, _, _) = crepes(&router, &fam.owner, &fam.group_id).await;
+
+    for (min_role, expected) in [
+        ("standard", [true, true, true]),
+        ("admin", [true, true, false]),
+        ("owner", [true, false, false]),
+    ] {
+        common::thresholds::set_threshold(&router, &fam, "recipes_edit", min_role).await;
+        for ((who, cookie), may) in [
+            ("owner", &fam.owner),
+            ("admin", &fam.admin),
+            ("standard", &fam.standard),
+        ]
+        .into_iter()
+        .zip(expected)
+        {
+            let res = get(&router, cookie, &done_path(&fam.group_id, &recipe)).await;
+            assert_status(&res, StatusCode::OK);
+            assert_eq!(
+                json_body(res).await["can_edit_recipe"],
+                may,
+                "{who} under {min_role}"
+            );
+        }
+    }
+}

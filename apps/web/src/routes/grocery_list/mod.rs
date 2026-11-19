@@ -20,8 +20,9 @@
 //! Permission bar (mirrors `apps/api/src/grocery_list/mod.rs::can_modify`):
 //! any family member may add, read, or **check off** an item, so those
 //! controls render for everyone; the per-row edit link and the edit screen's
-//! edit/delete controls render only for the item's creator or a group
-//! admin/owner. The backend stays the authority (a forged edit/delete is
+//! edit/delete controls render only for the item's creator or a member whose
+//! role meets the family's `grocery_edit` threshold (#866, admin/owner by
+//! default). The backend stays the authority (a forged edit/delete is
 //! still 403'd, mapped defensively here).
 
 pub mod edit;
@@ -54,6 +55,9 @@ pub(crate) use manage_our_home_shared::validation::grocery_list::can_modify;
 pub(crate) struct FamilyContext {
     pub gid: Uuid,
     pub role: String,
+    /// The family's `grocery_edit` threshold (#866): from which role a member
+    /// edits or deletes what another member added (`can_modify`).
+    pub edit_min_role: String,
     /// Whether `role` meets the family's `budget` threshold (#865), which
     /// draws the price field (`can_access_budget`).
     pub reaches_budget: bool,
@@ -72,6 +76,7 @@ pub(crate) async fn family_context(
     active.map(|g| FamilyContext {
         gid: g.group_id,
         role: g.role.clone(),
+        edit_min_role: g.min_role(Feature::GroceryEdit).to_string(),
         reaches_budget: can_access_budget(&g.role, g.min_role(Feature::Budget)),
         header,
     })

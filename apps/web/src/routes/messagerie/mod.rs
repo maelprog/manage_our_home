@@ -21,7 +21,8 @@
 //! Permission bar (mirrors `apps/api/src/messagerie/mod.rs::can_modify`): any
 //! member may read the thread, post, and open the socket, so those render for
 //! everyone; a row's `Modifier`/`Supprimer` controls render only for the
-//! message's author or a group admin/owner. The backend stays the authority (a
+//! message's author or a member whose role meets the family's
+//! `messagerie_moderate` threshold (#866, admin/owner by default). The backend stays the authority (a
 //! forged edit/delete is still 403'd, mapped defensively here).
 
 pub mod thread;
@@ -30,6 +31,7 @@ use axum::http::HeaderMap;
 use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
+use manage_our_home_shared::validation::groups::Feature;
 use uuid::Uuid;
 
 use crate::app::{shell, Width};
@@ -52,6 +54,9 @@ pub(crate) struct FamilyContext {
     /// The family's name, which the page is headed with (#528).
     pub name: String,
     pub role: String,
+    /// The family's `messagerie_moderate` threshold (#866): from which role a member
+    /// edits or deletes what another member wrote (`can_modify`).
+    pub edit_min_role: String,
     pub user_id: Uuid,
     pub header: String,
     /// The browser-facing API base URL (`API_PUBLIC_BASE_URL`), used to build
@@ -73,6 +78,7 @@ pub(crate) async fn family_context(
         gid: g.group_id,
         name: g.name.clone(),
         role: g.role.clone(),
+        edit_min_role: g.min_role(Feature::MessagerieModerate).to_string(),
         user_id: me.user_id,
         header,
         api_public_base_url: state.api_public_base_url.clone(),

@@ -87,6 +87,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::planned::{scale_quantity, without_binary_noise};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::recipes::can_modify;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
@@ -666,7 +667,12 @@ pub async fn preview_done(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, false).await?;
-    let can_edit_recipe = can_modify(&role, selection.recipe_created_by == auth.user_id);
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    let can_edit_recipe = can_modify(
+        &role,
+        &min_role,
+        selection.recipe_created_by == auth.user_id,
+    );
     let rows = ingredients(&mut tx, group_id, recipe_id).await?;
     let stock = sqlx::query_as!(
         StockItemRow,
@@ -804,7 +810,12 @@ pub async fn apply_done(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, true).await?;
-    let may_change = can_modify(&role, selection.recipe_created_by == auth.user_id);
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    let may_change = can_modify(
+        &role,
+        &min_role,
+        selection.recipe_created_by == auth.user_id,
+    );
     if !body.recipe_updates.is_empty() && !may_change {
         return Err(AppError::Forbidden);
     }

@@ -91,7 +91,7 @@ pub async fn get(
         _ => return service_unavailable_page().into_response(),
     };
 
-    let can_edit = can_modify(&fam.role, item.created_by == me.user_id);
+    let can_edit = can_modify(&fam.role, &fam.edit_min_role, item.created_by == me.user_id);
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
     Html(page(&fam.header, &item, can_edit, notice, error)).into_response()

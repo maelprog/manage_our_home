@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::stocks::barcode::normalize;
 use crate::stocks::{can_modify, planned_usage};
@@ -486,8 +487,11 @@ pub async fn update_stock_item(
     // touching any full-record field requires the creator/admin/owner bar.
     let full_edit = body.touches_full_record();
     let quantity_adjustment = body.adjusts_quantity_only();
-    if full_edit && !can_modify(&actor_role, existing.created_by == auth.user_id) {
-        return Err(AppError::Forbidden);
+    if full_edit {
+        let min_role = min_role_for(&mut tx, group_id, Feature::StocksEdit).await?;
+        if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
+            return Err(AppError::Forbidden);
+        }
     }
 
     let name = match body.name.as_deref().map(str::trim) {
@@ -601,7 +605,8 @@ pub async fn delete_stock_item(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::StocksEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 

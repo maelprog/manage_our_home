@@ -232,7 +232,11 @@ pub async fn get(
     } else {
         String::new()
     };
-    let can_edit = can_modify(&fam.role, recipe.created_by == me.user_id);
+    let can_edit = can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        recipe.created_by == me.user_id,
+    );
     // Planned in place of another (#816): « X remplacé par Y. ».
     let replaced = match (query.notice.as_deref(), query.from.as_deref()) {
         (Some("recipe_replaced"), from) => {
