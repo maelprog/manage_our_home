@@ -1581,6 +1581,84 @@ async fn another_family_neither_sees_nor_applies_a_link(db: PgPool) {
     );
 }
 
+async fn item_ingredient(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    item_id: &str,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/stock-items/{item_id}/ingredient"),
+        Some(cookie),
+        None,
+    )
+    .await
+}
+
+/// Issue #904: an article's page reads whether it has a category — by its
+/// name, its scanned product or its name's link — and the link itself,
+/// for its family only.
+#[sqlx::test]
+async fn an_article_s_page_reads_its_category_and_its_link(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, member, group_id) = family_with_member(&router, &db, "link-item").await;
+    let (stranger, _, _) = family_with_member(&router, &db, "link-item-b").await;
+    let plaisir = stock_plaisir(&router, &owner, &group_id, "Mon p'tit plaisir").await;
+    let lait = stock_plaisir(&router, &owner, &group_id, "Lait demi-écrémé").await;
+    let code = "3017620422003";
+    sqlx::query("INSERT INTO off_products (code, name, categories_tags) VALUES ($1, 'Pot', $2)")
+        .bind(code)
+        .bind(vec!["en:fermented-creams".to_string()])
+        .execute(&db)
+        .await
+        .unwrap();
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(&owner),
+        Some(serde_json::json!({"name": "Pot blanc", "quantity": 1.0, "barcode": code})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let scanned = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    for (item, recognized) in [(&plaisir, false), (&lait, true), (&scanned, true)] {
+        let res = item_ingredient(&router, &member, &group_id, item).await;
+        assert_status(&res, StatusCode::OK);
+        assert_eq!(
+            json_body(res).await,
+            serde_json::json!({"recognized": recognized, "link": null}),
+            "{item}"
+        );
+    }
+
+    let res = put_link(&router, &member, &group_id, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::OK);
+    let set = json_body(res).await;
+    let res = item_ingredient(&router, &owner, &group_id, &plaisir).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        json_body(res).await,
+        serde_json::json!({
+            "recognized": true,
+            "link": {
+                "tag": "en:fermented-creams",
+                "label": set["label"],
+                "created_by": set["created_by"],
+            },
+        })
+    );
+
+    // Another family's member is no member; an unknown article is a 404.
+    let res = item_ingredient(&router, &stranger, &group_id, &plaisir).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    let res = item_ingredient(&router, &owner, &group_id, &uuid::Uuid::new_v4().to_string()).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+}
+
 /// Issue #903: a category the taxonomy lacks, or a name without a word, is
 /// a 400 and stores nothing.
 #[sqlx::test]
