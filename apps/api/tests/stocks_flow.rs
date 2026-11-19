@@ -1655,7 +1655,13 @@ async fn an_article_s_page_reads_its_category_and_its_link(db: PgPool) {
     // Another family's member is no member; an unknown article is a 404.
     let res = item_ingredient(&router, &stranger, &group_id, &plaisir).await;
     assert_status(&res, StatusCode::FORBIDDEN);
-    let res = item_ingredient(&router, &owner, &group_id, &uuid::Uuid::new_v4().to_string()).await;
+    let res = item_ingredient(
+        &router,
+        &owner,
+        &group_id,
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await;
     assert_status(&res, StatusCode::NOT_FOUND);
 }
 
