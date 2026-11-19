@@ -1115,6 +1115,10 @@ textarea[data-count] { resize: vertical; }
 .ing .cancel { margin: var(--s2x) 0 0; }
 .ing-field { position: relative; display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
 .ing-picks { margin-top: var(--s4); }
+/* Up to twenty suggestions: five and a half options shown, the half one
+   saying that the rest scrolls, rather than a list running over the
+   phone's navigation bar. */
+.ing .combo-list { max-height: calc(5.5 * var(--s12)); overflow-y: auto; overscroll-behavior: contain; }
 /* « Retirer » keeps only its --error text: `button.secondary.danger`
    draws a box (0,2,1), so the type is named to outweigh it; its hover,
    later and as heavy, still lays --error-soft. */
