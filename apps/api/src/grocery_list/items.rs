@@ -289,7 +289,8 @@ pub async fn list_grocery_items(
 
 /// Any member may check/uncheck an item off the shared list — this is a
 /// lighter permission bar than `update_grocery_item`, which only the
-/// creator or a group admin/owner may use to edit name/quantity/unit.
+/// creator or a member whose role meets the family's `grocery_edit`
+/// threshold (#866) may use to edit name/quantity/unit.
 #[utoipa::path(
     post,
     path = "/groups/{id}/grocery-items/{item_id}/check",

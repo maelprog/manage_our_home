@@ -40,8 +40,9 @@
 //! name and unit, the quantity used brought back to the recipe's number of
 //! people, unless the recipe already has an ingredient of that name
 //! (`article_key`), so that replaying adds it once. Changing the recipe
-//! stays for its creator, an admin or the owner (`can_modify`, as for
-//! `PATCH`): anyone else gets 403 for an `add_to_recipe` that adds
+//! stays for its creator or a member whose role meets the family's
+//! `recipes_edit` threshold (#866; `can_modify`, as for `PATCH`): anyone
+//! else gets 403 for an `add_to_recipe` that adds
 //! something (products the recipe already names add nothing), and the
 //! preview says whether the caller may (`can_edit_recipe`).
 //!
@@ -67,8 +68,9 @@
 //! two applications at once end with one 200 and one 404. Any member may
 //! apply either action, like logging a meal. Removing from the stock is a
 //! quantity-only adjustment, already open to any member (#39). Removing
-//! grocery items is not otherwise: deleting one directly is for its creator,
-//! an admin or the owner (`grocery_list::can_modify`). Through an abandon it
+//! grocery items is not otherwise: deleting one directly is for its creator
+//! or a member whose role meets the family's `grocery_edit` threshold
+//! (`grocery_list::can_modify`, #866). Through an abandon it
 //! is open to any member, by user arbitration of 2026-10-25, as for the
 //! reception of the groceries (#471), and `can_modify` is deliberately not
 //! called: only unchecked items generated for the abandoned recipe can go,

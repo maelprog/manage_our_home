@@ -91,7 +91,8 @@ impl UpdateStockItemRequest {
     /// member — the shared-inventory "any member may adjust the quantity"
     /// tier from issue #19. Touching any full-record field (name, category,
     /// unit, reorder_threshold, expires_on) makes it a full edit, which stays behind
-    /// `can_modify` (creator/admin/owner), the same bar as delete.
+    /// `can_modify` (the creator, or a role meeting the family's
+    /// `stocks_edit` threshold, #866), the same bar as delete.
     fn touches_full_record(&self) -> bool {
         self.name.is_some()
             || self.category.is_some()
@@ -484,7 +485,8 @@ pub async fn update_stock_item(
     .ok_or(AppError::NotFound)?;
 
     // A quantity-only adjustment is allowed to any member (shared inventory);
-    // touching any full-record field requires the creator/admin/owner bar.
+    // touching any full-record field requires the creator or a role meeting
+    // the family's `stocks_edit` threshold (#866).
     let full_edit = body.touches_full_record();
     let quantity_adjustment = body.adjusts_quantity_only();
     if full_edit {

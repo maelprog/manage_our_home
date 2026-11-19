@@ -5,8 +5,9 @@
 //!
 //! Permission bar: the quantity-adjust form renders for **any** family member
 //! (shared inventory — issue #39); the edit link and delete button render only
-//! for the item's creator or a group admin/owner (`can_modify`). A standard
-//! member viewing another member's item still gets the adjust form, plus a
+//! for the item's creator or a member whose role meets the family's
+//! `stocks_edit` threshold (`can_modify`, #866). A member below it viewing
+//! another member's item still gets the adjust form, plus a
 //! muted note that editing/deleting is reserved. The backend stays the
 //! authority — a forged full-edit/DELETE is 403'd and mapped to
 //! `?error=forbidden` here defensively.

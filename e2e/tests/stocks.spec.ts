@@ -7,8 +7,9 @@ import { fetchVerificationToken } from "../lib/db";
 // apps/api/src/stocks/'s error tables. Note the two-tier permission bar: a
 // quantity-only adjustment is open to any family member (shared inventory), so
 // every member sees the adjust form; the full-record edit and delete stay
-// behind can_modify (creator/admin/owner), so a standard member gets no
-// edit/delete controls on another member's item.
+// behind can_modify (the creator, or a role meeting the family's `stocks_edit`
+// threshold, #866 — admin/owner by default), so under that default a standard
+// member gets no edit/delete controls on another member's item.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;

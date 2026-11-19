@@ -405,7 +405,8 @@ fn page(
         String::new()
     };
 
-    // Edit/delete controls (creator or owner/admin only).
+    // Edit/delete controls (creator, or a role meeting the family's
+    // `agenda_edit` threshold, #866).
     let controls_html = if can_edit {
         format!(
             r#"<div class="actions">

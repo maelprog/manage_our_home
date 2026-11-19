@@ -8,7 +8,8 @@
 //!   non-empty, ≤ 4000 **chars** — not bytes), so the composer rejects locally
 //!   with the copy a defensively-mapped backend 400 would produce.
 //! - `can_modify` mirrors `apps/api/src/messagerie/mod.rs::can_modify`: the
-//!   message's author, or a group owner/admin, may edit or delete it. Reading
+//!   message's author, or a member whose role meets the family's
+//!   `messagerie_moderate` threshold (#866), may edit or delete it. Reading
 //!   and posting are open to any member and are *not* gated here.
 //! - `clamp_limit` / `older_page_query` mirror the cursor-pagination contract
 //!   (`before_created_at` + `before_id`, default 50, max 100) — the cursor keeps
