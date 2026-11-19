@@ -13,7 +13,9 @@
 //! belongs to it, so that a reminder from another family does not land on
 //! a « introuvable » page. An invitation has nowhere to go in the
 //! application (its token is only in the e-mail): opening it marks it read
-//! and comes back here.
+//! and comes back here. So does a change another member made to the
+//! agenda (#853) when its event is gone — the deletion it reports, or one
+//! since — and an import's, which names no event.
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
@@ -39,7 +41,9 @@ const PAGE_LIMIT: usize = 30;
 
 /// The filters, in the order the row shows them: the API's `kind` (`None`
 /// for every kind) and the label of its pastille.
-const FILTERS: [(Option<&str>, &str); 7] = [
+/// The changes another member made to the agenda (#853) come last, so the
+/// pastilles before keep their places.
+const FILTERS: [(Option<&str>, &str); 8] = [
     (None, "Toutes"),
     (Some("agenda_reminder"), "Agenda"),
     (Some("stock_expiry"), "Stocks"),
@@ -47,6 +51,7 @@ const FILTERS: [(Option<&str>, &str); 7] = [
     (Some("invitation"), "Familles"),
     (Some("grocery_item"), "Courses"),
     (Some("budget_alert"), "Budget"),
+    (Some("agenda_change"), "Changements d’agenda"),
 ];
 
 // -- pure logic (TDD'd below) ------------------------------------------------
@@ -69,6 +74,7 @@ fn kind_label(kind: &str) -> &'static str {
         "invitation" => "Familles",
         "grocery_item" => "Courses",
         "budget_alert" => "Budget",
+        "agenda_change" => "Changement d’agenda",
         _ => "Notification",
     }
 }
@@ -85,7 +91,7 @@ fn family_to_activate(groups: &[GroupSummary], group_id: Uuid) -> Option<Uuid> {
 
 fn kind_icon(kind: &str) -> Icon {
     match kind {
-        "agenda_reminder" => Icon::Calendar,
+        "agenda_reminder" | "agenda_change" => Icon::Calendar,
         "stock_expiry" => Icon::Stocks,
         "message" => Icon::Messages,
         "invitation" => Icon::Members,
@@ -144,8 +150,27 @@ fn target(kind: &str, object_id: Option<Uuid>) -> Option<String> {
         ("message", _) => Some("/messagerie".into()),
         ("grocery_item", _) => Some("/grocery-list".into()),
         ("budget_alert", _) => Some("/budget".into()),
+        // An event added or changed (#853); an import names none.
+        ("agenda_change", Some(id)) => Some(format!("/agenda/{id}")),
         _ => None,
     }
+}
+
+/// Whether the event an agenda change names is gone — deleted by that
+/// change or since — as the API's answer for it says (`None`: no answer).
+/// The entry then stays here: only a 404 says so; anything else still
+/// leads to the event's page, which says what it can.
+fn event_gone(kind: &str, status: Option<reqwest::StatusCode>) -> bool {
+    kind == "agenda_change" && status == Some(reqwest::StatusCode::NOT_FOUND)
+}
+
+/// Where an entry that leads nowhere — or whose event is gone — leaves the
+/// member: the page it was opened from, its filter kept (#853). Only a
+/// kind the page accepts comes back.
+fn stay_href(filter: Option<&str>) -> String {
+    kind_filter(filter).map_or("/notifications".into(), |k| {
+        format!("/notifications?kind={k}")
+    })
 }
 
 /// The count over the title.
@@ -171,12 +196,16 @@ fn cursor_instant(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
-/// One entry: the button of its form. Unread, it is a card with its text in
-/// bold, a dot for the eye and « Non lue » for the ear.
-fn row_html(n: &NotificationResponse, today: NaiveDate) -> String {
+/// One entry: the button of its form, which carries the page's filter.
+/// Unread, it is a card with its text in bold, a dot for the eye and
+/// « Non lue » for the ear.
+fn row_html(n: &NotificationResponse, today: NaiveDate, filter: Option<&str>) -> String {
     let unread = n.read_at.is_none();
     let object = n.object_id.map_or(String::new(), |id| {
         format!(r#"<input type="hidden" name="object_id" value="{id}"/>"#)
+    });
+    let filter = filter.map_or(String::new(), |k| {
+        format!(r#"<input type="hidden" name="filter" value="{k}"/>"#)
     });
     let (class, text, mark) = if unread {
         (
@@ -188,7 +217,7 @@ fn row_html(n: &NotificationResponse, today: NaiveDate) -> String {
         ("secondary notif", "span", "")
     };
     format!(
-        r#"<li><form method="post" action="/notifications/{id}/open"><input type="hidden" name="group_id" value="{group}"/><input type="hidden" name="kind" value="{kind}"/>{object}<button class="{class}">{icon}<span class="what"><{text}>{body}</{text}> <span class="muted">{label} · {when}</span></span>{mark}</button></form></li>"#,
+        r#"<li><form method="post" action="/notifications/{id}/open"><input type="hidden" name="group_id" value="{group}"/><input type="hidden" name="kind" value="{kind}"/>{object}{filter}<button class="{class}">{icon}<span class="what"><{text}>{body}</{text}> <span class="muted">{label} · {when}</span></span>{mark}</button></form></li>"#,
         id = n.id,
         group = n.group_id,
         kind = html_escape(&n.kind),
@@ -201,7 +230,11 @@ fn row_html(n: &NotificationResponse, today: NaiveDate) -> String {
 
 /// The entries under their group headings, in the order given (newest
 /// first). Nothing for an empty list.
-fn groups_html(notifications: &[NotificationResponse], today: NaiveDate) -> String {
+fn groups_html(
+    notifications: &[NotificationResponse],
+    today: NaiveDate,
+    filter: Option<&str>,
+) -> String {
     let mut html = String::new();
     let mut open: Option<Bucket> = None;
     for n in notifications {
@@ -216,7 +249,7 @@ fn groups_html(notifications: &[NotificationResponse], today: NaiveDate) -> Stri
             ));
             open = Some(here);
         }
-        html.push_str(&row_html(n, today));
+        html.push_str(&row_html(n, today, filter));
     }
     if open.is_some() {
         html.push_str("</ul>");
@@ -312,7 +345,7 @@ fn page_body(
                 ),
                 _ => String::new(),
             };
-            format!("{}{older}", groups_html(&page.notifications, today))
+            format!("{}{older}", groups_html(&page.notifications, today, kind))
         }
     };
     let newest = if paged {
@@ -443,6 +476,8 @@ pub struct OpenForm {
     group_id: Uuid,
     kind: String,
     object_id: Option<Uuid>,
+    /// The filter of the page the entry was opened from.
+    filter: Option<String>,
 }
 
 /// `POST /notifications/:id/open` — marks the entry read, then goes to
@@ -466,9 +501,26 @@ pub async fn open(
     if !matches!(marked, Ok(ref resp) if resp.status == reqwest::StatusCode::NO_CONTENT) {
         return Redirect::to("/notifications?error=open_failed").into_response();
     }
+    let here = stay_href(form.filter.as_deref());
     let Some(to) = target(&form.kind, form.object_id) else {
-        return Redirect::to("/notifications").into_response();
+        return Redirect::to(&here).into_response();
     };
+    // A change names its event, which may be gone (#853): read and stay.
+    if let (true, Some(event)) = (form.kind == "agenda_change", form.object_id) {
+        let status = api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            &format!("/groups/{}/events/{event}", form.group_id),
+            cookie.as_deref(),
+            None,
+        )
+        .await
+        .ok()
+        .map(|resp| resp.status);
+        if event_gone(&form.kind, status) {
+            return Redirect::to(&here).into_response();
+        }
+    }
     // The family it happened in becomes the active one.
     let groups = fetch_groups(&state, cookie.as_deref())
         .await
@@ -562,13 +614,85 @@ mod tests {
         assert_eq!(kind_label("invitation"), "Familles");
         assert_eq!(kind_label("grocery_item"), "Courses");
         assert_eq!(kind_label("budget_alert"), "Budget");
+        assert_eq!(kind_label("agenda_change"), "Changement d’agenda");
         // A kind a newer API adds still lists, under a neutral word.
         assert_eq!(kind_label("something_new"), "Notification");
         assert_eq!(kind_icon("something_new"), Icon::Bell);
         assert_eq!(kind_icon("agenda_reminder"), Icon::Calendar);
-        // An entry is named as its filter is.
+        // A change is about the agenda too: its calendar (#853).
+        assert_eq!(kind_icon("agenda_change"), Icon::Calendar);
+        // An entry is named as its filter is — one change, under the
+        // pastille of the changes (the maquette of #853).
         for (kind, label) in FILTERS.iter().skip(1) {
-            assert_eq!(kind_label(kind.unwrap()), *label);
+            let label = label.replace("Changements", "Changement");
+            assert_eq!(kind_label(kind.unwrap()), label);
+        }
+    }
+
+    /// #853: the changes' pastille is the last of the row, after
+    /// « Budget », so the existing ones keep their places.
+    #[test]
+    fn the_agenda_changes_have_the_last_pastille() {
+        assert_eq!(
+            FILTERS.last(),
+            Some(&(Some("agenda_change"), "Changements d’agenda"))
+        );
+        assert_eq!(kind_filter(Some("agenda_change")), Some("agenda_change"));
+        let row = filters_html(Some("agenda_change"));
+        assert!(
+            row.ends_with(
+                r#"<a href="/notifications?kind=agenda_change" aria-current="true">Changements d’agenda</a></nav>"#
+            ),
+            "{row}"
+        );
+    }
+
+    /// An added or changed event opens; a deletion — or an import, about
+    /// no single event — has nowhere to go but back here.
+    #[test]
+    fn a_change_leads_to_its_event_when_it_names_one() {
+        let id = Uuid::from_u128(9);
+        assert_eq!(
+            target("agenda_change", Some(id)).as_deref(),
+            Some(format!("/agenda/{id}").as_str())
+        );
+        assert_eq!(target("agenda_change", None), None);
+    }
+
+    /// The event a change names may be gone — deleted by the change itself
+    /// or since: the entry, marked read, then stays here rather than open
+    /// an « introuvable » page. Only an answer that says so sends it back:
+    /// an API that fails to answer still leads to the event's page.
+    #[test]
+    fn a_change_whose_event_is_gone_stays_here() {
+        use reqwest::StatusCode;
+        assert!(event_gone("agenda_change", Some(StatusCode::NOT_FOUND)));
+        for status in [Some(StatusCode::OK), Some(StatusCode::BAD_GATEWAY), None] {
+            assert!(!event_gone("agenda_change", status), "{status:?}");
+        }
+        // A reminder of a deleted event is not this issue's: unchanged.
+        assert!(!event_gone("agenda_reminder", Some(StatusCode::NOT_FOUND)));
+    }
+
+    /// « Stays here » is the page the entry was opened from, its filter
+    /// kept: each row's form carries the filter of its page, and only a
+    /// kind the page accepts comes back.
+    #[test]
+    fn an_entry_that_stays_here_keeps_the_page_s_filter() {
+        let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
+        let n = notification("agenda_change", at, false);
+        let filtered = row_html(&n, friday(), Some("agenda_change"));
+        assert!(
+            filtered.contains(r#"<input type="hidden" name="filter" value="agenda_change"/>"#),
+            "{filtered}"
+        );
+        assert!(!row_html(&n, friday(), None).contains(r#"name="filter""#));
+        assert_eq!(
+            stay_href(Some("agenda_change")),
+            "/notifications?kind=agenda_change"
+        );
+        for raw in [None, Some(""), Some("autre"), Some("agenda_change&x=1")] {
+            assert_eq!(stay_href(raw), "/notifications", "{raw:?}");
         }
     }
 
@@ -651,7 +775,7 @@ mod tests {
     #[test]
     fn an_unread_entry_is_marked_for_the_eye_and_the_ear() {
         let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
-        let html = row_html(&notification("agenda_reminder", at, false), friday());
+        let html = row_html(&notification("agenda_reminder", at, false), friday(), None);
         let id = Uuid::from_u128(7);
         assert!(
             html.contains(&format!(
@@ -678,7 +802,7 @@ mod tests {
     #[test]
     fn a_read_entry_carries_no_mark() {
         let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
-        let html = row_html(&notification("message", at, true), friday());
+        let html = row_html(&notification("message", at, true), friday(), None);
         assert!(html.contains(r#"class="secondary notif""#), "{html}");
         assert!(!html.contains("unread"), "{html}");
         assert!(!html.contains("Non lue"), "{html}");
@@ -690,7 +814,7 @@ mod tests {
         let at = Utc.with_ymd_and_hms(2026, 10, 30, 17, 30, 0).unwrap();
         let mut n = notification("grocery_item", at, false);
         n.body = "Sam a ajouté « <b>pain</b> » à la liste de courses.".to_string();
-        let html = row_html(&n, friday());
+        let html = row_html(&n, friday(), None);
         assert!(html.contains("&lt;b&gt;pain&lt;/b&gt;"), "{html}");
         assert!(!html.contains("<b>"), "{html}");
     }
@@ -720,7 +844,7 @@ mod tests {
                 true,
             ),
         ];
-        let html = groups_html(&list, today);
+        let html = groups_html(&list, today, None);
         let at = |needle: &str| {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle}: {html}"))
@@ -741,11 +865,11 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 10, 26, 9, 0, 0).unwrap(),
             false,
         )];
-        let html = groups_html(&list, friday());
+        let html = groups_html(&list, friday(), None);
         assert!(!html.contains("Aujourd’hui"), "{html}");
         assert!(html.contains("Cette semaine"), "{html}");
         assert!(!html.contains("Plus tôt"), "{html}");
-        assert_eq!(groups_html(&[], friday()), "");
+        assert_eq!(groups_html(&[], friday(), None), "");
     }
 
     #[test]

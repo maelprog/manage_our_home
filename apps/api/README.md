@@ -279,7 +279,8 @@ Seven other things run on this pool, and none is a request handler:
   does not bypass RLS, logs `stock expiry pass failed` at ERROR once an
   hour and writes nothing;
 - the **daily expiry recap** (#566, `src/jobs/stock_expiry_recap.rs`),
-  which every 5 minutes takes the active `users` whose recap hour
+  which every 5 minutes takes the active `users` who keep the recap on
+  (`expiry_digest_enabled`, #853), whose recap hour
   (`expiry_digest_hour`, Europe/Paris, #700) has come and who had no pass
   yet that day (`expiry_digest_sent_on`), reads the `stock_items` of their
   families of quantity > 0 whose expiry date is at most 3 days ahead,

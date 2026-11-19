@@ -1,7 +1,16 @@
 //! `/account/notifications` — how reminders reach the member (#306): by
-//! notification on their devices, by email, or both; the hour of their
-//! daily recap of the products nearing their expiry date (#700), saved by
-//! the same form; and this device's subscription.
+//! notification on their devices, by email, both or neither; their daily
+//! recap of the products nearing their expiry date, on or off, and its
+//! hour (#700); whether they are told of the additions, changes and
+//! deletions other members make to the agenda (#853); and this device's
+//! subscription.
+//!
+//! Every setting is a switch (`.switch`, #853) or the recap's hour, in one
+//! form sent whole as soon as one changes (`data-submit-on-change`, the
+//! mechanism of #844): the page comes back with « Préférence
+//! enregistrée. » and the focus on that switch (`data-keep-scroll`), the
+//! form's fields locked meanwhile (`data-lock-on-change`). « Enregistrer »
+//! is the fallback without the script (`app::submit_fallback`).
 //!
 //! **No fallback** (controller's decision of 2026-10-01): a member on
 //! notifications with no device subscribed receives no reminder at all,
@@ -41,7 +50,7 @@ use manage_our_home_shared::dto::notifications::{
     NotificationSettings, PushSubscriptionRequest, UpcomingReminder, UpdateNotificationSettings,
 };
 
-use crate::app::{html_escape, shell_with_header, Width};
+use crate::app::{html_escape, shell_with_header, submit_fallback, Width};
 use crate::assets::Script;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
@@ -52,21 +61,25 @@ use super::{account_cookie, account_header, service_unavailable_page};
 /// email choice of the form below, by its `id`.
 pub(crate) const EMAIL_CHOICE_HREF: &str = "/account/notifications#rappels-email";
 
-/// The three channels, as the API spells them, with the label of each.
-const CHANNELS: [(&str, &str); 3] = [
-    ("push", "Par notification sur mes appareils"),
-    ("email", "Par email"),
-    ("both", "Les deux"),
-];
-
 /// Whether `channel` sends notifications (`push` or `both`).
 pub(crate) fn includes_push(channel: &str) -> bool {
     matches!(channel, "push" | "both")
 }
 
-/// Whether `channel` is one the API takes.
-pub(crate) fn is_channel(channel: &str) -> bool {
-    CHANNELS.iter().any(|(value, _)| *value == channel)
+/// Whether `channel` sends emails (`email` or `both`).
+fn includes_email(channel: &str) -> bool {
+    matches!(channel, "email" | "both")
+}
+
+/// The channel of the two reminder switches (#853), as the API spells it:
+/// both off is `none`, the reminders in the notification centre alone.
+fn channel_of(push: bool, email: bool) -> &'static str {
+    match (push, email) {
+        (true, true) => "both",
+        (true, false) => "push",
+        (false, true) => "email",
+        (false, false) => "none",
+    }
 }
 
 /// The recap's hour as the form sends it, if it is one of the day's, 0 to
@@ -256,8 +269,12 @@ pub(crate) fn local_block(settings: &NotificationSettings) -> String {
     let email = email_choice_link();
     let on_email = if includes_push(&settings.reminder_channel) {
         ""
-    } else {
+    } else if includes_email(&settings.reminder_channel) {
         r#"<p class="muted">Vos rappels partent par email : aucun n'est programmé sur ce téléphone.</p>
+"#
+    } else {
+        // Both switches off (#853).
+        r#"<p class="muted">Vos rappels ne restent que dans vos notifications : aucun n'est programmé sur ce téléphone.</p>
 "#
     };
     format!(
@@ -435,40 +452,87 @@ fn notice_html(notice: Option<&str>) -> String {
         }
         _ => return String::new(),
     };
-    format!(r#"<p class="notice success">{}</p>"#, html_escape(text))
+    format!(
+        r#"<p class="notice success" role="status">{}</p>"#,
+        html_escape(text)
+    )
 }
 
 fn error_html(error: Option<&str>) -> String {
     let text = match error {
-        Some("invalid_channel") => "Choix invalide, merci de réessayer.",
         Some("invalid_hour") => "Heure invalide : choisissez une heure entre 0 h et 23 h.",
         Some("unavailable") => "Service momentanément indisponible, merci de réessayer.",
+        // A switch sent on change (#853): the page comes back from the
+        // server, the switch as it was saved.
+        Some("not_saved") => {
+            "Le réglage n’a pas pu être enregistré : il est revenu à son état précédent. Réessayez."
+        }
         _ => return String::new(),
     };
-    format!(r#"<p class="notice error">{}</p>"#, html_escape(text))
+    format!(
+        r#"<p class="notice error" role="alert">{}</p>"#,
+        html_escape(text)
+    )
+}
+
+/// One setting (#853): a native box with `role="switch"`, drawn as a
+/// switch by the sheet (`.switch`), at the left of its words on one row —
+/// the row is its label. Sent as soon as it changes.
+fn switch(name: &str, words: &str, on: bool, id: &str) -> String {
+    let checked = if on { " checked" } else { "" };
+    format!(
+        r#"<label class="switch"><input type="checkbox" role="switch" name="{name}"{id}{checked} data-submit-on-change><span>{words}</span></label>
+"#
+    )
 }
 
 /// The body of the page.
 fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> String {
-    let choices: String = CHANNELS
-        .iter()
-        .map(|(value, label)| {
-            let id = if *value == "email" {
-                r#" id="rappels-email""#
-            } else {
-                ""
-            };
-            let checked = if *value == settings.reminder_channel {
-                " checked"
-            } else {
-                ""
-            };
-            format!(
-                r#"<label class="field inline"><input type="radio" name="reminder_channel" value="{value}"{id}{checked}/> {label}</label>
-"#
-            )
-        })
-        .collect();
+    let channel = settings.reminder_channel.as_str();
+    let reminders = format!(
+        "{}{}",
+        switch(
+            "reminder_push",
+            "Par notification sur mes appareils",
+            includes_push(channel),
+            ""
+        ),
+        switch(
+            "reminder_email",
+            "Par email",
+            includes_email(channel),
+            r#" id="rappels-email""#
+        ),
+    );
+    let agenda = format!(
+        "{}{}{}",
+        switch(
+            "notify_agenda_added",
+            "Ajouts",
+            settings.notify_agenda_added,
+            ""
+        ),
+        switch(
+            "notify_agenda_changed",
+            "Modifications",
+            settings.notify_agenda_changed,
+            ""
+        ),
+        switch(
+            "notify_agenda_deleted",
+            "Suppressions",
+            settings.notify_agenda_deleted,
+            ""
+        ),
+    );
+    let recap = switch(
+        "expiry_digest",
+        "Récapitulatif quotidien",
+        settings.expiry_digest_enabled,
+        "",
+    );
+    // The recap off, its hour is kept, and may be changed: the hour it
+    // comes back at when switched on again.
     let hours: String = (0..24)
         .map(|hour| {
             let selected = if hour == settings.expiry_digest_hour {
@@ -513,16 +577,20 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
 <h1>Notifications de rappel</h1>
 {notice}{error}
 {about}
-<form method="post" action="/account/notifications">
+<p class="muted" data-shown-with-js hidden>Chaque réglage s’applique dès que vous le changez.</p>
+<form method="post" action="/account/notifications" data-keep-scroll data-lock-on-change>
 <fieldset class="card">
 <legend>Recevoir mes rappels</legend>
-{choices}</fieldset>
+{reminders}</fieldset>
 <fieldset class="card">
 <legend>Produits bientôt périmés</legend>
-<p>Chaque jour, à l'heure choisie (heure de Paris), un récapitulatif des produits de vos familles qui périment bientôt arrive dans vos notifications.</p>
-<label class="field">Heure du récapitulatif <select name="expiry_digest_hour">{hours}</select></label>
+{recap}<p>Chaque jour, à l'heure choisie (heure de Paris), un récapitulatif des produits de vos familles qui périment bientôt arrive dans vos notifications.</p>
+<label class="field">Heure du récapitulatif <select name="expiry_digest_hour" data-submit-on-change>{hours}</select></label>
 </fieldset>
-<button type="submit">Enregistrer</button>
+<fieldset class="card">
+<legend>Changements de l’agenda</legend>
+{agenda}</fieldset>
+{fallback}
 </form>
 <section class="card">
 <h2>Mes appareils</h2>
@@ -530,6 +598,7 @@ fn page_body(settings: &NotificationSettings, notice: &str, error: &str) -> Stri
 <p>{devices}</p>
 {remove}
 </section>"#,
+        fallback = submit_fallback("Enregistrer"),
     )
 }
 
@@ -559,29 +628,51 @@ pub async fn get(
     .into_response()
 }
 
-#[derive(serde::Deserialize)]
-pub struct ChannelForm {
-    #[serde(default)]
-    reminder_channel: String,
-    /// The recap's hour (#700). Absent, it stays as it is.
+/// The settings' form (#853): a switch ticked is sent as `name=on`, a
+/// switch off is not sent at all — every switch is then known, on or off.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct SettingsForm {
+    reminder_push: Option<String>,
+    reminder_email: Option<String>,
+    expiry_digest: Option<String>,
     expiry_digest_hour: Option<String>,
+    notify_agenda_added: Option<String>,
+    notify_agenda_changed: Option<String>,
+    notify_agenda_deleted: Option<String>,
 }
 
-/// `POST /account/notifications` — the channel form, with the recap's hour.
+/// What the form asks of the API: the whole of it, each switch on or off,
+/// and the recap's hour, kept and saved while the recap is off. `Err`
+/// holds the error of the page: an hour sent that is not one of the day's.
+fn settings_update(form: &SettingsForm) -> Result<UpdateNotificationSettings, &'static str> {
+    let expiry_digest_hour = form
+        .expiry_digest_hour
+        .as_deref()
+        .map(|text| parse_digest_hour(text).ok_or("invalid_hour"))
+        .transpose()?;
+    Ok(UpdateNotificationSettings {
+        reminder_channel: channel_of(form.reminder_push.is_some(), form.reminder_email.is_some())
+            .to_string(),
+        expiry_digest_hour,
+        expiry_digest_enabled: Some(form.expiry_digest.is_some()),
+        notify_agenda_added: Some(form.notify_agenda_added.is_some()),
+        notify_agenda_changed: Some(form.notify_agenda_changed.is_some()),
+        notify_agenda_deleted: Some(form.notify_agenda_deleted.is_some()),
+    })
+}
+
+/// `POST /account/notifications` — the whole form, sent on each change of
+/// a switch or of the hour (or by « Enregistrer » without JavaScript).
 pub async fn post(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(form): Form<ChannelForm>,
+    Form(form): Form<SettingsForm>,
 ) -> Response {
-    if !is_channel(&form.reminder_channel) {
-        return Redirect::to("/account/notifications?error=invalid_channel").into_response();
-    }
-    let digest_hour = match form.expiry_digest_hour.as_deref().map(parse_digest_hour) {
-        None => None,
-        Some(Some(hour)) => Some(hour),
-        Some(None) => {
-            return Redirect::to("/account/notifications?error=invalid_hour").into_response()
+    let update = match settings_update(&form) {
+        Ok(update) => update,
+        Err(code) => {
+            return Redirect::to(&format!("/account/notifications?error={code}")).into_response()
         }
     };
     let cookie = account_cookie(&headers);
@@ -590,24 +681,14 @@ pub async fn post(
         reqwest::Method::PUT,
         "/account/notifications",
         cookie.as_deref(),
-        Some(
-            serde_json::to_value(UpdateNotificationSettings {
-                reminder_channel: form.reminder_channel,
-                expiry_digest_hour: digest_hour,
-                notify_agenda_changes: None,
-            })
-            .unwrap(),
-        ),
+        Some(serde_json::to_value(update).unwrap()),
     )
     .await;
     let target = match result {
         Ok(resp) if resp.status == reqwest::StatusCode::NO_CONTENT => {
             "/account/notifications?notice=channel_saved"
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
-            "/account/notifications?error=invalid_channel"
-        }
-        _ => "/account/notifications?error=unavailable",
+        _ => "/account/notifications?error=not_saved",
     };
     Redirect::to(target).into_response()
 }
@@ -678,9 +759,271 @@ mod tests {
             reminder_channel: channel.into(),
             push_subscriptions: devices,
             vapid_public_key: Some("BKey-_0".into()),
+            expiry_digest_enabled: true,
             expiry_digest_hour: 9,
-            notify_agenda_changes: true,
+            notify_agenda_added: true,
+            notify_agenda_changed: true,
+            notify_agenda_deleted: true,
         }
+    }
+
+    // -- the switches (#853) ----------------------------------------------
+
+    /// The form as the browser sends it: a box ticked is `name=on`, a box
+    /// left off is not sent at all.
+    fn form(on: &[&str], hour: Option<&str>) -> SettingsForm {
+        let mut pairs: Vec<String> = on.iter().map(|name| format!("{name}=on")).collect();
+        if let Some(hour) = hour {
+            pairs.push(format!("expiry_digest_hour={hour}"));
+        }
+        serde_urlencoded::from_str(&pairs.join("&")).unwrap()
+    }
+
+    #[test]
+    fn the_two_reminder_switches_are_one_channel() {
+        assert_eq!(channel_of(true, false), "push");
+        assert_eq!(channel_of(false, true), "email");
+        assert_eq!(channel_of(true, true), "both");
+        assert_eq!(channel_of(false, false), "none");
+        for (push, email) in [(true, false), (false, true), (true, true), (false, false)] {
+            let channel = channel_of(push, email);
+            assert_eq!(
+                (includes_push(channel), includes_email(channel)),
+                (push, email),
+                "{channel}"
+            );
+        }
+    }
+
+    /// The whole form goes to the API on every change: every switch, on or
+    /// off, and the recap's hour — kept, and changed, while the recap is
+    /// off.
+    #[test]
+    fn the_whole_form_is_one_update() {
+        let all = form(
+            &[
+                "reminder_push",
+                "reminder_email",
+                "expiry_digest",
+                "notify_agenda_added",
+                "notify_agenda_changed",
+                "notify_agenda_deleted",
+            ],
+            Some("21"),
+        );
+        let update = settings_update(&all).unwrap();
+        assert_eq!(update.reminder_channel, "both");
+        assert_eq!(
+            (update.expiry_digest_enabled, update.expiry_digest_hour),
+            (Some(true), Some(21))
+        );
+        assert_eq!(
+            (
+                update.notify_agenda_added,
+                update.notify_agenda_changed,
+                update.notify_agenda_deleted
+            ),
+            (Some(true), Some(true), Some(true))
+        );
+
+        let none = settings_update(&form(&[], Some("18"))).unwrap();
+        assert_eq!(none.reminder_channel, "none");
+        assert_eq!(
+            (none.expiry_digest_enabled, none.expiry_digest_hour),
+            (Some(false), Some(18))
+        );
+        assert_eq!(
+            (
+                none.notify_agenda_added,
+                none.notify_agenda_changed,
+                none.notify_agenda_deleted
+            ),
+            (Some(false), Some(false), Some(false))
+        );
+
+        let some =
+            settings_update(&form(&["reminder_email", "notify_agenda_changed"], None)).unwrap();
+        assert_eq!(some.reminder_channel, "email");
+        assert_eq!(
+            (some.expiry_digest_enabled, some.expiry_digest_hour),
+            (Some(false), None)
+        );
+        assert_eq!(
+            (
+                some.notify_agenda_added,
+                some.notify_agenda_changed,
+                some.notify_agenda_deleted
+            ),
+            (Some(false), Some(true), Some(false))
+        );
+    }
+
+    /// An hour sent, recap on or off, must be one of the day's; an hour
+    /// left out is left as it is.
+    #[test]
+    fn an_hour_sent_is_one_of_the_day_s() {
+        for on in [&["expiry_digest"][..], &[]] {
+            for hour in ["24", "", "neuf", "-1"] {
+                assert_eq!(
+                    settings_update(&form(on, Some(hour))).unwrap_err(),
+                    "invalid_hour",
+                    "{on:?} {hour:?}"
+                );
+            }
+            let update = |hour| settings_update(&form(on, hour)).unwrap().expiry_digest_hour;
+            assert_eq!(update(Some("0")), Some(0), "{on:?}");
+            assert_eq!(update(None), None, "{on:?}");
+        }
+    }
+
+    /// The input of the switch named `name`, up to its `>`.
+    fn switch_input<'a>(body: &'a str, name: &str) -> &'a str {
+        let at = body
+            .find(&format!(r#"name="{name}""#))
+            .unwrap_or_else(|| panic!("{name}: {body}"));
+        let start = body[..at].rfind("<input").unwrap();
+        &body[start..at + body[at..].find('>').unwrap()]
+    }
+
+    /// Every setting is a switch at the left of its words, on one row: a
+    /// native box with `role="switch"`, ticked when on, sent as soon as it
+    /// changes. Labelled by the row it sits in.
+    #[test]
+    fn every_setting_is_a_switch_sent_on_change() {
+        let body = page_body(&settings("push", 0), "", "");
+        for (name, words) in [
+            ("reminder_push", "Par notification sur mes appareils"),
+            ("reminder_email", "Par email"),
+            ("expiry_digest", "Récapitulatif quotidien"),
+            ("notify_agenda_added", "Ajouts"),
+            ("notify_agenda_changed", "Modifications"),
+            ("notify_agenda_deleted", "Suppressions"),
+        ] {
+            let input = switch_input(&body, name);
+            assert!(
+                input.contains(r#"type="checkbox" role="switch""#),
+                "{input}"
+            );
+            assert!(input.contains(" data-submit-on-change"), "{input}");
+            assert!(
+                body.contains(&format!(r#"{input}><span>{words}</span></label>"#)),
+                "{name}: {body}"
+            );
+            let row = &body[..body.find(input).unwrap()];
+            assert!(row.ends_with(r#"<label class="switch">"#), "{name}");
+        }
+        // The radios are gone, and their « Les deux ».
+        assert!(!body.contains(r#"type="radio""#), "{body}");
+        assert!(!body.contains("Les deux"), "{body}");
+        // The email switch is where the warnings send.
+        assert!(switch_input(&body, "reminder_email").contains(r#"id="rappels-email""#));
+        // The hour is sent on change too; the form keeps the scroll, and
+        // its fields wait locked for the page to come back.
+        let select = &body[body.find(r#"<select name="expiry_digest_hour""#).unwrap()..];
+        assert!(
+            select.starts_with(r#"<select name="expiry_digest_hour" data-submit-on-change>"#),
+            "{select}"
+        );
+        assert!(
+            body.contains(r#"<form method="post" action="/account/notifications" data-keep-scroll data-lock-on-change>"#),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn each_switch_is_on_as_the_settings_say() {
+        let checked = |s: &NotificationSettings, name: &str| {
+            switch_input(&page_body(s, "", ""), name).contains(" checked")
+        };
+        let mut s = settings("push", 0);
+        assert!(checked(&s, "reminder_push"));
+        assert!(!checked(&s, "reminder_email"));
+        assert!(checked(&s, "expiry_digest"));
+        s = settings("both", 0);
+        assert!(checked(&s, "reminder_push") && checked(&s, "reminder_email"));
+        s = settings("none", 0);
+        assert!(!checked(&s, "reminder_push") && !checked(&s, "reminder_email"));
+        s.expiry_digest_enabled = false;
+        s.expiry_digest_hour = 18;
+        s.notify_agenda_changed = false;
+        assert!(!checked(&s, "expiry_digest"));
+        assert!(checked(&s, "notify_agenda_added"));
+        assert!(!checked(&s, "notify_agenda_changed"));
+        assert!(checked(&s, "notify_agenda_deleted"));
+        // The recap off, the hour shown is the member's, and may be changed.
+        let body = page_body(&s, "", "");
+        let (_, selected) = hour_options(&body);
+        assert_eq!(selected, ["18"]);
+        assert!(
+            body.contains(r#"<select name="expiry_digest_hour" data-submit-on-change>"#),
+            "{body}"
+        );
+    }
+
+    /// No « Enregistrer » with JavaScript (#853): a sentence says each
+    /// setting applies as it changes; the button and its sentence are the
+    /// fallback without the script.
+    #[test]
+    fn the_button_is_the_fallback_without_the_script() {
+        let body = page_body(&settings("push", 0), "", "");
+        assert!(
+            body.contains(
+                r#"<p class="muted" data-shown-with-js hidden>Chaque réglage s’applique dès que vous le changez.</p>"#
+            ),
+            "{body}"
+        );
+        let form = &body[body
+            .find("<form method=\"post\" action=\"/account/notifications\"")
+            .unwrap()..];
+        let form = &form[..form.find("</form>").unwrap()];
+        assert!(
+            form.contains(&format!(
+                "\n{}\n",
+                crate::app::submit_fallback("Enregistrer")
+            )),
+            "{form}"
+        );
+        assert_eq!(
+            body.matches(r#"<button type="submit">"#).count(),
+            0,
+            "{body}"
+        );
+    }
+
+    /// The agenda's card: three switches under its legend, the import not
+    /// named (#849 leaves it to the additions and changes).
+    #[test]
+    fn the_agenda_changes_have_their_card() {
+        let body = page_body(&settings("push", 0), "", "");
+        let card = &body[body
+            .find("<legend>Changements de l’agenda</legend>")
+            .expect("the card")..];
+        let card = &card[..card.find("</fieldset>").unwrap()];
+        for name in [
+            "notify_agenda_added",
+            "notify_agenda_changed",
+            "notify_agenda_deleted",
+        ] {
+            assert!(card.contains(&format!(r#"name="{name}""#)), "{name}");
+        }
+        assert!(!card.to_lowercase().contains("import"), "{card}");
+    }
+
+    #[test]
+    fn a_saved_setting_is_announced_and_a_failure_alerts() {
+        assert_eq!(
+            notice_html(Some("channel_saved")),
+            r#"<p class="notice success" role="status">Préférence enregistrée.</p>"#
+        );
+        let failed = error_html(Some("not_saved"));
+        assert!(
+            failed.starts_with(r#"<p class="notice error" role="alert">"#),
+            "{failed}"
+        );
+        assert!(failed.contains("revenu à son état précédent"), "{failed}");
+        // No form sends `invalid_channel` since the switches: any refusal
+        // of the API is `not_saved`.
+        assert_eq!(error_html(Some("invalid_channel")), "");
     }
 
     /// The `<option>`s of the recap's hour, and the value of the selected
@@ -713,16 +1056,11 @@ mod tests {
         }
         let body = page_body(&settings("push", 0), "", "");
         assert!(body.contains(r#"<option value="7">7 h</option>"#), "{body}");
-        // Labelled, in the form that saves the channel: one button.
+        // Labelled, in the form that saves the switches.
         assert!(
             body.contains(
-                r#"<label class="field">Heure du récapitulatif <select name="expiry_digest_hour">"#
+                r#"<label class="field">Heure du récapitulatif <select name="expiry_digest_hour" data-submit-on-change>"#
             ),
-            "{body}"
-        );
-        assert_eq!(
-            body.matches(r#"<button type="submit">"#).count(),
-            1,
             "{body}"
         );
         assert!(body.contains("heure de Paris"), "{body}");
@@ -755,17 +1093,8 @@ mod tests {
         assert!(includes_push("push"));
         assert!(includes_push("both"));
         assert!(!includes_push("email"));
+        assert!(!includes_push("none"));
         assert!(!includes_push(""));
-    }
-
-    #[test]
-    fn only_the_three_channels_are_channels() {
-        for c in ["push", "email", "both"] {
-            assert!(is_channel(c), "{c}");
-        }
-        for c in ["", "sms", "Push", "push "] {
-            assert!(!is_channel(c), "{c:?}");
-        }
     }
 
     #[test]
@@ -849,26 +1178,6 @@ mod tests {
         assert!(!html.contains("data-vapid-key"), "{html}");
         assert!(!html.contains("push-enable-button"), "{html}");
         assert!(!html.contains("<script"), "{html}");
-    }
-
-    #[test]
-    fn the_page_checks_the_current_channel_and_names_the_email_choice() {
-        for (channel, _) in CHANNELS {
-            let body = page_body(&settings(channel, 0), "", "");
-            let checked: Vec<&str> = body
-                .split("<input")
-                .skip(1)
-                .filter(|i| i.contains(" checked"))
-                .collect();
-            assert_eq!(checked.len(), 1, "{channel}: {checked:?}");
-            assert!(
-                checked[0].contains(&format!(r#"value="{channel}""#)),
-                "{channel}"
-            );
-        }
-        let body = page_body(&settings("push", 0), "", "");
-        assert!(body.contains(r#"id="rappels-email""#), "{body}");
-        assert!(body.contains(r#"value="email""#));
     }
 
     #[test]
@@ -1017,6 +1326,13 @@ mod tests {
         assert!(local_block(&settings("email", 0)).contains(told));
         assert!(!local_block(&settings("push", 0)).contains(told));
         assert!(!local_block(&settings("both", 0)).contains(told));
+        // Both switches off (#853): not by email either.
+        let none = local_block(&settings("none", 0));
+        assert!(!none.contains(told), "{none}");
+        assert!(
+            none.contains("aucun n'est programmé sur ce téléphone"),
+            "{none}"
+        );
     }
 
     fn api(status: u16, body: serde_json::Value) -> Result<crate::state::ApiResponse, String> {

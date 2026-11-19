@@ -6,8 +6,10 @@
 //! looks like to each member before and after the write — a private event
 //! (#620) is seen by its participants alone, and nobody is told of one they
 //! do not see, nor named its title. Who may be told at all, a database
-//! read: the family's members whose account is active and who keep
-//! `notify_agenda_changes` on (#848).
+//! read: the family's members whose account is active and who keep the
+//! switch of that news on — `notify_agenda_added`, `_changed` or
+//! `_deleted` (#853, one setting for all three until then); an import is
+//! told to those who keep the additions' or the changes' on.
 //!
 //! Not told, event by event: an event mirrored from an imported calendar —
 //! its rows are rewritten from the feed — nor the generated days (bank
@@ -154,25 +156,87 @@ pub(crate) fn visible_changes(before: &Visible<'_>, after: &Visible<'_>) -> Agen
     }
 }
 
+/// What a change tells: an event added, changed, deleted, or an import
+/// that added or changed several (#852).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum News {
+    Added,
+    Changed,
+    Deleted,
+    Imported,
+}
+
+/// A member's three switches of `/account/notifications` (#853):
+/// `users.notify_agenda_added`, `_changed` and `_deleted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AgendaSwitches {
+    pub added: bool,
+    pub changed: bool,
+    pub deleted: bool,
+}
+
+impl AgendaSwitches {
+    /// Whether the member is told of `news`. An import adds or changes
+    /// events: either switch lets it through.
+    pub fn wants(self, news: News) -> bool {
+        match news {
+            News::Added => self.added,
+            News::Changed => self.changed,
+            News::Deleted => self.deleted,
+            News::Imported => self.added || self.changed,
+        }
+    }
+}
+
+/// A member of the family who may be told of a change, with their
+/// switches.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Candidate {
+    pub id: Uuid,
+    pub switches: AgendaSwitches,
+}
+
+/// The `candidates` who want `news`, in their order.
+pub(crate) fn wanting(candidates: &[Candidate], news: News) -> Vec<Uuid> {
+    candidates
+        .iter()
+        .filter(|c| c.switches.wants(news))
+        .map(|c| c.id)
+        .collect()
+}
+
 /// The members of `group_id` who may be told of an agenda change: active
-/// accounts that keep `notify_agenda_changes` on. The author is among them;
-/// the functions above leave them out.
+/// accounts, with their switches ([`wanting`] keeps those who want a
+/// news). The author is among them; the functions above leave them out.
 pub(crate) async fn candidates(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     group_id: Uuid,
-) -> AppResult<Vec<Uuid>> {
-    Ok(sqlx::query_scalar!(
-        r#"SELECT gm.user_id
+) -> AppResult<Vec<Candidate>> {
+    let rows = sqlx::query!(
+        r#"SELECT gm.user_id, u.notify_agenda_added, u.notify_agenda_changed,
+                  u.notify_agenda_deleted
            FROM group_members gm
            JOIN users u ON u.id = gm.user_id
            WHERE gm.group_id = $1
              AND u.deactivated_at IS NULL AND u.deleted_at IS NULL
-             AND u.notify_agenda_changes
+             AND (u.notify_agenda_added OR u.notify_agenda_changed
+                  OR u.notify_agenda_deleted)
            ORDER BY gm.user_id"#,
         group_id,
     )
     .fetch_all(&mut **tx)
-    .await?)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| Candidate {
+            id: row.user_id,
+            switches: AgendaSwitches {
+                added: row.notify_agenda_added,
+                changed: row.notify_agenda_changed,
+                deleted: row.notify_agenda_deleted,
+            },
+        })
+        .collect())
 }
 
 /// Writes `event` for `recipients`, about the event `event_id`. Returns the
@@ -232,7 +296,7 @@ pub(crate) async fn tell_added(
     event_id: Uuid,
     shown: &Shown<'_>,
 ) -> AppResult<Vec<Uuid>> {
-    let candidates = candidates(tx, group_id).await?;
+    let candidates = wanting(&candidates(tx, group_id).await?, News::Added);
     let told = recipients(&candidates, author.id, &shown.audience);
     write(
         tx,
@@ -255,7 +319,7 @@ pub(crate) async fn tell_deleted(
     event_id: Uuid,
     shown: &Shown<'_>,
 ) -> AppResult<Vec<Uuid>> {
-    let candidates = candidates(tx, group_id).await?;
+    let candidates = wanting(&candidates(tx, group_id).await?, News::Deleted);
     let told = recipients(&candidates, author.id, &shown.audience);
     let event = center::Event::AgendaDeleted {
         author: author.name,
@@ -280,13 +344,21 @@ pub(crate) async fn tell_changed(
 ) -> AppResult<Vec<Uuid>> {
     let changes = visible_changes(&before.visible, &after.visible);
     let candidates = candidates(tx, group_id).await?;
-    let told = change_recipients(
-        &candidates,
+    let everyone: Vec<Uuid> = candidates.iter().map(|c| c.id).collect();
+    let mut told = change_recipients(
+        &everyone,
         author.id,
         &before.audience,
         &after.audience,
         changes,
     );
+    // Each told by the switch of what they are told (#853).
+    let (adds, changes_on) = (
+        wanting(&candidates, News::Added),
+        wanting(&candidates, News::Changed),
+    );
+    told.added.retain(|member| adds.contains(member));
+    told.changed.retain(|member| changes_on.contains(member));
     let mut written = write(
         tx,
         group_id,
@@ -339,7 +411,7 @@ pub(crate) async fn tell_imported(
             assignees: &row.assignees,
         })
         .collect();
-    let candidates = candidates(tx, group_id).await?;
+    let candidates = wanting(&candidates(tx, group_id).await?, News::Imported);
     let counts = import_counts(&candidates, author.id, &audiences);
     // One INSERT per distinct count: the text differs by count alone.
     let mut by_count: std::collections::BTreeMap<usize, Vec<Uuid>> = Default::default();
@@ -457,6 +529,73 @@ mod tests {
             created_by,
             assignees: &[],
         }
+    }
+
+    // -- AgendaSwitches::wants, wanting (#853) ----------------------------
+
+    fn switches(added: bool, changed: bool, deleted: bool) -> AgendaSwitches {
+        AgendaSwitches {
+            added,
+            changed,
+            deleted,
+        }
+    }
+
+    #[test]
+    fn each_switch_lets_its_own_news_through() {
+        let only = |news| {
+            [
+                (switches(true, false, false), News::Added),
+                (switches(false, true, false), News::Changed),
+                (switches(false, false, true), News::Deleted),
+            ]
+            .into_iter()
+            .filter(|(s, _)| s.wants(news))
+            .map(|(_, n)| n)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(only(News::Added), [News::Added]);
+        assert_eq!(only(News::Changed), [News::Changed]);
+        assert_eq!(only(News::Deleted), [News::Deleted]);
+        for news in [News::Added, News::Changed, News::Deleted, News::Imported] {
+            assert!(switches(true, true, true).wants(news), "{news:?}");
+            assert!(!switches(false, false, false).wants(news), "{news:?}");
+        }
+    }
+
+    /// An import adds or changes events (#852): told to a member who keeps
+    /// either switch on, never on the deletions' alone.
+    #[test]
+    fn an_import_is_news_for_the_additions_or_the_changes() {
+        assert!(switches(true, false, false).wants(News::Imported));
+        assert!(switches(false, true, false).wants(News::Imported));
+        assert!(!switches(false, false, true).wants(News::Imported));
+    }
+
+    #[test]
+    fn wanting_keeps_the_candidates_order_and_drops_the_others() {
+        let candidates = [
+            Candidate {
+                id: uid(3),
+                switches: switches(true, false, true),
+            },
+            Candidate {
+                id: uid(1),
+                switches: switches(false, true, false),
+            },
+            Candidate {
+                id: uid(2),
+                switches: switches(true, true, false),
+            },
+        ];
+        assert_eq!(wanting(&candidates, News::Added), [uid(3), uid(2)]);
+        assert_eq!(wanting(&candidates, News::Changed), [uid(1), uid(2)]);
+        assert_eq!(wanting(&candidates, News::Deleted), [uid(3)]);
+        assert_eq!(
+            wanting(&candidates, News::Imported),
+            [uid(3), uid(1), uid(2)]
+        );
+        assert_eq!(wanting(&[], News::Added), Vec::<Uuid>::new());
     }
 
     // -- Audience::sees ---------------------------------------------------

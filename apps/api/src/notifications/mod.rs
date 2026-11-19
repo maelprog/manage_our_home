@@ -1,8 +1,10 @@
 //! How a member receives their reminders (#306): by notification on the
-//! devices they subscribed (the default for a new account), by email, or
-//! both. One choice per account, `users.reminder_channel`, read by the
-//! reminder worker at send time — so switching to email covers the
-//! reminders already set, not only the next ones.
+//! devices they subscribed (the default for a new account), by email,
+//! both, or neither (#853: both switches of `/account/notifications` off,
+//! the reminders reach the notification centre alone). One choice per
+//! account, `users.reminder_channel`, read by the reminder worker at send
+//! time — so switching to email covers the reminders already set, not only
+//! the next ones.
 //!
 //! No fallback from one channel to the other (controller's decision of
 //! 2026-10-01): a member who chose notifications and has no device
@@ -21,15 +23,18 @@ pub enum ReminderChannel {
     Push,
     Email,
     Both,
+    /// `none` (#853): neither notification nor email; the centre only.
+    Off,
 }
 
 impl ReminderChannel {
-    /// The column's value, as the `CHECK` of migration 0020 spells it.
+    /// The column's value, as the `CHECK` of migration 0063 spells it.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "push" => Some(ReminderChannel::Push),
             "email" => Some(ReminderChannel::Email),
             "both" => Some(ReminderChannel::Both),
+            "none" => Some(ReminderChannel::Off),
             _ => None,
         }
     }
@@ -39,6 +44,7 @@ impl ReminderChannel {
             ReminderChannel::Push => "push",
             ReminderChannel::Email => "email",
             ReminderChannel::Both => "both",
+            ReminderChannel::Off => "none",
         }
     }
 
@@ -88,11 +94,12 @@ mod tests {
     }
 
     #[test]
-    fn the_three_values_round_trip() {
+    fn the_four_values_round_trip() {
         for (text, channel) in [
             ("push", ReminderChannel::Push),
             ("email", ReminderChannel::Email),
             ("both", ReminderChannel::Both),
+            ("none", ReminderChannel::Off),
         ] {
             assert_eq!(ReminderChannel::parse(text), Some(channel));
             assert_eq!(channel.as_str(), text);
@@ -115,5 +122,7 @@ mod tests {
             (false, true)
         );
         assert_eq!((Both.includes_push(), Both.includes_email()), (true, true));
+        // #853: both switches off, the reminders reach the centre alone.
+        assert_eq!((Off.includes_push(), Off.includes_email()), (false, false));
     }
 }
