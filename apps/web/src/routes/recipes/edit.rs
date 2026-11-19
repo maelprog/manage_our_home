@@ -96,7 +96,11 @@ pub async fn get(
         Err(resp) => return *resp,
     };
 
-    if !can_modify(&fam.role, recipe.created_by == me.user_id) {
+    if !can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        recipe.created_by == me.user_id,
+    ) {
         return forbidden_page().into_response();
     }
 

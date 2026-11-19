@@ -11,7 +11,8 @@
 //! Permission bar (mirrors `apps/api/src/recipes/mod.rs::can_modify`): any
 //! family member may create/read a recipe or log a meal, so those controls
 //! render for everyone; the edit link and delete button render only for the
-//! recipe's creator or a group admin/owner. The backend stays the authority
+//! recipe's creator or a member whose role meets the family's `recipes_edit`
+//! threshold (#866, admin/owner by default). The backend stays the authority
 //! (a forged edit/delete/log is still 403'd, mapped defensively here).
 
 pub mod allergy;
@@ -40,6 +41,7 @@ use manage_our_home_shared::dto::recipes::{
     PlannedSelection, PlannedSelectionList, RecipeSelectionResponse, SelectRecipeRequest,
     UpdateSelectionRequest,
 };
+use manage_our_home_shared::validation::groups::{role_meets, Feature};
 use manage_our_home_shared::validation::recipes::{parse_servings, SERVINGS_MAX};
 use uuid::Uuid;
 
@@ -58,6 +60,9 @@ pub(crate) struct FamilyContext {
     pub gid: Uuid,
     pub name: String,
     pub role: String,
+    /// The family's `recipes_edit` threshold (#866): from which role a member
+    /// edits or deletes what another member wrote (`can_modify`).
+    pub edit_min_role: String,
     pub header: String,
 }
 
@@ -74,17 +79,20 @@ pub(crate) async fn family_context(
         gid: g.group_id,
         name: g.name.clone(),
         role: g.role.clone(),
+        edit_min_role: g.min_role(Feature::RecipesEdit).to_string(),
         header,
     })
 }
 
 /// Mirror of `apps/api/src/recipes/mod.rs::can_modify`: the recipe's
-/// creator, or a group owner/admin, may edit or delete it. Used to decide
+/// creator, or a member whose role meets `min_role`, the family's
+/// `recipes_edit` threshold (#866, `admin` by default), may edit or delete
+/// it. Used to decide
 /// whether to render the edit/delete controls (the backend still 403s a
 /// forged request). Create/read/log-a-meal are *not* gated by this — they're
 /// open to any member.
-pub(crate) fn can_modify(role: &str, is_creator: bool) -> bool {
-    is_creator || role == "owner" || role == "admin"
+pub(crate) fn can_modify(role: &str, min_role: &str, is_creator: bool) -> bool {
+    is_creator || role_meets(role, min_role)
 }
 
 /// Fetches `cookie_of` for a Recipes handler (re-exported so the submodules
@@ -673,20 +681,39 @@ pub(crate) fn forbidden_page() -> Html<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn creator_can_modify_regardless_of_role() {
-        assert!(can_modify("standard", true));
-    }
+    /// Every role × threshold × authorship (#866), written out rather than
+    /// derived: the creator always may; anyone else when their role meets
+    /// the family's threshold, the owner whatever it says.
+    const CAN_MODIFY_CASES: [(&str, &str, bool, bool); 18] = [
+        ("standard", "standard", false, true),
+        ("standard", "admin", false, false),
+        ("standard", "owner", false, false),
+        ("admin", "standard", false, true),
+        ("admin", "admin", false, true),
+        ("admin", "owner", false, false),
+        ("owner", "standard", false, true),
+        ("owner", "admin", false, true),
+        ("owner", "owner", false, true),
+        ("standard", "standard", true, true),
+        ("standard", "admin", true, true),
+        ("standard", "owner", true, true),
+        ("admin", "standard", true, true),
+        ("admin", "admin", true, true),
+        ("admin", "owner", true, true),
+        ("owner", "standard", true, true),
+        ("owner", "admin", true, true),
+        ("owner", "owner", true, true),
+    ];
 
     #[test]
-    fn owner_and_admin_can_modify_others_recipes() {
-        assert!(can_modify("owner", false));
-        assert!(can_modify("admin", false));
-    }
-
-    #[test]
-    fn standard_member_cannot_modify_another_members_recipe() {
-        assert!(!can_modify("standard", false));
+    fn can_modify_follows_the_threshold_and_spares_the_creator() {
+        for (role, min_role, creator, expected) in CAN_MODIFY_CASES {
+            assert_eq!(
+                can_modify(role, min_role, creator),
+                expected,
+                "{role} under {min_role}, creator: {creator}"
+            );
+        }
     }
 
     #[test]

@@ -79,8 +79,9 @@ failed, so that the error banner above the list is seen. Any member may check/un
 ### Edit/delete on a per-item screen, behind `can_modify`
 
 `/grocery-list/:item_id` is the item's edit screen (name / quantity / unit)
-with a delete action, both reserved for the item's **creator or a group
-admin/owner** (`can_modify`, mirrored from
+with a delete action, both reserved for the item's **creator or a member
+meeting the family's `grocery_edit` threshold** (#866, admin/owner by
+default; `can_modify`, mirrored from
 `apps/api/src/grocery_list/mod.rs`). A non-permitted member GETting it sees
 the forbidden page; on the list, the per-row "Modifier" link renders only
 for items they may modify. The backend stays the authority — a forged
@@ -210,15 +211,19 @@ pre-validated by the shared `validate_item_form`.
 ## Permission bar (front mirror of `grocery_list::can_modify`)
 
 Backend bar (`apps/api/src/grocery_list/mod.rs::can_modify`): the item's
-creator, or a group **owner/admin**, may edit (name/quantity/unit) or delete
+creator, or a member whose role meets the family's `grocery_edit`
+threshold (#866; **admin/owner** by default, which the owner may lower to
+`standard` or raise to `owner`), may edit (name/quantity/unit) or delete
 it; **any** member may create, read, or **check off** an item. The front
 mirrors it (`manage_our_home_shared::validation::grocery_list::can_modify`,
-unit-tested, re-exported by `routes/grocery_list`):
+unit-tested, re-exported by `routes/grocery_list`, with the threshold
+`GET /groups` hands apps/web):
 
 - The inline add form, the generate button, and every row's check control
   render for **every** member.
 - The per-row **Modifier** link and the edit screen's edit/delete controls
-  render only when `can_modify(role, is_creator)`; a standard member sees
+  render only when `can_modify(role, min_role, is_creator)`; a member below
+  the threshold sees
   no "Modifier" link on another member's item, and GETting its edit screen
   gets the forbidden page.
 

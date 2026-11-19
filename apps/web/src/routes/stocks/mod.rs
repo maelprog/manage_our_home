@@ -8,7 +8,8 @@
 //! Permission bar (#19 + follow-up #39): the backend runs a two-tier bar. A
 //! **quantity-only** PATCH is open to any family member (shared inventory), so
 //! the adjust form renders for everyone; the full-record edit and delete stay
-//! behind `can_modify` (creator or group admin/owner), so the edit link and
+//! behind `can_modify` (creator, or a member whose role meets the family's
+//! `stocks_edit` threshold, #866: admin/owner by default), so the edit link and
 //! delete button render only for those users. The backend stays the authority
 //! (a forged full-edit/delete is still 403'd, mapped defensively here). An
 //! adjustment to 0 of an article without a reorder threshold removes it
@@ -34,6 +35,7 @@ use leptos::prelude::*;
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::dto::stocks::PlannedUsage;
+use manage_our_home_shared::validation::groups::{role_meets, Feature};
 use manage_our_home_shared::validation::stocks::{format_quantity, ExpiryStatus};
 use uuid::Uuid;
 
@@ -51,6 +53,9 @@ pub(crate) struct FamilyContext {
     /// The family's name, which the add sheet is headed with (#527).
     pub name: String,
     pub role: String,
+    /// The family's `stocks_edit` threshold (#866): from which role a member
+    /// edits or deletes what another member added (`can_modify`).
+    pub edit_min_role: String,
     pub header: String,
 }
 
@@ -67,17 +72,19 @@ pub(crate) async fn family_context(
         gid: g.group_id,
         name: g.name.clone(),
         role: g.role.clone(),
+        edit_min_role: g.min_role(Feature::StocksEdit).to_string(),
         header,
     })
 }
 
 /// Mirror of `apps/api/src/stocks/mod.rs::can_modify`: the item's creator, or a
-/// group owner/admin, may edit the full record or delete it. Used to decide
+/// member whose role meets `min_role`, the family's `stocks_edit` threshold
+/// (#866, `admin` by default), may edit the full record or delete it. Used to decide
 /// whether to render the edit/delete controls (the backend still 403s a forged
 /// request). Quantity adjustment is *not* gated by this — it's open to any
 /// member (issue #39).
-pub(crate) fn can_modify(role: &str, is_creator: bool) -> bool {
-    is_creator || role == "owner" || role == "admin"
+pub(crate) fn can_modify(role: &str, min_role: &str, is_creator: bool) -> bool {
+    is_creator || role_meets(role, min_role)
 }
 
 /// Fetches `cookie_of` for a Stocks handler (re-exported so the submodules
@@ -209,6 +216,41 @@ pub(crate) const THRESHOLD_TOO_LARGE_MESSAGE: &str =
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// Every role × threshold × authorship (#866), written out rather than
+    /// derived: the creator always may; anyone else when their role meets
+    /// the family's threshold, the owner whatever it says.
+    const CAN_MODIFY_CASES: [(&str, &str, bool, bool); 18] = [
+        ("standard", "standard", false, true),
+        ("standard", "admin", false, false),
+        ("standard", "owner", false, false),
+        ("admin", "standard", false, true),
+        ("admin", "admin", false, true),
+        ("admin", "owner", false, false),
+        ("owner", "standard", false, true),
+        ("owner", "admin", false, true),
+        ("owner", "owner", false, true),
+        ("standard", "standard", true, true),
+        ("standard", "admin", true, true),
+        ("standard", "owner", true, true),
+        ("admin", "standard", true, true),
+        ("admin", "admin", true, true),
+        ("admin", "owner", true, true),
+        ("owner", "standard", true, true),
+        ("owner", "admin", true, true),
+        ("owner", "owner", true, true),
+    ];
+
+    #[test]
+    fn can_modify_follows_the_threshold_and_spares_the_creator() {
+        for (role, min_role, creator, expected) in CAN_MODIFY_CASES {
+            assert_eq!(
+                can_modify(role, min_role, creator),
+                expected,
+                "{role} under {min_role}, creator: {creator}"
+            );
+        }
+    }
 
     #[test]
     fn the_too_large_messages_write_the_shared_bound() {

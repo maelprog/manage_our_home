@@ -455,6 +455,7 @@ pub async fn get(
         plus = icon(Icon::Plus),
         list = sections_html(&items, fam.reaches_budget, |item| can_modify(
             &fam.role,
+            &fam.edit_min_role,
             item.created_by == me.user_id
         )),
         suggestions = suggestions_html(suggestions.as_deref()),

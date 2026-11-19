@@ -8,8 +8,9 @@
 //!
 //! Permission bar: the log-a-meal form renders for **any** family member
 //! (feeding the shared variety history); the edit link and delete button
-//! render only for the recipe's creator or a group admin/owner
-//! (`can_modify`). A standard member viewing another member's recipe still
+//! render only for the recipe's creator or a member whose role meets the
+//! family's `recipes_edit` threshold (`can_modify`, #866). A member below it
+//! viewing another member's recipe still
 //! gets the log form, plus a muted note that editing/deleting is reserved.
 //! The backend stays the authority — a forged edit/DELETE/log is 403'd and
 //! mapped defensively here.
@@ -232,7 +233,11 @@ pub async fn get(
     } else {
         String::new()
     };
-    let can_edit = can_modify(&fam.role, recipe.created_by == me.user_id);
+    let can_edit = can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        recipe.created_by == me.user_id,
+    );
     // Planned in place of another (#816): « X remplacé par Y. ».
     let replaced = match (query.notice.as_deref(), query.from.as_deref()) {
         (Some("recipe_replaced"), from) => {

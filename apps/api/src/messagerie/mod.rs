@@ -13,11 +13,14 @@ use uuid::Uuid;
 
 use crate::messagerie::messages::MessageResponse;
 
-/// Same permission bar as Stocks/Recipes/Grocery list (Budget is owner/admin
-/// only since #531): any member may create or read a message, but only the
-/// message's author or a group admin/owner may edit or delete it.
-pub(crate) fn can_modify(actor_role: &str, actor_is_creator: bool) -> bool {
-    actor_is_creator || actor_role == "owner" || actor_role == "admin"
+use crate::groups::access::role_meets;
+
+/// Same permission bar as Stocks/Recipes/Grocery list: any member may create
+/// or read a message, but only the message's author or a member whose role
+/// meets `min_role`, the family's `messagerie_moderate` threshold (#866,
+/// `admin` by default), may edit or delete it.
+pub(crate) fn can_modify(actor_role: &str, min_role: &str, actor_is_creator: bool) -> bool {
+    actor_is_creator || role_meets(actor_role, min_role)
 }
 
 /// WS push events, tagged by `type`, mirroring the REST `MessageResponse`
@@ -318,19 +321,38 @@ mod tests {
         }
     }
 
-    #[test]
-    fn author_can_modify_own_message() {
-        assert!(can_modify("standard", true));
-    }
+    /// Every role × threshold × authorship (#866), written out rather than
+    /// derived: the creator always may; anyone else when their role meets
+    /// the family's threshold, the owner whatever it says.
+    const CASES: [(&str, &str, bool, bool); 18] = [
+        ("standard", "standard", false, true),
+        ("standard", "admin", false, false),
+        ("standard", "owner", false, false),
+        ("admin", "standard", false, true),
+        ("admin", "admin", false, true),
+        ("admin", "owner", false, false),
+        ("owner", "standard", false, true),
+        ("owner", "admin", false, true),
+        ("owner", "owner", false, true),
+        ("standard", "standard", true, true),
+        ("standard", "admin", true, true),
+        ("standard", "owner", true, true),
+        ("admin", "standard", true, true),
+        ("admin", "admin", true, true),
+        ("admin", "owner", true, true),
+        ("owner", "standard", true, true),
+        ("owner", "admin", true, true),
+        ("owner", "owner", true, true),
+    ];
 
     #[test]
-    fn non_author_standard_cannot_modify() {
-        assert!(!can_modify("standard", false));
-    }
-
-    #[test]
-    fn admin_and_owner_can_modify_others_messages() {
-        assert!(can_modify("admin", false));
-        assert!(can_modify("owner", false));
+    fn can_modify_follows_the_threshold_and_spares_the_author() {
+        for (role, min_role, author, expected) in CASES {
+            assert_eq!(
+                can_modify(role, min_role, author),
+                expected,
+                "{role} under {min_role}, author: {author}"
+            );
+        }
     }
 }

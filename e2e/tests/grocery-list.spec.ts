@@ -16,7 +16,8 @@ test.beforeEach(async ({ context }) => {
 // docs/front-epic-6-grocery-list.md). One shared list per family; any member
 // may add/read/check off, so every member sees the check control; the per-row
 // "Modifier" link and the edit/delete screen stay behind can_modify
-// (creator/admin/owner). Generate is idempotent — a re-run adds nothing.
+// (the creator, or a role meeting the family's `grocery_edit` threshold, #866 —
+// admin/owner by default). Generate is idempotent — a re-run adds nothing.
 // It takes the recipes « À réaliser » only (#470), scaled to their number of
 // people.
 

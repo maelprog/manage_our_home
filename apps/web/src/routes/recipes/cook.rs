@@ -59,7 +59,11 @@ pub async fn get(
         }
         _ => return service_unavailable_page().into_response(),
     };
-    let can_edit = can_modify(&fam.role, recipe.created_by == me.user_id);
+    let can_edit = can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        recipe.created_by == me.user_id,
+    );
     Html(page(&fam.header, &recipe, can_edit)).into_response()
 }
 

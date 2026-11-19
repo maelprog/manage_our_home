@@ -8,7 +8,8 @@
 //!   the backend checks them, so the first error the form surfaces is the one
 //!   a forged request would hit.
 //! - `can_modify` mirrors `apps/api/src/grocery_list/mod.rs::can_modify`: the
-//!   item's creator, or a group owner/admin, may edit or delete it. Any member
+//!   item's creator, or a member whose role meets the family's
+//!   `grocery_edit` threshold (#866), may edit or delete it. Any member
 //!   may create/read/check off (that lighter bar is *not* gated here).
 //! - `fmt_num` / `quantity_label` format the optional quantity/unit for
 //!   display and form pre-fill (no trailing `.0` on whole numbers).
@@ -69,12 +70,14 @@ pub fn normalize_unit(quantity: Option<f64>, unit: Option<&str>) -> Option<Strin
 }
 
 /// Mirror of `apps/api/src/grocery_list/mod.rs::can_modify`: the item's
-/// creator, or a group owner/admin, may edit or delete it. Used to decide
+/// creator, or a member whose role meets `min_role`, the family's
+/// `grocery_edit` threshold (#866, `admin` by default), may edit or delete
+/// it. Used to decide
 /// whether to render the edit/delete controls (the backend still 403s a
 /// forged request). Create/read/check-off are *not* gated by this — they're
 /// open to any member.
-pub fn can_modify(role: &str, is_creator: bool) -> bool {
-    is_creator || role == "owner" || role == "admin"
+pub fn can_modify(role: &str, min_role: &str, is_creator: bool) -> bool {
+    is_creator || super::groups::role_meets(role, min_role)
 }
 
 /// Formats an `f64` quantity for display and form pre-fill without a trailing
@@ -193,20 +196,39 @@ mod tests {
 
     // -- can_modify ----------------------------------------------------------
 
-    #[test]
-    fn creator_can_modify_regardless_of_role() {
-        assert!(can_modify("standard", true));
-    }
+    /// Every role × threshold × authorship (#866), written out rather than
+    /// derived: the creator always may; anyone else when their role meets
+    /// the family's threshold, the owner whatever it says.
+    const CAN_MODIFY_CASES: [(&str, &str, bool, bool); 18] = [
+        ("standard", "standard", false, true),
+        ("standard", "admin", false, false),
+        ("standard", "owner", false, false),
+        ("admin", "standard", false, true),
+        ("admin", "admin", false, true),
+        ("admin", "owner", false, false),
+        ("owner", "standard", false, true),
+        ("owner", "admin", false, true),
+        ("owner", "owner", false, true),
+        ("standard", "standard", true, true),
+        ("standard", "admin", true, true),
+        ("standard", "owner", true, true),
+        ("admin", "standard", true, true),
+        ("admin", "admin", true, true),
+        ("admin", "owner", true, true),
+        ("owner", "standard", true, true),
+        ("owner", "admin", true, true),
+        ("owner", "owner", true, true),
+    ];
 
     #[test]
-    fn owner_and_admin_can_modify_others_items() {
-        assert!(can_modify("owner", false));
-        assert!(can_modify("admin", false));
-    }
-
-    #[test]
-    fn standard_member_cannot_modify_another_members_item() {
-        assert!(!can_modify("standard", false));
+    fn can_modify_follows_the_threshold_and_spares_the_creator() {
+        for (role, min_role, creator, expected) in CAN_MODIFY_CASES {
+            assert_eq!(
+                can_modify(role, min_role, creator),
+                expected,
+                "{role} under {min_role}, creator: {creator}"
+            );
+        }
     }
 
     // -- fmt_num / quantity_label -------------------------------------------

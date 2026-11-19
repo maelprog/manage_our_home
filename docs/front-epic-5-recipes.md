@@ -192,14 +192,17 @@ non-permitted user GETting it gets the forbidden page.
 ## Permission bar (front mirror of `recipes::can_modify`)
 
 Backend bar (`apps/api/src/recipes/mod.rs::can_modify`): the recipe's
-creator, or a group **owner/admin**, may update or delete it; **any**
-member may create, read, or log a meal. The front mirrors it
-(`routes/recipes::can_modify`, unit-tested):
+creator, or a member whose role meets the family's `recipes_edit`
+threshold (#866; **admin/owner** by default, which the owner may lower to
+`standard` or raise to `owner`), may update or delete it; **any** member
+may create, read, or log a meal. The front mirrors it
+(`routes/recipes::can_modify`, unit-tested, with the threshold
+`GET /groups` hands apps/web):
 
 - Create, read, and the **log-a-meal** form render for every member.
 - The **edit link** and **delete button** render only when
-  `can_modify(role, is_creator)`; a standard member viewing another
-  member's recipe sees a muted "Seul le créateur ou un administrateur…"
+  `can_modify(role, min_role, is_creator)`; a member below the threshold
+  viewing another member's recipe sees a muted "Seul le créateur ou un administrateur…"
   note instead.
 
 The backend stays the authority: a forged edit/delete/log is still

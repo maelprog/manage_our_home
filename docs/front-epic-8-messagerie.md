@@ -268,16 +268,20 @@ and both surface the same copy.
 ## Permission bar (front mirror of `messagerie::can_modify`)
 
 Backend bar (`apps/api/src/messagerie/mod.rs::can_modify`): the message's
-**author**, or a group **owner/admin**, may edit or delete it; **any** member may
+**author**, or a member whose role meets the family's `messagerie_moderate`
+threshold (#866; **admin/owner** by default, which the owner may lower to
+`standard` or raise to `owner`), may edit or delete it; **any** member may
 read the thread, post a message, and open the WS. The front mirrors it
 (`manage_our_home_shared::validation::messagerie::can_modify`, unit-tested,
-re-exported by `routes/messagerie`):
+re-exported by `routes/messagerie`, with the threshold `GET /groups` hands
+apps/web):
 
 - The thread, the composer, the `Charger les messages plus anciens` link and the
   live channel render for **every** member.
 - A row's `Modifier` disclosure and `Supprimer` button render only when
-  `can_modify(role, is_author)` — a standard member sees neither on another
-  member's message, while an admin/owner sees both on every message.
+  `can_modify(role, min_role, is_author)` — a member below the threshold sees
+  neither on another member's message, while one meeting it sees both on
+  every message.
 
 The backend stays the authority: a forged edit/delete is still `403`'d and
 mapped to the forbidden page per the tables above.
