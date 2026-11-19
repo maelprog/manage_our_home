@@ -1445,15 +1445,15 @@ fn deletion(scope: EditScope, produced_before: u32) -> Deletion {
 
 /// Tells the members who saw `event` that the caller deleted it, from its
 /// occurrence at `from` on (#849). Its `object_id` stays the event's id,
-/// whether the row is gone or not. Returns the members told, to push once
-/// committed (#851).
+/// whether the row is gone or not. Returns the entries written, to push
+/// once committed (#851).
 async fn tell_deleted_from(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     auth: &AuthUser,
     event: &EventRow,
     assignees: &[Uuid],
     from: DateTime<Utc>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<crate::notifications::center::Entry>> {
     let seen = shown(event, assignees);
     let gone = Shown {
         visible: Visible {

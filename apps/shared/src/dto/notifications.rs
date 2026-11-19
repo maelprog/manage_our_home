@@ -63,11 +63,27 @@ pub struct UpdateNotificationSettings {
 }
 
 /// `POST /account/push-subscriptions`: the endpoint of the browser's
-/// `PushSubscription`, and nothing else of it.
+/// `PushSubscription`, and its keys (#862), which a push's payload is
+/// encrypted with. Also `POST /account/push-subscriptions/received`,
+/// without keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PushSubscriptionRequest {
     pub endpoint: String,
+    /// `PushSubscription.toJSON().keys`. Left out by a page of before
+    /// #862: the device is then pushed without payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<PushSubscriptionKeys>,
+}
+
+/// The keys of a push subscription, base64url as the browser gives them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PushSubscriptionKeys {
+    /// The browser's P-256 public key, uncompressed point.
+    pub p256dh: String,
+    /// The 16-byte authentication secret.
+    pub auth: String,
 }
 
 /// One entry of the notification centre (#534), `GET /notifications`.

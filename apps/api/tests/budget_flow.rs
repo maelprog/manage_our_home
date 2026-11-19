@@ -2790,11 +2790,14 @@ async fn push_alerts_follows_each_member_s_channel(db: PgPool) {
     }
 
     let pushed = std::sync::Mutex::new(Vec::new());
-    let send_push = |endpoint: String, ttl: i64| {
-        pushed.lock().unwrap().push((endpoint, ttl));
-        async { manage_our_home::notifications::push::PushOutcome::Delivered }
-    };
-    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &ids)
+    let send_push =
+        |endpoint: String,
+         ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            pushed.lock().unwrap().push((endpoint, ttl));
+            async { manage_our_home::notifications::push::PushOutcome::Delivered }
+        };
+    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &entries_of(&ids))
         .await
         .unwrap();
     let mut pushed = pushed.into_inner().unwrap();
@@ -3660,4 +3663,16 @@ async fn cap_alerts_follow_the_family_s_threshold(db: PgPool) {
             );
         }
     }
+}
+
+/// An entry of the notification centre for each of `members` (#862): what
+/// a push names.
+fn entries_of(members: &[uuid::Uuid]) -> Vec<manage_our_home::notifications::center::Entry> {
+    members
+        .iter()
+        .map(|&member| manage_our_home::notifications::center::Entry {
+            member,
+            id: uuid::Uuid::new_v4(),
+        })
+        .collect()
 }

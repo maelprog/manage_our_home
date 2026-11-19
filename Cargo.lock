@@ -2464,6 +2464,7 @@ dependencies = [
  "argon2",
  "aws-config",
  "aws-credential-types",
+ "aws-lc-rs",
  "aws-sdk-s3",
  "axum",
  "base64 0.23.1",

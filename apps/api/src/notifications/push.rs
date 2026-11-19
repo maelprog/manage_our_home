@@ -1,17 +1,20 @@
 //! Web Push (RFC 8030) with VAPID (RFC 8292), for the reminders sent as a
 //! notification (#306) and the budget alerts (#536).
 //!
-//! **No payload.** A push message carries no body at all: the service
-//! worker (`apps/web/src/sw.js`) asks the site which kind of push its
-//! device got ([`Pending`]) and shows that kind's fixed text — « Rappel
-//! d'un événement à venir », « Alerte de budget », a neutral one when it
-//! cannot tell —, and the event's title is read in the
-//! application, after the click. So nothing about the event — not
-//! its title, not an identifier — ever reaches the push service (Mozilla,
-//! Google, Apple, Microsoft), and there is no payload to encrypt
-//! (RFC 8291): the subscription's `p256dh`/`auth` keys are not even
-//! stored. What the push service learns is that this server sent this
-//! device a message at that time.
+//! **No text in the payload.** The service worker (`apps/web/src/sw.js`)
+//! asks the site which kind of push its device got ([`Pending`]) and shows
+//! that kind's fixed text — « Rappel d'un événement à venir », « Alerte de
+//! budget », a neutral one when it cannot tell —, and the event's title is
+//! read in the application, after the click. The payload names only the
+//! entries of the notification centre the push stands for ([`payload`],
+//! #862: opaque UUIDs, user's decision of 2026-11-19), so that the click
+//! marks them read; it is encrypted for the browser that subscribed
+//! ([`encrypt`], RFC 8291) with its subscription's keys
+//! (`push_subscriptions.p256dh`/`auth`). A device registered without them
+//! is pushed with no body at all. Nothing about the event — not its title,
+//! not its identifier — ever reaches the push service (Mozilla, Google,
+//! Apple, Microsoft): it learns that this server sent this device a
+//! message at that time, and its length.
 //!
 //! **The endpoint is user input that the server then POSTs to.** Left
 //! open, `POST /account/push-subscriptions` would make the reminder worker
@@ -275,7 +278,7 @@ impl PendingKind {
 /// (`push_subscriptions.pending_*`, migration 0037), so that the service
 /// worker shows the text of the push it got, and not that of another.
 ///
-/// A push carries nothing: the worker asks on each one which kind it is
+/// A push carries no kind (#862: only entry ids): the worker asks on each one which kind it is
 /// ([`pending_on_receipt`]). Each push is counted before it is sent
 /// ([`pending_after_push`]) and each receipt takes one off. While the
 /// pushes pending are all of one kind, a receipt can only be one of them;
@@ -389,6 +392,157 @@ pub fn pending_on_receipt(pending: Pending, now: DateTime<Utc>) -> (Option<PushK
         Pending { count, ..pending }
     };
     (shown, after)
+}
+
+/// The two keys of a browser's push subscription (RFC 8291 §2), which a
+/// payload is encrypted for: its P-256 public key and its authentication
+/// secret. Never shown in a log.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SubscriberKeys {
+    /// The uncompressed point, 65 bytes.
+    p256dh: [u8; 65],
+    auth: [u8; 16],
+}
+
+impl std::fmt::Debug for SubscriberKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubscriberKeys").finish_non_exhaustive()
+    }
+}
+
+/// Why a subscription's keys are refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeysError {
+    /// Not base64url.
+    NotBase64,
+    /// Not the uncompressed form of a point of P-256.
+    BadPublicKey,
+    /// Not 16 bytes.
+    BadAuthSecret,
+}
+
+/// The keys as `PushSubscription.toJSON().keys` gives them: base64url,
+/// padded or not.
+pub fn parse_keys(p256dh: &str, auth: &str) -> Result<SubscriberKeys, KeysError> {
+    let decode = |text: &str| {
+        URL_SAFE_NO_PAD
+            .decode(text.trim().trim_end_matches('='))
+            .map_err(|_| KeysError::NotBase64)
+    };
+    let (p256dh, auth) = (decode(p256dh)?, decode(auth)?);
+    // The uncompressed form only (0x04 || x || y), and a point of the
+    // curve: no key agreement is ever attempted with anything else.
+    let p256dh: [u8; 65] = p256dh.try_into().map_err(|_| KeysError::BadPublicKey)?;
+    if p256dh[0] != 0x04 || p256::PublicKey::from_sec1_bytes(&p256dh).is_err() {
+        return Err(KeysError::BadPublicKey);
+    }
+    let auth: [u8; 16] = auth.try_into().map_err(|_| KeysError::BadAuthSecret)?;
+    Ok(SubscriberKeys { p256dh, auth })
+}
+
+/// Most entries of the notification centre one push names: a push stands
+/// for one entry, or for one per family of its member (the daily expiry
+/// recap). Beyond, it names none, and its click marks nothing read.
+pub const MAX_PAYLOAD_ENTRIES: usize = 20;
+
+/// The payload of a push standing for `entries` of the notification
+/// centre: their identifiers and nothing else, `{"entries":[…]}`. `None` —
+/// no payload — for no entry, or more than [`MAX_PAYLOAD_ENTRIES`].
+pub fn payload(entries: &[uuid::Uuid]) -> Option<Vec<u8>> {
+    if entries.is_empty() || entries.len() > MAX_PAYLOAD_ENTRIES {
+        return None;
+    }
+    serde_json::to_vec(&serde_json::json!({ "entries": entries })).ok()
+}
+
+/// The record size of every push: one record (RFC 8188 §2), its plaintext
+/// bounded well below by [`MAX_PAYLOAD_ENTRIES`].
+const RECORD_SIZE: u32 = 4096;
+
+/// `plaintext` encrypted for `keys`, as the body of a push (RFC 8291:
+/// the `aes128gcm` content coding of RFC 8188), under a key pair and a
+/// salt drawn for this message alone. `None` if the keys cannot be agreed
+/// with, or the plaintext does not fit one record.
+pub fn encrypt(plaintext: &[u8], keys: &SubscriberKeys) -> Option<Vec<u8>> {
+    use aws_lc_rs::agreement;
+    let sender = agreement::PrivateKey::generate(&agreement::ECDH_P256).ok()?;
+    let mut salt = [0u8; 16];
+    aws_lc_rs::rand::fill(&mut salt).ok()?;
+    encrypt_from(plaintext, keys, &sender, &salt)
+}
+
+/// [`encrypt`] with the sender's private key (a P-256 scalar, 32 bytes)
+/// and the salt given: the test vector of RFC 8291 Appendix A.
+#[cfg(test)]
+fn encrypt_with(
+    plaintext: &[u8],
+    keys: &SubscriberKeys,
+    sender_private: &[u8],
+    salt: &[u8; 16],
+) -> Option<Vec<u8>> {
+    use aws_lc_rs::agreement;
+    let sender =
+        agreement::PrivateKey::from_private_key(&agreement::ECDH_P256, sender_private).ok()?;
+    encrypt_from(plaintext, keys, &sender, salt)
+}
+
+/// RFC 8291 §3.4 and RFC 8188 §2: the header (salt, record size, the
+/// sender's public key as key id), then the one record, plaintext and
+/// its delimiter `0x02`, under AES-128-GCM.
+fn encrypt_from(
+    plaintext: &[u8],
+    keys: &SubscriberKeys,
+    sender: &aws_lc_rs::agreement::PrivateKey,
+    salt: &[u8; 16],
+) -> Option<Vec<u8>> {
+    use aws_lc_rs::{aead, agreement, hkdf};
+
+    // The delimiter and the tag, 17 bytes, in the record too.
+    if plaintext.len() + 17 > RECORD_SIZE as usize {
+        return None;
+    }
+    let sender_public = sender.compute_public_key().ok()?;
+    let sender_public = sender_public.as_ref();
+    let peer = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, keys.p256dh);
+    let shared = agreement::agree(sender, peer, (), |secret| Ok(secret.to_vec())).ok()?;
+
+    struct Len(usize);
+    impl hkdf::KeyType for Len {
+        fn len(&self) -> usize {
+            self.0
+        }
+    }
+    let derive = |salt: &[u8], ikm: &[u8], info: &[u8], len: usize| -> Option<Vec<u8>> {
+        let mut out = vec![0u8; len];
+        hkdf::Salt::new(hkdf::HKDF_SHA256, salt)
+            .extract(ikm)
+            .expand(&[info], Len(len))
+            .ok()?
+            .fill(&mut out)
+            .ok()?;
+        Some(out)
+    };
+    let key_info = [b"WebPush: info\0".as_slice(), &keys.p256dh, sender_public].concat();
+    let ikm = derive(&keys.auth, &shared, &key_info, 32)?;
+    let cek = derive(salt, &ikm, b"Content-Encoding: aes128gcm\0", 16)?;
+    let nonce = derive(salt, &ikm, b"Content-Encoding: nonce\0", 12)?;
+
+    let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &cek).ok()?);
+    let mut record = [plaintext, &[0x02]].concat();
+    key.seal_in_place_append_tag(
+        aead::Nonce::try_assume_unique_for_key(&nonce).ok()?,
+        aead::Aad::empty(),
+        &mut record,
+    )
+    .ok()?;
+
+    let mut body = Vec::with_capacity(86 + record.len());
+    body.extend_from_slice(salt);
+    body.extend_from_slice(&RECORD_SIZE.to_be_bytes());
+    body.push(u8::try_from(sender_public.len()).ok()?);
+    body.extend_from_slice(sender_public);
+    body.extend_from_slice(&record);
+    Some(body)
 }
 
 /// How long a VAPID token is valid. RFC 8292 caps it at 24 hours.
@@ -506,13 +660,25 @@ pub fn client() -> reqwest::Client {
         .expect("static reqwest configuration")
 }
 
-/// Sends one push without payload to `endpoint`. The endpoint is checked
-/// again here, whatever was stored: only a push service is ever requested.
+/// What a push carries (#862): [`payload`], in the clear until [`send`]
+/// encrypts it for the device's `keys`.
+#[derive(Debug, Clone)]
+pub struct Payload {
+    pub keys: SubscriberKeys,
+    pub plaintext: Vec<u8>,
+}
+
+/// Sends one push to `endpoint`: `payload` encrypted for its device
+/// ([`encrypt`]), or no body at all — no payload, or one that could not be
+/// encrypted: the device then shows its text without marking anything
+/// read on the click. The endpoint is checked again here, whatever was
+/// stored: only a push service is ever requested.
 pub async fn send(
     client: &reqwest::Client,
     vapid: &Vapid,
     endpoint: &str,
     ttl_secs: i64,
+    payload: Option<&Payload>,
 ) -> PushOutcome {
     let url = match validate_endpoint(endpoint) {
         Ok(url) => url,
@@ -520,14 +686,20 @@ pub async fn send(
         Err(_) => return PushOutcome::Gone,
     };
     let authorization = vapid.authorization(&audience(&url), Utc::now());
-    let response = client
+    let request = client
         .post(url)
         .header("TTL", ttl_secs.to_string())
         .header("Urgency", "normal")
-        .header("Authorization", authorization)
-        .header("Content-Length", "0")
-        .send()
-        .await;
+        .header("Authorization", authorization);
+    let body = payload.and_then(|p| encrypt(&p.plaintext, &p.keys));
+    let request = match body {
+        Some(body) => request
+            .header("Content-Encoding", "aes128gcm")
+            .header("Content-Type", "application/octet-stream")
+            .body(body),
+        None => request.header("Content-Length", "0"),
+    };
+    let response = request.send().await;
     match response {
         Ok(response) => classify(response.status().as_u16()),
         // The error's text can carry the endpoint; keep the kind only.
@@ -935,6 +1107,7 @@ mod tests {
             &vapid(),
             &format!("http://127.0.0.1:{port}/push"),
             60,
+            None,
         )
         .await;
 
@@ -1117,5 +1290,167 @@ mod tests {
             pending_after_unanswered(Pending::default()),
             Pending::default()
         );
+    }
+
+    // -- the payload (#862) ----------------------------------------------------
+
+    fn b64(text: &str) -> Vec<u8> {
+        URL_SAFE_NO_PAD.decode(text).unwrap()
+    }
+
+    // RFC 8291, Appendix A.
+    const UA_PUBLIC: &str =
+        "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+    const UA_PRIVATE: &str = "q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94";
+    const AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
+    const AS_PRIVATE: &str = "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw";
+    const SALT: &str = "DGv6ra1nlYgDCS1FRnbzlw";
+
+    fn rfc_keys() -> SubscriberKeys {
+        parse_keys(UA_PUBLIC, AUTH).unwrap()
+    }
+
+    #[test]
+    fn the_keys_of_a_subscription_are_read_from_base64url() {
+        let keys = rfc_keys();
+        assert_eq!(keys.p256dh.to_vec(), b64(UA_PUBLIC));
+        assert_eq!(keys.auth.to_vec(), b64(AUTH));
+        // Padded, as some browsers give them.
+        assert_eq!(
+            parse_keys(&format!("{UA_PUBLIC}="), "BTBZMqHH6r4Tts7J_aSIgg==").unwrap(),
+            keys
+        );
+        // And never shown.
+        assert_eq!(format!("{keys:?}"), "SubscriberKeys { .. }");
+    }
+
+    #[test]
+    fn keys_that_are_not_a_subscription_s_are_refused() {
+        assert_eq!(parse_keys("not base64!", AUTH), Err(KeysError::NotBase64));
+        assert_eq!(parse_keys(UA_PUBLIC, "*"), Err(KeysError::NotBase64));
+        // The compressed form, 33 bytes.
+        let mut compressed = b64(UA_PUBLIC)[..33].to_vec();
+        compressed[0] = 0x02;
+        assert_eq!(
+            parse_keys(&URL_SAFE_NO_PAD.encode(&compressed), AUTH),
+            Err(KeysError::BadPublicKey)
+        );
+        // 65 bytes, but off the curve.
+        let mut off = b64(UA_PUBLIC);
+        off[64] ^= 1;
+        assert_eq!(
+            parse_keys(&URL_SAFE_NO_PAD.encode(&off), AUTH),
+            Err(KeysError::BadPublicKey)
+        );
+        assert_eq!(parse_keys("", AUTH), Err(KeysError::BadPublicKey));
+        assert_eq!(
+            parse_keys(UA_PUBLIC, &URL_SAFE_NO_PAD.encode([0u8; 15])),
+            Err(KeysError::BadAuthSecret)
+        );
+        assert_eq!(
+            parse_keys(UA_PUBLIC, &URL_SAFE_NO_PAD.encode([0u8; 32])),
+            Err(KeysError::BadAuthSecret)
+        );
+    }
+
+    #[test]
+    fn the_payload_names_the_entries_and_nothing_else() {
+        let a = uuid::Uuid::from_u128(1);
+        let b = uuid::Uuid::from_u128(2);
+        let one: serde_json::Value = serde_json::from_slice(&payload(&[a]).unwrap()).unwrap();
+        assert_eq!(one, serde_json::json!({ "entries": [a.to_string()] }));
+        let two: serde_json::Value = serde_json::from_slice(&payload(&[a, b]).unwrap()).unwrap();
+        assert_eq!(
+            two,
+            serde_json::json!({ "entries": [a.to_string(), b.to_string()] })
+        );
+    }
+
+    #[test]
+    fn no_entry_or_too_many_is_no_payload() {
+        assert_eq!(payload(&[]), None);
+        let many: Vec<uuid::Uuid> = (0..=MAX_PAYLOAD_ENTRIES as u128)
+            .map(uuid::Uuid::from_u128)
+            .collect();
+        assert_eq!(payload(&many), None);
+        let payload = payload(&many[..MAX_PAYLOAD_ENTRIES]).unwrap();
+        // Well within one record (`RECORD_SIZE`), header and tag included.
+        assert!(payload.len() + 86 + 1 + 16 <= 4096, "{}", payload.len());
+    }
+
+    /// RFC 8291, Appendix A: the same keys, salt and plaintext give the
+    /// same message, byte for byte.
+    #[test]
+    fn the_rfc_8291_example_is_encrypted_byte_for_byte() {
+        let plaintext = b64("V2hlbiBJIGdyb3cgdXAsIEkgd2FudCB0byBiZSBhIHdhdGVybWVsb24");
+        let salt: [u8; 16] = b64(SALT).try_into().unwrap();
+        let body = encrypt_with(&plaintext, &rfc_keys(), &b64(AS_PRIVATE), &salt).unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(body),
+            "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+        );
+    }
+
+    /// The browser's side of RFC 8291: what it reads of `body` with its
+    /// private key.
+    fn decrypt(body: &[u8]) -> Vec<u8> {
+        use aws_lc_rs::{aead, agreement, hkdf};
+        let (salt, rest) = body.split_at(16);
+        assert_eq!(&rest[..4], &4096u32.to_be_bytes());
+        assert_eq!(rest[4], 65);
+        let (sender_public, ciphertext) = rest[5..].split_at(65);
+        let ua = agreement::PrivateKey::from_private_key(&agreement::ECDH_P256, &b64(UA_PRIVATE))
+            .unwrap();
+        let ua_public = b64(UA_PUBLIC);
+        let peer = agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, sender_public);
+        let shared = agreement::agree(&ua, peer, (), |s| Ok(s.to_vec())).unwrap();
+        struct Len(usize);
+        impl hkdf::KeyType for Len {
+            fn len(&self) -> usize {
+                self.0
+            }
+        }
+        let expand = |salt: &[u8], ikm: &[u8], info: &[u8], len: usize| {
+            let mut out = vec![0u8; len];
+            hkdf::Salt::new(hkdf::HKDF_SHA256, salt)
+                .extract(ikm)
+                .expand(&[info], Len(len))
+                .unwrap()
+                .fill(&mut out)
+                .unwrap();
+            out
+        };
+        let key_info = [b"WebPush: info\0".as_slice(), &ua_public, sender_public].concat();
+        let ikm = expand(&b64(AUTH), &shared, &key_info, 32);
+        let cek = expand(salt, &ikm, b"Content-Encoding: aes128gcm\0", 16);
+        let nonce = expand(salt, &ikm, b"Content-Encoding: nonce\0", 12);
+        let key = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &cek).unwrap());
+        let mut buffer = ciphertext.to_vec();
+        let plain = key
+            .open_in_place(
+                aead::Nonce::try_assume_unique_for_key(&nonce).unwrap(),
+                aead::Aad::empty(),
+                &mut buffer,
+            )
+            .unwrap();
+        // The last record's delimiter, no padding.
+        assert_eq!(plain.last(), Some(&2));
+        plain[..plain.len() - 1].to_vec()
+    }
+
+    #[test]
+    fn a_payload_is_read_back_by_the_browser_alone() {
+        let entry = uuid::Uuid::from_u128(7);
+        let plaintext = payload(&[entry]).unwrap();
+        let first = encrypt(&plaintext, &rfc_keys()).unwrap();
+        let second = encrypt(&plaintext, &rfc_keys()).unwrap();
+        assert_eq!(decrypt(&first), plaintext);
+        assert_eq!(decrypt(&second), plaintext);
+        // A salt and a key pair of its own for each message.
+        assert_ne!(first[..16], second[..16]);
+        assert_ne!(first[21..86], second[21..86]);
+        // Nothing of the identifier in the clear.
+        let id = entry.to_string();
+        assert!(!first.windows(id.len()).any(|w| w == id.as_bytes()));
     }
 }

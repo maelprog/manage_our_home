@@ -110,10 +110,15 @@ pub async fn update_settings(
 }
 
 /// `POST /account/push-subscriptions` — registers this device's endpoint
-/// for the caller: 201. 400 `invalid_push_endpoint` for anything but a
-/// browser push service's URL (`push::validate_endpoint`: the reminder
-/// worker will POST to it), 409 `push_not_configured` on a server without
-/// a VAPID key, where no browser could have subscribed anyway.
+/// for the caller, and its subscription's keys (#862): 201. 400
+/// `invalid_push_endpoint` for anything but a browser push service's URL
+/// (`push::validate_endpoint`: the reminder worker will POST to it), 400
+/// `invalid_push_keys` for keys that are not a subscription's
+/// (`push::parse_keys`), 409 `push_not_configured` on a server without a
+/// VAPID key, where no browser could have subscribed anyway.
+///
+/// Without keys (a page of before #862), the device keeps those it was
+/// registered with, if any; with none, it is pushed without payload.
 ///
 /// An endpoint already registered — this device, subscribed under another
 /// account that signed in on it before — moves to the caller: a device
@@ -137,7 +142,7 @@ pub async fn update_settings(
     request_body = PushSubscriptionRequest,
     responses(
         (status = 201, description = "Push subscription stored"),
-        (status = 400, description = "`invalid_push_endpoint`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`invalid_push_endpoint` or `invalid_push_keys`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 409, description = "`push_not_configured`: the server has no VAPID key", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
     ),
@@ -153,6 +158,14 @@ pub async fn subscribe(
     }
     let endpoint = validate_endpoint(&body.endpoint)
         .map_err(|_| AppError::BadRequest("invalid_push_endpoint".into()))?;
+    if let Some(keys) = &body.keys {
+        push::parse_keys(&keys.p256dh, &keys.auth)
+            .map_err(|_| AppError::BadRequest("invalid_push_keys".into()))?;
+    }
+    let (p256dh, auth_secret) = match &body.keys {
+        Some(keys) => (Some(keys.p256dh.as_str()), Some(keys.auth.as_str())),
+        None => (None, None),
+    };
     let mut tx = crate::db::begin(&state.db).await?;
     sqlx::query!(
         "SELECT id FROM users WHERE id = $1 FOR UPDATE",
@@ -161,10 +174,13 @@ pub async fn subscribe(
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query!(
-        r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at)
-           VALUES ($1, $2, clock_timestamp(), clock_timestamp())
+        r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at, p256dh, auth)
+           VALUES ($1, $2, clock_timestamp(), clock_timestamp(), $3, $4)
            ON CONFLICT (endpoint) DO UPDATE SET
                last_seen_at = EXCLUDED.last_seen_at,
+               p256dh = COALESCE(EXCLUDED.p256dh, push_subscriptions.p256dh),
+               auth = CASE WHEN EXCLUDED.p256dh IS NULL
+                   THEN push_subscriptions.auth ELSE EXCLUDED.auth END,
                user_id = EXCLUDED.user_id,
                created_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
                    THEN push_subscriptions.created_at ELSE EXCLUDED.created_at END,
@@ -181,7 +197,9 @@ pub async fn subscribe(
                pending_until = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
                    THEN push_subscriptions.pending_until END"#,
         auth.user_id,
-        endpoint.as_str()
+        endpoint.as_str(),
+        p256dh,
+        auth_secret,
     )
     .execute(&mut *tx)
     .await?;
@@ -205,7 +223,7 @@ pub async fn subscribe(
 pub const MAX_DEVICES_PER_ACCOUNT: i64 = 50;
 
 /// `POST /account/push-subscriptions/received`, `{"endpoint": …}` — what
-/// the service worker asks on each push, which carries nothing: 200
+/// the service worker asks on each push, which carries no text: 200
 /// `{"kind": …}`, the kind of notification this device got
 /// (`push::pending_on_receipt`), `null` for the neutral text — pushes of
 /// two kinds on their way, none pending, or an endpoint that is not one of

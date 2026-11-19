@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at, p256dh, auth)\n           VALUES ($1, $2, clock_timestamp(), clock_timestamp(), $3, $4)\n           ON CONFLICT (endpoint) DO UPDATE SET\n               last_seen_at = EXCLUDED.last_seen_at,\n               p256dh = COALESCE(EXCLUDED.p256dh, push_subscriptions.p256dh),\n               auth = CASE WHEN EXCLUDED.p256dh IS NULL\n                   THEN push_subscriptions.auth ELSE EXCLUDED.auth END,\n               user_id = EXCLUDED.user_id,\n               created_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.created_at ELSE EXCLUDED.created_at END,\n               last_success_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.last_success_at END,\n               consecutive_failures = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.consecutive_failures ELSE 0 END,\n               failing_since = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.failing_since END,\n               pending_push_kind = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.pending_push_kind END,\n               pending_pushes = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.pending_pushes ELSE 0 END,\n               pending_until = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.pending_until END",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c475486da6bf5758e685cb39fd1b8430fb235cc3c3a19cbb01693640628a105c"
+}

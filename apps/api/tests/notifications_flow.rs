@@ -223,7 +223,12 @@ async fn pass(db: &PgPool, email_ok: bool) {
             Err(anyhow::anyhow!("smtp down"))
         }
     };
-    let send_push = |_endpoint: String, _ttl: i64| async { PushOutcome::Delivered };
+    let send_push =
+        |_endpoint: String,
+         _ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| async {
+            PushOutcome::Delivered
+        };
     send_due_notifications(db, "https://maison.example", send, send_push)
         .await
         .unwrap();
@@ -869,11 +874,14 @@ async fn the_recap_push_follows_each_member_s_channel(db: PgPool) {
     let done = recap(&db, today, 9).await.unwrap();
     assert_eq!(done.recipients.len(), 3);
     let pushed = std::sync::Mutex::new(Vec::new());
-    let send_push = |endpoint: String, _ttl: i64| {
-        pushed.lock().unwrap().push(endpoint);
-        async { PushOutcome::Delivered }
-    };
-    push_recap(&db, &send_push, &done.recipients).await.unwrap();
+    let send_push =
+        |endpoint: String,
+         _ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            pushed.lock().unwrap().push(endpoint);
+            async { PushOutcome::Delivered }
+        };
+    push_recap(&db, &send_push, &done.entries).await.unwrap();
     let mut pushed = pushed.into_inner().unwrap();
     pushed.sort();
     assert_eq!(
@@ -904,11 +912,14 @@ async fn the_recap_is_pushed_to_the_members_who_have_a_device(db: PgPool) {
 
     let done = recap(&db, today, 9).await.unwrap();
     let pushed = std::sync::Mutex::new(Vec::new());
-    let send_push = |endpoint: String, ttl: i64| {
-        pushed.lock().unwrap().push((endpoint, ttl));
-        async { PushOutcome::Delivered }
-    };
-    push_recap(&db, &send_push, &done.recipients).await.unwrap();
+    let send_push =
+        |endpoint: String,
+         ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            pushed.lock().unwrap().push((endpoint, ttl));
+            async { PushOutcome::Delivered }
+        };
+    push_recap(&db, &send_push, &done.entries).await.unwrap();
     assert_eq!(
         pushed.into_inner().unwrap(),
         [(endpoint.to_string(), RECAP_PUSH_TTL_SECS)]
