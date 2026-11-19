@@ -9,6 +9,8 @@
   reposent sur un volume chiffré (LUKS, #380).
 - `docker-prune.sh` — purge périodique des ressources Docker.
 - `mcp-playwright.sh` — serveur MCP Playwright, en conteneur (`.mcp.json`).
+- `attack-bench/bench.sh` — banc d'attaque local : pile jetable et foyers
+  fictifs, cible locale uniquement (`docs/guides/banc-attaque.md`).
 
 ## Purge Docker (`docker-prune.sh`)
 
