@@ -71,7 +71,9 @@ pub enum AliasError {
     UnknownTag { line: usize, tag: String },
     /// The taxonomy already gives the name that tag.
     Redundant { line: usize },
-    /// With the alias, the name resolves to another tag, or to none.
+    /// With the alias, the name, with its accents or without them,
+    /// resolves to another tag, or to none (`resolved`: the first of the
+    /// two that does).
     Ambiguous {
         line: usize,
         resolved: Option<String>,
@@ -166,8 +168,10 @@ impl Taxonomy {
     /// name shared by unrelated categories is still no tag. Every alias that
     /// does not end up naming its tag is reported: a malformed line, a tag
     /// the taxonomy lacks (the alias is then dropped), a name the taxonomy
-    /// already gives that tag, or a name that resolves to another tag, or
-    /// to none, once the alias joins it.
+    /// already gives that tag, or a name that, once the alias joins it,
+    /// resolves to another tag, or to none, with its accents or without
+    /// them. An alias only joins those two keys, so an alias without error
+    /// changes no other name.
     pub fn parse_with_aliases(tsv: &str, aliases: &str) -> (Taxonomy, Vec<AliasError>) {
         let rows: Vec<(&str, &str, &str)> = tsv
             .lines()
@@ -286,8 +290,13 @@ impl Taxonomy {
             if exact.or(folded) == Some(tag) {
                 errors.push(AliasError::Redundant { line });
             } else {
-                let resolved = taxonomy.canonical_ingredient(name);
-                if resolved != Some(tag) {
+                // Both keys the alias joins, accents kept and folded, must
+                // now name its tag: otherwise a name that had a tag, or the
+                // alias itself, lost it to the shared-name rule.
+                let exact = taxonomy.exact.get(&normalize(name, false)).copied();
+                let folded = taxonomy.folded.get(&normalize(name, true)).copied();
+                let wrong = [exact, folded].into_iter().find(|&r| r != Some(tag));
+                if let Some(resolved) = wrong {
                     errors.push(AliasError::Ambiguous {
                         line,
                         resolved: resolved.map(|t| taxonomy.id(t).to_string()),
@@ -694,6 +703,21 @@ en:potatoes\t\tPommes de terre
             ]
         );
         assert_eq!(canon(&t, "beurre"), None);
+    }
+
+    #[test]
+    fn an_alias_that_takes_its_folded_spelling_from_another_tag_is_ambiguous() {
+        // The accented spelling is new, but without accents it is the
+        // taxonomy's "Crème fraiche": that name would lose its tag.
+        let (t, errors) = with_aliases("crème fraîche\ten:eggs\n");
+        assert_eq!(
+            errors,
+            vec![AliasError::Ambiguous {
+                line: 1,
+                resolved: None
+            }]
+        );
+        assert_eq!(canon(&t, "creme fraiche"), None);
     }
 
     #[test]

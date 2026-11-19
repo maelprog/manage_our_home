@@ -32,7 +32,9 @@ build script and `off-categories-fr.tsv.gz` are unchanged. An alias is one
 more French name of its category, under the same rules as Open Food Facts'
 names: a name two unrelated categories share is still no tag. A test fails
 when a line names a category the taxonomy lacks, repeats a name the taxonomy
-already gives that category, or does not end up naming its category.
+already gives that category, or does not end up naming its category, with
+its accents or without them (a name that loses its tag to an alias is caught
+that way).
 
 **Origin.** These aliases are written for manage_our_home, not taken from
 Open Food Facts; only the category ids they point to are Open Food Facts'.
