@@ -364,6 +364,9 @@ label, .field { display: flex; flex-direction: column; gap: var(--s1); font-size
 .switch input:checked::after { left: 23px; background: var(--accent-fg); }
 .switch :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch input:disabled { opacity: 0.6; cursor: progress; }
+/* Locked while its form is sent: the whole pill fades, words with the
+   radio, as the mock-up of #867 draws the family's thresholds. */
+.pick:has(:disabled) { opacity: 0.6; cursor: progress; }
 @media (forced-colors: active) { .switch input::after { background: CanvasText; } }
 input, select, textarea {
   font-size: var(--t-base);
@@ -1237,6 +1240,17 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 .when-form fieldset, fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
 .when-form legend, .plain > legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
 .when-form .when-state { flex: 1 0 100%; }
+/* « Accès » of the family's settings (#867): a fieldset per feature, a
+   --line between them, its legend a bold line of body text. Floated, the
+   legend leaves the border it would otherwise sit in. The status line,
+   empty until its choice is sent, takes no room. */
+.access fieldset { margin: 0; padding: var(--s3) 0 0; border: 0; border-top: 1px solid var(--line); min-width: 0; }
+.access fieldset:first-of-type { padding-top: 0; border-top: 0; }
+.access legend { float: left; width: 100%; padding: 0; margin-bottom: var(--s1); font-weight: 700; }
+.access legend + * { clear: both; }
+.access fieldset > p { margin: 0 0 var(--s2x); }
+.access fieldset > .status { margin: var(--s2x) 0 0; }
+.access .status:empty { min-height: 0; margin: 0; }
 /* The number of people of a planned recipe (#846), at the end of its
    actions: the form, its label and its fallback « Appliquer » on one line,
    « Personnes » left of the field and never wrapped from it. Wider blank,
@@ -1565,6 +1579,7 @@ input[name="no_expiry"] { accent-color: var(--accent); width: 1.25rem; height: 1
    reduced motion (below). */
 button[aria-busy="true"] { cursor: progress; }
 .spin,
+.status:not(:empty)[data-busy-status]::before,
 button[aria-busy="true"]::before {
   content: "";
   display: inline-block;
@@ -1707,7 +1722,7 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
    still says the form is on its way. */
 @media (prefers-reduced-motion: reduce) {
   :root { --dur: 0s; }
-  .spin, button[aria-busy="true"]::before { animation: none; }
+  .spin, .status:not(:empty)[data-busy-status]::before, button[aria-busy="true"]::before { animation: none; }
 }
 /* Forced colours drop `box-shadow`, and with it the school holiday's band
    (#565): a top border of the same width, which they repaint instead of

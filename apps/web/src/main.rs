@@ -573,6 +573,10 @@ fn build_router(state: AppState) -> Router {
             post(routes::groups::settings::equipment),
         )
         .route(
+            "/groups/{id}/settings/access",
+            post(routes::groups::settings::access),
+        )
+        .route(
             "/groups/{id}/settings/transfer",
             post(routes::groups::settings::transfer),
         )
