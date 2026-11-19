@@ -326,7 +326,7 @@ pub(crate) fn ingredient_html(
         _ => String::new(),
     };
     let cancel = if ingredient.link.is_some() {
-        format!(r#"<p><a class="more" href="/stocks/{id}">Annuler</a></p>"#)
+        format!(r#"<p class="cancel"><a class="more" href="/stocks/{id}">Annuler</a></p>"#)
     } else {
         String::new()
     };
@@ -1054,7 +1054,7 @@ mod tests {
         );
         assert!(
             html.contains(&format!(
-                r#"<a class="more" href="/stocks/{}">Annuler</a>"#,
+                r#"<p class="cancel"><a class="more" href="/stocks/{}">Annuler</a></p>"#,
                 id()
             )),
             "{html}"

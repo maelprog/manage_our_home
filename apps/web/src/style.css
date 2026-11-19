@@ -1110,6 +1110,9 @@ textarea[data-count] { resize: vertical; }
 .ing .lead { margin: 0 0 var(--s3); font-size: var(--t-sm); }
 .ing .help { margin: 0; font-size: var(--t-xs); color: var(--muted); }
 .ing .status { margin: var(--s2x) 0 0; color: var(--muted); }
+/* « Annuler » closes the card under its own 48 px target: no paragraph
+   margin below it, as in the maquette (état 8). */
+.ing .cancel { margin: var(--s2x) 0 0; }
 .ing-field { position: relative; display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
 .ing-picks { margin-top: var(--s4); }
 /* « Retirer » keeps only its --error text: `button.secondary.danger`
