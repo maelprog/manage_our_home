@@ -734,6 +734,14 @@ en:potatoes\t\tPommes de terre
     }
 
     #[test]
+    fn an_alias_the_taxonomy_answers_once_accents_are_folded_is_redundant() {
+        // "creme fraiche" is not the taxonomy's spelling ("Crème fraiche"),
+        // but the lookup without accents already finds en:creme-fraiche.
+        let (_, errors) = with_aliases("creme fraiche\ten:creme-fraiche\n");
+        assert_eq!(errors, vec![AliasError::Redundant { line: 1 }]);
+    }
+
+    #[test]
     fn a_malformed_alias_line_is_an_error() {
         let (_, errors) = with_aliases("sans tabulation\n\ten:milks\nde\ten:milks\nlait\t\n");
         assert_eq!(
