@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM ingredient_links WHERE group_id = $1 AND name_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "434da1f83ba6638a5a19ce5b7919a75867047fd0fd7bf4c9ea67712c50d1c218"
+}

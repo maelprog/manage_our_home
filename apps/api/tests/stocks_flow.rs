@@ -1292,3 +1292,405 @@ async fn a_quantity_adjustment_stays_open_whatever_the_threshold(db: PgPool) {
         assert_eq!(full.status(), StatusCode::FORBIDDEN, "{who}'s full edit");
     }
 }
+
+// -- ingredient links (#903) ------------------------------------------------
+
+/// « Mon p'tit plaisir », percent-encoded for a path.
+const PLAISIR: &str = "Mon%20p'tit%20plaisir";
+
+/// An owner, a member who joined their family, and the family.
+async fn family_with_member(
+    router: &axum::Router,
+    db: &PgPool,
+    prefix: &str,
+) -> (String, String, String) {
+    let owner = register_verify_login(
+        router,
+        db,
+        &format!("{prefix}-owner@example.test"),
+        "owner-password1",
+    )
+    .await;
+    let member = register_verify_login(
+        router,
+        db,
+        &format!("{prefix}-member@example.test"),
+        "member-password1",
+    )
+    .await;
+    let group_id = create_group(router, &owner, "Foyer").await;
+    let invite = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(&owner),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(&member),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+    (owner, member, group_id)
+}
+
+async fn put_link(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    name: &str,
+    tag: &str,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::PUT,
+        &format!("/groups/{group_id}/ingredient-links/{name}"),
+        Some(cookie),
+        Some(serde_json::json!({ "tag": tag })),
+    )
+    .await
+}
+
+async fn delete_link(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+    name: &str,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/ingredient-links/{name}"),
+        Some(cookie),
+        None,
+    )
+    .await
+}
+
+/// The family's links, as `(name, tag)`.
+async fn links(router: &axum::Router, cookie: &str, group_id: &str) -> Vec<(String, String)> {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/ingredient-links"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["name"].as_str().unwrap().to_string(),
+                l["tag"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// A planned recipe « Tarte » that needs « Crème fraîche », no quantity.
+async fn planned_tart(router: &axum::Router, cookie: &str, group_id: &str) {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(cookie),
+        Some(serde_json::json!({
+            "name": "Tarte",
+            "ingredients": [{"name": "Crème fraîche", "is_optional": false}],
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let recipe_id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let select = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{recipe_id}/selection"),
+        Some(cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+}
+
+/// What the tart lacks, read by the suggestions and by the planned
+/// selection: `(suggestions, planned)`.
+async fn tart_missing(
+    router: &axum::Router,
+    cookie: &str,
+    group_id: &str,
+) -> (serde_json::Value, serde_json::Value) {
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let suggested = json_body(res).await["suggestions"][0]["missing_ingredients"].clone();
+    let res = call(
+        router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/selections"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let planned = json_body(res).await["selections"][0]["missing"].clone();
+    (suggested, planned)
+}
+
+async fn stock_plaisir(router: &axum::Router, cookie: &str, group_id: &str, name: &str) -> String {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/stock-items"),
+        Some(cookie),
+        Some(serde_json::json!({"name": name, "quantity": 1.0, "unit": "pot"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// Issue #903: once « mon p'tit plaisir » is linked to crème fraîche, a
+/// recipe needing crème fraîche is covered, for the suggestions and for
+/// what a planned recipe lacks; the link holds for every line of that name,
+/// one added later included, and outlives the article.
+#[sqlx::test]
+async fn a_link_covers_the_recipes_needing_its_category(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, member, group_id) = family_with_member(&router, &db, "link-cover").await;
+    let item_id = stock_plaisir(&router, &owner, &group_id, "Mon p'tit plaisir").await;
+    planned_tart(&router, &owner, &group_id).await;
+
+    let lacking = serde_json::json!([{"name": "Crème fraîche", "quantity": null, "unit": null}]);
+    let (suggested, planned) = tart_missing(&router, &member, &group_id).await;
+    assert_eq!(suggested, lacking);
+    assert_eq!(planned.as_array().unwrap().len(), 1, "{planned}");
+
+    // Any member may link; the name is the one typed, the label the
+    // category's French name.
+    let res = put_link(&router, &member, &group_id, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::OK);
+    let link = json_body(res).await;
+    assert_eq!(link["name"], "Mon p'tit plaisir");
+    assert_eq!(link["tag"], "en:fermented-creams");
+    assert!(!link["label"].as_str().unwrap().is_empty(), "{link}");
+
+    let (suggested, planned) = tart_missing(&router, &member, &group_id).await;
+    assert_eq!(suggested, serde_json::json!([]));
+    assert_eq!(planned, serde_json::json!([]));
+
+    // Deleting the article leaves the link; a line of the same name,
+    // written otherwise, added later, is covered by it.
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{group_id}/stock-items/{item_id}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        links(&router, &owner, &group_id).await,
+        vec![(
+            "Mon p'tit plaisir".to_string(),
+            "en:fermented-creams".to_string()
+        )]
+    );
+    assert_eq!(tart_missing(&router, &member, &group_id).await.0, lacking);
+    stock_plaisir(&router, &member, &group_id, "MON P’TIT  PLAISIRS").await;
+    let (suggested, planned) = tart_missing(&router, &member, &group_id).await;
+    assert_eq!(suggested, serde_json::json!([]));
+    assert_eq!(planned, serde_json::json!([]));
+
+    // Replacing the link changes the category: the tart lacks it again.
+    let res = put_link(&router, &owner, &group_id, PLAISIR, "en:butters").await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(links(&router, &owner, &group_id).await.len(), 1);
+    assert_eq!(tart_missing(&router, &member, &group_id).await.0, lacking);
+}
+
+/// Issue #903: another family neither sees nor applies a link — its own
+/// line of the same name stays uncovered, its list stays empty, and it
+/// reaches the first family's links through no path.
+#[sqlx::test]
+async fn another_family_neither_sees_nor_applies_a_link(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_a, _, group_a) = family_with_member(&router, &db, "link-a").await;
+    let (owner_b, _, group_b) = family_with_member(&router, &db, "link-b").await;
+    stock_plaisir(&router, &owner_a, &group_a, "Mon p'tit plaisir").await;
+    stock_plaisir(&router, &owner_b, &group_b, "Mon p'tit plaisir").await;
+    planned_tart(&router, &owner_a, &group_a).await;
+    planned_tart(&router, &owner_b, &group_b).await;
+
+    let res = put_link(&router, &owner_a, &group_a, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::OK);
+
+    assert_eq!(
+        tart_missing(&router, &owner_a, &group_a).await,
+        (serde_json::json!([]), serde_json::json!([]))
+    );
+    let (suggested, planned) = tart_missing(&router, &owner_b, &group_b).await;
+    assert_eq!(suggested.as_array().unwrap().len(), 1, "{suggested}");
+    assert_eq!(planned.as_array().unwrap().len(), 1, "{planned}");
+    assert!(links(&router, &owner_b, &group_b).await.is_empty());
+
+    // Through its own family, the name finds nothing to delete.
+    let res = delete_link(&router, &owner_b, &group_b, PLAISIR).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    // Through the other's, it is no member.
+    for res in [
+        call(
+            &router,
+            Method::GET,
+            &format!("/groups/{group_a}/ingredient-links"),
+            Some(&owner_b),
+            None,
+        )
+        .await,
+        put_link(&router, &owner_b, &group_a, PLAISIR, "en:butters").await,
+        delete_link(&router, &owner_b, &group_a, PLAISIR).await,
+    ] {
+        assert_status(&res, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(
+        links(&router, &owner_a, &group_a).await,
+        vec![(
+            "Mon p'tit plaisir".to_string(),
+            "en:fermented-creams".to_string()
+        )]
+    );
+}
+
+/// Issue #903: a category the taxonomy lacks, or a name without a word, is
+/// a 400 and stores nothing.
+#[sqlx::test]
+async fn a_link_to_an_unknown_category_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _, group_id) = family_with_member(&router, &db, "link-400").await;
+    for (name, tag, code) in [
+        (PLAISIR, "en:not-a-category", "unknown_tag"),
+        (PLAISIR, "", "unknown_tag"),
+        ("%20-%20", "en:fermented-creams", "name_required"),
+    ] {
+        let res = put_link(&router, &owner, &group_id, name, tag).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], code, "{name} {tag}");
+    }
+    assert!(links(&router, &owner, &group_id).await.is_empty());
+}
+
+/// Issue #903: a link is deleted by whoever set it last, or by an admin or
+/// the owner; another standard member may not.
+#[sqlx::test]
+async fn deleting_a_link_is_for_its_creator_or_an_admin(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, member, group_id) = family_with_member(&router, &db, "link-del").await;
+
+    let res = put_link(&router, &owner, &group_id, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::OK);
+    let res = delete_link(&router, &member, &group_id, PLAISIR).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(links(&router, &owner, &group_id).await.len(), 1);
+    // The name written otherwise reaches the same link.
+    let res = delete_link(&router, &owner, &group_id, "mon%20P'TIT%20plaisirs").await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = delete_link(&router, &owner, &group_id, PLAISIR).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    // The member's own link: theirs to delete.
+    let res = put_link(&router, &member, &group_id, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::OK);
+    let res = delete_link(&router, &member, &group_id, PLAISIR).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+
+    // The owner deletes a member's link.
+    let res = put_link(&router, &member, &group_id, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::OK);
+    let res = delete_link(&router, &owner, &group_id, PLAISIR).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert!(links(&router, &owner, &group_id).await.is_empty());
+}
+
+/// Issue #903: a member leaving the family takes the links they set with
+/// them (the key onto the membership cascades); the others' stay.
+#[sqlx::test]
+async fn leaving_the_family_takes_the_member_s_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, member, group_id) = family_with_member(&router, &db, "link-leave").await;
+    let res = put_link(&router, &member, &group_id, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::OK);
+    let res = put_link(&router, &owner, &group_id, "Beurre%20maison", "en:butters").await;
+    assert_status(&res, StatusCode::OK);
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/leave"),
+        Some(&member),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        links(&router, &owner, &group_id).await,
+        vec![("Beurre maison".to_string(), "en:butters".to_string())]
+    );
+}
+
+/// Issue #903: a family holds at most `LINKS_MAX` links; replacing one
+/// never counts.
+#[sqlx::test]
+async fn the_family_s_links_are_bounded(db: PgPool) {
+    use manage_our_home::stocks::ingredient_links::LINKS_MAX;
+    let router = test_router(db.clone());
+    let (owner, _, group_id) = family_with_member(&router, &db, "link-max").await;
+    // The bound's worth of links, written directly.
+    sqlx::query(
+        "INSERT INTO ingredient_links (group_id, name_key, name, tag, created_by)
+         SELECT g.group_id, 'article ' || n, 'Article ' || n, 'en:butters', g.user_id
+         FROM group_members g, generate_series(1, $2) n
+         WHERE g.group_id = $1::uuid AND g.role = 'owner'",
+    )
+    .bind(&group_id)
+    .bind(LINKS_MAX as i32)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let res = put_link(&router, &owner, &group_id, PLAISIR, "en:fermented-creams").await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"], "link_limit_reached");
+    let res = put_link(
+        &router,
+        &owner,
+        &group_id,
+        "Article%201",
+        "en:fermented-creams",
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(
+        links(&router, &owner, &group_id).await.len(),
+        LINKS_MAX as usize
+    );
+}

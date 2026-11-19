@@ -149,6 +149,9 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
         "INSERT INTO allergy_sharing (user_id, tag, group_id, share)
          VALUES ($1, 'en:peanuts', $2, 'public')",
         "INSERT INTO user_dislikes (user_id, tag) VALUES ($1, 'en:mushrooms')",
+        // An ingredient link it set (#903): goes with its membership.
+        "INSERT INTO ingredient_links (group_id, name_key, name, tag, created_by)
+         VALUES ($2, $1::text, 'Mon p''tit plaisir', 'en:fermented-creams', $1)",
     ] {
         let query = sqlx::query(sql).bind(user);
         let query = if sql.contains("$2") {
@@ -247,6 +250,10 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
             "user_dislikes",
             "SELECT count(*) FROM user_dislikes WHERE user_id = $1",
         ),
+        (
+            "ingredient_links",
+            "SELECT count(*) FROM ingredient_links WHERE created_by = $1",
+        ),
     ] {
         let n: i64 = sqlx::query_scalar(sql)
             .bind(user)
@@ -277,6 +284,7 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "user_allergies",
         "allergy_sharing",
         "user_dislikes",
+        "ingredient_links",
     ]
     .into_iter()
     .map(|t| (t, n))

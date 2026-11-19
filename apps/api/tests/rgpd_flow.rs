@@ -1212,6 +1212,12 @@ async fn export_accounts_for_every_table(db: PgPool) {
              feature, a family's setting, no account",
         ),
         (
+            "ingredient_links",
+            "a family's links from an article's name to an ingredient category (#903): \
+             family content, no personal data; who set a link is a current member only, \
+             and the link goes with the membership (0064)",
+        ),
+        (
             "off_products",
             "Open Food Facts' public product records, keyed by code: no family, no account",
         ),
@@ -1332,6 +1338,13 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
             "stock_expiry_announcements",
             "user_id",
             "which item a recap announced to the account; the recaps are exported",
+        ),
+        // #903: who set an ingredient link. Its key is onto the membership
+        // and cascades when it ends (0064): a current member only.
+        (
+            "ingredient_links",
+            "created_by",
+            "who set a family's ingredient link; deleted with the membership",
         ),
     ];
 

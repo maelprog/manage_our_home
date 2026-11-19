@@ -1,5 +1,6 @@
 pub mod barcode;
 pub mod gs1;
+pub mod ingredient_links;
 pub mod items;
 pub mod openfoodfacts;
 pub mod planned_usage;
