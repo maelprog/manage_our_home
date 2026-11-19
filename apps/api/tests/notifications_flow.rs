@@ -1754,6 +1754,36 @@ async fn each_agenda_switch_lets_its_own_news_through(db: PgPool) {
     );
 }
 
+/// An event that a member sees only after a change is news of an addition
+/// to them, so the additions switch decides it, not the changes one: a
+/// member with the additions off and the changes on is not told, one with
+/// the additions on is told « a ajouté ».
+#[sqlx::test]
+async fn an_event_seen_only_after_a_change_follows_the_additions_switch(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    sqlx::query("UPDATE users SET notify_agenda_added = false WHERE email = $1")
+        .bind("third@example.test")
+        .execute(&db)
+        .await
+        .unwrap();
+    let owner = user_id(&db, "owner@example.test").await;
+    let event = create_event(
+        &f,
+        &f.owner,
+        json!({"is_private": true, "assignee_ids": [owner]}),
+    )
+    .await;
+    assert_eq!(agenda_rows(&db).await, rows(&[]));
+    patch_event(&f, &f.owner, &event, json!({"is_private": false})).await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a ajouté « Dîner » le 10/12/2026 à 15:00."
+        )])
+    );
+}
+
 /// The switches off, an account deactivated or purged: told nothing.
 #[sqlx::test]
 async fn a_member_who_opted_out_or_whose_account_is_gone_is_not_told(db: PgPool) {
