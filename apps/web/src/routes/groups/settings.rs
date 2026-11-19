@@ -540,10 +540,6 @@ fn access_card(group_id: Uuid, my_role: &str, access: &Access) -> String {
     )
 }
 
-/// The body of `PUT /groups/:id/access-policies` for what the form posted:
-/// each feature's threshold, in the order posted. A feature or a threshold
-/// off the lists, a feature twice, or nothing at all is refused here,
-/// before apps/api, which would refuse it too (400).
 /// The name and value « Enregistrer l'accès » posts, which a radio's post
 /// (`form.submit()`, no submitter) does not carry.
 const SENT_BY_BUTTON: (&str, &str) = ("sent", "button");
@@ -565,6 +561,10 @@ fn access_redirect(pairs: &[(String, String)], query: &str) -> String {
     }
 }
 
+/// The body of `PUT /groups/:id/access-policies` for what the form posted:
+/// each feature's threshold, in the order posted. A feature or a threshold
+/// off the lists, a feature twice, or nothing at all is refused here,
+/// before apps/api, which would refuse it too (400).
 fn access_request(pairs: &[(String, String)]) -> Result<AccessPolicies, &'static str> {
     let mut policies: Vec<AccessPolicy> = Vec::with_capacity(pairs.len());
     for (key, value) in pairs {
@@ -2204,7 +2204,6 @@ mod tests {
                 {"feature": "stocks_edit", "min_role": "owner"},
             ]}))
         );
-        // Nothing to send.
         // The button's own name is not a feature.
         assert_eq!(
             access_request(&pairs(&[("budget", "owner"), ("sent", "button")])),
