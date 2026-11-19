@@ -451,6 +451,108 @@ async fn stock_items_isolated_without_scoping(db: PgPool) {
         .unwrap();
 }
 
+/// Issue #903: a family's article-to-ingredient links (migration 0064) hold
+/// against a query that forgets `WHERE group_id = ...` — nothing without a
+/// family scope, only the scoped family's links with one, and no link
+/// written into another family.
+#[sqlx::test]
+async fn ingredient_links_isolated_without_scoping(db: PgPool) {
+    let ((owner_a, group_a), (owner_b, group_b)) = two_owned_groups(&db).await;
+    for (group, owner, name) in [(group_a, owner_a, "lait A"), (group_b, owner_b, "lait B")] {
+        sqlx::query(
+            "INSERT INTO ingredient_links (group_id, name_key, name, tag, created_by) \
+             VALUES ($1, $2, $2, 'lait', $3)",
+        )
+        .bind(group)
+        .bind(name)
+        .bind(owner)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ingredient_links TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let unscoped: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM ingredient_links")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        unscoped.is_empty(),
+        "no family scope must see no link at all"
+    );
+
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM ingredient_links")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        visible,
+        vec![group_a],
+        "group A's scope sees its own link and never group B's"
+    );
+
+    let touched = sqlx::query("UPDATE ingredient_links SET tag = 'beurre' WHERE group_id = $1")
+        .bind(group_b)
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(
+        touched, 0,
+        "group A's scope must not rewrite group B's link"
+    );
+
+    let cross = sqlx::query(
+        "INSERT INTO ingredient_links (group_id, name_key, name, tag, created_by) \
+         VALUES ($1, 'beurre', 'beurre', 'beurre', $2)",
+    )
+    .bind(group_b)
+    .bind(owner_b)
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        cross.is_err(),
+        "group A's scope must not write a link into group B"
+    );
+
+    tx.rollback().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON ingredient_links FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
+        .execute(&db)
+        .await
+        .unwrap();
+}
+
 /// AC #15 analog for the Recipes epic: `recipes` isolation must hold even
 /// against a bug that forgets `WHERE group_id = ...` in application code.
 #[sqlx::test]
