@@ -9,8 +9,8 @@
 //! past its date **still counts** as available (same decision).
 //!
 //! The recipe's required ingredients are first brought to the selection's
-//! number of people and merged by name as the grocery list does
-//! (`grocery_list::planned::plan_lines`). An ingredient is then matched to
+//! number of people and merged by name or by tag as the grocery list does
+//! (`grocery_list::planned::plan_lines`, #902). An ingredient is then matched to
 //! the stock lines holding more than 0 of its name (`article_key`) or of its
 //! category (#900): a line whose categories — its scanned product's, else
 //! its name's (`suggestions::stock_entry`) — are the one the ingredient's
@@ -42,8 +42,8 @@ pub(crate) struct RecipeIngredient {
 
 /// What a planned recipe needs: its required ingredients, scaled from the
 /// recipe's number of people (`written_for`) to the selection's
-/// (`cooked_for`) and merged by name (`plan_lines`). Optional ingredients
-/// are left out.
+/// (`cooked_for`) and merged by name or by tag (`plan_lines`, #902).
+/// Optional ingredients are left out.
 pub(crate) fn needs(
     recipe_id: Uuid,
     ingredients: &[RecipeIngredient],
