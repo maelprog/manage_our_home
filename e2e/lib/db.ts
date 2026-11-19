@@ -417,8 +417,9 @@ export async function seedAgendaChangeNotification(
 
 /**
  * Sets the threshold of `feature` in the family named `groupName` (#865),
- * the row `PUT /groups/:id/access-policies` writes for its owner: no page
- * drives that route yet.
+ * the row `PUT /groups/:id/access-policies` writes for its owner, without
+ * going through « Accès » of the family's settings, which
+ * `access-settings.spec.ts` drives (#867).
  */
 export async function setAccessPolicy(
   groupName: string,
