@@ -447,6 +447,7 @@
   // WCAG 2.5.3. It keeps its content and its name; the sheet lays the
   // wheel over it.
   var BUSY_LABEL = "Envoi en cours";
+  var SAVING = "Enregistrement…";
 
   function busy(form, submitter) {
     var button =
@@ -485,6 +486,11 @@
         button.removeAttribute("aria-busy");
         Array.prototype.forEach.call(button.querySelectorAll("[data-submit-on-change]"), function (field) {
           field.disabled = false;
+        });
+        // And its fieldset's line, emptied (#867).
+        Array.prototype.forEach.call(button.querySelectorAll("[data-busy-status]"), function (said) {
+          said.textContent = "";
+          said.parentNode.removeAttribute("aria-busy");
         });
         return;
       }
@@ -559,6 +565,14 @@
         Array.prototype.forEach.call(input.form.querySelectorAll("[data-submit-on-change]"), function (field) {
           field.disabled = true;
         });
+        // The family's thresholds (#867): the fieldset of the radio says
+        // the choice is on its way, in its live `data-busy-status` line.
+        var group = input.closest("fieldset");
+        var said = group && group.querySelector("[data-busy-status]");
+        if (said) {
+          group.setAttribute("aria-busy", "true");
+          said.textContent = SAVING;
+        }
       }
     }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).

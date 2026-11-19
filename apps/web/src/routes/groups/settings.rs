@@ -11,16 +11,22 @@
 //! Since #530 the page also lists the members with their roles and, for
 //! owners and admins, the invitation by e-mail and a « Gérer » per member
 //! they may act on — the controls themselves stay on `/groups/:id/members`.
+//! Since #867 the owner alone also sets, in « Accès », from which role the
+//! members reach each restricted feature (`PUT /groups/:id/access-policies`,
+//! owner-only: 403 otherwise).
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use manage_our_home_shared::dto::auth::MeResponse;
-use manage_our_home_shared::dto::groups::{GroupDetailResponse, GroupMember, RenameGroupRequest};
+use manage_our_home_shared::dto::groups::{
+    AccessPolicies, AccessPolicy, GroupDetailResponse, GroupMember, GroupSummary,
+    RenameGroupRequest,
+};
 use manage_our_home_shared::validation::dietary::{validate_equipment, EQUIPMENT};
 use manage_our_home_shared::validation::groups::{
-    actor_can_act_on, can_manage_group, validate_group_name, Accent, SchoolZone,
+    actor_can_act_on, can_manage_group, validate_group_name, Accent, Feature, SchoolZone,
 };
 use uuid::Uuid;
 
@@ -376,6 +382,213 @@ fn equipment_card(group_id: Uuid, household: Option<&[String]>, my_role: &str) -
     )
 }
 
+/// What « Accès » (#867) shows: the family as `GET /groups` lists it, whose
+/// `access_policies` carry the thresholds (`None` when it could not be
+/// read), and the banner of the last save, said in the card rather than at
+/// the top of the page, since the page comes back at the card.
+#[derive(Default)]
+struct Access<'a> {
+    group: Option<&'a GroupSummary>,
+    notice: Option<&'static str>,
+    error: Option<&'static str>,
+}
+
+fn access_notice_text(code: &str) -> Option<&'static str> {
+    match code {
+        "access_saved" => {
+            Some("Accès enregistré. Les membres voient le changement à leur prochaine page.")
+        }
+        _ => None,
+    }
+}
+
+fn access_error_text(code: &str) -> Option<&'static str> {
+    match code {
+        "access_failed" => Some(
+            "Les accès n'ont pas été enregistrés. Vos choix précédents sont conservés ; réessayez dans un instant.",
+        ),
+        "invalid_access" => Some("Un choix d'accès n'est pas proposé. Rechargez la page."),
+        _ => None,
+    }
+}
+
+/// A feature's legend, what it covers, and — for the two the menu shows —
+/// where the change shows (the validated mock-up's words).
+fn feature_text(feature: Feature) -> (&'static str, &'static str, Option<&'static str>) {
+    match feature {
+        Feature::Budget => (
+            "Budget",
+            "Voir le budget, ses plafonds et ses catégories.",
+            Some("Le lien Budget du menu apparaît pour les membres concernés."),
+        ),
+        Feature::GoogleCalendar => (
+            "Google Agenda",
+            "Connecter et gérer les agendas Google de la famille.",
+            Some("Le lien « Gérer les agendas Google » apparaît pour les membres concernés."),
+        ),
+        Feature::StocksEdit => (
+            "Stocks",
+            "Modifier ou supprimer ce que d’autres ont ajouté au stock.",
+            None,
+        ),
+        Feature::RecipesEdit => (
+            "Recettes",
+            "Modifier ou supprimer les recettes ajoutées par d’autres.",
+            None,
+        ),
+        Feature::GroceryEdit => (
+            "Courses",
+            "Modifier ou supprimer ce que d’autres ont ajouté à la liste de courses.",
+            None,
+        ),
+        Feature::AgendaEdit => (
+            "Agenda",
+            "Modifier ou supprimer les événements créés par d’autres.",
+            None,
+        ),
+        Feature::MessagerieModerate => (
+            "Messagerie",
+            "Supprimer les messages des autres membres.",
+            None,
+        ),
+    }
+}
+
+/// The three thresholds, lowest first, as `group_role` values and in words.
+const THRESHOLDS: [(&str, &str); 3] = [
+    ("standard", "Tous les membres"),
+    ("admin", "Admins et propriétaire"),
+    ("owner", "Propriétaire seul"),
+];
+
+/// « Accès » (#867, maquette validée le 2026-11-19): for the owner alone —
+/// the bar of `PUT /groups/:id/access-policies` —, one fieldset per
+/// restricted feature, its three thresholds as native radios of one form.
+/// A radio sends the whole form by itself (#844), the seven thresholds
+/// together, and the form is locked while it is sent
+/// (`data-lock-on-change`), its fieldset saying so in its `data-busy-status`
+/// line; the button is the fallback without JavaScript, `submit_fallback`'s
+/// markup with a name (`SENT_BY_BUTTON`) so that its post is told from a
+/// radio's (`access_redirect`). No form when the
+/// thresholds could not be read: it would send seven defaults.
+fn access_card(group_id: Uuid, my_role: &str, access: &Access) -> String {
+    if my_role != "owner" {
+        return String::new();
+    }
+    let notice = access
+        .notice
+        .map(|n| format!(r#"<p class="notice success" role="status">{n}</p>"#))
+        .unwrap_or_default();
+    let error = access
+        .error
+        .map(|e| format!(r#"<p class="notice error" role="alert">{e}</p>"#))
+        .unwrap_or_default();
+    let body = match access.group {
+        None => r#"<p class="notice error">Impossible de lire les accès de la famille. Merci de recharger la page.</p>"#.to_string(),
+        Some(group) => {
+            let fieldsets: String = Feature::ALL
+                .into_iter()
+                .map(|feature| {
+                    let name = feature.as_str();
+                    let (legend, covers, effect) = feature_text(feature);
+                    let current = group.min_role(feature);
+                    let picks: String = THRESHOLDS
+                        .iter()
+                        .map(|(value, label)| {
+                            let on = if *value == current { " checked" } else { "" };
+                            format!(
+                                r#"<label class="field inline pick"><input type="radio" name="{name}" value="{value}"{on} data-submit-on-change>{label}</label>"#
+                            )
+                        })
+                        .collect();
+                    let (effect, described) = match effect {
+                        Some(e) => (
+                            format!("\n<p class=\"hint\" id=\"acces-{name}-effet\">{e}</p>"),
+                            format!("acces-{name} acces-{name}-effet"),
+                        ),
+                        None => (String::new(), format!("acces-{name}")),
+                    };
+                    format!(
+                        r#"<fieldset aria-describedby="{described}">
+<legend>{legend}</legend>
+<p class="muted" id="acces-{name}">{covers}</p>{effect}
+<div class="picks">{picks}</div>
+<p class="status" role="status" data-busy-status></p>
+</fieldset>
+"#
+                    )
+                })
+                .collect();
+            format!(
+                r#"<form method="post" action="/groups/{group_id}/settings/access" data-keep-scroll data-lock-on-change>
+{APPLIES_ON_CHANGE}
+{fieldsets}<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" name="{sent}" value="{by}" data-hidden-with-js>Enregistrer l'accès</button>
+</form>"#,
+                sent = SENT_BY_BUTTON.0,
+                by = SENT_BY_BUTTON.1,
+            )
+        }
+    };
+    format!(
+        r#"<section class="card access" id="acces" aria-labelledby="acces-titre">
+<h2 id="acces-titre">Accès</h2>
+<p class="muted">Choisissez qui peut utiliser chaque fonction. Le propriétaire garde toujours la main.</p>
+{notice}{error}
+{body}
+</section>"#
+    )
+}
+
+/// The name and value « Enregistrer l'accès » posts, which a radio's post
+/// (`form.submit()`, no submitter) does not carry.
+const SENT_BY_BUTTON: (&str, &str) = ("sent", "button");
+
+/// The query, and the anchor, the page comes back with after a post of
+/// « Accès ». A radio's post goes back to the page as it was: `enhance.js`
+/// puts the reader and the focus back on the radio (`data-keep-scroll`),
+/// which an anchor would take away from it. The button's post, without
+/// JavaScript, and any failure — which `data-keep-scroll` leaves at the
+/// top — go to the card, whose banner says how it went.
+fn access_redirect(pairs: &[(String, String)], query: &str) -> String {
+    let by_button = pairs
+        .iter()
+        .any(|(k, v)| (k.as_str(), v.as_str()) == SENT_BY_BUTTON);
+    if by_button || query.starts_with("error=") {
+        format!("?{query}#acces")
+    } else {
+        format!("?{query}")
+    }
+}
+
+/// The body of `PUT /groups/:id/access-policies` for what the form posted:
+/// each feature's threshold, in the order posted. A feature or a threshold
+/// off the lists, a feature twice, or nothing at all is refused here,
+/// before apps/api, which would refuse it too (400).
+fn access_request(pairs: &[(String, String)]) -> Result<AccessPolicies, &'static str> {
+    let mut policies: Vec<AccessPolicy> = Vec::with_capacity(pairs.len());
+    for (key, value) in pairs {
+        if key == SENT_BY_BUTTON.0 {
+            continue;
+        }
+        let feature = Feature::parse(key).ok_or("invalid_access")?;
+        if !THRESHOLDS.iter().any(|(t, _)| t == value) {
+            return Err("invalid_access");
+        }
+        if policies.iter().any(|p| p.feature == feature.as_str()) {
+            return Err("invalid_access");
+        }
+        policies.push(AccessPolicy {
+            feature: feature.as_str().to_string(),
+            min_role: value.clone(),
+        });
+    }
+    if policies.is_empty() {
+        return Err("invalid_access");
+    }
+    Ok(AccessPolicies { policies })
+}
+
 #[derive(serde::Deserialize)]
 pub struct CalendarForm {
     /// `""` is « Aucune »; absent, the zone is kept.
@@ -409,14 +622,18 @@ fn calendar_request(form: &CalendarForm) -> Result<RenameGroupRequest, &'static 
 /// Famille »): the family's name under « Paramètres de la famille » and
 /// your role, then the members and their roles with the invitation, then
 /// the name and the sensitive zone; beside them on a PC, under them on a
-/// phone, the column of « Couleur de la famille » (#538), then the Google
-/// calendars. `accent` is this family's, which may not be the active one's.
+/// phone, the column of « Couleur de la famille » (#538), « Calendrier »,
+/// « Équipements de la cuisine », « Accès » for the owner (#867), then the
+/// Google calendars. `accent` is this family's, which may not be the active
+/// one's.
+#[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
     me: &MeResponse,
     group: &GroupDetailResponse,
     accent: Accent,
     equipment: Option<&[String]>,
+    access: Access,
     notice: Option<&str>,
     error: Option<&str>,
 ) -> String {
@@ -459,6 +676,7 @@ fn page(
 {colour}
 {calendar}
 {equipment}
+{access}
 <section class="card">
 <h2>Agendas Google</h2>
 <p class="muted">Les agendas Google connectés à cette famille se gèrent depuis l'agenda : leurs événements y sont recopiés à la demande.</p>
@@ -477,6 +695,7 @@ fn page(
         colour = colour_card(group.id, accent, &my_role),
         calendar = calendar_card(group, &my_role),
         equipment = equipment_card(group.id, equipment, &my_role),
+        access = access_card(group.id, &my_role, &access),
         id = group.id,
     );
     shell_with_header(
@@ -520,16 +739,66 @@ pub async fn get(
             .await;
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
+    // The thresholds come with the family in the caller's list (#865):
+    // `GET /groups/:id` does not carry them either.
+    let access = Access {
+        group: groups.iter().find(|g| g.group_id == group_id),
+        notice: query.notice.as_deref().and_then(access_notice_text),
+        error: query.error.as_deref().and_then(access_error_text),
+    };
     Html(page(
         &header,
         &me,
         &group,
         accent,
         equipment.as_deref(),
+        access,
         notice,
         error,
     ))
     .into_response()
+}
+
+/// « Enregistrer l'accès » (#867): `PUT /groups/:id/access-policies` with
+/// the seven thresholds the form holds. Where the page comes back:
+/// `access_redirect`.
+pub async fn access(
+    CurrentUser(_me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(group_id): Path<Uuid>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let settings_url = format!("/groups/{group_id}/settings");
+    let back = |query: &str| format!("{settings_url}{}", access_redirect(&pairs, query));
+    let body = match access_request(&pairs) {
+        Ok(body) => body,
+        Err(code) => return Redirect::to(&back(&format!("error={code}"))).into_response(),
+    };
+
+    let cookie = cookie_of(&headers);
+    let result = api_request_auth(
+        &state,
+        reqwest::Method::PUT,
+        &format!("/groups/{group_id}/access-policies"),
+        cookie.as_deref(),
+        Some(serde_json::json!(body)),
+    )
+    .await;
+
+    let target = match result {
+        Ok(resp) if resp.status == reqwest::StatusCode::OK => back("notice=access_saved"),
+        // The page's own banner, at the top: no card for a non-owner.
+        Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
+            format!("{settings_url}?error=forbidden")
+        }
+        Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => back("error=invalid_access"),
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
+            return group_not_found_page().into_response()
+        }
+        Ok(_) | Err(_) => back("error=access_failed"),
+    };
+    Redirect::to(&target).into_response()
 }
 
 /// « Enregistrer les équipements » (#819): `PUT /groups/:id/equipment`
@@ -900,6 +1169,7 @@ mod tests {
             &family(),
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         )
@@ -935,6 +1205,7 @@ mod tests {
             &group,
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1074,6 +1345,7 @@ mod tests {
             &group,
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1109,6 +1381,7 @@ mod tests {
             &group,
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1146,6 +1419,7 @@ mod tests {
                 &family(),
                 Accent::Prune,
                 Some(&[]),
+                Access::default(),
                 None,
                 None,
             );
@@ -1200,7 +1474,16 @@ mod tests {
     #[test]
     fn the_preview_wears_the_familys_colour() {
         for who in [OWNER, STANDARD] {
-            let html = page("", &me(who), &family(), Accent::Miel, Some(&[]), None, None);
+            let html = page(
+                "",
+                &me(who),
+                &family(),
+                Accent::Miel,
+                Some(&[]),
+                Access::default(),
+                None,
+                None,
+            );
             let card = colour_card(&html);
             assert!(
                 card.contains(r#"<div class="preview" data-accent="miel" aria-hidden="true">"#),
@@ -1219,6 +1502,7 @@ mod tests {
             &family(),
             Accent::Ocean,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1277,6 +1561,7 @@ mod tests {
                 &group,
                 Accent::Sarcelle,
                 Some(&[]),
+                Access::default(),
                 None,
                 None,
             );
@@ -1337,6 +1622,7 @@ mod tests {
             &family_with(None, false),
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1365,6 +1651,7 @@ mod tests {
             &family_with(Some("C"), true),
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1384,6 +1671,7 @@ mod tests {
             &family_with(None, false),
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1430,6 +1718,7 @@ mod tests {
             &family(),
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             Some("Calendrier de la famille enregistré."),
             None,
         );
@@ -1535,6 +1824,7 @@ mod tests {
                 &family(),
                 Accent::Sarcelle,
                 Some(&household),
+                Access::default(),
                 None,
                 None,
             );
@@ -1573,6 +1863,7 @@ mod tests {
             &family(),
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1591,6 +1882,7 @@ mod tests {
             &family(),
             Accent::Sarcelle,
             Some(&household),
+            Access::default(),
             None,
             None,
         );
@@ -1611,6 +1903,7 @@ mod tests {
             &family(),
             Accent::Sarcelle,
             Some(&[]),
+            Access::default(),
             None,
             None,
         );
@@ -1625,12 +1918,320 @@ mod tests {
             &family(),
             Accent::Sarcelle,
             None,
+            Access::default(),
             None,
             None,
         );
         let card = equipment_card(&html);
         assert!(!card.contains("<form"), "{card}");
         assert!(card.contains(r#"<p class="notice error">"#), "{card}");
+    }
+
+    // -- « Accès » (#867) ----------------------------------------------------
+
+    fn summary(policies: &[(&str, &str)]) -> GroupSummary {
+        GroupSummary {
+            group_id: G,
+            name: "Famille Martin".to_string(),
+            role: "owner".to_string(),
+            accent: "sarcelle".to_string(),
+            ownership_notice: None,
+            access_policies: policies
+                .iter()
+                .map(|(feature, min_role)| AccessPolicy {
+                    feature: feature.to_string(),
+                    min_role: min_role.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    fn page_with_access(id: Uuid, access: Access) -> String {
+        page(
+            "",
+            &me(id),
+            &family(),
+            Accent::Sarcelle,
+            Some(&[]),
+            access,
+            None,
+            None,
+        )
+    }
+
+    fn access_card(html: &str) -> &str {
+        let at = html
+            .find(r#"<section class="card access" id="acces""#)
+            .expect("the access card");
+        &html[at..at + html[at..].find("</section>").unwrap()]
+    }
+
+    /// The owner alone sees « Accès »: an admin and a standard member get
+    /// the page they had, with no card and no form posting to it.
+    #[test]
+    fn the_access_card_is_the_owners_alone() {
+        let family = summary(&[]);
+        let access = || Access {
+            group: Some(&family),
+            notice: None,
+            error: None,
+        };
+        let owner = page_with_access(OWNER, access());
+        assert!(access_card(&owner).contains("<h2 id=\"acces-titre\">Accès</h2>"));
+        for who in [ADMIN, STANDARD] {
+            let html = page_with_access(who, access());
+            assert!(!html.contains(r#"id="acces""#), "{html}");
+            assert!(!html.contains("/settings/access"), "{html}");
+        }
+    }
+
+    /// Seven fieldsets, one per feature in the API's order, each with three
+    /// radios named after the feature; the family's threshold is checked,
+    /// `admin` where the owner has set none.
+    #[test]
+    fn each_feature_offers_the_three_thresholds_with_the_familys_checked() {
+        let family = summary(&[("budget", "standard"), ("google_calendar", "owner")]);
+        let html = page_with_access(
+            OWNER,
+            Access {
+                group: Some(&family),
+                notice: None,
+                error: None,
+            },
+        );
+        let card = access_card(&html);
+        assert!(
+            card.contains(&format!(
+                r#"<form method="post" action="/groups/{G}/settings/access" data-keep-scroll data-lock-on-change>"#
+            )),
+            "{card}"
+        );
+        assert_eq!(card.matches("<fieldset").count(), 7, "{card}");
+        assert_eq!(card.matches(r#"type="radio""#).count(), 21, "{card}");
+        assert_eq!(card.matches(" checked").count(), 7, "{card}");
+        assert_eq!(card.matches(" data-submit-on-change").count(), 21, "{card}");
+        let mut last = 0;
+        for (feature, legend) in [
+            ("budget", "Budget"),
+            ("google_calendar", "Google Agenda"),
+            ("stocks_edit", "Stocks"),
+            ("recipes_edit", "Recettes"),
+            ("grocery_edit", "Courses"),
+            ("agenda_edit", "Agenda"),
+            ("messagerie_moderate", "Messagerie"),
+        ] {
+            let at = card
+                .find(&format!("<legend>{legend}</legend>"))
+                .unwrap_or_else(|| panic!("{legend}: {card}"));
+            assert!(at > last, "{legend} out of order: {card}");
+            last = at;
+            let checked = match feature {
+                "budget" => "standard",
+                "google_calendar" => "owner",
+                _ => "admin",
+            };
+            for (value, label) in [
+                ("standard", "Tous les membres"),
+                ("admin", "Admins et propriétaire"),
+                ("owner", "Propriétaire seul"),
+            ] {
+                let on = if value == checked { " checked" } else { "" };
+                assert!(
+                    card.contains(&format!(
+                        r#"<label class="field inline pick"><input type="radio" name="{feature}" value="{value}"{on} data-submit-on-change>{label}</label>"#
+                    )),
+                    "{feature} {value}: {card}"
+                );
+            }
+        }
+        // What each feature covers, said once per fieldset.
+        assert!(
+            card.contains("Modifier ou supprimer ce que d’autres ont ajouté au stock."),
+            "{card}"
+        );
+        assert!(
+            card.contains("Supprimer les messages des autres membres."),
+            "{card}"
+        );
+        // #844: applies on the click, the button being the fallback; it
+        // names itself, so that its post is told from a radio's.
+        assert!(card.contains(APPLIES_ON_CHANGE), "{card}");
+        assert!(
+            card.contains(r#"<p class="muted" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>
+<button type="submit" name="sent" value="button" data-hidden-with-js>Enregistrer l'accès</button>"#),
+            "{card}"
+        );
+    }
+
+    /// Where the page comes back: a radio's post (JavaScript, which puts
+    /// the reader and the focus back by itself) to the page as it was; the
+    /// button's, or a failure, to the card (`#acces`), whose banner says it.
+    #[test]
+    fn the_page_comes_back_at_the_card_after_the_button_or_a_failure() {
+        let by = |sent: bool| {
+            let mut p = vec![("budget".to_string(), "admin".to_string())];
+            if sent {
+                p.push(("sent".to_string(), "button".to_string()));
+            }
+            p
+        };
+        assert_eq!(
+            access_redirect(&by(false), "notice=access_saved"),
+            "?notice=access_saved"
+        );
+        assert_eq!(
+            access_redirect(&by(true), "notice=access_saved"),
+            "?notice=access_saved#acces"
+        );
+        for sent in [false, true] {
+            assert_eq!(
+                access_redirect(&by(sent), "error=access_failed"),
+                "?error=access_failed#acces"
+            );
+        }
+    }
+
+    /// Placed between « Équipements de la cuisine » and the Google
+    /// calendars, as the validated mock-up has it.
+    #[test]
+    fn the_access_card_follows_the_equipment() {
+        let family = summary(&[]);
+        let html = page_with_access(
+            OWNER,
+            Access {
+                group: Some(&family),
+                notice: None,
+                error: None,
+            },
+        );
+        let equipment = html.find(r#"id="equipements""#).unwrap();
+        let access = html.find(r#"id="acces""#).unwrap();
+        let google = html.find("<h2>Agendas Google</h2>").unwrap();
+        assert!(equipment < access && access < google);
+    }
+
+    /// The thresholds unread (the family missing from `GET /groups`): no
+    /// form, which would send seven defaults over the owner's settings.
+    #[test]
+    fn unread_thresholds_offer_no_form() {
+        let html = page_with_access(
+            OWNER,
+            Access {
+                group: None,
+                notice: None,
+                error: None,
+            },
+        );
+        let card = access_card(&html);
+        assert!(!card.contains("<form"), "{card}");
+        assert!(card.contains(r#"<p class="notice error">"#), "{card}");
+    }
+
+    /// The banner of a save or of its failure is in the card, where the
+    /// page comes back (`#acces`), not at the top of the page.
+    #[test]
+    fn the_access_banners_are_in_the_card() {
+        let family = summary(&[]);
+        let saved = page_with_access(
+            OWNER,
+            Access {
+                group: Some(&family),
+                notice: access_notice_text("access_saved"),
+                error: None,
+            },
+        );
+        assert!(
+            access_card(&saved).contains(r#"<p class="notice success" role="status">Accès enregistré. Les membres voient le changement à leur prochaine page.</p>"#),
+            "{saved}"
+        );
+        let failed = page_with_access(
+            OWNER,
+            Access {
+                group: Some(&family),
+                notice: None,
+                error: access_error_text("access_failed"),
+            },
+        );
+        let card = access_card(&failed);
+        assert!(
+            card.contains(r#"<p class="notice error" role="alert">Les accès n'ont pas été enregistrés. Vos choix précédents sont conservés ; réessayez dans un instant.</p>"#),
+            "{card}"
+        );
+        assert!(card.contains("<form"), "{card}");
+        assert!(access_error_text("invalid_access").is_some());
+        // Not the page's own codes.
+        assert_eq!(access_notice_text("renamed"), None);
+        assert_eq!(access_error_text("forbidden"), None);
+    }
+
+    /// Each fieldset holds the line `enhance.js` fills while the choice is
+    /// sent (`data-busy-status`), a live region present from the start.
+    #[test]
+    fn each_feature_has_a_busy_status() {
+        let family = summary(&[]);
+        let html = page_with_access(
+            OWNER,
+            Access {
+                group: Some(&family),
+                notice: None,
+                error: None,
+            },
+        );
+        let card = access_card(&html);
+        assert_eq!(
+            card.matches(r#"<p class="status" role="status" data-busy-status></p>"#)
+                .count(),
+            7,
+            "{card}"
+        );
+    }
+
+    /// What the form posts becomes `PUT /groups/:id/access-policies`' body:
+    /// every feature sent with its threshold, in the order sent.
+    #[test]
+    fn the_access_form_sends_every_threshold_posted() {
+        let pairs = |p: &[(&str, &str)]| {
+            p.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+        };
+        let body = access_request(&pairs(&[("budget", "standard"), ("stocks_edit", "owner")]))
+            .map(|r| serde_json::to_value(r).unwrap());
+        assert_eq!(
+            body,
+            Ok(serde_json::json!({"policies": [
+                {"feature": "budget", "min_role": "standard"},
+                {"feature": "stocks_edit", "min_role": "owner"},
+            ]}))
+        );
+        // The button's own name is not a feature.
+        assert_eq!(
+            access_request(&pairs(&[("budget", "owner"), ("sent", "button")])),
+            Ok(AccessPolicies {
+                policies: vec![AccessPolicy {
+                    feature: "budget".into(),
+                    min_role: "owner".into()
+                }]
+            })
+        );
+        assert_eq!(access_request(&pairs(&[])), Err("invalid_access"));
+        assert_eq!(
+            access_request(&pairs(&[("sent", "button")])),
+            Err("invalid_access")
+        );
+        // A threshold off the list, a feature twice, a feature unknown.
+        for bad in [
+            &[("budget", "member")][..],
+            &[("budget", "Admin")][..],
+            &[("budget", "admin"), ("budget", "owner")][..],
+            &[("chores", "admin")][..],
+        ] {
+            assert_eq!(
+                access_request(&pairs(bad)),
+                Err("invalid_access"),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
