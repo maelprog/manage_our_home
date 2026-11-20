@@ -1788,3 +1788,83 @@ async fn export_keeps_own_rows_on_a_private_event_the_caller_cannot_see(db: PgPo
     drop(scoped_router);
     drop_prescribed_role(&db, app_db, &role).await;
 }
+
+/// #917, constat 2 (rouge sur `main`, branche jetable) : un membre assigné à
+/// un événement privé quitte le foyer ; le propriétaire change ensuite le
+/// titre et le lieu. L'export de l'ancien membre, sous le rôle prescrit, rend
+/// le titre et le lieu écrits après son départ. Constat 2 de la revue #382,
+/// toujours ouvert.
+#[sqlx::test]
+async fn pentest_917_a_former_member_s_export_does_not_read_an_event_changed_after_departure(
+    db: PgPool,
+) {
+    let router = test_router(db.clone());
+    let owner_cookie =
+        register_verify_login(&router, &db, "p917-owner@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &owner_cookie, "Foyer").await;
+    let member_cookie =
+        register_verify_login(&router, &db, "p917-member@example.test", "member-password1").await;
+    join_group(&router, &owner_cookie, &member_cookie, &group_id).await;
+    let ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT id FROM users WHERE email IN ('p917-owner@example.test', 'p917-member@example.test')",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/events"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({
+            "title": "Avant le depart",
+            "starts_at": "2026-12-01T10:00:00Z",
+            "ends_at": "2026-12-01T11:00:00Z",
+            "is_private": true,
+            "assignee_ids": ids,
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let event_id = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let leave = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/leave"),
+        Some(&member_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert_status(&leave, StatusCode::OK);
+    let patch = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{group_id}/events/{event_id}"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"title": "Avocat", "location": "Lieu secret"})),
+    )
+    .await;
+    assert_status(&patch, StatusCode::OK);
+
+    let (role, app_db) = prescribed_role_pool(&db).await;
+    let scoped_router = test_router(app_db.clone());
+    let export = call(
+        &scoped_router,
+        Method::GET,
+        "/account/export",
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&export, StatusCode::OK);
+    let text = json_body(export).await.to_string();
+    drop(scoped_router);
+    drop_prescribed_role(&db, app_db, &role).await;
+
+    assert!(
+        !text.contains("Lieu secret"),
+        "l'export de l'ancien membre lit l'événement modifié après son départ"
+    );
+}

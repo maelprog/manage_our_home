@@ -5726,3 +5726,101 @@ async fn editing_an_event_follows_the_family_s_threshold(db: PgPool) {
     )
     .await;
 }
+
+/// #917, constat 1 (rouge sur `main`, branche jetable) : un membre simple,
+/// sous le seuil `agenda_edit` par défaut (`admin`), ne peut ni modifier ni
+/// supprimer l'événement du propriétaire (#866), mais il supprime le rappel
+/// que le propriétaire y a posé : `delete_reminder` s'arrête à
+/// `require_role`. Constat 4 de la revue #382, toujours ouvert.
+#[sqlx::test]
+async fn pentest_917_a_member_under_the_threshold_cannot_delete_the_owner_s_reminder(db: PgPool) {
+    let router = test_router(db.clone());
+    let fam = common::thresholds::family(&router, &db, "p917r").await;
+    let event_id = create_event(&router, &fam.owner, &fam.group_id).await;
+    let reminder = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{}/events/{event_id}/reminders", fam.group_id),
+        Some(&fam.owner),
+        Some(serde_json::json!({"offset_minutes": 30})),
+    )
+    .await;
+    assert_status(&reminder, StatusCode::CREATED);
+    let reminder_id = json_body(reminder).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Témoin : l'événement lui-même lui est refusé.
+    let event = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/events/{event_id}", fam.group_id),
+        Some(&fam.standard),
+        None,
+    )
+    .await;
+    assert_status(&event, StatusCode::FORBIDDEN);
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!(
+            "/groups/{}/events/{event_id}/reminders/{reminder_id}",
+            fam.group_id
+        ),
+        Some(&fam.standard),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::FORBIDDEN);
+}
+
+/// #917, constat 1 (rouge sur `main`, branche jetable) : même membre, même
+/// seuil, sur la pièce jointe du propriétaire. `delete_attachment` efface
+/// l'objet du stockage puis la ligne, sans retour possible. Demande un vrai
+/// MinIO (`MINIO_*`) : sans lui, le test échoue au lieu de se sauter.
+#[sqlx::test]
+async fn pentest_917_a_member_under_the_threshold_cannot_delete_the_owner_s_attachment(db: PgPool) {
+    let (s3, bucket) =
+        real_minio_from_env().expect("pentest_917 : MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/BUCKET");
+    let router = test_router_with_storage(
+        db.clone(),
+        manage_our_home::storage::Storage::new(s3, bucket),
+    );
+    let fam = common::thresholds::family(&router, &db, "p917a").await;
+    let event_id = create_event(&router, &fam.owner, &fam.group_id).await;
+    let upload = call_upload(
+        &router,
+        &format!("/groups/{}/events/{event_id}/attachments", fam.group_id),
+        &fam.owner,
+        "ordonnance.png",
+        PNG_BYTES,
+    )
+    .await;
+    assert_status(&upload, StatusCode::CREATED);
+    let attachment_id = json_body(upload).await["id"].as_str().unwrap().to_string();
+
+    let event = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/events/{event_id}", fam.group_id),
+        Some(&fam.standard),
+        None,
+    )
+    .await;
+    assert_status(&event, StatusCode::FORBIDDEN);
+
+    let delete = call(
+        &router,
+        Method::DELETE,
+        &format!(
+            "/groups/{}/events/{event_id}/attachments/{attachment_id}",
+            fam.group_id
+        ),
+        Some(&fam.standard),
+        None,
+    )
+    .await;
+    assert_status(&delete, StatusCode::FORBIDDEN);
+}
