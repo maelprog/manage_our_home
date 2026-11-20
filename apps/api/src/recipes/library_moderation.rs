@@ -22,7 +22,7 @@
 //!   that block.
 //!
 //! Every superadmin route runs on `AppState.admin_db` behind
-//! `SuperAdminUser` (recent session included), and is traced in
+//! `SuperAdminUser` (recent session included); each of its writes is traced in
 //! `audit_log` in the same transaction (`audit::record`).
 
 use axum::extract::rejection::JsonRejection;
@@ -202,11 +202,13 @@ pub struct AdminLibraryReportList {
     ),
     security(("session_cookie" = [])),
 )]
+/// A read with no side effect (`get_side_effects_flow`): it names no
+/// account, so unlike the reads of `/admin/users` and `/admin/groups` it
+/// writes nothing to `audit_log`. The decisions it leads to are traced.
 pub async fn list_reports(
     State(state): State<AppState>,
-    actor: SuperAdminUser,
+    _actor: SuperAdminUser,
 ) -> AppResult<impl IntoResponse> {
-    let mut tx = crate::db::begin(&state.admin_db).await?;
     let reports = sqlx::query_as!(
         AdminLibraryReport,
         r#"SELECT r.id, r.library_recipe_id, l.name AS "library_recipe_name?", r.reason,
@@ -215,18 +217,8 @@ pub async fn list_reports(
            LEFT JOIN library_recipes l ON l.id = r.library_recipe_id
            ORDER BY r.closed_at DESC NULLS FIRST, r.created_at, r.id"#
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&state.admin_db)
     .await?;
-    audit::record(
-        &mut tx,
-        Some(actor.user_id),
-        "admin.library.reports.list",
-        "library_reports",
-        "*",
-        json!({ "count": reports.len() }),
-    )
-    .await?;
-    tx.commit().await?;
     Ok(Json(AdminLibraryReportList { reports }))
 }
 
