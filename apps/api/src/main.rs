@@ -181,8 +181,8 @@ async fn main() -> anyhow::Result<()> {
     // The other limits wait on their subject's lock the same way (#483):
     // pools of their own too. `POST /csp-report` and the "account exists"
     // notice of `POST /auth/register` (#570) answer anyone, so each has one
-    // to itself; the recipe import and Open Food Facts, behind a session,
-    // share the other.
+    // to itself; the recipe import, Open Food Facts and the recipe library
+    // (#906), behind a session, share the other.
     let csp_report_pool_size = manage_our_home::db::pool_size(
         manage_our_home::csp_report_throttle::POOL_SIZE_VAR,
         env::var(manage_our_home::csp_report_throttle::POOL_SIZE_VAR)
@@ -230,8 +230,13 @@ async fn main() -> anyhow::Result<()> {
         rate_limit_db.clone(),
         pseudonyms.clone(),
     ));
-    let recipe_import_throttle = std::sync::Arc::new(
-        manage_our_home::recipes::import::ImportThrottle::new(rate_limit_db, pseudonyms.clone()),
+    let recipe_import_throttle =
+        std::sync::Arc::new(manage_our_home::recipes::import::ImportThrottle::new(
+            rate_limit_db.clone(),
+            pseudonyms.clone(),
+        ));
+    let library_throttle = std::sync::Arc::new(
+        manage_our_home::recipes::library::LibraryThrottle::new(rate_limit_db, pseudonyms.clone()),
     );
     let account_exists_throttle = std::sync::Arc::new(
         manage_our_home::auth::account_exists_notice::NoticeThrottle::new(
@@ -312,6 +317,7 @@ async fn main() -> anyhow::Result<()> {
         off_throttle,
         recipe_import_client: manage_our_home::outbound_http::recipe_import_client().clone(),
         recipe_import_throttle,
+        library_throttle,
         account_exists_throttle,
         auth_response_floor,
         shutdown: manage_our_home_http_guard::Shutdown::new(),

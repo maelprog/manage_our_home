@@ -155,6 +155,10 @@ pub struct AppState {
     /// The per-member limit on recipe imports (#405), counted in
     /// Postgres (`rate_limit_log`, #428).
     pub recipe_import_throttle: std::sync::Arc<recipes::import::ImportThrottle>,
+    /// The per-user limits on reading the shared recipe library and
+    /// publishing to it (#906), counted in Postgres (`rate_limit_log`), on
+    /// the pool of the recipe import.
+    pub library_throttle: std::sync::Arc<recipes::library::LibraryThrottle>,
     /// The per-address cap on the "account exists" notice `register` mails
     /// (#570), counted in Postgres (`rate_limit_log`), on a pool of its own.
     pub account_exists_throttle: std::sync::Arc<auth::account_exists_notice::NoticeThrottle>,
@@ -480,6 +484,15 @@ pub fn build_router(state: AppState) -> Router {
             get(recipes::crud::get_recipe)
                 .patch(recipes::crud::update_recipe)
                 .delete(recipes::crud::delete_recipe),
+        )
+        .route(
+            "/groups/{id}/recipes/{recipe_id}/publish",
+            post(recipes::library::publish_recipe).delete(recipes::library::unpublish_recipe),
+        )
+        .route("/library/recipes", get(recipes::library::list_library))
+        .route(
+            "/library/recipes/{id}",
+            get(recipes::library::get_library_recipe),
         )
         .route(
             "/groups/{id}/recipes/{recipe_id}/meal-history",

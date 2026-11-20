@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT created_by, name, instructions, servings, duration_minutes\n           FROM recipes WHERE id = $1 AND group_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "instructions",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "instructions"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "servings"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "duration_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "duration_minutes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "f648133aa663e16842a0ba55675bb26b90b8c46269c512c3427a3c7b6051baf8"
+}

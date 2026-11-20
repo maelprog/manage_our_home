@@ -2,7 +2,16 @@
 //! security. Every check runs as a throwaway `NOSUPERUSER NOBYPASSRLS`
 //! role, as `rls.rs` does: a superuser or the tables' owner would bypass
 //! every policy and prove nothing.
+//!
+//! Issue #906: its routes (`recipes::library`), driven through the router.
+//! The handlers run as `FLOW_TEST_RUNTIME_ROLE` when it is set (CI job
+//! `test`), under the same policies.
 
+mod common;
+
+use axum::http::{Method, StatusCode};
+use common::{assert_status, call, insert_session, json_body, test_router};
+use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
@@ -441,4 +450,743 @@ async fn a_copy_and_a_publication_outlive_each_others_source(db: PgPool) {
             .await
             .unwrap();
     assert_eq!(link, Some(None));
+}
+
+// --- #906: the routes -------------------------------------------------------
+
+/// An account able to use the API (age declared, CGU accepted), and the
+/// cookie of a session of it.
+async fn api_user(db: &PgPool, email: &str) -> (Uuid, String) {
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, password_hash, display_name, email_verified,
+                            age_declared_at, terms_accepted_version, terms_accepted_at)
+         VALUES ($1, 'not-a-real-hash', $1, true, now(), $2, now())
+         RETURNING id",
+    )
+    .bind(email)
+    .bind(manage_our_home::auth::terms_acceptance::terms_in_force_now())
+    .fetch_one(db)
+    .await
+    .unwrap();
+    (id, insert_session(db, id).await)
+}
+
+/// A family member: their id and session cookie.
+struct Member {
+    id: Uuid,
+    cookie: String,
+}
+
+/// A family of an owner, an admin and a standard member, under the default
+/// `recipes_edit` threshold (`admin`).
+struct Fam {
+    id: Uuid,
+    owner: Member,
+    admin: Member,
+    standard: Member,
+}
+
+async fn fam(db: &PgPool, prefix: &str) -> Fam {
+    let mut members = Vec::new();
+    for role in ["owner", "admin", "standard"] {
+        let (id, cookie) = api_user(db, &format!("{prefix}-{role}@example.test")).await;
+        members.push((role, Member { id, cookie }));
+    }
+    let group: Uuid = sqlx::query_scalar(
+        "INSERT INTO groups (name, created_by) VALUES ('Foyer', $1) RETURNING id",
+    )
+    .bind(members[0].1.id)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    for (role, m) in &members {
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, $3::group_role)",
+        )
+        .bind(group)
+        .bind(m.id)
+        .bind(role)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+    let mut it = members.into_iter().map(|(_, m)| m);
+    Fam {
+        id: group,
+        owner: it.next().unwrap(),
+        admin: it.next().unwrap(),
+        standard: it.next().unwrap(),
+    }
+}
+
+/// `cookie`'s member writes a recipe in `group` through the API.
+async fn new_recipe(router: &axum::Router, group: Uuid, cookie: &str, body: Value) -> Uuid {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group}/recipes"),
+        Some(cookie),
+        Some(body),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn leek_tart() -> Value {
+    json!({
+        "name": "Tarte aux poireaux",
+        "instructions": "Cuire 45 minutes.",
+        "servings": 4,
+        "duration_minutes": 45,
+        "source_url": "https://example.test/tarte",
+        "ingredients": [
+            {"name": "Poireau", "quantity": 3.0, "seasonal_months": [12, 10, 11]},
+            {"name": "Pâte brisée", "quantity": 1.0, "unit": "rouleau"},
+            {"name": "Sel", "is_optional": true, "seasonal_months": []}
+        ]
+    })
+}
+
+fn consent() -> Option<Value> {
+    Some(json!({"consent": true}))
+}
+
+async fn publish_call(
+    router: &axum::Router,
+    group: Uuid,
+    recipe: Uuid,
+    cookie: &str,
+    body: Option<Value>,
+) -> axum::http::Response<axum::body::Body> {
+    call(
+        router,
+        Method::POST,
+        &format!("/groups/{group}/recipes/{recipe}/publish"),
+        Some(cookie),
+        body,
+    )
+    .await
+}
+
+async fn get(router: &axum::Router, uri: &str, cookie: &str) -> (StatusCode, Value) {
+    let res = call(router, Method::GET, uri, Some(cookie), None).await;
+    let status = res.status();
+    (status, json_body(res).await)
+}
+
+async fn library_rows(db: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM library_recipes")
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// AC: without `consent`, nothing is published; a member who may not edit
+/// the recipe cannot publish it, consent or not.
+#[sqlx::test]
+async fn publishing_takes_the_consent_and_the_edit_bar(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "bar").await;
+    let recipe = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+
+    for body in [
+        None,
+        Some(json!({})),
+        Some(json!({"consent": false})),
+        Some(json!({"consent": "true"})),
+    ] {
+        let res = publish_call(&router, f.id, recipe, &f.owner.cookie, body.clone()).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(res).await["error"],
+            "consent_required",
+            "{body:?}"
+        );
+    }
+    // Not the creator, under the `admin` threshold.
+    let res = publish_call(&router, f.id, recipe, &f.standard.cookie, consent()).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    // Not a member at all.
+    let (_, outsider) = api_user(&db, "bar-outsider@example.test").await;
+    let res = publish_call(&router, f.id, recipe, &outsider, consent()).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    assert_eq!(library_rows(&db).await, 0, "nothing published");
+
+    // A recipe of another family, named under this family's path.
+    let other = fam(&db, "bar-other").await;
+    let foreign = new_recipe(&router, other.id, &other.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, foreign, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(library_rows(&db).await, 0);
+
+    // The standard member's own recipe: its creator may.
+    let own = new_recipe(&router, f.id, &f.standard.cookie, json!({"name": "Soupe"})).await;
+    let res = publish_call(&router, f.id, own, &f.standard.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    // And the admin, on the owner's recipe.
+    let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    assert_eq!(library_rows(&db).await, 2);
+}
+
+/// AC: what `GET /library/…` answers holds no id of a family or a person,
+/// checked on the whole JSON, and only the publication's own fields.
+#[sqlx::test]
+async fn the_library_names_neither_the_family_nor_the_person(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "anon").await;
+    let recipe = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let published = json_body(res).await;
+    let id = published["id"].as_str().unwrap().to_string();
+
+    let (_, reader) = api_user(&db, "anon-reader@example.test").await;
+    let (status, list) = get(&router, "/library/recipes", &reader).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, detail) = get(&router, &format!("/library/recipes/{id}"), &reader).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let forbidden: Vec<String> = [f.id, f.owner.id, f.admin.id, f.standard.id, recipe]
+        .iter()
+        .flat_map(|u| [u.to_string(), u.simple().to_string()])
+        .chain([
+            "anon-owner@example.test".to_string(),
+            "example.test/tarte".to_string(),
+        ])
+        .collect();
+    for (what, body) in [
+        ("publish", &published),
+        ("list", &list),
+        ("detail", &detail),
+    ] {
+        let text = body.to_string();
+        for needle in &forbidden {
+            assert!(
+                !text.contains(needle.as_str()),
+                "{what} holds {needle}: {text}"
+            );
+        }
+    }
+
+    let keys = |v: &Value| {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    };
+    assert_eq!(keys(&list), ["next_cursor", "recipes"]);
+    assert_eq!(list["recipes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        keys(&list["recipes"][0]),
+        [
+            "duration_minutes",
+            "id",
+            "name",
+            "published_at",
+            "servings",
+            "updated_at"
+        ]
+    );
+    assert_eq!(
+        keys(&detail),
+        [
+            "duration_minutes",
+            "id",
+            "ingredients",
+            "instructions",
+            "name",
+            "published_at",
+            "servings",
+            "updated_at"
+        ]
+    );
+    for ingredient in detail["ingredients"].as_array().unwrap() {
+        assert_eq!(
+            keys(ingredient),
+            ["is_optional", "name", "quantity", "seasonal_months", "unit"]
+        );
+    }
+    assert_eq!(detail, published, "the publisher reads what everyone reads");
+
+    // The snapshot: the recipe's order (as the family reads it, by name
+    // under the database's collation), months sorted, `[]` read as « all
+    // year ».
+    assert_eq!(detail["name"], "Tarte aux poireaux");
+    assert_eq!(detail["servings"], 4);
+    assert_eq!(detail["duration_minutes"], 45);
+    let names = |v: &Value| -> Vec<String> {
+        v["ingredients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (_, source) = get(
+        &router,
+        &format!("/groups/{}/recipes/{recipe}", f.id),
+        &f.owner.cookie,
+    )
+    .await;
+    assert_eq!(names(&detail), names(&source));
+    let ingredient = |name: &str| {
+        detail["ingredients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        ingredient("Poireau")["seasonal_months"],
+        json!([10, 11, 12])
+    );
+    assert_eq!(ingredient("Sel")["seasonal_months"], Value::Null);
+    assert_eq!(ingredient("Sel")["is_optional"], true);
+    assert_eq!(ingredient("Pâte brisée")["unit"], "rouleau");
+
+    let (status, _) = get(
+        &router,
+        &format!("/library/recipes/{}", Uuid::new_v4()),
+        &reader,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let res = call(&router, Method::GET, "/library/recipes", None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+}
+
+/// AC: withdrawing takes the recipe out of the list at once. Only its
+/// publisher withdraws it.
+#[sqlx::test]
+async fn unpublishing_removes_it_from_the_list_at_once(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "unpub").await;
+    let recipe = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    let id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let (_, reader) = api_user(&db, "unpub-reader@example.test").await;
+    let (_, list) = get(&router, "/library/recipes", &reader).await;
+    assert_eq!(list["recipes"].as_array().unwrap().len(), 1);
+
+    let uri = format!("/groups/{}/recipes/{recipe}/publish", f.id);
+    // Another member, whatever their role, has nothing of theirs to withdraw.
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(library_rows(&db).await, 1);
+
+    let res = call(&router, Method::DELETE, &uri, Some(&f.owner.cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (_, list) = get(&router, "/library/recipes", &reader).await;
+    assert_eq!(list["recipes"], json!([]));
+    let (status, _) = get(&router, &format!("/library/recipes/{id}"), &reader).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    for table in [
+        "library_recipes",
+        "library_ingredients",
+        "library_recipe_publishers",
+    ] {
+        let n: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+    let res = call(&router, Method::DELETE, &uri, Some(&f.owner.cookie), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    // The recipe itself stays.
+    let (status, _) = get(
+        &router,
+        &format!("/groups/{}/recipes/{recipe}", f.id),
+        &f.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// Publishing again replaces the snapshot in place; another member's
+/// publication of the same recipe is not theirs to replace.
+#[sqlx::test]
+async fn republishing_replaces_the_snapshot(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "repub").await;
+    let recipe = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    let first = json_body(res).await;
+    let detail_uri = format!("/library/recipes/{}", first["id"].as_str().unwrap());
+
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{}/recipes/{recipe}", f.id),
+        Some(&f.owner.cookie),
+        Some(json!({"name": "Tarte fine", "ingredients": [{"name": "Oignon"}]})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let (_, reader) = api_user(&db, "repub-reader@example.test").await;
+    let (_, before) = get(&router, &detail_uri, &reader).await;
+    assert_eq!(
+        before["name"], "Tarte aux poireaux",
+        "a snapshot does not follow its recipe"
+    );
+
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::OK);
+    let second = json_body(res).await;
+    assert_eq!(second["id"], first["id"]);
+    assert_eq!(second["published_at"], first["published_at"]);
+    assert_eq!(second["name"], "Tarte fine");
+    assert_eq!(
+        second["ingredients"],
+        json!([{"name": "Oignon", "quantity": null, "unit": null,
+                "is_optional": false, "seasonal_months": null}])
+    );
+    let (_, after) = get(&router, &detail_uri, &reader).await;
+    assert_eq!(after, second);
+    assert_eq!(library_rows(&db).await, 1);
+
+    // The admin may edit the recipe, but the publication is the owner's.
+    let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"], "published_by_another_member");
+    assert_eq!(library_rows(&db).await, 1);
+}
+
+/// A recipe past a bound of the library is refused with a 400, nothing
+/// written.
+#[sqlx::test]
+async fn a_recipe_past_the_library_bounds_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "bounds").await;
+    let long = new_recipe(
+        &router,
+        f.id,
+        &f.owner.cookie,
+        json!({"name": "a".repeat(201)}),
+    )
+    .await;
+    let res = publish_call(&router, f.id, long, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "name_too_long");
+    let ingredients: Vec<Value> = (0..101).map(|i| json!({"name": format!("i{i}")})).collect();
+    let many = new_recipe(
+        &router,
+        f.id,
+        &f.owner.cookie,
+        json!({"name": "Bouillon", "ingredients": ingredients}),
+    )
+    .await;
+    let res = publish_call(&router, f.id, many, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(res).await["error"], "too_many_ingredients");
+    assert_eq!(library_rows(&db).await, 0);
+}
+
+/// `count` publications by `user` of fresh recipes of `group`, written
+/// straight to the tables (the route publishes 10 a minute at most).
+/// Returns the recipes.
+async fn seed_publications(
+    db: &PgPool,
+    group: Uuid,
+    user: Uuid,
+    count: usize,
+    name: &str,
+) -> Vec<Uuid> {
+    let mut recipes = Vec::new();
+    for i in 0..count {
+        #[allow(clippy::disallowed_methods)]
+        let mut tx = db.begin().await.unwrap();
+        let recipe: Uuid = sqlx::query_scalar(
+            "INSERT INTO recipes (group_id, created_by, name) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(group)
+        .bind(user)
+        .bind(format!("{name} {i}"))
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        let id: Uuid =
+            sqlx::query_scalar("INSERT INTO library_recipes (name) VALUES ($1) RETURNING id")
+                .bind(format!("{name} {i}"))
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        sqlx::query(
+            "INSERT INTO library_recipe_publishers (library_recipe_id, user_id, source_recipe_id)
+             VALUES ($1, $2, $3)",
+        )
+        .bind(id)
+        .bind(user)
+        .bind(recipe)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        recipes.push(recipe);
+    }
+    recipes
+}
+
+/// At most 50 publications per family, whichever of its members published
+/// them: the 51st is refused 409, publishing one of the 50 again is not.
+/// Another family's count is its own.
+#[sqlx::test]
+async fn a_family_holds_fifty_publications_at_most(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "quota").await;
+    let seeded = seed_publications(&db, f.id, f.admin.id, 50, "Plat").await;
+
+    let recipe = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"], "library_quota_exceeded");
+    assert_eq!(library_rows(&db).await, 50);
+
+    let res = publish_call(&router, f.id, seeded[0], &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::OK);
+
+    let other = fam(&db, "quota-other").await;
+    let theirs = new_recipe(&router, other.id, &other.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, other.id, theirs, &other.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+
+    // The count is the family's members' alone, and of `app.group_id`:
+    // a number, under the runtime policies. The standard member belongs to
+    // both families: scoped to one, they do not count the other.
+    sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'standard')")
+        .bind(other.id)
+        .bind(f.standard.id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let role = restricted_role(&db).await;
+    for (user, scope, group, expected) in [
+        (f.standard.id, f.id, f.id, 50_i64),
+        (other.owner.id, f.id, f.id, 0),
+        (other.owner.id, other.id, f.id, 0),
+        (f.standard.id, f.id, other.id, 0),
+        (f.standard.id, other.id, other.id, 1),
+        (other.owner.id, other.id, other.id, 1),
+    ] {
+        let mut tx = as_user(&db, &role, Some((user, scope))).await;
+        let n: i64 = sqlx::query_scalar("SELECT group_library_publication_count($1)")
+            .bind(group)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(n, expected, "{user} in {scope} on {group}");
+    }
+
+    // A source recipe deleted, its publication no longer counts.
+    sqlx::query("DELETE FROM recipes WHERE id = $1")
+        .bind(seeded[1])
+        .execute(&db)
+        .await
+        .unwrap();
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+}
+
+/// Search by name and by ingredient, case aside and literally; pages of 20
+/// by default, 50 at most, chained by their cursor; a term past 100
+/// characters refused.
+#[sqlx::test]
+async fn the_library_is_searched_and_paged(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "search").await;
+    seed_publications(&db, f.id, f.owner.id, 55, "Gratin").await;
+    seed_publications(&db, f.id, f.owner.id, 1, "Tarte 100%").await;
+    let gratin: Uuid = sqlx::query_scalar("SELECT id FROM library_recipes WHERE name = 'Gratin 7'")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO library_ingredients (library_recipe_id, position, name)
+         VALUES ($1, 0, 'Poireaux')",
+    )
+    .bind(gratin)
+    .execute(&db)
+    .await
+    .unwrap();
+    let (_, reader) = api_user(&db, "search-reader@example.test").await;
+
+    let (status, page) = get(&router, "/library/recipes", &reader).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["recipes"].as_array().unwrap().len(), 20);
+    let (_, page) = get(&router, "/library/recipes?limit=500", &reader).await;
+    assert_eq!(
+        page["recipes"].as_array().unwrap().len(),
+        50,
+        "capped, not refused"
+    );
+    let cursor = page["next_cursor"].as_str().unwrap().to_string();
+    let (_, rest) = get(
+        &router,
+        &format!("/library/recipes?limit=50&cursor={cursor}"),
+        &reader,
+    )
+    .await;
+    assert_eq!(rest["recipes"].as_array().unwrap().len(), 6);
+    assert_eq!(rest["next_cursor"], Value::Null);
+    let mut seen: Vec<String> = page["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(rest["recipes"].as_array().unwrap())
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), 56, "every publication once across the pages");
+
+    let names = |v: &Value| -> Vec<String> {
+        v["recipes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let none: Vec<String> = Vec::new();
+    let (_, hit) = get(&router, "/library/recipes?q=%20gRATIN%2052%20", &reader).await;
+    assert_eq!(names(&hit), ["Gratin 52"]);
+    let (_, hit) = get(&router, "/library/recipes?q=100%25", &reader).await;
+    assert_eq!(names(&hit), ["Tarte 100% 0"], "`%` is taken literally");
+    let (_, hit) = get(&router, "/library/recipes?q=_", &reader).await;
+    assert_eq!(names(&hit), none, "`_` is taken literally");
+    let (_, hit) = get(&router, "/library/recipes?ingredient=POIREAU", &reader).await;
+    assert_eq!(names(&hit), ["Gratin 7"]);
+    let (_, hit) = get(
+        &router,
+        "/library/recipes?q=tarte&ingredient=poireau",
+        &reader,
+    )
+    .await;
+    assert_eq!(names(&hit), none);
+    let (_, all) = get(&router, "/library/recipes?q=&limit=50", &reader).await;
+    assert_eq!(
+        all["recipes"].as_array().unwrap().len(),
+        50,
+        "an empty search lists everything"
+    );
+
+    let hundred = "é".repeat(100);
+    let (status, _) = get(&router, &format!("/library/recipes?q={hundred}"), &reader).await;
+    assert_eq!(status, StatusCode::OK, "100 characters, not bytes");
+    for query in [format!("q={hundred}a"), format!("ingredient={hundred}a")] {
+        let (status, body) = get(&router, &format!("/library/recipes?{query}"), &reader).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"], "search_too_long");
+    }
+    // A cursor chrono reads but `timestamptz` cannot hold: refused, not a
+    // database error.
+    let far = format!("-8000000000000000000.{}", Uuid::new_v4());
+    for query in ["cursor=nope".to_string(), format!("cursor={far}")] {
+        let (status, body) = get(&router, &format!("/library/recipes?{query}"), &reader).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"], "invalid_cursor");
+    }
+    for query in ["limit=-1", "limit=0", "limit=abc"] {
+        let (status, body) = get(&router, &format!("/library/recipes?{query}"), &reader).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"], "invalid_limit", "{query}");
+    }
+}
+
+/// Publications of one family arriving together at its quota: exactly the
+/// quota is published, the rest refused 409. Without the family's lock,
+/// they would all read the same count and all be written.
+#[sqlx::test]
+async fn simultaneous_publications_stop_at_the_quota(db: PgPool) {
+    const AT_ONCE: usize = 8;
+    const ROOM: usize = 3;
+    let router = common::test_router_sized(db.clone(), AT_ONCE as u32 + 2);
+    let f = fam(&db, "race").await;
+    seed_publications(&db, f.id, f.admin.id, 50 - ROOM, "Plat").await;
+    // Each publisher a member of their own recipe: no rate limit shared.
+    let mut publishers = Vec::new();
+    for i in 0..AT_ONCE {
+        let (id, cookie) = api_user(&db, &format!("race-{i}@example.test")).await;
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'standard')",
+        )
+        .bind(f.id)
+        .bind(id)
+        .execute(&db)
+        .await
+        .unwrap();
+        let recipe = new_recipe(&router, f.id, &cookie, json!({"name": format!("Race {i}")})).await;
+        publishers.push((recipe, cookie));
+    }
+
+    let statuses = futures::future::join_all(publishers.iter().map(|(recipe, cookie)| {
+        let router = router.clone();
+        async move {
+            publish_call(&router, f.id, *recipe, cookie, consent())
+                .await
+                .status()
+        }
+    }))
+    .await;
+    let created = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::CREATED)
+        .count();
+    let refused = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::CONFLICT)
+        .count();
+    assert_eq!((created, refused), (ROOM, AT_ONCE - ROOM), "{statuses:?}");
+    assert_eq!(library_rows(&db).await, 50);
+}
+
+/// 60 reads a minute per user and 10 publications, 429 past them; another
+/// user's budget is their own.
+#[sqlx::test]
+async fn reads_and_publications_are_rate_limited(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "rate").await;
+    let (_, reader) = api_user(&db, "rate-reader@example.test").await;
+    for i in 0..60 {
+        let uri = if i % 2 == 0 {
+            "/library/recipes".to_string()
+        } else {
+            format!("/library/recipes/{}", Uuid::new_v4())
+        };
+        let res = call(&router, Method::GET, &uri, Some(&reader), None).await;
+        assert_ne!(res.status(), StatusCode::TOO_MANY_REQUESTS, "read {i}");
+    }
+    let res = call(
+        &router,
+        Method::GET,
+        "/library/recipes",
+        Some(&reader),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::TOO_MANY_REQUESTS);
+    let (status, _) = get(&router, "/library/recipes", &f.owner.cookie).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let recipe = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    for i in 0..10 {
+        let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+        assert!(
+            res.status().is_success(),
+            "publication {i}: {}",
+            res.status()
+        );
+    }
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::TOO_MANY_REQUESTS);
+    let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CONFLICT);
 }

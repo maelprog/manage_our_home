@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO library_ingredients\n                   (library_recipe_id, position, name, quantity, unit, is_optional, seasonal_months)\n               VALUES ($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int2",
+        "Text",
+        "Float8",
+        "Text",
+        "Bool",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b8f031978c885f6297578adefdcffe30857464dd7751d743d5882efed556b24a"
+}
