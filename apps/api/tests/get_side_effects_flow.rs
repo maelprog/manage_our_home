@@ -1,5 +1,5 @@
 //! No `GET` route of apps/api changes anything (#414), outside the closed
-//! list the arbitrages of 2026-10-26 and 2026-11-11 admit. `SameSite=Lax` sends the session
+//! list the arbitrages of 2026-10-26, 2026-11-11 and 2026-11-20 admit. `SameSite=Lax` sends the session
 //! cookie on a cross-site navigation, so a `GET` that writes is one a third
 //! site can trigger (#223, point 4).
 //!
@@ -49,6 +49,12 @@ const AUDITED: [&str; 4] = [
     "/admin/groups/{id}/members",
     "/admin/users",
 ];
+
+/// The `GET` routes of the shared recipe library (#906), which the
+/// arbitrage of 2026-11-20 limits to 60 reads a minute per user
+/// (`recipes::library::READ_RATE`): each read counts in `rate_limit_log`,
+/// and writes nothing else. Called like the others.
+const RATE_LIMITED: [&str; 2] = ["/library/recipes", "/library/recipes/{id}"];
 
 /// The `GET` routes the spec leaves out (`openapi_flow::NOT_DOCUMENTED`),
 /// and the documentation, which `docs_router` turns on.
@@ -118,6 +124,7 @@ struct Household {
     recipe: String,
     grocery_item: String,
     budget_entry: String,
+    publication: String,
 }
 
 async fn insert_user(db: &PgPool, email: &str, name: &str) -> String {
@@ -264,6 +271,17 @@ async fn household(db: &PgPool, router: &axum::Router) -> Household {
         serde_json::json!({"name": "Farine", "amount": 2.5}),
     )
     .await;
+    // The recipe, published to the shared library (#906).
+    let res = call(
+        router,
+        Method::POST,
+        &format!("{g}/recipes/{recipe}/publish"),
+        Some(&owner_cookie),
+        Some(serde_json::json!({"consent": true})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let publication = json_body(res).await["id"].as_str().unwrap().to_string();
     // From the member: unread for the owner, and a notification.
     created(
         router,
@@ -284,6 +302,7 @@ async fn household(db: &PgPool, router: &axum::Router) -> Household {
         recipe,
         grocery_item,
         budget_entry,
+        publication,
     }
 }
 
@@ -297,6 +316,8 @@ fn fill(path: &str, h: &Household) -> String {
     };
     let group = if path.starts_with("/admin/") {
         &h.ownerless_group
+    } else if path.starts_with("/library/") {
+        &h.publication
     } else {
         &h.group
     };
@@ -396,6 +417,12 @@ async fn no_get_route_outside_the_admitted_list_changes_anything(db: PgPool) {
             "{audited} is admitted but is no GET route"
         );
     }
+    for limited in RATE_LIMITED {
+        assert!(
+            routes.iter().any(|r| r == limited),
+            "{limited} is admitted but is no GET route"
+        );
+    }
     for (route, _) in NOT_REACHED {
         assert!(
             routes.iter().any(|r| r == route),
@@ -420,6 +447,8 @@ async fn no_get_route_outside_the_admitted_list_changes_anything(db: PgPool) {
         let changed = changed_tables(&before, &after);
         let admitted: &[&str] = if AUDITED.contains(&route.as_str()) {
             &["audit_log"]
+        } else if RATE_LIMITED.contains(&route.as_str()) {
+            &["rate_limit_log"]
         } else {
             &[]
         };
