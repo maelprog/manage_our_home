@@ -1122,4 +1122,22 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     ).toBeVisible();
     await readerContext.close();
   });
+
+  // A publication outlives its family: its publisher, in no family any
+  // more, still reads « Mes publications » and withdraws it from there.
+  test("« Mes publications » without a family: listed and withdrawn", async ({ page }) => {
+    const email = await registerAndLogin(page, "e2e-rcpubalone", "Lone Publisher");
+    const name = `Gratin ${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    await publishToLibrary(email, { name, ingredients: ["pommes de terre"] });
+    const listed = await page.goto("/recipes/library/mine");
+    expect(listed?.status()).toBe(200);
+    await expect(page).toHaveURL(/\/recipes\/library\/mine$/);
+    await expect(page.getByRole("heading", { name: "Mes publications", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
+    await expect(page.getByText("Cette recette n'est plus dans vos recettes")).toBeVisible();
+    await page.getByRole("button", { name: `Retirer ${name} de la bibliothèque` }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished&nom=/);
+    await expect(page.getByText(`« ${name} » retirée de la bibliothèque.`)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+  });
 });

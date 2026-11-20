@@ -25,7 +25,8 @@ use crate::lenient_query::LenientQuery;
 use crate::state::{api_request_auth, AppState};
 
 use super::publish::dates_text;
-use super::{family_context, recipes_cookie};
+use super::recipes_cookie;
+use crate::routes::groups::header_with_groups;
 
 const LIST: &str = "/recipes/library/mine";
 
@@ -135,9 +136,10 @@ pub async fn get(
     headers: HeaderMap,
     LenientQuery(query): LenientQuery<MineQuery>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, LIST).await else {
-        return Redirect::to("/groups/new").into_response();
-    };
+    // No family needed: a publication outlives the family it came from,
+    // and this is where it is withdrawn from (#947) — a reader without
+    // one still gets the page, under the header of no family.
+    let (_, header) = header_with_groups(&state, &headers, &me, LIST).await;
     let cookie = recipes_cookie(&headers);
     let list = match api_request_auth(
         &state,
@@ -170,7 +172,7 @@ pub async fn get(
         Html(shell_with_header(
             Width::Read,
             "Mes publications",
-            &fam.header,
+            &header,
             &mine_body(list.as_deref(), &banner),
         )),
     )
@@ -183,16 +185,14 @@ pub struct WithdrawForm {
     nom: String,
 }
 
+/// No family needed either: the API withdraws for the publisher alone.
 pub async fn withdraw(
-    CurrentUser(me): CurrentUser,
+    CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Form(form): Form<WithdrawForm>,
 ) -> Response {
-    if family_context(&state, &headers, &me, LIST).await.is_none() {
-        return Redirect::to("/groups/new").into_response();
-    }
     let cookie = recipes_cookie(&headers);
     let status = api_request_auth(
         &state,
