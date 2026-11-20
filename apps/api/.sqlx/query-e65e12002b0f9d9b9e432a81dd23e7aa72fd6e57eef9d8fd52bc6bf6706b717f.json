@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO library_withdrawn_sources (source_recipe_id, library_recipe_id)\n               VALUES ($1, $2)\n               ON CONFLICT (source_recipe_id) DO UPDATE\n                   SET library_recipe_id = EXCLUDED.library_recipe_id,\n                       withdrawn_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e65e12002b0f9d9b9e432a81dd23e7aa72fd6e57eef9d8fd52bc6bf6706b717f"
+}

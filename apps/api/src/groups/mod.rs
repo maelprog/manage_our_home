@@ -1041,6 +1041,7 @@ pub async fn remove_member(
     )
     .execute(&mut *tx)
     .await?;
+    unpublish_departed(&mut tx, group_id).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1109,9 +1110,28 @@ pub async fn leave_group(
     )
     .execute(&mut *tx)
     .await?;
+    unpublish_departed(&mut tx, group_id).await?;
 
     tx.commit().await?;
     Ok(StatusCode::OK)
+}
+
+/// Withdraws from the shared library what the member who just left the
+/// family, or was removed from it, published from its recipes (user's
+/// decision of 2026-11-20, #908): the families' copies stay, the quota is
+/// freed. Called once the membership is deleted, in the same transaction;
+/// the function of 0068 takes whatever no current member stands behind.
+async fn unpublish_departed(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> AppResult<()> {
+    sqlx::query_scalar!(
+        r#"SELECT group_library_unpublish_departed($1) AS "n!""#,
+        group_id
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

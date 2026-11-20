@@ -159,6 +159,9 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
                     SELECT id, $1 FROM l)
          INSERT INTO library_ingredients (library_recipe_id, position, name)
          SELECT id, 0, 'Poireau' FROM l",
+        // A report it made on a publication (#908).
+        "INSERT INTO library_reports (library_recipe_id, reporter_id, reason, comment)
+         VALUES (gen_random_uuid(), $1, 'spam', 'Publicité')",
     ] {
         let query = sqlx::query(sql).bind(user);
         let query = if sql.contains("$2") {
@@ -265,6 +268,10 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
             "library_recipe_publishers",
             "SELECT count(*) FROM library_recipe_publishers WHERE user_id = $1",
         ),
+        (
+            "library_reports",
+            "SELECT count(*) FROM library_reports WHERE reporter_id = $1",
+        ),
     ] {
         let n: i64 = sqlx::query_scalar(sql)
             .bind(user)
@@ -297,6 +304,7 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "user_dislikes",
         "ingredient_links",
         "library_recipe_publishers",
+        "library_reports",
     ]
     .into_iter()
     .map(|t| (t, n))

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO library_reports (library_recipe_id, reporter_id, reason, comment)\n           SELECT id, $2, $3, $4 FROM library_recipes WHERE id = $1\n           ON CONFLICT (library_recipe_id, reporter_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "79a05e3420b4f924df5ac1c39ee4fdbed4dc1c07126967189885d4fb4e1e90b2"
+}

@@ -7,6 +7,7 @@ pub mod import;
 pub mod ingredient_line;
 pub mod jsonld;
 pub mod library;
+pub mod library_moderation;
 pub mod meal_history;
 pub mod microdata;
 pub mod outcome;

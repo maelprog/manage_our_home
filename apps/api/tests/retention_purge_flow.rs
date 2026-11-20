@@ -242,6 +242,8 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
             login_throttle: 1,
             rate_limit_log: 1,
             csp_report_throttle: 1,
+            library_reports_lapsed: 0,
+            library_reports: 0,
         }
     );
     for (table, query) in [
@@ -548,4 +550,106 @@ async fn the_pass_refuses_a_role_that_does_not_bypass_rls(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(left, 1);
+}
+
+/// #908 (user's decision of 2026-11-20): a report on a publication of the
+/// shared library is deleted six months after its closure, an open one
+/// never. A report whose publication is gone otherwise than by moderation
+/// is closed by the pass, as `lapsed`, and its six months start then.
+#[sqlx::test]
+async fn library_reports_go_six_months_after_their_closure(db: PgPool) {
+    let now = Utc::now();
+    let six_months = now.checked_sub_months(Months::new(6)).unwrap();
+    let minute = Duration::minutes(1);
+    let reporter = insert_user(&db, "signalant@example.test", false).await;
+    // Verified, or the second pass below would purge the account (#834).
+    sqlx::query("UPDATE users SET email_verified = true WHERE id = $1")
+        .bind(reporter)
+        .execute(&db)
+        .await
+        .unwrap();
+    let live: Uuid = sqlx::query_scalar(
+        "WITH l AS (INSERT INTO library_recipes (name) VALUES ('Tarte') RETURNING id),
+              p AS (INSERT INTO library_recipe_publishers (library_recipe_id, user_id)
+                    SELECT id, $1 FROM l)
+         SELECT id FROM l",
+    )
+    .bind(reporter)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    let old = six_months - Duration::days(9);
+    let mut ids = Vec::new();
+    for (publication, created, resolution, closed) in [
+        // Open, on a live publication, however old: kept open.
+        (live, six_months - Duration::days(400), None, None),
+        // Open, its publication gone: closed now, kept.
+        (Uuid::new_v4(), now - minute, None, None),
+        // Closed past six months: deleted.
+        (
+            Uuid::new_v4(),
+            old,
+            Some("dismissed"),
+            Some(six_months - minute),
+        ),
+        (
+            Uuid::new_v4(),
+            old + minute,
+            Some("withdrawn"),
+            Some(six_months - minute),
+        ),
+        // Closed a minute short of it: kept.
+        (
+            Uuid::new_v4(),
+            old + minute + minute,
+            Some("lapsed"),
+            Some(six_months + minute),
+        ),
+    ] {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO library_reports
+                 (library_recipe_id, reporter_id, reason, created_at, resolution, closed_at)
+             VALUES ($1, $2, 'spam', $3, $4, $5) RETURNING id",
+        )
+        .bind(publication)
+        .bind(reporter)
+        .bind(created)
+        .bind(resolution)
+        .bind(closed)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+
+    let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
+    assert_eq!(counts.library_reports_lapsed, 1);
+    assert_eq!(counts.library_reports, 2);
+
+    let left: Vec<(Uuid, Option<String>, Option<DateTime<Utc>>)> =
+        sqlx::query_as("SELECT id, resolution, closed_at FROM library_reports ORDER BY created_at")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    let left_ids: Vec<Uuid> = left.iter().map(|r| r.0).collect();
+    assert_eq!(left_ids, vec![ids[0], ids[4], ids[1]]);
+    assert_eq!(left[0].1, None);
+    assert_eq!(left[2].1.as_deref(), Some("lapsed"));
+    // Closed at the pass's clock (`timestamptz` keeps microseconds).
+    assert_eq!(
+        left[2].2.map(|t| t.timestamp_micros()),
+        Some(now.timestamp_micros())
+    );
+
+    // Six months on, the lapsed one goes too; the open one stays.
+    let later = now.checked_add_months(Months::new(6)).unwrap() + minute;
+    let counts = purge(&db, RetentionCutoffs::at(later)).await.unwrap();
+    assert_eq!(counts.library_reports_lapsed, 0);
+    assert_eq!(counts.library_reports, 2);
+    let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM library_reports")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, vec![ids[0]]);
 }

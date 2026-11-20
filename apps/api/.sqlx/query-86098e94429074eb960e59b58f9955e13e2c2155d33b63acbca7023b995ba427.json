@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE library_reports r SET resolution = 'lapsed', closed_at = $1\n           WHERE r.resolution IS NULL\n             AND NOT EXISTS (SELECT 1 FROM library_recipes l WHERE l.id = r.library_recipe_id)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "86098e94429074eb960e59b58f9955e13e2c2155d33b63acbca7023b995ba427"
+}

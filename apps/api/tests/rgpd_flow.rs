@@ -1225,8 +1225,14 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("library_recipes", "library_recipes"),
         ("library_ingredients", "library_recipes"),
         ("library_recipe_publishers", "library_recipes"),
+        ("library_reports", "library_reports"),
     ];
     const LEFT_OUT: &[(&str, &str)] = &[
+        (
+            "library_withdrawn_sources",
+            "the family recipes whose publication the superadmin withdrew (#908): a recipe, \
+             no account; the family's content, not the person's",
+        ),
         (
             "account_reactivation_requests",
             "exists only while the account is deactivated, when AuthUser refuses the export",
@@ -1379,6 +1385,8 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
         // #905: who published what to the shared library, under
         // `app.user_id`; read with the publications.
         ("library_recipe_publishers", "user_id"),
+        // #908: the reports the person made, under `app.user_id`.
+        ("library_reports", "reporter_id"),
     ];
     const LEFT_OUT: &[(&str, &str, &str)] = &[
         (

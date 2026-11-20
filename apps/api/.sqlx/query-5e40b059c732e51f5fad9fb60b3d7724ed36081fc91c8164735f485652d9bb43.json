@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT l.id, p.source_recipe_id AS \"source_recipe_id?\"\n           FROM library_recipes l\n           LEFT JOIN library_recipe_publishers p ON p.library_recipe_id = l.id\n           WHERE l.id = $1\n           FOR UPDATE OF l",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "source_recipe_id?",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "library_recipe_publishers",
+            "name": "source_recipe_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "5e40b059c732e51f5fad9fb60b3d7724ed36081fc91c8164735f485652d9bb43"
+}

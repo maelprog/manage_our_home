@@ -13,6 +13,9 @@
 //! are the ones published in
 //! `docs/privacy-policy.md` and recorded in `docs/registre-traitements.md`.
 //!
+//! Since #908 it also closes, then deletes six months later, the reports on
+//! publications of the shared recipe library.
+//!
 //! The pass also deletes the login lock's counters past their own bound
 //! (`auth::throttle::purge_cutoff`, half an hour, #427): not a retention
 //! period of its own, the instant past which no counter can still count.
@@ -53,6 +56,11 @@ pub const INVITATION_RETENTION_DAYS: i64 = 30;
 /// find a month's reminders and messages again, short enough that the
 /// list holds no history of its own (controller's decision of 2026-10-21).
 pub const NOTIFICATION_RETENTION_DAYS: i64 = 30;
+/// A report on a publication of the shared library (#908), counted from
+/// its closure — dismissed, the publication withdrawn, or gone on its own
+/// (`lapsed`); an open report is kept until it is closed (user's decision
+/// of 2026-11-20).
+pub const LIBRARY_REPORT_RETENTION_MONTHS: u32 = 6;
 
 /// The instant, per table, before which a row has outlived its retention.
 ///
@@ -71,6 +79,8 @@ pub struct RetentionCutoffs {
     pub invitation: DateTime<Utc>,
     /// `notifications.created_at` older than this goes.
     pub notification: DateTime<Utc>,
+    /// `library_reports.closed_at` older than this goes.
+    pub library_report: DateTime<Utc>,
     /// A session whose `last_seen_at` is older than this has been idle
     /// past `SESSION_IDLE_TIMEOUT_DAYS` and is already refused.
     pub session_idle: DateTime<Utc>,
@@ -129,6 +139,9 @@ impl RetentionCutoffs {
             password_reset: now - Duration::hours(PASSWORD_RESET_RETENTION_HOURS),
             invitation: now - Duration::days(INVITATION_RETENTION_DAYS),
             notification: now - Duration::days(NOTIFICATION_RETENTION_DAYS),
+            library_report: now
+                .checked_sub_months(Months::new(LIBRARY_REPORT_RETENTION_MONTHS))
+                .unwrap_or(DateTime::<Utc>::MIN_UTC),
             session_idle: now - Duration::days(SESSION_IDLE_TIMEOUT_DAYS),
             unverified_account: now - Duration::days(UNVERIFIED_ACCOUNT_RETENTION_DAYS),
             now,
@@ -159,6 +172,11 @@ pub struct PurgeCounts {
     pub rate_limit_log: u64,
     /// CSP report counters whose window is over (#428).
     pub csp_report_throttle: u64,
+    /// Open reports on a publication gone otherwise than by moderation,
+    /// closed as `lapsed` (#908).
+    pub library_reports_lapsed: u64,
+    /// Reports closed past [`LIBRARY_REPORT_RETENTION_MONTHS`] (#908).
+    pub library_reports: u64,
 }
 
 /// Polling worker, `account_purge`'s shape. `pool` must be the `BYPASSRLS`
@@ -329,6 +347,29 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
     let csp_report_throttle =
         crate::csp_report_throttle::purge_expired(&mut tx, cutoffs.now.into()).await?;
 
+    // #908: a report whose publication is gone — withdrawn by its
+    // publisher, by the family's owner, at the publisher's departure or
+    // account purge — has nothing left to decide on. It is closed then, as
+    // `lapsed`, and its six months start. One the superadmin withdrew was
+    // closed by the withdrawal itself.
+    let library_reports_lapsed = sqlx::query!(
+        r#"UPDATE library_reports r SET resolution = 'lapsed', closed_at = $1
+           WHERE r.resolution IS NULL
+             AND NOT EXISTS (SELECT 1 FROM library_recipes l WHERE l.id = r.library_recipe_id)"#,
+        cutoffs.now
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    // An open report is never deleted, however old.
+    let library_reports = sqlx::query!(
+        "DELETE FROM library_reports WHERE closed_at < $1",
+        cutoffs.library_report
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
     tx.commit().await?;
 
     Ok(PurgeCounts {
@@ -342,6 +383,8 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
         login_throttle,
         rate_limit_log,
         csp_report_throttle,
+        library_reports_lapsed,
+        library_reports,
     })
 }
 
@@ -384,6 +427,27 @@ mod tests {
         assert_eq!(
             RetentionCutoffs::at(now()).notification,
             now() - Duration::days(30)
+        );
+    }
+
+    /// The duration decided on 2026-11-20 (#908): six calendar months
+    /// after the closure, clamped as the audit log's.
+    #[test]
+    fn closed_library_reports_keep_six_months() {
+        assert_eq!(
+            RetentionCutoffs::at(now()).library_report,
+            DateTime::parse_from_rfc3339("2026-03-22T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+        let end_of_august = DateTime::parse_from_rfc3339("2026-08-31T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            RetentionCutoffs::at(end_of_august).library_report,
+            DateTime::parse_from_rfc3339("2026-02-28T08:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
         );
     }
 
