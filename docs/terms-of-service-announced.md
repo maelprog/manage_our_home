@@ -1,0 +1,214 @@
+# Conditions générales d'utilisation — Manage Our Home
+
+Dernière mise à jour : 2026-11-20.
+
+Version en vigueur : 2026-11-20.
+
+## Objet
+
+Manage Our Home est un service en ligne qui permet aux membres d'un même
+foyer de s'organiser : un agenda partagé, une messagerie de groupe, des
+stocks, des recettes, une liste de courses et un suivi de budget. Les
+présentes conditions définissent le service, ce que vous pouvez en attendre
+et ce que l'éditeur attend de vous.
+
+Vous acceptez les présentes conditions en cochant la case prévue à cet
+effet à l'ouverture de votre compte ; un compte ouvert avec Google, ou avant
+que cette case existe, les accepte de la même façon avant tout autre accès
+au service. La version acceptée est conservée, avec sa date. Si vous ne les
+acceptez pas, n'ouvrez pas de compte.
+
+L'éditeur du service, une personne physique qui l'édite à titre non
+professionnel, est présenté dans les [mentions légales](/legal-notice), qui
+donnent l'adresse pour le joindre.
+
+## Le service
+
+Le service est fourni gratuitement et en l'état, sans engagement de durée ni
+garantie de disponibilité : il peut être interrompu pour maintenance,
+modifié, ou arrêté. En cas d'arrêt définitif, l'éditeur s'efforce de prévenir
+les membres avec un préavis raisonnable, afin que chacun puisse exporter ses
+données avant la fermeture.
+
+Aucune fonctionnalité n'est payante, aucune publicité n'est diffusée, et
+aucune donnée n'est revendue.
+
+## Âge minimal
+
+Le service est réservé aux personnes âgées d'au moins **15 ans**. C'est le
+seuil que la loi française retient pour qu'un mineur consente seul au
+traitement de ses données personnelles ; en deçà, l'accord du titulaire de
+l'autorité parentale serait nécessaire, et le service n'offre aucun moyen de
+le recueillir. Les moins de 15 ans ne sont donc pas acceptés, sans exception.
+
+À l'ouverture d'un compte, vous déclarez avoir 15 ans ou plus ; un compte
+ouvert avec Google fait cette déclaration à sa première connexion, avant tout
+accès au service. Aucune date de
+naissance n'est demandée : seule la déclaration est conservée, avec sa date.
+Un compte dont l'éditeur apprend qu'il a été ouvert par une personne plus
+jeune est fermé et ses données supprimées ; le titulaire de l'autorité
+parentale peut le signaler à l'adresse donnée dans les [mentions
+légales](/legal-notice).
+
+Cela n'empêche pas d'organiser le foyer autour d'enfants plus jeunes : depuis
+le compte d'un membre qui a l'âge requis, un événement, une tâche ou une
+course peut parfaitement les concerner et les nommer. Ce que ces conditions
+interdisent, c'est d'ouvrir un compte au nom d'un enfant de moins de 15 ans.
+
+## Votre compte
+
+L'ouverture d'un compte passe par le formulaire d'inscription, où vous
+fournissez notamment une adresse email valide, un nom affiché et un mot de
+passe. L'adresse email doit être vérifiée — le service y envoie un lien —
+avant la première connexion. Vous pouvez aussi vous connecter avec un compte
+Google.
+
+Vous êtes responsable de l'exactitude des informations que vous fournissez,
+de la confidentialité de votre mot de passe et des actions faites depuis
+votre compte. Prévenez l'éditeur si vous pensez qu'un tiers y accède.
+
+Un compte est personnel : il ne se partage pas et ne se cède pas.
+
+## Les groupes
+
+Le service s'organise en groupes — un foyer, une famille. Le membre qui crée
+un groupe en est le propriétaire. Il peut inviter d'autres membres, nommer
+des administrateurs, transférer la propriété du groupe ou le supprimer ; un
+administrateur peut renommer le groupe, inviter, nommer administrateur un
+membre ordinaire, et retirer un membre ordinaire.
+
+Tout ce qui est déposé dans un groupe est visible par l'ensemble de ses
+membres, et par eux seuls, à une exception près, que seul décide le membre
+qui publie : une recette publiée dans la bibliothèque (voir « Vos
+contenus »). Inviter quelqu'un, c'est donc lui donner accès à
+tout le contenu du groupe, y compris à ce qui y a été déposé avant son
+arrivée. Supprimer un groupe supprime son contenu. Des groupes, l'éditeur ne
+voit dans le service, pour l'assistance, que le nom, la date de création et
+le nombre de membres — jamais ce qui y est déposé.
+
+## Vos contenus
+
+Vous gardez vos droits sur les contenus que vous déposez : messages,
+événements, recettes, articles de stock, dépenses, pièces jointes.
+L'éditeur ne les exploite pas et ne les cède à personne. Il les héberge
+pour vous et les rend accessibles aux autres membres de votre groupe, ce qui
+est la finalité même du service ; il ne les rend accessibles au-delà que si
+vous publiez une recette dans la bibliothèque.
+
+Si vous publiez une recette dans la bibliothèque, elle devient lisible par
+tous les utilisateurs du service, sans votre nom, et chacun peut la copier
+dans sa famille ; ces copies restent après son retrait. N'y mettez aucune
+donnée personnelle, la vôtre ou celle d'un tiers, ni aucun contenu dont vous
+n'avez pas le droit de disposer. L'éditeur peut retirer une recette publiée
+qui enfreint les présentes conditions.
+
+Vous vous engagez à ne déposer que des contenus dont vous avez le droit de
+disposer, et à ne rien déposer d'illicite.
+
+**Le contenu que vous avez déposé dans un groupe survit à la suppression de
+votre compte.** C'est un choix assumé, et il est écrit ici parce qu'il vous
+engage : quand votre compte est anonymisé, ce que vous avez créé reste dans
+le groupe, à la disposition de ses autres membres, mais n'est plus rattaché
+à votre identité. Ce contenu, ce sont les événements et leurs pièces
+jointes, les tâches cochées, les messages, les stocks, les recettes et
+l'historique des repas, la liste de courses, le budget, et les groupes que
+vous avez créés. Sont en revanche supprimés, notamment, vos appartenances
+aux groupes, les invitations que vous avez envoyées et les imports
+calendrier que vous avez configurés — et un groupe dont vous étiez le
+dernier membre, supprimé avec tout son contenu, puisque plus personne ne
+pourrait le voir. Les recettes que vous avez publiées sont retirées de la
+bibliothèque ; les copies qu'en ont faites d'autres familles restent les
+leurs. Subsistent un temps les entrées du
+journal d'audit qui concernent votre compte sans être de votre fait (celle
+qui date la suppression, les transferts de propriété, les actions d'un
+autre membre ou de l'éditeur sur votre compte), jusqu'au premier passage de
+purge qui suit leurs 6 mois, et une invitation qu'un membre aurait envoyée
+à votre adresse, jusqu'à son acceptation, à la suppression du groupe ou au
+premier passage de purge qui suit les 30 jours de son envoi ; la [politique
+de confidentialité](/privacy-policy) en donne le détail. Un agenda familial
+amputé de la moitié de ses rendez-vous, ou un fil de discussion troué, ne
+rendrait service à personne. Si vous souhaitez que certains de vos contenus
+disparaissent, supprimez-les vous-même avant de demander la suppression de
+votre compte.
+
+## Fermeture de votre compte
+
+Vous pouvez demander la suppression de votre compte à tout moment, depuis
+les écrans de votre compte. Un délai de grâce de 30 jours s'applique, pendant
+lequel la demande reste annulable ; à son terme, le compte est anonymisé. La
+[politique de confidentialité](/privacy-policy) détaille ce qui est alors
+effacé et ce qui subsiste.
+
+Un compte ne peut pas être supprimé tant qu'il est propriétaire d'un
+groupe : transférez la propriété, ou supprimez le groupe, au préalable. Si
+vous devenez propriétaire d'un groupe pendant le délai de grâce, la
+propriété passe, à la suppression, dans cet ordre : à l'administrateur le
+plus ancien, à défaut au membre le plus ancien, puis, si tous les autres
+membres ont eux-mêmes demandé leur suppression, à l'administrateur puis au
+membre le plus ancien parmi eux. Un compte désactivé par l'éditeur n'en
+hérite jamais : s'il ne reste que de tels comptes, le groupe reste sans
+propriétaire, jusqu'à ce que l'éditeur réactive l'un d'eux — la propriété
+est alors attribuée de nouveau, dans le même ordre — ou désigne un
+propriétaire parmi les membres actifs. Le membre qui devient propriétaire
+de l'une de ces façons en est averti par email et dans l'application. Un
+groupe dont vous étiez le seul membre est supprimé avec son contenu.
+
+L'éditeur peut suspendre ou fermer un compte qui enfreint les présentes
+conditions, ou dont l'usage met en danger le service ou ses autres
+utilisateurs. Sauf urgence ou obligation légale, il en informe le titulaire
+et lui laisse le temps d'exporter ses données.
+
+## Ce que vous vous engagez à ne pas faire
+
+- Utiliser le service pour une activité illicite, ou pour porter atteinte
+  aux droits d'un tiers.
+- Accéder, ou tenter d'accéder, au compte ou au groupe de quelqu'un d'autre.
+- Perturber le service : charge automatisée disproportionnée, contournement
+  des protections de la connexion, recherche de failles sans autorisation de
+  l'éditeur.
+- Vous servir du service pour de la prospection commerciale ou de l'envoi de
+  messages en masse.
+
+## Données personnelles
+
+Le traitement de vos données personnelles est décrit dans la [politique de
+confidentialité](/privacy-policy), qui fait partie intégrante des présentes
+conditions : ce qui est collecté, pourquoi, combien de temps, avec qui, et
+comment exercer vos droits.
+
+## Responsabilité
+
+Le service est fourni gratuitement, sans garantie de résultat. L'éditeur
+répond des dommages directs causés par une faute qui lui est imputable. Il
+ne répond pas des contenus déposés par les membres, ni de l'usage qu'un
+membre de votre groupe fait de ce à quoi vous lui avez donné accès, ni d'une
+perte de données dont la cause lui est extérieure. Exportez régulièrement
+vos données si elles vous sont précieuses.
+
+Rien dans les présentes conditions n'écarte une responsabilité que la loi ne
+permet pas d'écarter.
+
+## Modification des conditions
+
+L'éditeur peut modifier les présentes conditions, notamment pour suivre une
+évolution du service ou de la réglementation. La date de dernière mise à
+jour figure en tête de ce document, avec la version en vigueur ; seule une
+modification substantielle change de version. Une modification substantielle
+est annoncée aux membres avant son entrée en vigueur : la nouvelle version est
+publiée, avec sa date d'entrée en vigueur, à côté de la version en vigueur,
+qui continue de s'appliquer jusqu'à cette date, et elle est signalée sur la
+page d'accueil du service. Continuer à utiliser le service après cette date
+vaut acceptation de la nouvelle version.
+
+À partir de cette date, le changement de version est signalé sur la page
+d'accueil du service à tout membre qui a accepté une version antérieure,
+jusqu'à ce qu'il indique en avoir pris connaissance ; la version dont il a
+pris connaissance est alors conservée, avec sa date.
+
+## Droit applicable et litiges
+
+Les présentes conditions sont soumises au droit français. En cas de
+difficulté, adressez-vous d'abord à l'éditeur, à l'adresse donnée dans les
+[mentions légales](/legal-notice) : c'est là que la plupart des différends
+se règlent. À défaut d'accord amiable, le litige relève des juridictions
+françaises compétentes.

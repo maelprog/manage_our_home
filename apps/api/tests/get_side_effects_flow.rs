@@ -83,7 +83,7 @@ const NOT_REACHED: [(&str, &str); 7] = [
     ),
     ("/groups/{id}/members/{user_id}/avatar", "no profile photo"),
     ("/me/avatar", "no profile photo"),
-    // No new version of the CGU is announced.
+    // No version of the CGU is announced and not yet in force.
     ("/terms-of-service/announced", "nothing announced"),
     // Only a deactivated account's restricted session opens it.
     ("/account/deactivated", "a full session"),
