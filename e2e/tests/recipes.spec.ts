@@ -975,3 +975,151 @@ test.describe("Recipes — bibliothèque (#910)", () => {
     await expect(page.getByText(/retirée/)).toHaveCount(0);
   });
 });
+
+// #911: publishing from the recipe's page, the consent asked first (and
+// nothing published without it, without JavaScript too); another account
+// reads the publication and its source, then reports it; the publisher
+// updates it, withdraws it from the recipe, publishes it again and
+// withdraws it from « Mes publications ».
+test.describe("Recipes — publier et signaler (#911)", () => {
+  test("publish with consent, read and report from another account, withdraw", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-rcpub", "Publish Author");
+    await createGroup(page, "Famille Partageuse");
+    const token = `Pub${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const name = `Tarte ${token}`;
+    // An imported recipe: the page's address in the create form's hidden
+    // `source_url`, as the import leaves it.
+    const source = "https://www.marmiton.org/recettes/recette_tarte-aux-poireaux_1.aspx";
+    await page.goto("/recipes/new");
+    await page.locator('form[action="/recipes/new"]').evaluate((form, url) => {
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = "source_url";
+      field.value = url;
+      form.appendChild(field);
+    }, source);
+    await page.getByLabel("Nom").fill(name);
+    await fillSteps(page, "Étaler la pâte.\nCuire 40 minutes.");
+    await page.getByRole("button", { name: "Créer la recette" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+    const recipeUrl = page.url().replace(/\?.*$/, "");
+
+    // The card of the recipe offers to publish it.
+    const card = page.locator("#bibliotheque");
+    await expect(card.getByRole("heading", { name: "Bibliothèque" })).toBeVisible();
+    await card.getByRole("link", { name: "Publier dans la bibliothèque" }).click();
+    await expect(page).toHaveURL(`${recipeUrl}/publish`);
+    await expect(
+      page.getByRole("heading", { name: "Publier dans la bibliothèque", level: 1 }),
+    ).toBeVisible();
+    await expect(page.getByText("(ici : marmiton.org)")).toBeVisible();
+    await expect(page.getByText("Votre nom, votre foyer, votre photo")).toBeVisible();
+
+    // Without JavaScript, the box left unticked: nothing is published.
+    const bare = await browser.newContext({
+      javaScriptEnabled: false,
+      storageState: await page.context().storageState(),
+    });
+    const noJs = await bare.newPage();
+    await noJs.goto(`${recipeUrl}/publish`);
+    const [refused] = await Promise.all([
+      noJs.waitForResponse((r) => r.url().endsWith("/publish") && r.request().method() === "POST"),
+      noJs.getByRole("button", { name: "Publier", exact: true }).click(),
+    ]);
+    expect(refused.status()).toBe(422);
+    await expect(
+      noJs.getByText("Rien n'a été publié : cochez la case de consentement pour continuer."),
+    ).toBeVisible();
+    await expect(noJs.getByText("Cochez cette case pour publier.")).toBeVisible();
+    await noJs.goto("/recipes/library/mine");
+    await expect(noJs.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+    await bare.close();
+
+    // Ticked: published, back on the recipe.
+    await page.getByRole("checkbox", { name: /Je confirme que cette recette/ }).check();
+    await page.getByRole("button", { name: "Publier", exact: true }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=published`);
+    await expect(page.getByText("Recette publiée dans la bibliothèque.")).toBeVisible();
+    await expect(card.getByText("Publiée", { exact: true })).toBeVisible();
+    await expect(card.getByRole("button", { name: "Retirer de la bibliothèque" })).toBeVisible();
+
+    // Another account, in another family, reads it — its source, nothing of
+    // its author — and reports it.
+    const readerContext = await browser.newContext();
+    await skipMealStart(readerContext);
+    const reader = await readerContext.newPage();
+    await registerAndLogin(reader, "e2e-rcpubreader", "Library Reader");
+    await createGroup(reader, "Famille Lectrice");
+    await reader.goto(`/recipes/library?q=${token}`);
+    await reader.getByRole("link", { name: new RegExp(name) }).click();
+    await expect(reader).toHaveURL(/\/recipes\/library\/[0-9a-f-]{36}$/);
+    const publication = reader.url();
+    await expect(reader.getByRole("heading", { name, level: 1 })).toBeVisible();
+    await expect(reader.getByText("Cuire 40 minutes.")).toBeVisible();
+    await expect(reader.getByRole("link", { name: "marmiton.org" })).toHaveAttribute(
+      "href",
+      source,
+    );
+    await expect(reader.getByText("Publish Author")).toHaveCount(0);
+    await expect(reader.getByText("Famille Partageuse")).toHaveCount(0);
+
+    await reader.getByRole("link", { name: "Signaler cette recette" }).click();
+    await expect(reader).toHaveURL(`${publication}/report`);
+    await expect(reader.getByRole("radio")).toHaveCount(6);
+    // No reason, then « Autre » without a comment: said, nothing sent.
+    await reader.getByRole("button", { name: "Envoyer le signalement" }).click();
+    await expect(reader.getByText("Choisissez un motif.")).toBeVisible();
+    await reader.getByRole("radio", { name: "Autre (commentaire obligatoire)" }).check();
+    await reader.getByRole("button", { name: "Envoyer le signalement" }).click();
+    await expect(reader.getByText("Précisez le problème dans le commentaire.")).toBeVisible();
+    await expect(
+      reader.getByRole("radio", { name: "Autre (commentaire obligatoire)" }),
+    ).toBeChecked();
+    await reader.getByRole("textbox", { name: /Commentaire/ }).fill("Recette en double.");
+    await reader.getByRole("button", { name: "Envoyer le signalement" }).click();
+    await expect(reader).toHaveURL(`${publication}?notice=reported`);
+    await expect(reader.getByText("Merci, votre signalement a été transmis.")).toBeVisible();
+    await expect(reader.getByText(/Vous avez signalé cette recette le/)).toBeVisible();
+    await expect(reader.getByRole("link", { name: "Signaler cette recette" })).toHaveCount(0);
+
+    // The publisher updates the publication: the consent asked again.
+    await page.goto(recipeUrl);
+    await card.getByRole("link", { name: "Mettre à jour la publication" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Mettre à jour la publication", level: 1 }),
+    ).toBeVisible();
+    await page.getByRole("checkbox", { name: /Je confirme à nouveau/ }).check();
+    await page.getByRole("button", { name: "Mettre à jour", exact: true }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=publication_updated`);
+
+    // Withdrawn from the recipe, in one click.
+    await card.getByRole("button", { name: "Retirer de la bibliothèque" }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=unpublished`);
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
+    await expect(card.getByText("Cette recette n'est plus dans la bibliothèque.")).toBeVisible();
+    const gone = await reader.goto(publication);
+    expect(gone?.status()).toBe(404);
+
+    // Published again, then withdrawn from « Mes publications ».
+    await card.getByRole("link", { name: "Publier à nouveau" }).click();
+    await page.getByRole("checkbox", { name: /Je confirme que cette recette/ }).check();
+    await page.getByRole("button", { name: "Publier", exact: true }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=published`);
+    await card.getByRole("link", { name: "Mes publications" }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine$/);
+    await expect(page.getByRole("heading", { name: "Mes publications", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
+    await page.getByRole("button", { name: `Retirer ${name} de la bibliothèque` }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished&nom=/);
+    await expect(page.getByText(`« ${name} » retirée de la bibliothèque.`)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+    await reader.goto(`/recipes/library?q=${token}`);
+    await expect(
+      reader.getByRole("heading", { name: "Aucune recette ne correspond" }),
+    ).toBeVisible();
+    await readerContext.close();
+  });
+});

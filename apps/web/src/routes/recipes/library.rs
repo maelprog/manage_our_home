@@ -17,26 +17,33 @@
 //! - `POST /recipes/library/:id/add` — the copy
 //!   (`POST /groups/:gid/library/recipes/:id/copy`), then back to the
 //!   publication (PRG): `?notice=added`, or as it now stands.
+//!
+//! #911 adds « Mes publications » beside the list's title (`mine.rs`), the
+//! page a publication was imported from (« Source : <site> ») under its
+//! title, and « Signaler cette recette » at its foot (`report.rs`), or the
+//! day the reader reported it; `?notice=reported` after a report.
 
 use std::collections::HashMap;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use chrono::{DateTime, Utc};
 use manage_our_home_shared::dto::recipes::{
     IngredientResponse, LibraryPage, LibraryRecipe, LibraryRecipeSummary, RecipeList,
     RecipeResponse,
 };
-use manage_our_home_shared::validation::recipes::{duration_label, servings_label};
+use manage_our_home_shared::validation::recipes::{duration_label, servings_label, steps_of};
 use uuid::Uuid;
 
 use crate::app::{html_escape, kitchen_segment, shell_with_header, Width};
 use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::lenient_query::LenientQuery;
+use crate::routes::account::allergies::long_date;
 use crate::state::{api_request_auth, AppState};
 
-use super::detail::{ingredient_html, steps_html};
+use super::detail::{ingredient_html, source_html};
 use super::{family_context, forbidden_page, recipes_cookie};
 
 /// Publications per page: the API's default page, asked for explicitly.
@@ -282,7 +289,7 @@ pub(crate) fn list_body(q: &str, results: &str) -> String {
     format!(
         r#"{segment}<div class="page-header">
 <h1>Bibliothèque</h1>
-<div class="actions"><a class="btn secondary" href="/recipes">Mes recettes</a></div>
+<div class="actions"><a class="btn secondary" href="/recipes/library/mine">Mes publications</a><a class="btn secondary" href="/recipes">Mes recettes</a></div>
 </div>
 <p class="muted">Des recettes à copier dans les vôtres, pour les adapter à votre foyer.</p>
 {search}
@@ -293,12 +300,44 @@ pub(crate) fn list_body(q: &str, results: &str) -> String {
 }
 
 /// A refusal of the list or of a publication, with the way to ask again.
-fn error_html(code: &str, retry: &str) -> String {
+pub(super) fn error_html(code: &str, retry: &str) -> String {
     format!(
         r#"<p class="notice error" role="alert">{text} <a href="{retry}">Réessayer</a></p>"#,
         text = html_escape(error_text(code)),
         retry = html_escape(retry),
     )
+}
+
+/// A publication's steps (#911): numbered and aired as its ingredients are
+/// (`.spaced`), as the mockup draws them. The family's page keeps its own
+/// (`detail::steps_html`).
+pub(crate) fn steps_html(instructions: Option<&str>) -> String {
+    let steps = steps_of(instructions.unwrap_or_default());
+    if steps.is_empty() {
+        return String::new();
+    }
+    let items: String = steps
+        .iter()
+        .map(|s| format!("<li>{}</li>", html_escape(s)))
+        .collect();
+    format!(r#"<h2>Étapes</h2><ol class="spaced">{items}</ol>"#)
+}
+
+/// The foot of a publication (#911): the way to report it, or the day the
+/// reader did — once per reader (the API's).
+pub(crate) fn report_foot(id: Uuid, reported_at: Option<DateTime<Utc>>) -> String {
+    let inner = match reported_at {
+        Some(at) => format!(
+            r#"<p class="muted">{check} Vous avez signalé cette recette le {day}.</p>"#,
+            check = icon(Icon::Check),
+            day = html_escape(&long_date(at)),
+        ),
+        None => format!(
+            r#"<p class="muted">Un problème avec cette recette (contenu inapproprié, illégal, erroné ou dangereux) ?</p>
+<a class="btn secondary" href="/recipes/library/{id}/report">Signaler cette recette</a>"#
+        ),
+    };
+    format!(r#"<div class="report-foot">{inner}</div>"#)
 }
 
 /// A publication's page. `copy` is the family's copy of it, if any;
@@ -316,6 +355,10 @@ pub(crate) fn detail_body(
         ),
         (Some("added"), None) => {
             r#"<p class="notice success" role="status">Recette ajoutée à vos recettes.</p>"#
+                .to_string()
+        }
+        (Some("reported"), _) => {
+            r#"<p class="notice success" role="status">Merci, votre signalement a été transmis. Nous l'examinerons.</p>"#
                 .to_string()
         }
         _ => String::new(),
@@ -378,19 +421,23 @@ pub(crate) fn detail_body(
 {notice}{error}
 <h1>{name}</h1>
 {meta}
+{source}
 {action}
 <h2>Ingrédients</h2>
 {ingredients}
-{steps}"#,
+{steps}
+{foot}"#,
         segment = kitchen_segment("/recipes"),
         name = html_escape(&recipe.name),
+        source = source_html(recipe.source_url.as_deref()),
         steps = steps_html(recipe.instructions.as_deref()),
+        foot = report_foot(id, recipe.reported_at),
     )
 }
 
 /// A publication the API no longer knows: withdrawn, by its publisher or
 /// by moderation. Its content left with it.
-pub(crate) fn withdrawn_body() -> String {
+pub(super) fn withdrawn_body() -> String {
     format!(
         r#"{segment}<h1>Recette retirée</h1>
 <p class="notice warning" role="status">Cette recette a été retirée de la bibliothèque et ne peut plus être ajoutée.</p>
@@ -424,7 +471,7 @@ async fn family_copies(state: &AppState, gid: Uuid, cookie: Option<&str>) -> Has
 }
 
 /// The API's error code of a refusal, `too_many` for a 429.
-fn refusal_code(status: reqwest::StatusCode, body: &serde_json::Value) -> String {
+pub(super) fn refusal_code(status: reqwest::StatusCode, body: &serde_json::Value) -> String {
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return "too_many".to_string();
     }
@@ -835,6 +882,8 @@ mod tests {
                 is_optional: false,
                 seasonal_months: None,
             }],
+            source_url: None,
+            reported_at: None,
         }
     }
 
@@ -853,7 +902,51 @@ mod tests {
         assert!(html.contains(
             r#"<ul class="spaced"><li><strong>Pommes de terre</strong> — 1 kg</li></ul>"#
         ));
-        assert!(html.contains("<h2>Étapes</h2><ol><li>Préchauffer.</li><li>Cuire.</li></ol>"));
+        // Its own steps, aired as its ingredients (#911).
+        assert!(html.contains(
+            r#"<h2>Étapes</h2><ol class="spaced"><li>Préchauffer.</li><li>Cuire.</li></ol>"#
+        ));
+        assert!(!html.contains("Source :"), "typed by hand");
+    }
+
+    #[test]
+    fn a_publication_names_the_site_it_was_imported_from() {
+        let mut p = publication();
+        p.source_url = Some("https://www.marmiton.org/recettes/gratin.aspx".into());
+        let html = detail_body(&p, None, None, None);
+        assert!(html.contains(
+            r#"<p class="muted">Source : <a href="https://www.marmiton.org/recettes/gratin.aspx" rel="noopener noreferrer nofollow">marmiton.org</a></p>"#
+        ));
+        // Not a web page: no link.
+        p.source_url = Some("ftp://e.fr/gratin".into());
+        assert!(!detail_body(&p, None, None, None).contains("Source :"));
+    }
+
+    #[test]
+    fn a_publication_ends_with_the_way_to_report_it_or_the_report_made() {
+        let id = Uuid::from_u128(5);
+        let html = detail_body(&publication(), None, None, None);
+        assert!(html.ends_with(&report_foot(id, None)));
+        assert!(html.contains(&format!(
+            r#"<a class="btn secondary" href="/recipes/library/{id}/report">Signaler cette recette</a>"#
+        )));
+        let mut reported = publication();
+        reported.reported_at = Some("2026-11-20T10:00:00Z".parse().unwrap());
+        let html = detail_body(&reported, None, None, None);
+        assert!(html.contains("Vous avez signalé cette recette le 20 novembre 2026."));
+        assert!(!html.contains("/report"));
+        let thanked = detail_body(&reported, None, Some("reported"), None);
+        assert!(thanked.contains(
+            r#"<p class="notice success" role="status">Merci, votre signalement a été transmis. Nous l'examinerons.</p>"#
+        ));
+    }
+
+    #[test]
+    fn the_list_leads_to_my_publications() {
+        let html = list_body("", "");
+        assert!(html.contains(
+            r#"<a class="btn secondary" href="/recipes/library/mine">Mes publications</a>"#
+        ));
     }
 
     #[test]

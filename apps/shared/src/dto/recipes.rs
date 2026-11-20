@@ -277,6 +277,53 @@ pub struct LibraryRecipe {
     pub servings: Option<i32>,
     pub duration_minutes: Option<i32>,
     pub ingredients: Vec<LibraryIngredient>,
+    /// The page the recipe was imported from (#911).
+    #[serde(default)]
+    pub source_url: Option<String>,
+    /// When the reader reported it, if they did (#911).
+    #[serde(default)]
+    pub reported_at: Option<DateTime<Utc>>,
+}
+
+/// One of the caller's own publications (`GET /library/recipes/mine`,
+/// #911). Mirrors `MyPublication`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyPublication {
+    pub id: Uuid,
+    pub name: String,
+    pub published_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Whether the recipe it was taken from still exists.
+    pub source_recipe_kept: bool,
+}
+
+/// `GET /library/recipes/mine` response body, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyPublications {
+    pub recipes: Vec<MyPublication>,
+}
+
+/// `GET /groups/:id/recipes/:recipe_id/publish` (#911): the caller's own
+/// publication of the recipe. Mirrors `PublicationOfRecipe`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicationOfRecipe {
+    pub library_recipe_id: Uuid,
+    pub published_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `POST /groups/:id/recipes/:recipe_id/publish` request body (#906).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishRequest {
+    pub consent: bool,
+}
+
+/// `POST /library/recipes/:id/report` request body (#908).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportRequest {
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 /// `GET /groups/:id/recipes` response envelope (`{ "recipes": [...] }`).

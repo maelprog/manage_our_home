@@ -15,6 +15,10 @@
 //! The backend stays the authority — a forged edit/DELETE/log is 403'd and
 //! mapped defensively here.
 //!
+//! The « Bibliothèque » card (#911, `publish.rs`), before « Modifier » and
+//! « Supprimer »: to publish the recipe, publish it again or withdraw it,
+//! for whoever may edit it; the others read why it offers them nothing.
+//!
 //! Error table: 404 (`get_recipe`/`delete_recipe`/`log_meal`) unknown/foreign
 //! recipe → introuvable page; 403 (`delete`/`log` permission bar) →
 //! `?error=forbidden` / forbidden page.
@@ -68,7 +72,7 @@ pub(crate) fn source_domain(url: &str) -> Option<String> {
 /// Nothing for a recipe typed by hand, or for an address that is not a web
 /// page (the API refuses one; this is not where a `javascript:` link gets
 /// a second chance).
-fn source_html(source_url: Option<&str>) -> String {
+pub(super) fn source_html(source_url: Option<&str>) -> String {
     let Some((url, domain)) = source_url.and_then(|u| Some((u.trim(), source_domain(u)?))) else {
         return String::new();
     };
@@ -100,6 +104,15 @@ pub(super) fn notice_text(code: &str) -> Option<&'static str> {
         "recipe_abandoned" => Some(super::outcome::ABANDONED_NOTICE),
         "plan_saved" => Some("Jour et repas enregistrés."),
         "plan_cleared" => Some("Date retirée : la recette reste à réaliser."),
+        "published" => Some(
+            "Recette publiée dans la bibliothèque. D'autres foyers peuvent maintenant la copier.",
+        ),
+        "publication_updated" => Some(
+            "Publication mise à jour. La bibliothèque montre maintenant la version actuelle de la recette.",
+        ),
+        "unpublished" => Some(
+            "Recette retirée de la bibliothèque. Les foyers qui l'avaient déjà copiée la gardent.",
+        ),
         _ => None,
     }
 }
@@ -113,6 +126,9 @@ pub(super) fn error_text(code: &str) -> Option<&'static str> {
         "meal_without_day" => Some("Choisissez un jour pour préciser le repas."),
         "invalid_planned_on" => Some("Le jour doit tomber à 366 jours au plus d'aujourd'hui."),
         "invalid_meal_slot" => Some("Le repas se choisit entre midi et soir."),
+        "unpublish_failed" => Some(
+            "Le retrait n'a pas pu être enregistré. La recette est toujours dans la bibliothèque. Réessayez dans un instant.",
+        ),
         _ => None,
     }
 }
@@ -238,6 +254,19 @@ pub async fn get(
         &fam.edit_min_role,
         recipe.created_by == me.user_id,
     );
+    // The caller's own publication of it (#911), read only when they may
+    // publish it.
+    let publication = if can_edit {
+        super::publish::my_publication(&state, fam.gid, recipe_id, cookie.as_deref()).await
+    } else {
+        None
+    };
+    let library = super::publish::library_card(
+        recipe_id,
+        can_edit,
+        publication.as_ref(),
+        query.notice.as_deref() == Some("unpublished"),
+    );
     // Planned in place of another (#816): « X remplacé par Y. ».
     let replaced = match (query.notice.as_deref(), query.from.as_deref()) {
         (Some("recipe_replaced"), from) => {
@@ -271,6 +300,7 @@ pub async fn get(
         is_plan_error(query.error.as_deref()),
         can_edit,
         &format!("{notice_html}{incomplete}{error_html}"),
+        &library,
     ))
     .into_response()
 }
@@ -421,6 +451,7 @@ pub(super) fn plan_html_with(
 /// `?error=`, and the planned recipes left incomplete in between (#560).
 /// `planned` is the recipe's planned selection; `plan_open` opens its
 /// « Choisir un jour » again after an error of that form (#812).
+/// `library` is the « Bibliothèque » card (#911).
 #[allow(clippy::too_many_arguments)]
 fn page(
     header: &str,
@@ -432,6 +463,7 @@ fn page(
     plan_open: bool,
     can_edit: bool,
     banners: &str,
+    library: &str,
 ) -> String {
     let id = recipe.id;
 
@@ -516,6 +548,7 @@ fn page(
 {instructions_html}
 {last_eaten_html}
 {log_form}
+{library}
 {edit_delete_html}
 <div class="links"><a href="/recipes">Retour aux recettes</a></div>"#,
         name = html_escape(&recipe.name),
@@ -984,7 +1017,7 @@ mod tests {
     }
 
     fn render(recipe: &RecipeResponse) -> String {
-        page("", recipe, None, None, None, None, false, false, "")
+        page("", recipe, None, None, None, None, false, false, "", "")
     }
 
     #[test]
@@ -1011,8 +1044,28 @@ mod tests {
             false,
             false,
             "",
+            "",
         );
         assert!(html.contains(&link), "{html}");
+    }
+
+    /// The « Bibliothèque » card (#911) after the meal log, before
+    /// « Modifier » and « Supprimer », as the mockup places it; its
+    /// banners have their words.
+    #[test]
+    fn the_library_card_comes_before_editing() {
+        let recipe = recipe_with(serde_json::json!({}));
+        let card = super::super::publish::library_card(recipe.id, true, None, false);
+        let html = page("", &recipe, None, None, None, None, false, true, "", &card);
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        assert!(at("Logger ce repas") < at(r#"id="bibliotheque""#));
+        assert!(at(r#"id="bibliotheque""#) < at("Modifier la recette"));
+        for code in ["published", "publication_updated", "unpublished"] {
+            assert!(notice_text(code).is_some(), "{code}");
+        }
+        assert!(error_text("unpublish_failed")
+            .unwrap()
+            .contains("toujours dans la bibliothèque"));
     }
 
     #[test]
