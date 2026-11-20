@@ -457,6 +457,8 @@ pub struct LibraryRecipeSummary {
     pub name: String,
     pub servings: Option<i32>,
     pub duration_minutes: Option<i32>,
+    /// How many ingredients it lists.
+    pub ingredient_count: i64,
     pub published_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -467,6 +469,9 @@ pub struct LibraryPage {
     pub recipes: Vec<LibraryRecipeSummary>,
     /// To pass as `cursor` for the next page; absent on the last one.
     pub next_cursor: Option<String>,
+    /// How many publications `q` and `ingredient` find, over every page:
+    /// the cursor does not narrow it.
+    pub total: i64,
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -888,7 +893,9 @@ pub async fn list_library(
     // One more than the page: whether a next one exists.
     let mut recipes = sqlx::query_as!(
         LibraryRecipeSummary,
-        r#"SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at
+        r#"SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at,
+                  (SELECT count(*) FROM library_ingredients i
+                   WHERE i.library_recipe_id = l.id) AS "ingredient_count!"
            FROM library_recipes l
            WHERE ($1::text IS NULL OR lower(l.name) LIKE lower($1) ESCAPE '\')
              AND ($2::text IS NULL OR EXISTS (
@@ -905,6 +912,20 @@ pub async fn list_library(
         size + 1,
     )
     .fetch_all(&mut *tx)
+    .await?;
+    // The same search without the cursor: what every page of it adds up to.
+    let total = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "total!"
+           FROM library_recipes l
+           WHERE ($1::text IS NULL OR lower(l.name) LIKE lower($1) ESCAPE '\')
+             AND ($2::text IS NULL OR EXISTS (
+                     SELECT 1 FROM library_ingredients i
+                     WHERE i.library_recipe_id = l.id
+                       AND lower(i.name) LIKE lower($2) ESCAPE '\'))"#,
+        name,
+        ingredient,
+    )
+    .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
 
@@ -923,6 +944,7 @@ pub async fn list_library(
     Ok(Json(LibraryPage {
         recipes,
         next_cursor,
+        total,
     }))
 }
 

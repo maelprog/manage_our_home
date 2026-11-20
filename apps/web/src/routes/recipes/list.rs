@@ -612,6 +612,7 @@ pub async fn get(
         r#"{segment}<div class="page-header"{start}>
 <h1>Recettes</h1>
 <div class="actions">
+<a class="btn secondary" href="/recipes/library">Bibliothèque</a>
 <a class="btn secondary" href="/recipes/import">Importer depuis une URL</a>
 <a class="btn" href="/recipes/new">Nouvelle recette</a>
 </div>
@@ -657,6 +658,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             allergy_warning: Default::default(),
+            library_recipe_id: None,
         }
     }
 

@@ -152,6 +152,10 @@ pub struct RecipeResponse {
     /// What it holds of the allergies the reader may see (#818).
     #[serde(default)]
     pub allergy_warning: AllergyWarning,
+    /// The publication of the library it was copied from (#907, #910),
+    /// while that publication exists.
+    #[serde(default)]
+    pub library_recipe_id: Option<Uuid>,
 }
 
 /// One of the reader's own allergies a recipe holds (#818). Mirrors
@@ -226,6 +230,53 @@ pub struct RecipeDraft {
     pub ingredients: Vec<DraftIngredient>,
     pub steps: Vec<String>,
     pub source_url: String,
+}
+
+/// A publication of the recipe library in a list (#906, #910). Mirrors
+/// `apps/api/src/recipes/library.rs::LibraryRecipeSummary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryRecipeSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub servings: Option<i32>,
+    pub duration_minutes: Option<i32>,
+    /// How many ingredients it lists (#910).
+    #[serde(default)]
+    pub ingredient_count: i64,
+}
+
+/// `GET /library/recipes` response body: one page, newest first. Mirrors
+/// `LibraryPage`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryPage {
+    pub recipes: Vec<LibraryRecipeSummary>,
+    /// The `cursor` of the next page; absent on the last one.
+    pub next_cursor: Option<String>,
+    /// How many publications the search finds, over every page (#910).
+    #[serde(default)]
+    pub total: i64,
+}
+
+/// One ingredient of a publication. Mirrors `LibraryIngredientResponse`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryIngredient {
+    pub name: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub is_optional: bool,
+    pub seasonal_months: Option<Vec<i32>>,
+}
+
+/// `GET /library/recipes/:id` response body. Mirrors
+/// `LibraryRecipeResponse`: nothing of who published it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryRecipe {
+    pub id: Uuid,
+    pub name: String,
+    pub instructions: Option<String>,
+    pub servings: Option<i32>,
+    pub duration_minutes: Option<i32>,
+    pub ingredients: Vec<LibraryIngredient>,
 }
 
 /// `GET /groups/:id/recipes` response envelope (`{ "recipes": [...] }`).

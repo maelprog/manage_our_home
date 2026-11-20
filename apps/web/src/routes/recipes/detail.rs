@@ -609,7 +609,7 @@ pub async fn delete(
 }
 
 /// The method as the form wrote it (#539): one numbered step per line.
-fn steps_html(instructions: Option<&str>) -> String {
+pub(super) fn steps_html(instructions: Option<&str>) -> String {
     let steps = steps_of(instructions.unwrap_or_default());
     if steps.is_empty() {
         return String::new();

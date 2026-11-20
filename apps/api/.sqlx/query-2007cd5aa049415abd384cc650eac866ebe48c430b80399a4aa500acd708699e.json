@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at\n           FROM library_recipes l\n           WHERE ($1::text IS NULL OR lower(l.name) LIKE lower($1) ESCAPE '\\')\n             AND ($2::text IS NULL OR EXISTS (\n                     SELECT 1 FROM library_ingredients i\n                     WHERE i.library_recipe_id = l.id\n                       AND lower(i.name) LIKE lower($2) ESCAPE '\\'))\n             AND ($3::timestamptz IS NULL OR (l.published_at, l.id) < ($3, $4::uuid))\n           ORDER BY l.published_at DESC, l.id DESC\n           LIMIT $5",
+  "query": "SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at,\n                  (SELECT count(*) FROM library_ingredients i\n                   WHERE i.library_recipe_id = l.id) AS \"ingredient_count!\"\n           FROM library_recipes l\n           WHERE ($1::text IS NULL OR lower(l.name) LIKE lower($1) ESCAPE '\\')\n             AND ($2::text IS NULL OR EXISTS (\n                     SELECT 1 FROM library_ingredients i\n                     WHERE i.library_recipe_id = l.id\n                       AND lower(i.name) LIKE lower($2) ESCAPE '\\'))\n             AND ($3::timestamptz IS NULL OR (l.published_at, l.id) < ($3, $4::uuid))\n           ORDER BY l.published_at DESC, l.id DESC\n           LIMIT $5",
   "describe": {
     "columns": [
       {
@@ -68,6 +68,12 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "ingredient_count!",
+        "type_info": "Int8",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -85,8 +91,9 @@
       true,
       true,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "75db267444add7b73bc647d82957994c010a9612afd90fef2f6c81fbfd577303"
+  "hash": "2007cd5aa049415abd384cc650eac866ebe48c430b80399a4aa500acd708699e"
 }
