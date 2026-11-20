@@ -6,6 +6,8 @@
 //! Issue #906: its routes (`recipes::library`), driven through the router.
 //! The handlers run as `FLOW_TEST_RUNTIME_ROLE` when it is set (CI job
 //! `test`), under the same policies.
+//!
+//! Issue #907: copying a publication into a family, through the router.
 
 mod common;
 
@@ -1189,4 +1191,359 @@ async fn reads_and_publications_are_rate_limited(db: PgPool) {
     assert_status(&res, StatusCode::TOO_MANY_REQUESTS);
     let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
     assert_status(&res, StatusCode::CONFLICT);
+}
+
+// --- #907: copying a publication into a family ------------------------------
+
+async fn copy_call(
+    router: &axum::Router,
+    group: Uuid,
+    library_id: &str,
+    cookie: &str,
+) -> axum::http::Response<axum::body::Body> {
+    call(
+        router,
+        Method::POST,
+        &format!("/groups/{group}/library/recipes/{library_id}/copy"),
+        Some(cookie),
+        None,
+    )
+    .await
+}
+
+/// `f`'s owner publishes the leek tart: its recipe and the publication's id.
+async fn published_leek_tart(router: &axum::Router, f: &Fam) -> (Uuid, String) {
+    let recipe = new_recipe(router, f.id, &f.owner.cookie, leek_tart()).await;
+    let res = publish_call(router, f.id, recipe, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let id = json_body(res).await["id"].as_str().unwrap().to_string();
+    (recipe, id)
+}
+
+async fn library_link(db: &PgPool, recipe: &str) -> Option<Uuid> {
+    sqlx::query_scalar("SELECT library_recipe_id FROM recipes WHERE id = $1::uuid")
+        .bind(recipe)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+async fn recipes_of(db: &PgPool, group: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM recipes WHERE group_id = $1")
+        .bind(group)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// AC: any member copies a publication into their family: a recipe of its
+/// own, created by them, linked to the publication, naming neither the
+/// family nor the person it was published by. A second copy into the same
+/// family is refused 409 `already_copied`; another family copies it too.
+#[sqlx::test]
+async fn a_member_copies_a_publication_into_their_family(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "src").await;
+    let (source, published) = published_leek_tart(&router, &author).await;
+    let reader = fam(&db, "dst").await;
+
+    let res = copy_call(&router, reader.id, &published, &reader.standard.cookie).await;
+    assert_status(&res, StatusCode::CREATED);
+    let copy = json_body(res).await;
+    let copy_id = copy["id"].as_str().unwrap().to_string();
+    assert_eq!(copy["group_id"], reader.id.to_string());
+    assert_eq!(copy["created_by"], reader.standard.id.to_string());
+    assert_eq!(copy["name"], "Tarte aux poireaux");
+    assert_eq!(copy["instructions"], "Cuire 45 minutes.");
+    assert_eq!(copy["servings"], 4);
+    assert_eq!(copy["duration_minutes"], 45);
+    assert_eq!(copy["source_url"], Value::Null);
+    assert_eq!(copy["required_equipment"], json!([]));
+    assert_eq!(
+        library_link(&db, &copy_id).await,
+        Some(published.parse().unwrap())
+    );
+
+    // The ingredients, as the publication holds them, read as any recipe's.
+    let (_, detail) = get(
+        &router,
+        &format!("/library/recipes/{published}"),
+        &reader.owner.cookie,
+    )
+    .await;
+    let strip = |ingredients: &Value| -> Vec<Value> {
+        let mut v: Vec<Value> = ingredients
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                json!({
+                    "name": i["name"], "quantity": i["quantity"], "unit": i["unit"],
+                    "is_optional": i["is_optional"], "seasonal_months": i["seasonal_months"],
+                })
+            })
+            .collect();
+        v.sort_by_key(|i| i["name"].as_str().unwrap().to_string());
+        v
+    };
+    assert_eq!(strip(&copy["ingredients"]), strip(&detail["ingredients"]));
+    assert_eq!(copy["ingredients"].as_array().unwrap().len(), 3);
+    let (status, read) = get(
+        &router,
+        &format!("/groups/{}/recipes/{copy_id}", reader.id),
+        &reader.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read, copy);
+
+    // Nothing of the author's family, its members, its recipe or its URL.
+    let text = copy.to_string();
+    for needle in [
+        author.id,
+        author.owner.id,
+        author.admin.id,
+        author.standard.id,
+        source,
+    ]
+    .iter()
+    .flat_map(|u| [u.to_string(), u.simple().to_string()])
+    .chain([
+        "src-owner@example.test".to_string(),
+        "example.test/tarte".to_string(),
+    ]) {
+        assert!(!text.contains(&needle), "the copy holds {needle}: {text}");
+    }
+
+    // Once per family, whoever asks.
+    for member in [&reader.owner, &reader.standard] {
+        let res = copy_call(&router, reader.id, &published, &member.cookie).await;
+        assert_status(&res, StatusCode::CONFLICT);
+        assert_eq!(json_body(res).await["error"], "already_copied");
+    }
+    assert_eq!(recipes_of(&db, reader.id).await, 1);
+    // The author's own family may copy it too: a recipe of its own.
+    let res = copy_call(&router, author.id, &published, &author.standard.cookie).await;
+    assert_status(&res, StatusCode::CREATED);
+    assert_eq!(recipes_of(&db, author.id).await, 2);
+
+    // Not a member: refused, nothing written.
+    let (_, outsider) = api_user(&db, "dst-outsider@example.test").await;
+    let res = copy_call(&router, reader.id, &published, &outsider).await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    // No such publication.
+    let res = copy_call(
+        &router,
+        reader.id,
+        &Uuid::new_v4().to_string(),
+        &reader.owner.cookie,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{}/library/recipes/{published}/copy", reader.id),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    assert_eq!(recipes_of(&db, reader.id).await, 1);
+}
+
+/// AC: the copy is edited and deleted under the family's usual rules, does
+/// not follow its publication, and outlives it.
+#[sqlx::test]
+async fn a_copy_is_the_familys_own_recipe(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "own-src").await;
+    let (source, published) = published_leek_tart(&router, &author).await;
+    let f = fam(&db, "own").await;
+
+    let res = copy_call(&router, f.id, &published, &f.admin.cookie).await;
+    assert_status(&res, StatusCode::CREATED);
+    let copy_id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let uri = format!("/groups/{}/recipes/{copy_id}", f.id);
+
+    // Not its creator, under the `admin` threshold: refused.
+    let rename = Some(json!({"name": "Tarte de mamie"}));
+    let res = call(
+        &router,
+        Method::PATCH,
+        &uri,
+        Some(&f.standard.cookie),
+        rename.clone(),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &uri,
+        Some(&f.standard.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    // Its creator may.
+    let res = call(&router, Method::PATCH, &uri, Some(&f.admin.cookie), rename).await;
+    assert_status(&res, StatusCode::OK);
+
+    // The publication published again: the copy does not follow.
+    let res = call(
+        &router,
+        Method::PATCH,
+        &format!("/groups/{}/recipes/{source}", author.id),
+        Some(&author.owner.cookie),
+        Some(json!({"name": "Tarte fine", "ingredients": [{"name": "Oignon"}]})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let res = publish_call(&router, author.id, source, &author.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::OK);
+    let (_, copy) = get(&router, &uri, &f.owner.cookie).await;
+    assert_eq!(copy["name"], "Tarte de mamie");
+    assert_eq!(copy["ingredients"].as_array().unwrap().len(), 3);
+
+    // Deleted, the family may copy the publication again.
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = copy_call(&router, f.id, &published, &f.standard.cookie).await;
+    assert_status(&res, StatusCode::CREATED);
+    let again = json_body(res).await;
+    assert_eq!(
+        again["name"], "Tarte fine",
+        "a copy takes the snapshot of now"
+    );
+    let again_id = again["id"].as_str().unwrap().to_string();
+
+    // The publication withdrawn by its publisher: the copy stays, its link
+    // gone, and it can no longer be copied.
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/recipes/{source}/publish", author.id),
+        Some(&author.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (status, kept) = get(
+        &router,
+        &format!("/groups/{}/recipes/{again_id}", f.id),
+        &f.standard.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept, again);
+    assert_eq!(library_link(&db, &again_id).await, None);
+    let res = copy_call(&router, f.id, &published, &f.owner.cookie).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+}
+
+/// AC: a publication withdrawn by moderation (the superadmin, through the
+/// admin pool, which bypasses RLS — here, the harness's own role) can no
+/// longer be copied: 404, nothing written.
+#[sqlx::test]
+async fn a_withdrawn_publication_cannot_be_copied(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "mod-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    sqlx::query("DELETE FROM library_recipes WHERE id = $1::uuid")
+        .bind(&published)
+        .execute(&db)
+        .await
+        .unwrap();
+    let f = fam(&db, "mod").await;
+    let res = copy_call(&router, f.id, &published, &f.owner.cookie).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(json_body(res).await["error"], "not_found");
+    assert_eq!(recipes_of(&db, f.id).await, 0);
+}
+
+/// Copies of one publication into one family arriving together: exactly
+/// one is made, the others refused 409. Each waits on the family's lock
+/// (`COPY_LOCK` of `recipes::library`) before it looks for a copy: held
+/// here while they arrive, none writes anything until it is released.
+/// Without that lock, each could find no copy and write one.
+#[sqlx::test]
+async fn simultaneous_copies_make_one(db: PgPool) {
+    const AT_ONCE: usize = 8;
+    let router = common::test_router_sized(db.clone(), AT_ONCE as u32 + 2);
+    let author = fam(&db, "crace-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let f = fam(&db, "crace").await;
+    let mut cookies = Vec::new();
+    for i in 0..AT_ONCE {
+        let (id, cookie) = api_user(&db, &format!("crace-{i}@example.test")).await;
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'standard')",
+        )
+        .bind(f.id)
+        .bind(id)
+        .execute(&db)
+        .await
+        .unwrap();
+        cookies.push(cookie);
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    let mut lock = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(i32::from_be_bytes(*b"mlbc"))
+        .bind(f.id.to_string())
+        .execute(&mut *lock)
+        .await
+        .unwrap();
+    let group = f.id;
+    let copies = tokio::spawn(futures::future::join_all(cookies.into_iter().map(
+        move |cookie| {
+            let router = router.clone();
+            let published = published.clone();
+            async move {
+                copy_call(&router, group, &published, &cookie)
+                    .await
+                    .status()
+            }
+        },
+    )));
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(recipes_of(&db, f.id).await, 0, "written under the lock");
+    assert!(
+        !copies.is_finished(),
+        "the copies wait on the family's lock"
+    );
+    lock.commit().await.unwrap();
+
+    let statuses = copies.await.unwrap();
+    let created = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::CREATED)
+        .count();
+    let refused = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::CONFLICT)
+        .count();
+    assert_eq!((created, refused), (1, AT_ONCE - 1), "{statuses:?}");
+    assert_eq!(recipes_of(&db, f.id).await, 1);
+}
+
+/// A copy counts against the caller's reads of the library: past 60 a
+/// minute, refused 429, nothing written; another member's budget is theirs.
+#[sqlx::test]
+async fn copies_count_with_the_reads(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "crate-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let f = fam(&db, "crate").await;
+    for i in 0..60 {
+        let (status, _) = get(&router, "/library/recipes", &f.owner.cookie).await;
+        assert_eq!(status, StatusCode::OK, "read {i}");
+    }
+    let res = copy_call(&router, f.id, &published, &f.owner.cookie).await;
+    assert_status(&res, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(recipes_of(&db, f.id).await, 0);
+    let res = copy_call(&router, f.id, &published, &f.admin.cookie).await;
+    assert_status(&res, StatusCode::CREATED);
 }

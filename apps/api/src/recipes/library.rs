@@ -16,6 +16,12 @@
 //!   nothing about who published it: no family, no person, no source recipe.
 //!   Their JSON is built from `library_recipes` and `library_ingredients`
 //!   alone, which hold none of these.
+//! - `POST /groups/{id}/library/recipes/{library_id}/copy` (#907): any
+//!   member copies a publication into their family, a recipe of its own
+//!   (`created_by` the caller, `library_recipe_id` the publication) that
+//!   does not follow it afterwards (user's decision of 2026-11-17). Once
+//!   per family: a second copy is refused 409 `already_copied` rather
+//!   than answered with the first, so the client knows nothing was made.
 //!
 //! **The source recipe is never taken from the client.** It is the recipe
 //! of the path, read in the caller's family under its row-level policy
@@ -49,7 +55,7 @@ use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::rate_limit::{SlidingLimiter, SlidingWindow};
 use crate::recipes::can_modify;
-use crate::recipes::crud::DURATION_MAX;
+use crate::recipes::crud::{read_recipe, DURATION_MAX};
 use crate::recipes::selections::SERVINGS_MAX;
 use crate::AppState;
 
@@ -99,6 +105,10 @@ const INGREDIENTS_MAX: usize = 100;
 /// The second key is `hashtext` of the family's id; two families that
 /// collide only wait on each other.
 const QUOTA_LOCK: i32 = i32::from_be_bytes(*b"mlbq");
+
+/// Advisory lock class of a family's copies: two copies of one publication
+/// cannot both find none in the family. Second key as [`QUOTA_LOCK`]'s.
+const COPY_LOCK: i32 = i32::from_be_bytes(*b"mlbc");
 
 /// The unique key of `library_recipe_publishers.source_recipe_id`.
 const SOURCE_KEY: &str = "library_recipe_publishers_source_recipe_id_key";
@@ -811,6 +821,85 @@ pub async fn get_library_recipe(
         .ok_or(AppError::NotFound)?;
     tx.commit().await?;
     Ok(Json(publication))
+}
+
+#[utoipa::path(
+    post,
+    path = "/groups/{id}/library/recipes/{library_id}/copy",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("library_id" = uuid::Uuid, Path, description = "Publication id"),
+    ),
+    responses(
+        (status = 201, description = "The family's copy: a recipe of its own, created by the caller", body = crate::recipes::crud::RecipeResponse),
+        (status = 404, description = "`not_found`: no such publication (never published, withdrawn by its publisher or by moderation)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`already_copied`: the family already holds a copy of this publication", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 429, description = "`too_many_attempts`: counted with the reads of the library, 60 per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn copy_library_recipe(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, library_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    // A copy reads a publication whole, as the detail does: same budget.
+    LibraryThrottle::admit(&state.library_throttle.read, auth.user_id).await?;
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(COPY_LOCK)
+        .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    let copied = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM recipes
+                          WHERE group_id = $1 AND library_recipe_id = $2) AS "copied!""#,
+        group_id,
+        library_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if copied {
+        return Err(AppError::Conflict("already_copied".into()));
+    }
+
+    // Only the publication's own columns: nothing of who published it, nor
+    // of the recipe it was taken from, reaches the family.
+    let recipe_id = sqlx::query_scalar!(
+        r#"INSERT INTO recipes (group_id, created_by, name, instructions, servings,
+                                duration_minutes, library_recipe_id)
+           SELECT $1, $2, name, instructions, servings, duration_minutes, id
+           FROM library_recipes WHERE id = $3
+           RETURNING id"#,
+        group_id,
+        auth.user_id,
+        library_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    sqlx::query!(
+        r#"INSERT INTO recipe_ingredients
+               (recipe_id, group_id, name, quantity, unit, is_optional, seasonal_months)
+           SELECT $1, $2, name, quantity, unit, is_optional, seasonal_months
+           FROM library_ingredients WHERE library_recipe_id = $3
+           ORDER BY position"#,
+        recipe_id,
+        group_id,
+        library_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let copy = read_recipe(&mut tx, group_id, auth.user_id, recipe_id)
+        .await?
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("copy {recipe_id} not read back")))?;
+    tx.commit().await?;
+    Ok((StatusCode::CREATED, Json(copy)))
 }
 
 #[cfg(test)]

@@ -341,23 +341,37 @@ pub async fn get_recipe(
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
+    let recipe = read_recipe(&mut tx, group_id, auth.user_id, recipe_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(recipe))
+}
 
-    let recipe = sqlx::query_as!(
+/// A recipe of `group_id` as `reader` reads it — its ingredients and the
+/// allergy warning for them (#818) — in `tx`, scoped to the family.
+pub(crate) async fn read_recipe(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    reader: Uuid,
+    recipe_id: Uuid,
+) -> AppResult<Option<RecipeResponse>> {
+    let Some(recipe) = sqlx::query_as!(
         RecipeRow,
         r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
            FROM recipes WHERE id = $1 AND group_id = $2"#,
         recipe_id,
         group_id,
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
-    .ok_or(AppError::NotFound)?;
+    else {
+        return Ok(None);
+    };
 
-    let ingredients = fetch_ingredients(&mut tx, recipe.id).await?;
-    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, recipe.id).await?;
-    tx.commit().await?;
-
-    Ok(Json(RecipeResponse {
+    let ingredients = fetch_ingredients(tx, recipe.id).await?;
+    let allergy_warning = warning_for(tx, group_id, reader, recipe.id).await?;
+    Ok(Some(RecipeResponse {
         id: recipe.id,
         group_id: recipe.group_id,
         created_by: recipe.created_by,
