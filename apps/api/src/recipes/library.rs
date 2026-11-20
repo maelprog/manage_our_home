@@ -74,7 +74,7 @@ pub const PAGE_MAX: i64 = 50;
 /// The longest search term, in characters, once trimmed.
 pub const SEARCH_MAX_CHARS: usize = 100;
 
-/// Reads of the library (list and detail) per user.
+/// Reads of the library (list, detail and copies) per user.
 pub const READ_RATE: SlidingWindow = SlidingWindow {
     limit: 60,
     window: Duration::from_secs(60),
