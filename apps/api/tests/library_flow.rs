@@ -12,6 +12,10 @@
 //! Issue #908: reporting a publication, its moderation by the superadmin,
 //! and the publications that end with a member's departure or by the
 //! family owner's hand.
+//!
+//! Issue #947: the publisher lists their own publications and withdraws
+//! one by its id alone, through no family — its family deleted since
+//! included.
 
 mod common;
 
@@ -2392,4 +2396,154 @@ async fn a_publication_follows_its_family_once_its_source_is_deleted(db: PgPool)
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// --- #947: the publisher's own routes ----------------------------------------
+
+/// The ids of `GET /library/recipes/mine` for `cookie`, in its order.
+async fn mine(router: &axum::Router, cookie: &str) -> Vec<String> {
+    let (status, body) = get(router, "/library/recipes/mine", cookie).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// AC of #947: the family deleted, its publisher still withdraws their
+/// publication — 2xx, then gone from the library — and no one else can.
+#[sqlx::test]
+async fn the_publisher_withdraws_once_the_family_is_deleted(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "gone").await;
+    let mut ids = Vec::new();
+    for m in [&f.admin, &f.owner] {
+        let recipe = new_recipe(&router, f.id, &m.cookie, leek_tart()).await;
+        let res = publish_call(&router, f.id, recipe, &m.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        ids.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+    let (admins, owners) = (ids[0].clone(), ids[1].clone());
+    let other = fam(&db, "gone-other").await;
+    let recipe = new_recipe(&router, other.id, &other.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, other.id, recipe, &other.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let others = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}", f.id),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(library_rows(&db).await, 3, "the publications outlive it");
+
+    // Each lists their own, and nothing of anyone else's.
+    assert_eq!(mine(&router, &f.admin.cookie).await, vec![admins.clone()]);
+    assert_eq!(mine(&router, &f.owner.cookie).await, vec![owners.clone()]);
+    assert_eq!(mine(&router, &other.owner.cookie).await, vec![others]);
+    assert!(mine(&router, &f.standard.cookie).await.is_empty());
+    let (_, body) = get(&router, "/library/recipes/mine", &f.admin.cookie).await;
+    let mut keys: Vec<&str> = body["recipes"][0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "duration_minutes",
+            "id",
+            "ingredient_count",
+            "name",
+            "published_at",
+            "servings",
+            "updated_at"
+        ],
+        "a publication, as the library lists it: no family, no source"
+    );
+
+    // No one else withdraws it: the family's former owner and members, a
+    // stranger, nor anyone through a family route.
+    let uri = format!("/library/recipes/{admins}");
+    for cookie in [&f.owner.cookie, &f.standard.cookie, &other.owner.cookie] {
+        let res = call(&router, Method::DELETE, &uri, Some(cookie), None).await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+    let res = call(&router, Method::DELETE, &uri, None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/library/recipes/{admins}", other.id),
+        Some(&other.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(library_rows(&db).await, 3);
+
+    // Its publisher does.
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (_, list) = get(&router, "/library/recipes", &other.standard.cookie).await;
+    let listed: Vec<&str> = list["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(!listed.contains(&admins.as_str()), "{listed:?}");
+    assert_eq!(listed.len(), 2);
+    let (status, _) = get(&router, &uri, &other.standard.cookie).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(mine(&router, &f.admin.cookie).await.is_empty());
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM library_recipe_publishers WHERE library_recipe_id = $1::uuid",
+    )
+    .bind(&admins)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(n, 0, "its publisher row goes with it");
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(mine(&router, &f.owner.cookie).await, vec![owners]);
+}
+
+/// The publisher's own route withdraws a publication whose family still
+/// exists, too, and the family's owner gets nothing from it; `mine` lists
+/// the publications newest first.
+#[sqlx::test]
+async fn the_publisher_lists_and_withdraws_their_own(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "own").await;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let recipe = new_recipe(&router, f.id, &f.admin.cookie, leek_tart()).await;
+        let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        ids.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        mine(&router, &f.admin.cookie).await,
+        vec![ids[1].clone(), ids[0].clone()]
+    );
+    assert!(mine(&router, &f.owner.cookie).await.is_empty());
+    let uri = format!("/library/recipes/{}", ids[0]);
+    let res = call(&router, Method::DELETE, &uri, Some(&f.owner.cookie), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(mine(&router, &f.admin.cookie).await, vec![ids[1].clone()]);
+    assert_eq!(library_rows(&db).await, 1);
+    let res = call(&router, Method::GET, "/library/recipes/mine", None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
 }

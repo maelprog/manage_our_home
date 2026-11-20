@@ -50,11 +50,16 @@ const AUDITED: [&str; 4] = [
     "/admin/users",
 ];
 
-/// The `GET` routes of the shared recipe library (#906), which the
-/// arbitrage of 2026-11-20 limits to 60 reads a minute per user
-/// (`recipes::library::READ_RATE`): each read counts in `rate_limit_log`,
-/// and writes nothing else. Called like the others.
-const RATE_LIMITED: [&str; 2] = ["/library/recipes", "/library/recipes/{id}"];
+/// The `GET` routes of the shared recipe library (#906), the publisher's
+/// own list (#947) included, which the arbitrage of 2026-11-20 limits to
+/// 60 reads a minute per user (`recipes::library::READ_RATE`): each read
+/// counts in `rate_limit_log`, and writes nothing else. Called like the
+/// others.
+const RATE_LIMITED: [&str; 3] = [
+    "/library/recipes",
+    "/library/recipes/mine",
+    "/library/recipes/{id}",
+];
 
 /// The `GET` routes the spec leaves out (`openapi_flow::NOT_DOCUMENTED`),
 /// and the documentation, which `docs_router` turns on.
