@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO library_recipe_publishers\n                       (library_recipe_id, user_id, source_recipe_id, group_id)\n                   VALUES ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4155bc7a03bdc6dbf3027c296203cc96fcbddff434be17f546d555ddf0ebcc89"
+}

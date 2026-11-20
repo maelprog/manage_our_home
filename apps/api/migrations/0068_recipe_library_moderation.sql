@@ -77,11 +77,29 @@ ALTER TABLE rate_limit_log ADD CONSTRAINT rate_limit_log_kind_check
     CHECK (kind IN ('recipe_import', 'openfoodfacts', 'account_exists_notice', 'google_sign_in',
                     'library_read', 'library_publish', 'library_report'));
 
+-- The family a publication was taken from, kept on the publication itself
+-- (user's decision of 2026-11-20): the source recipe may be deleted since
+-- (`source_recipe_id` NULL), and the departure and the owner below must
+-- still find it. Written by the publication (`recipes::library`), never
+-- changed: a recipe stays in its family. NULL once the family is deleted,
+-- as the source is: the publication outlives both, as it did (0066).
+-- Under the publishers' policy (0066): its publisher alone reads it.
+ALTER TABLE library_recipe_publishers
+    ADD COLUMN group_id UUID REFERENCES groups(id) ON DELETE SET NULL;
+UPDATE library_recipe_publishers p
+SET group_id = r.group_id
+FROM recipes r
+WHERE r.id = p.source_recipe_id;
+-- Serves the departure and the owner's withdrawal, and the `SET NULL`
+-- when a family is deleted.
+CREATE INDEX library_recipe_publishers_group_id_idx
+    ON library_recipe_publishers (group_id) WHERE group_id IS NOT NULL;
+
 -- A member's publications go when they leave the family (user's decision
 -- of 2026-11-20): the copies stay, the family's quota is freed. Deletes
--- the publications taken from a recipe of `p_group_id` whose publisher is
--- no longer one of its members; called by the departure, once the
--- membership is deleted (`groups::leave_group`, `groups::remove_member`).
+-- the publications taken from `p_group_id`, their source recipe deleted
+-- since or not, whose publisher is no longer one of its members; called
+-- by the departure, once the membership is deleted (`groups::leave_group`, `groups::remove_member`).
 -- The publishers' policy (0066) shows each user their own rows only, and
 -- the one departing by removal is not the caller, hence `SECURITY
 -- DEFINER`, guarded as the functions of 0067: the family of `app.group_id`
@@ -95,10 +113,9 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
     WITH gone AS (
         DELETE FROM library_recipes l
-        USING library_recipe_publishers p, recipes r
+        USING library_recipe_publishers p
         WHERE p.library_recipe_id = l.id
-          AND r.id = p.source_recipe_id
-          AND r.group_id = p_group_id
+          AND p.group_id = p_group_id
           AND p_group_id::text = current_setting('app.group_id', true)
           AND NOT EXISTS (
               SELECT 1 FROM group_members gm
@@ -110,14 +127,18 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION group_library_unpublish_departed(UUID) IS
-    'Deletes the library publications taken from recipes of the family of app.group_id whose publisher is no longer a member of it: the departure of issue #908.';
+    'Deletes the library publications taken from the family of app.group_id whose publisher is no longer a member of it: the departure of issue #908.';
 
--- The owner of a family withdraws any publication taken from one of its
--- recipes, whoever published it, a former member included (user's
--- decision of 2026-11-20). Same guards, plus the caller (`app.user_id`)
--- being the owner of `p_group_id`. Returns how many publications went: 0
--- or 1, a recipe having one publication at most.
-CREATE FUNCTION group_library_unpublish_as_owner(p_group_id UUID, p_recipe_id UUID)
+-- The owner of a family withdraws any publication taken from it, whoever
+-- published it, a former member included, its source recipe deleted since
+-- or not (user's decisions of 2026-11-20). Named by its source recipe
+-- (`p_recipe_id`) or, once that is gone, by itself (`p_library_recipe_id`);
+-- the other one NULL. Same guards, plus the caller (`app.user_id`) being
+-- the owner of `p_group_id`. Returns how many publications went: 0 or 1,
+-- a recipe having one publication at most.
+CREATE FUNCTION group_library_unpublish_as_owner(
+    p_group_id UUID, p_recipe_id UUID, p_library_recipe_id UUID
+)
 RETURNS BIGINT
 LANGUAGE sql
 VOLATILE
@@ -126,11 +147,10 @@ SET search_path = pg_catalog, public, pg_temp
 AS $$
     WITH gone AS (
         DELETE FROM library_recipes l
-        USING library_recipe_publishers p, recipes r
+        USING library_recipe_publishers p
         WHERE p.library_recipe_id = l.id
-          AND r.id = p.source_recipe_id
-          AND r.id = p_recipe_id
-          AND r.group_id = p_group_id
+          AND (p.source_recipe_id = p_recipe_id OR p.library_recipe_id = p_library_recipe_id)
+          AND p.group_id = p_group_id
           AND p_group_id::text = current_setting('app.group_id', true)
           AND EXISTS (
               SELECT 1 FROM group_members gm
@@ -143,5 +163,5 @@ AS $$
     SELECT count(*) FROM gone
 $$;
 
-COMMENT ON FUNCTION group_library_unpublish_as_owner(UUID, UUID) IS
-    'Deletes the library publication taken from a recipe of the family of app.group_id, for its owner only: issue #908.';
+COMMENT ON FUNCTION group_library_unpublish_as_owner(UUID, UUID, UUID) IS
+    'Deletes the library publication taken from the family of app.group_id, named by its source recipe or by itself, for its owner only: issue #908.';

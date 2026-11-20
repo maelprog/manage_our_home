@@ -926,12 +926,14 @@ async fn seed_publications(
                 .await
                 .unwrap();
         sqlx::query(
-            "INSERT INTO library_recipe_publishers (library_recipe_id, user_id, source_recipe_id)
-             VALUES ($1, $2, $3)",
+            "INSERT INTO library_recipe_publishers
+                 (library_recipe_id, user_id, source_recipe_id, group_id)
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(id)
         .bind(user)
         .bind(recipe)
+        .bind(group)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -2254,7 +2256,7 @@ async fn the_owner_withdraws_any_publication_of_the_family(db: PgPool) {
         (f.owner.id, other.id),
     ] {
         let mut tx = as_user(&db, &role, Some((user, scope))).await;
-        let n: i64 = sqlx::query_scalar("SELECT group_library_unpublish_as_owner($1, $2)")
+        let n: i64 = sqlx::query_scalar("SELECT group_library_unpublish_as_owner($1, $2, NULL)")
             .bind(f.id)
             .bind(again)
             .fetch_one(&mut *tx)
@@ -2269,4 +2271,101 @@ async fn the_owner_withdraws_any_publication_of_the_family(db: PgPool) {
         assert_eq!(n, 0, "{user} in {scope}");
     }
     assert_eq!(library_rows(&db).await, 2);
+}
+
+/// User's decision of 2026-11-20: the publication keeps its family. Its
+/// source recipe deleted, the owner still withdraws it — by its own id —
+/// and its publisher's departure still takes it.
+#[sqlx::test]
+async fn a_publication_follows_its_family_once_its_source_is_deleted(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "orph").await;
+    let mut published = Vec::new();
+    for m in [&f.admin, &f.standard, &f.standard] {
+        let recipe = new_recipe(&router, f.id, &m.cookie, leek_tart()).await;
+        let res = publish_call(&router, f.id, recipe, &m.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        let id = json_body(res).await["id"].as_str().unwrap().to_string();
+        let res = call(
+            &router,
+            Method::DELETE,
+            &format!("/groups/{}/recipes/{recipe}", f.id),
+            Some(&m.cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+        published.push((recipe, id));
+    }
+    assert_eq!(
+        library_rows(&db).await,
+        3,
+        "the publications outlive their source"
+    );
+
+    // By its source recipe, gone: nothing to name it by.
+    let (recipe, _) = &published[1];
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/recipes/{recipe}/publish", f.id),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    // By its own id: not another member's, nor from another family.
+    let by_id = |group: Uuid, id: &str| format!("/groups/{group}/library/recipes/{id}");
+    let other = fam(&db, "orph-other").await;
+    for (group, cookie) in [(f.id, &f.admin.cookie), (other.id, &other.owner.cookie)] {
+        let res = call(
+            &router,
+            Method::DELETE,
+            &by_id(group, &published[1].1),
+            Some(cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+    assert_eq!(library_rows(&db).await, 3);
+    // The owner withdraws a member's; the publisher their own.
+    let res = call(
+        &router,
+        Method::DELETE,
+        &by_id(f.id, &published[1].1),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &by_id(f.id, &published[2].1),
+        Some(&f.standard.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(library_rows(&db).await, 1);
+
+    // The admin leaves: their publication goes, its source gone or not.
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{}/leave", f.id),
+        Some(&f.admin.cookie),
+        Some(json!({})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(library_rows(&db).await, 0);
+    let (status, _) = get(
+        &router,
+        &format!("/library/recipes/{}", published[0].1),
+        &other.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

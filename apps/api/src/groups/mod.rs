@@ -1117,9 +1117,9 @@ pub async fn leave_group(
 }
 
 /// Withdraws from the shared library what the member who just left the
-/// family, or was removed from it, published from its recipes (user's
-/// decision of 2026-11-20, #908): the families' copies stay, the quota is
-/// freed. Called once the membership is deleted, in the same transaction;
+/// family, or was removed from it, published from its recipes, those
+/// deleted since included (user's decision of 2026-11-20, #908): the
+/// families' copies stay, the quota is freed. Called once the membership is deleted, in the same transaction;
 /// the function of 0068 takes whatever no current member stands behind.
 async fn unpublish_departed(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,

@@ -499,6 +499,10 @@ pub fn build_router(state: AppState) -> Router {
             post(recipes::library::copy_library_recipe),
         )
         .route(
+            "/groups/{id}/library/recipes/{library_id}",
+            delete(recipes::library::unpublish_library_recipe),
+        )
+        .route(
             "/library/recipes/{id}/report",
             post(recipes::library_moderation::report_library_recipe),
         )

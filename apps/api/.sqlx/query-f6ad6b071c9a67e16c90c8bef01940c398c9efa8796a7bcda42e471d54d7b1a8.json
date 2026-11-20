@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT group_library_unpublish_as_owner($1, $2) AS \"n!\"",
+  "query": "SELECT group_library_unpublish_as_owner($1, $2, $3) AS \"n!\"",
   "describe": {
     "columns": [
       {
@@ -13,6 +13,7 @@
     "parameters": {
       "Left": [
         "Uuid",
+        "Uuid",
         "Uuid"
       ]
     },
@@ -20,5 +21,5 @@
       null
     ]
   },
-  "hash": "af087996a21aed97844005e35572c4c3b09f54137e0146d547486e900f75e630"
+  "hash": "f6ad6b071c9a67e16c90c8bef01940c398c9efa8796a7bcda42e471d54d7b1a8"
 }

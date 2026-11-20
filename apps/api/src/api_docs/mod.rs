@@ -176,6 +176,7 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::recipes::library::list_library,
         crate::recipes::library::publish_recipe,
         crate::recipes::library::unpublish_recipe,
+        crate::recipes::library::unpublish_library_recipe,
         crate::recipes::library_moderation::dismiss_report,
         crate::recipes::library_moderation::lift_withdrawal,
         crate::recipes::library_moderation::list_reports,

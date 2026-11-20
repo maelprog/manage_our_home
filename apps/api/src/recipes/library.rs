@@ -11,9 +11,14 @@
 //!   snapshot, in place.
 //! - `DELETE` on the same path withdraws the caller's publication of that
 //!   recipe; the family's owner withdraws it whoever published it, a former
-//!   member included (#908). A member's publications are withdrawn when they
-//!   leave the family or are removed from it (`groups::leave_group`,
-//!   `groups::remove_member`, #908).
+//!   member included (#908). `DELETE /groups/{id}/library/recipes/{library_id}`
+//!   does the same by the publication's id, for one whose source recipe was
+//!   deleted since. A member's publications taken from the family are
+//!   withdrawn when they leave it or are removed from it, its source recipe
+//!   deleted since or not: the publication keeps its family
+//!   (`library_recipe_publishers.group_id`; `groups::leave_group`,
+//!   `groups::remove_member`, #908). Only a family deleted since leaves
+//!   none to look it up by.
 //! - `POST /library/recipes/{id}/report` and the superadmin's
 //!   `/admin/library/*` routes report a publication and moderate it
 //!   (`recipes::library_moderation`, #908). A recipe whose publication the
@@ -40,8 +45,8 @@
 //! Limits (user's decisions of 2026-11-20): at most [`FAMILY_QUOTA`]
 //! publications per family, 409 `library_quota_exceeded` past it; reads at
 //! [`READ_RATE`], publications at [`PUBLISH_RATE`] and reports at
-//! [`REPORT_RATE`] per user, 429 past them (`rate_limit::LIMITS`); a search term of [`SEARCH_MAX_CHARS`]
-//! characters at most, 400 `search_too_long` past it; pages of
+//! [`REPORT_RATE`] per user, 429 past them (`rate_limit::LIMITS`); a search
+//! term of [`SEARCH_MAX_CHARS`] characters at most, 400 `search_too_long` past it; pages of
 //! [`PAGE_DEFAULT`], [`PAGE_MAX`] at most.
 
 use std::time::Duration;
@@ -662,11 +667,13 @@ pub async fn publish_recipe(
             .fetch_one(&mut *tx)
             .await?;
             sqlx::query!(
-                r#"INSERT INTO library_recipe_publishers (library_recipe_id, user_id, source_recipe_id)
-                   VALUES ($1, $2, $3)"#,
+                r#"INSERT INTO library_recipe_publishers
+                       (library_recipe_id, user_id, source_recipe_id, group_id)
+                   VALUES ($1, $2, $3, $4)"#,
                 id,
                 auth.user_id,
                 recipe_id,
+                group_id,
             )
             .execute(&mut *tx)
             .await
@@ -755,37 +762,102 @@ pub async fn unpublish_recipe(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    // Its publisher withdraws it, whatever their role now: the policies of
-    // 0066 let no one else, the owner's function below aside. The ingredients and the publisher row go with
-    // it (`ON DELETE CASCADE`).
-    let mut withdrawn = sqlx::query!(
-        r#"DELETE FROM library_recipes WHERE id = (
-               SELECT library_recipe_id FROM library_recipe_publishers
-               WHERE source_recipe_id = $1 AND user_id = $2)"#,
-        recipe_id,
+    let withdrawn = withdraw(
+        &mut tx,
+        group_id,
         auth.user_id,
+        &actor_role,
+        Some(recipe_id),
+        None,
     )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected()
-        > 0;
-    // The owner withdraws another member's, or a former member's (#908),
-    // through the function of 0068, which checks the role again.
-    if !withdrawn && unpublishes_for_the_family(&actor_role) {
-        let by_owner = sqlx::query_scalar!(
-            r#"SELECT group_library_unpublish_as_owner($1, $2) AS "n!""#,
-            group_id,
-            recipe_id,
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        withdrawn = by_owner > 0;
-    }
+    .await?;
     if !withdrawn {
         return Err(AppError::NotFound);
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/library/recipes/{library_id}",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("library_id" = uuid::Uuid, Path, description = "Publication id"),
+    ),
+    responses(
+        (status = 204, description = "The publication, taken from the family, withdrawn: the caller's own, or, for the family's owner, whoever published it — its source recipe deleted since or not"),
+        (status = 404, description = "`not_found`: no publication taken from the family the caller may withdraw", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn unpublish_library_recipe(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, library_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
+    let withdrawn = withdraw(
+        &mut tx,
+        group_id,
+        auth.user_id,
+        &actor_role,
+        None,
+        Some(library_id),
+    )
+    .await?;
+    if !withdrawn {
+        return Err(AppError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Withdraws the publication taken from `group_id`, named by its source
+/// recipe or by itself (the other `None`): the caller's own, or, for the
+/// family's owner, whoever's (#908). Whether one went.
+async fn withdraw(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    user_id: Uuid,
+    actor_role: &str,
+    recipe_id: Option<Uuid>,
+    library_id: Option<Uuid>,
+) -> AppResult<bool> {
+    // Its publisher withdraws it, whatever their role now: the policies of
+    // 0066 let no one else, the owner's function below aside. The
+    // ingredients and the publisher row go with it (`ON DELETE CASCADE`).
+    let withdrawn = sqlx::query!(
+        r#"DELETE FROM library_recipes WHERE id = (
+               SELECT library_recipe_id FROM library_recipe_publishers
+               WHERE (source_recipe_id = $1 OR library_recipe_id = $2)
+                 AND group_id = $3 AND user_id = $4)"#,
+        recipe_id,
+        library_id,
+        group_id,
+        user_id,
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected()
+        > 0;
+    if withdrawn || !unpublishes_for_the_family(actor_role) {
+        return Ok(withdrawn);
+    }
+    // The owner withdraws another member's, or a former member's (#908),
+    // through the function of 0068, which checks the role again.
+    let by_owner = sqlx::query_scalar!(
+        r#"SELECT group_library_unpublish_as_owner($1, $2, $3) AS "n!""#,
+        group_id,
+        recipe_id,
+        library_id,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(by_owner > 0)
 }
 
 #[utoipa::path(
