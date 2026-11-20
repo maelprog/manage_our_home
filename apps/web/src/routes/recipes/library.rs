@@ -371,7 +371,7 @@ pub(crate) fn detail_body(
                 })
             })
             .collect();
-        format!("<ul>{items}</ul>")
+        format!(r#"<ul class="spaced">{items}</ul>"#)
     };
     format!(
         r#"{segment}<div class="links"><a href="/recipes/library"><span aria-hidden="true">‹</span> Retour à la bibliothèque</a></div>
@@ -850,7 +850,9 @@ mod tests {
         assert!(html.contains("Ajouter à mes recettes"));
         assert!(!html.contains("Voir ma copie"));
         assert!(!html.contains("Issue de la bibliothèque"));
-        assert!(html.contains("<li><strong>Pommes de terre</strong> — 1 kg</li>"));
+        assert!(html.contains(
+            r#"<ul class="spaced"><li><strong>Pommes de terre</strong> — 1 kg</li></ul>"#
+        ));
         assert!(html.contains("<h2>Étapes</h2><ol><li>Préchauffer.</li><li>Cuire.</li></ol>"));
     }
 

@@ -1404,7 +1404,8 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
    `.lib`, its rows: an `a.list-row` whose name, summary and « Issue de la
    bibliothèque » stack beside the chevron. `.void`, a card that says why
    there is nothing to list. `.pager`, « Précédent », the page, « Suivant »:
-   a link with nowhere to go is drawn out of use. */
+   a link with nowhere to go is drawn out of use. `.spaced`, a publication's
+   ingredients, aired as the mockup draws them (the family's page keeps its own). */
 .find { margin-top: var(--s4); }
 .find label { flex: 999 1 16rem; }
 .find button { flex: 1 0 auto; }
@@ -1415,6 +1416,8 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 .pager { display: flex; align-items: center; gap: var(--s3); margin: var(--s4) 0; }
 .pager > span { flex: 1; text-align: center; }
 .pager [aria-disabled] { background: var(--hover); color: var(--muted); cursor: not-allowed; }
+.spaced { padding-left: var(--s6); }
+.spaced li { margin-bottom: var(--s2x); }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and
