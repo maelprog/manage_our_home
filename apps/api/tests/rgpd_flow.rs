@@ -942,6 +942,77 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
     assert_eq!(exported as i64, held, "every ingredient held is exported");
 }
 
+/// Issue #905: the recipes the caller published to the shared library come
+/// out of their export, each with its ingredients in their order and the
+/// recipe it was taken from; another user's publication does not.
+#[sqlx::test]
+async fn export_lists_the_callers_library_publications(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "publisher@example.test", "owner-password1").await;
+    register_verify_login(&router, &db, "other-pub@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer Bibliotheque").await;
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Tarte", "ingredients": []})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let recipe = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    for (email, name, source) in [
+        (
+            "publisher@example.test",
+            "Tarte aux poireaux",
+            Some(recipe.clone()),
+        ),
+        ("other-pub@example.test", "Soupe", None),
+    ] {
+        sqlx::query(
+            "WITH l AS (
+                 INSERT INTO library_recipes (name, instructions, servings, duration_minutes)
+                 VALUES ($2, 'Cuire.', 4, 45) RETURNING id
+             ), p AS (
+                 INSERT INTO library_recipe_publishers (library_recipe_id, user_id, source_recipe_id)
+                 SELECT l.id, u.id, $3::uuid FROM l, users u WHERE u.email = $1
+             )
+             INSERT INTO library_ingredients (library_recipe_id, position, name, quantity, unit,
+                                              seasonal_months)
+             SELECT id, 1, 'Pâte brisée', 1, NULL, NULL::int[] FROM l
+             UNION ALL SELECT id, 0, 'Poireau', 3, 'pièce', '{10,11}'::int[] FROM l",
+        )
+        .bind(email)
+        .bind(name)
+        .bind(source.map(|s| uuid::Uuid::parse_str(&s).unwrap()))
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    let published = doc["library_recipes"].as_array().unwrap();
+    assert_eq!(published.len(), 1, "{published:?}");
+    let tarte = &published[0];
+    assert_eq!(tarte["name"], "Tarte aux poireaux");
+    assert_eq!(tarte["instructions"], "Cuire.");
+    assert_eq!(tarte["servings"], 4);
+    assert_eq!(tarte["duration_minutes"], 45);
+    assert_eq!(tarte["source_recipe_id"], recipe.as_str());
+    assert!(tarte["id"].is_string() && tarte["published_at"].is_string());
+    assert_eq!(
+        tarte["ingredients"],
+        serde_json::json!([
+            {"name": "Poireau", "quantity": 3.0, "unit": "pièce", "is_optional": false, "seasonal_months": [10, 11]},
+            {"name": "Pâte brisée", "quantity": 1.0, "unit": null, "is_optional": false, "seasonal_months": null},
+        ])
+    );
+}
+
 /// Issue #140: an invitation another member sent to the caller's address is
 /// data about them, even from a group they never joined. It comes out with
 /// its group and its sender, as the invitation email states them — not its
@@ -1151,6 +1222,9 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("user_allergies", "allergies"),
         ("allergy_sharing", "allergies"),
         ("user_dislikes", "dislikes"),
+        ("library_recipes", "library_recipes"),
+        ("library_ingredients", "library_recipes"),
+        ("library_recipe_publishers", "library_recipes"),
     ];
     const LEFT_OUT: &[(&str, &str)] = &[
         (
@@ -1302,6 +1376,9 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
         // Its key is onto the membership (`group_members`), which deletes
         // it when the membership ends; read with the allergies.
         ("allergy_sharing", "user_id"),
+        // #905: who published what to the shared library, under
+        // `app.user_id`; read with the publications.
+        ("library_recipe_publishers", "user_id"),
     ];
     const LEFT_OUT: &[(&str, &str, &str)] = &[
         (

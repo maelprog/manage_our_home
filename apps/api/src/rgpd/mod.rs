@@ -787,6 +787,59 @@ pub async fn export_account(
         .map(|d| json!({"tag": d.tag, "created_at": d.created_at}))
         .collect();
 
+    // The recipes the caller published to the shared library (#905). Who
+    // published what is readable by its publisher alone (0066), hence
+    // `app.user_id`, and filtered on the caller a second time.
+    let mut library_tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    let publications = sqlx::query!(
+        r#"SELECT l.id, l.name, l.instructions, l.servings, l.duration_minutes,
+                  l.published_at, l.updated_at, p.source_recipe_id
+           FROM library_recipes l
+           JOIN library_recipe_publishers p ON p.library_recipe_id = l.id
+           WHERE p.user_id = $1
+           ORDER BY l.published_at, l.id"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *library_tx)
+    .await?;
+    let library_ingredients = sqlx::query!(
+        r#"SELECT i.library_recipe_id, i.name, i.quantity, i.unit, i.is_optional,
+                  i.seasonal_months
+           FROM library_ingredients i
+           JOIN library_recipe_publishers p ON p.library_recipe_id = i.library_recipe_id
+           WHERE p.user_id = $1
+           ORDER BY i.library_recipe_id, i.position"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *library_tx)
+    .await?;
+    library_tx.commit().await?;
+    c.library_recipes = export::nest_ingredients(
+        publications
+            .into_iter()
+            .map(|l| {
+                json!({
+                    "id": l.id, "name": l.name, "instructions": l.instructions,
+                    "servings": l.servings, "duration_minutes": l.duration_minutes,
+                    "source_recipe_id": l.source_recipe_id,
+                    "published_at": l.published_at, "updated_at": l.updated_at,
+                })
+            })
+            .collect(),
+        library_ingredients
+            .into_iter()
+            .map(|i| {
+                (
+                    i.library_recipe_id,
+                    json!({
+                        "name": i.name, "quantity": i.quantity, "unit": i.unit,
+                        "is_optional": i.is_optional, "seasonal_months": i.seasonal_months,
+                    }),
+                )
+            })
+            .collect(),
+    );
+
     let doc = export::build_export(profile_json, c);
 
     let mut audit_tx = crate::db::begin(&state.db).await?;

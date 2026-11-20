@@ -152,6 +152,13 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
         // An ingredient link it set (#903): goes with its membership.
         "INSERT INTO ingredient_links (group_id, name_key, name, tag, created_by)
          VALUES ($2, $1::text, 'Mon p''tit plaisir', 'en:fermented-creams', $1)",
+        // A recipe it published to the shared library (#905), with an
+        // ingredient.
+        "WITH l AS (INSERT INTO library_recipes (name) VALUES ('Tarte') RETURNING id),
+              p AS (INSERT INTO library_recipe_publishers (library_recipe_id, user_id)
+                    SELECT id, $1 FROM l)
+         INSERT INTO library_ingredients (library_recipe_id, position, name)
+         SELECT id, 0, 'Poireau' FROM l",
     ] {
         let query = sqlx::query(sql).bind(user);
         let query = if sql.contains("$2") {
@@ -254,6 +261,10 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
             "ingredient_links",
             "SELECT count(*) FROM ingredient_links WHERE created_by = $1",
         ),
+        (
+            "library_recipe_publishers",
+            "SELECT count(*) FROM library_recipe_publishers WHERE user_id = $1",
+        ),
     ] {
         let n: i64 = sqlx::query_scalar(sql)
             .bind(user)
@@ -285,6 +296,7 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "allergy_sharing",
         "user_dislikes",
         "ingredient_links",
+        "library_recipe_publishers",
     ]
     .into_iter()
     .map(|t| (t, n))
@@ -338,6 +350,25 @@ async fn the_purge_deletes_every_personal_row_and_keeps_the_shared_content(db: P
 
     seed_personal_rows(&db, group, shared_event, leaving, "leaving").await;
     seed_personal_rows(&db, group, shared_event, staying, "staying").await;
+    // #905: another family copied the purged account's publication.
+    let published: Uuid = sqlx::query_scalar(
+        "SELECT library_recipe_id FROM library_recipe_publishers WHERE user_id = $1",
+    )
+    .bind(leaving)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let elsewhere = insert_group(&db, "Ailleurs", owner).await;
+    let copy: Uuid = sqlx::query_scalar(
+        "INSERT INTO recipes (group_id, created_by, name, library_recipe_id)
+         VALUES ($1, $2, 'Tarte', $3) RETURNING id",
+    )
+    .bind(elsewhere)
+    .bind(owner)
+    .bind(published)
+    .fetch_one(&db)
+    .await
+    .unwrap();
 
     purge_due_accounts(&db).await.unwrap();
 
@@ -359,6 +390,31 @@ async fn the_purge_deletes_every_personal_row_and_keeps_the_shared_content(db: P
     assert_eq!(row.terms_accepted_version, None);
     assert_eq!(row.terms_accepted_at, None);
     assert!(row.deleted_at.is_some());
+
+    // #905: its publications are gone, their ingredients with them; the
+    // copy stays, no longer linked to them. The other account's
+    // publication is untouched.
+    let left: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM library_recipes WHERE id = $1),
+                (SELECT count(*) FROM library_ingredients WHERE library_recipe_id = $1)",
+    )
+    .bind(published)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(left, (0, 0));
+    let copy_link: Option<Option<Uuid>> =
+        sqlx::query_scalar("SELECT library_recipe_id FROM recipes WHERE id = $1")
+            .bind(copy)
+            .fetch_optional(&db)
+            .await
+            .unwrap();
+    assert_eq!(copy_link, Some(None), "the copy stays, unlinked");
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM library_recipes")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 1, "the other account's publication stays");
 
     // The content shared with the group stays, still pointing at the
     // anonymised row.

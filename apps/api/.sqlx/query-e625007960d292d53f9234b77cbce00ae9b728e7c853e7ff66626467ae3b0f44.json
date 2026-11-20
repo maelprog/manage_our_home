@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM library_recipes WHERE id IN (\n               SELECT library_recipe_id FROM library_recipe_publishers WHERE user_id = $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e625007960d292d53f9234b77cbce00ae9b728e7c853e7ff66626467ae3b0f44"
+}
