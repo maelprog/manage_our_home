@@ -685,13 +685,16 @@ async fn the_library_names_neither_the_family_nor_the_person(db: PgPool) {
         k.sort();
         k
     };
-    assert_eq!(keys(&list), ["next_cursor", "recipes"]);
+    assert_eq!(keys(&list), ["next_cursor", "recipes", "total"]);
     assert_eq!(list["recipes"].as_array().unwrap().len(), 1);
+    assert_eq!(list["total"], 1);
+    assert_eq!(list["recipes"][0]["ingredient_count"], 3);
     assert_eq!(
         keys(&list["recipes"][0]),
         [
             "duration_minutes",
             "id",
+            "ingredient_count",
             "name",
             "published_at",
             "servings",
@@ -1043,6 +1046,7 @@ async fn the_library_is_searched_and_paged(db: PgPool) {
     let (status, page) = get(&router, "/library/recipes", &reader).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(page["recipes"].as_array().unwrap().len(), 20);
+    assert_eq!(page["total"], 56, "every page counts the whole search");
     let (_, page) = get(&router, "/library/recipes?limit=500", &reader).await;
     assert_eq!(
         page["recipes"].as_array().unwrap().len(),
@@ -1058,6 +1062,7 @@ async fn the_library_is_searched_and_paged(db: PgPool) {
     .await;
     assert_eq!(rest["recipes"].as_array().unwrap().len(), 6);
     assert_eq!(rest["next_cursor"], Value::Null);
+    assert_eq!(rest["total"], 56, "the cursor does not narrow the count");
     let mut seen: Vec<String> = page["recipes"]
         .as_array()
         .unwrap()
@@ -1080,12 +1085,19 @@ async fn the_library_is_searched_and_paged(db: PgPool) {
     let none: Vec<String> = Vec::new();
     let (_, hit) = get(&router, "/library/recipes?q=%20gRATIN%2052%20", &reader).await;
     assert_eq!(names(&hit), ["Gratin 52"]);
+    assert_eq!(hit["total"], 1);
+    assert_eq!(hit["recipes"][0]["ingredient_count"], 0);
+    let (_, hit) = get(&router, "/library/recipes?q=gratin", &reader).await;
+    assert_eq!(hit["total"], 55, "the search narrows the count");
     let (_, hit) = get(&router, "/library/recipes?q=100%25", &reader).await;
     assert_eq!(names(&hit), ["Tarte 100% 0"], "`%` is taken literally");
     let (_, hit) = get(&router, "/library/recipes?q=_", &reader).await;
     assert_eq!(names(&hit), none, "`_` is taken literally");
+    assert_eq!(hit["total"], 0);
     let (_, hit) = get(&router, "/library/recipes?ingredient=POIREAU", &reader).await;
     assert_eq!(names(&hit), ["Gratin 7"]);
+    assert_eq!(hit["total"], 1);
+    assert_eq!(hit["recipes"][0]["ingredient_count"], 1);
     let (_, hit) = get(
         &router,
         "/library/recipes?q=tarte&ingredient=poireau",
@@ -1279,6 +1291,15 @@ async fn a_member_copies_a_publication_into_their_family(db: PgPool) {
     assert_eq!(copy["duration_minutes"], 45);
     assert_eq!(copy["source_url"], Value::Null);
     assert_eq!(copy["required_equipment"], json!([]));
+    assert_eq!(copy["library_recipe_id"], published.as_str());
+    // A recipe of the family's own carries no publication.
+    let (_, own) = get(
+        &router,
+        &format!("/groups/{}/recipes/{source}", author.id),
+        &author.owner.cookie,
+    )
+    .await;
+    assert_eq!(own["library_recipe_id"], Value::Null);
     assert_eq!(
         library_link(&db, &copy_id).await,
         Some(published.parse().unwrap())
@@ -1456,7 +1477,10 @@ async fn a_copy_is_the_familys_own_recipe(db: PgPool) {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(kept, again);
+    assert_eq!(kept["library_recipe_id"], Value::Null, "the link is gone");
+    let mut was = again.clone();
+    was["library_recipe_id"] = Value::Null;
+    assert_eq!(kept, was, "the rest of the copy is kept");
     assert_eq!(library_link(&db, &again_id).await, None);
     let res = copy_call(&router, f.id, &published, &f.owner.cookie).await;
     assert_status(&res, StatusCode::NOT_FOUND);

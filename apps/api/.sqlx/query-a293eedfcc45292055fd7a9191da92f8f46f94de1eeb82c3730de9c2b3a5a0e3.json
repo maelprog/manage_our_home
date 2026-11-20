@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        UPDATE recipes SET\n            name = COALESCE($3, name),\n            instructions = $4,\n            servings = $5,\n            duration_minutes = $6,\n            required_equipment = COALESCE($7, required_equipment),\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at\n        ",
+  "query": "\n        UPDATE recipes SET\n            name = COALESCE($3, name),\n            instructions = $4,\n            servings = $5,\n            duration_minutes = $6,\n            required_equipment = COALESCE($7, required_equipment),\n            updated_at = now()\n        WHERE id = $1 AND group_id = $2\n        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id\n        ",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,17 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "library_recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "library_recipe_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -147,8 +158,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "00f703ecfb5cdf8bbdb0a6f769401647f2b847532c6dfb1af87b35f406fc56d0"
+  "hash": "a293eedfcc45292055fd7a9191da92f8f46f94de1eeb82c3730de9c2b3a5a0e3"
 }
