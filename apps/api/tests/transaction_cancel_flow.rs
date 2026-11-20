@@ -2,19 +2,20 @@
 //! come back to the pool still open.
 //!
 //! sqlx-postgres 0.9.0 sent `BEGIN`, then waited for the server's reply
-//! before counting the transaction as open (fixed in 0.9.1,
-//! launchbadge/sqlx#4394; these tests keep guarding against it). A future
-//! dropped during that wait (a client that hangs up — hyper drops the
-//! handler) left nothing to roll back on sqlx's side, and the first query of the pool's release path
-//! swallows the pending reply — the `after_release` query of
+//! before counting the transaction as open. A future dropped during that
+//! wait (a client that hangs up — hyper drops the handler) left nothing to
+//! roll back on sqlx's side, and the first query of the pool's release path
+//! swallowed the pending reply — the `after_release` query of
 //! `db::pool_options`, which sqlx runs before its own release ping (the ping
-//! does it on a pool without that hook). Without the hook's check, the
-//! connection goes back to the pool inside a transaction the server still
-//! holds open.
-//! The next autocommit write on it — the `UPDATE sessions SET last_seen_at`
-//! of every authenticated request — takes its row lock inside that
-//! transaction and never releases it, freezing every later request of that
-//! session.
+//! did it on a pool without that hook). Without the hook's check, the
+//! connection went back to the pool inside a transaction the server still
+//! held open. The next autocommit write on it — the `UPDATE sessions SET
+//! last_seen_at` of every authenticated request — took its row lock inside
+//! that transaction and never released it, freezing every later request of
+//! that session.
+//!
+//! sqlx-postgres 0.9.1 fixed that upstream (launchbadge/sqlx#4394); these
+//! tests keep guarding against it.
 //!
 //! Runtime queries (`sqlx::query`, not the macros) so this binary adds
 //! nothing to the `.sqlx` offline cache.
