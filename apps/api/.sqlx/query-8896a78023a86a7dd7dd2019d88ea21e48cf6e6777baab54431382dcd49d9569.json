@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, quantity, unit, is_optional, seasonal_months\n           FROM library_ingredients WHERE library_recipe_id = $1 ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "quantity",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "is_optional",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "is_optional"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "seasonal_months",
+        "type_info": "Int4Array",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "seasonal_months"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "8896a78023a86a7dd7dd2019d88ea21e48cf6e6777baab54431382dcd49d9569"
+}

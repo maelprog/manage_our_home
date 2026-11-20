@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT library_recipe_id FROM library_recipe_publishers\n           WHERE source_recipe_id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "library_recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "library_recipe_publishers",
+            "name": "library_recipe_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2c30ff02c4a1a6b03431b1178de2eb722c5e3f2c1b576202307175fddb87ed06"
+}

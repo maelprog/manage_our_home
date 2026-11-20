@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at\n           FROM library_recipes l\n           WHERE ($1::text IS NULL OR lower(l.name) LIKE lower($1) ESCAPE '\\')\n             AND ($2::text IS NULL OR EXISTS (\n                     SELECT 1 FROM library_ingredients i\n                     WHERE i.library_recipe_id = l.id\n                       AND lower(i.name) LIKE lower($2) ESCAPE '\\'))\n             AND ($3::timestamptz IS NULL OR (l.published_at, l.id) < ($3, $4::uuid))\n           ORDER BY l.published_at DESC, l.id DESC\n           LIMIT $5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "servings",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "servings"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "duration_minutes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "duration_minutes"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "published_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "published_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "75db267444add7b73bc647d82957994c010a9612afd90fef2f6c81fbfd577303"
+}

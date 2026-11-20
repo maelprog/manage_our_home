@@ -2,8 +2,9 @@
 //! import per member (`recipes::import`) and the reads sent to Open Food
 //! Facts (`stocks::openfoodfacts`); since #570, the "account exists" notice
 //! per address (`auth::account_exists_notice`); since #669, the native
-//! Google sign-in per address (`auth::google_id_token`). [`LIMITS`] lists
-//! them.
+//! Google sign-in per address (`auth::google_id_token`); since #906, the
+//! reads of the shared recipe library and the publications to it, per user
+//! (`recipes::library`). [`LIMITS`] lists them.
 //!
 //! Until #428 each was a `Mutex` in the process's memory: with N replicas
 //! behind the ingress, a member had N times their imports and Open Food
@@ -32,8 +33,9 @@
 //! pool connection per admission. Each limit guards a request that costs
 //! far more — an outbound HTTP fetch, or an email sent. That connection is
 //! held while the admission waits on its subject's lock, so it comes from a
-//! pool apart from the handlers': the one the recipe import and Open Food
-//! Facts share ([`POOL_SIZE`], #483), and one of its own for the notice,
+//! pool apart from the handlers': the one the recipe import, Open Food
+//! Facts and the recipe library share ([`POOL_SIZE`], #483, #906), and one
+//! of its own for the notice,
 //! whose route answers anyone (`auth::account_exists_notice::POOL_SIZE`).
 
 use std::time::{Duration, SystemTime};
@@ -88,7 +90,7 @@ pub const LOG_LOCK: i32 = i32::from_be_bytes(*b"mrll");
 /// kind's window old (#570: the windows run from a minute to a day, and a
 /// ten-minute counter is not kept a day because another limit counts over
 /// one).
-pub const LIMITS: [(&str, SlidingWindow); 4] = [
+pub const LIMITS: [(&str, SlidingWindow); 6] = [
     ("recipe_import", crate::recipes::import::RATE),
     ("openfoodfacts", crate::stocks::openfoodfacts::RATE),
     (
@@ -99,9 +101,18 @@ pub const LIMITS: [(&str, SlidingWindow); 4] = [
         crate::auth::google_id_token::KIND,
         crate::auth::google_id_token::RATE,
     ),
+    (
+        crate::recipes::library::READ_KIND,
+        crate::recipes::library::READ_RATE,
+    ),
+    (
+        crate::recipes::library::PUBLISH_KIND,
+        crate::recipes::library::PUBLISH_RATE,
+    ),
 ];
 
-/// Connections of the pool the recipe import and Open Food Facts share,
+/// Connections of the pool the recipe import, Open Food Facts and the
+/// recipe library (#906) share,
 /// per replica, when [`POOL_SIZE_VAR`] is unset (#483). `main.rs` opens it
 /// beside the handlers' pool (`db::pool_beside`) and gives it to their
 /// [`SlidingLimiter`]s (the notice of #570 has a pool of its own): an admission holds its connection while it waits on
