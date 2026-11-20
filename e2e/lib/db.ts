@@ -446,6 +446,65 @@ export async function setAccessPolicy(
   }
 }
 
+/**
+ * Publishes a recipe in the shared library (#905) in the name of `email`,
+ * and returns its id. The publishing screen is #911's: until it exists, the
+ * suite writes the publication itself — the snapshot, its ingredients in
+ * order, and the publisher's row its deferred key asks for at commit.
+ */
+export async function publishToLibrary(
+  email: string,
+  recipe: { name: string; instructions?: string; servings?: number; ingredients: string[] },
+): Promise<string> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO library_recipes (name, instructions, servings)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [recipe.name, recipe.instructions ?? null, recipe.servings ?? null],
+    );
+    const id: string = rows[0].id;
+    const { rowCount } = await client.query(
+      `INSERT INTO library_recipe_publishers (library_recipe_id, user_id)
+       SELECT $1, id FROM users WHERE email = $2`,
+      [id, email],
+    );
+    if (rowCount !== 1) throw new Error(`no user to publish as for ${email}`);
+    for (const [position, name] of recipe.ingredients.entries()) {
+      await client.query(
+        `INSERT INTO library_ingredients (library_recipe_id, position, name)
+         VALUES ($1, $2, $3)`,
+        [id, position, name],
+      );
+    }
+    await client.query("COMMIT");
+    return id;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Withdraws a publication from the library as moderation does (#908): the
+ * row goes, its ingredients and its publisher's row with it, and the copies
+ * of it lose their link.
+ */
+export async function withdrawFromLibrary(id: string): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(`DELETE FROM library_recipes WHERE id = $1`, [id]);
+    if (rowCount !== 1) throw new Error(`no publication ${id} to withdraw`);
+  } finally {
+    await client.end();
+  }
+}
+
 function requireDatabaseUrl(): string {
   const url = process.env.DATABASE_URL;
   if (!url) {

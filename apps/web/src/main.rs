@@ -390,6 +390,15 @@ fn build_router(state: AppState) -> Router {
             "/recipes/import",
             get(routes::recipes::import::get).post(routes::recipes::import::post),
         )
+        .route("/recipes/library", get(routes::recipes::library::list))
+        .route(
+            "/recipes/library/{id}",
+            get(routes::recipes::library::detail),
+        )
+        .route(
+            "/recipes/library/{id}/add",
+            post(routes::recipes::library::add),
+        )
         .route("/recipes/{id}", get(routes::recipes::detail::get))
         .route("/recipes/{id}/cook", get(routes::recipes::cook::get))
         .route(

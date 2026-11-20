@@ -1,6 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchVerificationToken, publishToLibrary, withdrawFromLibrary } from "../lib/db";
 import { fillIngredients, fillSteps, lineField } from "../lib/recipe-form";
 import { skipMealStart } from "../lib/meal-start";
 
@@ -888,5 +888,86 @@ test.describe("Recipes — changer ce plat (#816)", () => {
     await page.goto("/recipes/week");
     await expect(soir.getByRole("link", { name: "Soupe du jour", exact: true })).toBeVisible();
     await context.close();
+  });
+});
+
+// #910: the library shared by every family (API #906, #907). The
+// publication is written straight into the database (`publishToLibrary`):
+// the screen that publishes is #911's.
+test.describe("Recipes — bibliothèque (#910)", () => {
+  test("search, open, add, then find the copy in « Toutes les recettes »", async ({ page }) => {
+    const email = await registerAndLogin(page, "e2e-rclib", "Library User");
+    await createGroup(page, "Famille Partage");
+    const token = `Biblio${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const name = `Gratin ${token}`;
+    const id = await publishToLibrary(email, {
+      name,
+      instructions: "Préchauffer le four.\nCuire une heure.",
+      servings: 4,
+      ingredients: ["Pommes de terre", "Crème"],
+    });
+
+    // The way in: « Bibliothèque » in the header of the recipes.
+    await page.goto("/recipes");
+    await page.getByRole("link", { name: "Bibliothèque", exact: true }).click();
+    await expect(page).toHaveURL(/\/recipes\/library$/);
+    await expect(page.getByRole("heading", { name: "Bibliothèque", level: 1 })).toBeVisible();
+
+    // A search that finds nothing says so, and offers to start again.
+    await page.getByLabel("Rechercher une recette").fill(`${token}zz`);
+    await page.getByRole("button", { name: "Rechercher" }).click();
+    await expect(page.getByText(`0 résultat pour « ${token}zz ».`)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Aucune recette ne correspond" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Effacer la recherche" })).toHaveAttribute(
+      "href",
+      "/recipes/library",
+    );
+
+    // The search by name, case aside, finds it; its count is said.
+    await page.getByLabel("Rechercher une recette").fill(token.toLowerCase());
+    await page.getByRole("button", { name: "Rechercher" }).click();
+    await expect(page.getByText(`1 résultat pour « ${token.toLowerCase()} »`)).toBeVisible();
+    await expect(page.getByText("Page 1 sur 1")).toBeVisible();
+    const row = page.getByRole("link", { name: new RegExp(name) });
+    await expect(row).toContainText("4 personnes · 2 ingrédients");
+    await expect(row).not.toContainText("Issue de la bibliothèque");
+    await row.click();
+
+    // Its page: what it holds.
+    await expect(page).toHaveURL(new RegExp(`/recipes/library/${id}$`));
+    await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
+    await expect(page.getByText("Pour 4 personnes")).toBeVisible();
+    await expect(page.getByText("Pommes de terre")).toBeVisible();
+    await expect(page.getByText("Cuire une heure.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Ajouter à mes recettes" }).click();
+    await expect(page).toHaveURL(new RegExp(`/recipes/library/${id}\\?notice=added$`));
+    await expect(page.getByText("Recette ajoutée à vos recettes.")).toBeVisible();
+    // Once copied, no second « Ajouter »: the copy instead.
+    await expect(page.getByRole("button", { name: "Ajouter à mes recettes" })).toHaveCount(0);
+    await expect(page.getByText("Cette recette est déjà dans vos recettes.")).toBeVisible();
+    await page.getByRole("link", { name: "Voir ma copie" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]{36}$/);
+    await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
+
+    // The list marks the copy.
+    await page.goto(`/recipes/library?q=${token}`);
+    await expect(page.getByRole("link", { name: new RegExp(name) })).toContainText(
+      "Issue de la bibliothèque",
+    );
+
+    // The family has it among its own recipes.
+    await openRecipeDetail(page, name);
+
+    // Withdrawn: its page says so; the copy stays, without a word of it.
+    await withdrawFromLibrary(id);
+    const response = await page.goto(`/recipes/library/${id}`);
+    expect(response?.status()).toBe(404);
+    await expect(
+      page.getByText("Cette recette a été retirée de la bibliothèque et ne peut plus être ajoutée."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Ajouter à mes recettes" })).toHaveCount(0);
+    await openRecipeDetail(page, name);
+    await expect(page.getByText("Issue de la bibliothèque")).toHaveCount(0);
   });
 });

@@ -1398,6 +1398,23 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
   .cook-nav { grid-template-columns: 1fr 2fr; padding-right: calc(20rem + var(--s8)); }
 }
 .avoid { flex-flow: row wrap; align-items: center; gap: var(--s2x) var(--s3); margin: var(--s2x) 0; }
+/* -- The recipe library (#910, `routes::recipes::library`) ------------------
+   `.find`, its search: a `.card.inline` whose field takes the row, and whose
+   button, alone on its line once the row wraps (phone), takes the width.
+   `.lib`, its rows: an `a.list-row` whose name, summary and « Issue de la
+   bibliothèque » stack beside the chevron. `.void`, a card that says why
+   there is nothing to list. `.pager`, « Précédent », the page, « Suivant »:
+   a link with nowhere to go is drawn out of use. */
+.find { margin-top: var(--s4); }
+.find label { flex: 999 1 16rem; }
+.find button { flex: 1 0 auto; }
+.lib a.list-row > span { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); min-width: 0; }
+.lib strong { color: var(--accent); overflow-wrap: anywhere; }
+.lib .icon { color: var(--muted); }
+.void { text-align: center; }
+.pager { display: flex; align-items: center; gap: var(--s3); margin: var(--s4) 0; }
+.pager > span { flex: 1; text-align: center; }
+.pager [aria-disabled] { background: var(--hover); color: var(--muted); cursor: not-allowed; }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and
