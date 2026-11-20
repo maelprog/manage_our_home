@@ -495,6 +495,10 @@ pub fn build_router(state: AppState) -> Router {
             get(recipes::library::get_library_recipe),
         )
         .route(
+            "/groups/{id}/library/recipes/{library_id}/copy",
+            post(recipes::library::copy_library_recipe),
+        )
+        .route(
             "/groups/{id}/recipes/{recipe_id}/meal-history",
             post(recipes::meal_history::log_meal),
         )
