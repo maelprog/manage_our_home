@@ -190,7 +190,14 @@ pub struct AnnouncedTerms {
 }
 
 /// The version announced and its text, if any — see [`AnnouncedTerms`].
-pub const TERMS_ANNOUNCED: Option<AnnouncedTerms> = None;
+pub const TERMS_ANNOUNCED: Option<AnnouncedTerms> = Some(AnnouncedTerms {
+    // #909: the recipe library, readable by every user of the service.
+    version: "2026-11-20",
+    markdown: include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/terms-of-service-announced.md"
+    )),
+});
 
 /// The civil day `now` falls on in Europe/Paris, the fixed timezone the
 /// service speaks (F3) and the one a CGU version's date is read in (#367).
