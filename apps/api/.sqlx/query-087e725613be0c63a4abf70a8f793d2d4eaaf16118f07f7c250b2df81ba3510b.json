@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT created_by, name, instructions, servings, duration_minutes\n           FROM recipes WHERE id = $1 AND group_id = $2",
+  "query": "SELECT created_by, name, instructions, source_url, servings, duration_minutes\n           FROM recipes WHERE id = $1 AND group_id = $2",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "servings",
         "type_info": "Int4",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "duration_minutes",
         "type_info": "Int4",
         "origin": {
@@ -70,8 +81,9 @@
       false,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "f648133aa663e16842a0ba55675bb26b90b8c46269c512c3427a3c7b6051baf8"
+  "hash": "087e725613be0c63a4abf70a8f793d2d4eaaf16118f07f7c250b2df81ba3510b"
 }
