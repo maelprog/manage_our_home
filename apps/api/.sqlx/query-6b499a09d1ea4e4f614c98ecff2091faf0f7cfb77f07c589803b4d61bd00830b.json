@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
+  "query": "\n        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id\n        FROM recipes\n        WHERE group_id = $1\n        ORDER BY name\n        ",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,17 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "library_recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "library_recipe_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -141,8 +152,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "6da63ec474f16f4dd84a914fea280488ac549291307e0cea4da25207fdc73f12"
+  "hash": "6b499a09d1ea4e4f614c98ecff2091faf0f7cfb77f07c589803b4d61bd00830b"
 }

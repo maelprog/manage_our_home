@@ -117,6 +117,10 @@ pub struct RecipeResponse {
     pub updated_at: DateTime<Utc>,
     /// What the recipe holds of the allergies the reader may see (#818).
     pub allergy_warning: AllergyWarning,
+    /// The publication of the library it was copied from (#907), while
+    /// that publication exists: `null` for a recipe of the family's own,
+    /// and once the publication is withdrawn.
+    pub library_recipe_id: Option<Uuid>,
 }
 
 /// The allergy warning of one recipe for the reader (#818).
@@ -144,6 +148,7 @@ struct RecipeRow {
     required_equipment: Vec<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    library_recipe_id: Option<Uuid>,
 }
 
 struct IngredientRow {
@@ -280,7 +285,7 @@ pub async fn create_recipe(
         r#"
         INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
         "#,
         group_id,
         auth.user_id,
@@ -315,6 +320,7 @@ pub async fn create_recipe(
             created_at: recipe.created_at,
             updated_at: recipe.updated_at,
             allergy_warning,
+            library_recipe_id: recipe.library_recipe_id,
         }),
     ))
 }
@@ -358,7 +364,7 @@ pub(crate) async fn read_recipe(
 ) -> AppResult<Option<RecipeResponse>> {
     let Some(recipe) = sqlx::query_as!(
         RecipeRow,
-        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
            FROM recipes WHERE id = $1 AND group_id = $2"#,
         recipe_id,
         group_id,
@@ -385,6 +391,7 @@ pub(crate) async fn read_recipe(
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
         allergy_warning,
+        library_recipe_id: recipe.library_recipe_id,
     }))
 }
 
@@ -412,7 +419,7 @@ pub async fn list_recipes(
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
         r#"
-        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
         FROM recipes
         WHERE group_id = $1
         ORDER BY name
@@ -454,6 +461,7 @@ pub async fn list_recipes(
             created_at: r.created_at,
             updated_at: r.updated_at,
             allergy_warning: warnings.remove(&r.id).unwrap_or_default(),
+            library_recipe_id: r.library_recipe_id,
         })
         .collect();
 
@@ -552,7 +560,7 @@ pub async fn update_recipe(
             required_equipment = COALESCE($7, required_equipment),
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
         "#,
         recipe_id,
         group_id,
@@ -593,6 +601,7 @@ pub async fn update_recipe(
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
         allergy_warning,
+        library_recipe_id: recipe.library_recipe_id,
     }))
 }
 
