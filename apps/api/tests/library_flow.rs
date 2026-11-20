@@ -8,6 +8,10 @@
 //! `test`), under the same policies.
 //!
 //! Issue #907: copying a publication into a family, through the router.
+//!
+//! Issue #908: reporting a publication, its moderation by the superadmin,
+//! and the publications that end with a member's departure or by the
+//! family owner's hand.
 
 mod common;
 
@@ -922,12 +926,14 @@ async fn seed_publications(
                 .await
                 .unwrap();
         sqlx::query(
-            "INSERT INTO library_recipe_publishers (library_recipe_id, user_id, source_recipe_id)
-             VALUES ($1, $2, $3)",
+            "INSERT INTO library_recipe_publishers
+                 (library_recipe_id, user_id, source_recipe_id, group_id)
+             VALUES ($1, $2, $3, $4)",
         )
         .bind(id)
         .bind(user)
         .bind(recipe)
+        .bind(group)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -995,6 +1001,20 @@ async fn a_family_holds_fifty_publications_at_most(db: PgPool) {
         .unwrap();
     let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
     assert_status(&res, StatusCode::CREATED);
+}
+
+/// At the quota, a recipe another member already published is refused as
+/// theirs, 409 `published_by_another_member`, not for the quota: the
+/// member learns what would still refuse it below 50. Nothing written.
+#[sqlx::test]
+async fn at_the_quota_another_members_recipe_is_refused_as_theirs(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "qorder").await;
+    let seeded = seed_publications(&db, f.id, f.admin.id, 50, "Plat").await;
+    let res = publish_call(&router, f.id, seeded[0], &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"], "published_by_another_member");
+    assert_eq!(library_rows(&db).await, 50);
 }
 
 /// Search by name and by ingredient, case aside and literally; pages of 20
@@ -1442,19 +1462,16 @@ async fn a_copy_is_the_familys_own_recipe(db: PgPool) {
     assert_status(&res, StatusCode::NOT_FOUND);
 }
 
-/// AC: a publication withdrawn by moderation (the superadmin, through the
-/// admin pool, which bypasses RLS — here, the harness's own role) can no
-/// longer be copied: 404, nothing written.
+/// AC: a publication withdrawn by moderation (#908: the superadmin's
+/// route) can no longer be copied: 404, nothing written.
 #[sqlx::test]
 async fn a_withdrawn_publication_cannot_be_copied(db: PgPool) {
     let router = test_router(db.clone());
     let author = fam(&db, "mod-src").await;
     let (_, published) = published_leek_tart(&router, &author).await;
-    sqlx::query("DELETE FROM library_recipes WHERE id = $1::uuid")
-        .bind(&published)
-        .execute(&db)
-        .await
-        .unwrap();
+    let admin = superadmin(&db, "mod-admin").await;
+    let res = withdraw_call(&router, &published, &admin).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
     let f = fam(&db, "mod").await;
     let res = copy_call(&router, f.id, &published, &f.owner.cookie).await;
     assert_status(&res, StatusCode::NOT_FOUND);
@@ -1546,4 +1563,809 @@ async fn copies_count_with_the_reads(db: PgPool) {
     assert_eq!(recipes_of(&db, f.id).await, 0);
     let res = copy_call(&router, f.id, &published, &f.admin.cookie).await;
     assert_status(&res, StatusCode::CREATED);
+}
+
+// --- #908: reports, moderation, departures -----------------------------------
+
+/// A superadmin's cookie, its session just opened as a login opens one —
+/// the full lifetime ahead, which the `/admin/*` freshness reads.
+async fn superadmin(db: &PgPool, prefix: &str) -> String {
+    let (id, _) = api_user(db, &format!("{prefix}-moderator@example.test")).await;
+    sqlx::query("UPDATE users SET is_superadmin = true WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await
+        .unwrap();
+    let token = manage_our_home::auth::token::new_token();
+    sqlx::query(
+        "INSERT INTO sessions (user_id, expires_at, token_hash)
+         VALUES ($1, now() + make_interval(days => $2), $3)",
+    )
+    .bind(id)
+    .bind(manage_our_home::auth::session::SESSION_TTL_DAYS as i32)
+    .bind(&token.hash()[..])
+    .execute(db)
+    .await
+    .unwrap();
+    format!("session_id={}", token.value())
+}
+
+async fn report_call(
+    router: &axum::Router,
+    library_id: &str,
+    cookie: &str,
+    body: Option<Value>,
+) -> axum::http::Response<axum::body::Body> {
+    call(
+        router,
+        Method::POST,
+        &format!("/library/recipes/{library_id}/report"),
+        Some(cookie),
+        body,
+    )
+    .await
+}
+
+async fn withdraw_call(
+    router: &axum::Router,
+    library_id: &str,
+    cookie: &str,
+) -> axum::http::Response<axum::body::Body> {
+    call(
+        router,
+        Method::POST,
+        &format!("/admin/library/recipes/{library_id}/withdraw"),
+        Some(cookie),
+        None,
+    )
+    .await
+}
+
+/// `(reason, comment, resolution)` of the reports on `library_id`, oldest
+/// first.
+async fn reports_on(
+    db: &PgPool,
+    library_id: &str,
+) -> Vec<(String, Option<String>, Option<String>)> {
+    sqlx::query_as(
+        "SELECT reason, comment, resolution FROM library_reports
+         WHERE library_recipe_id = $1::uuid ORDER BY created_at, id",
+    )
+    .bind(library_id)
+    .fetch_all(db)
+    .await
+    .unwrap()
+}
+
+async fn audit_actions(db: &PgPool, target: &str) -> Vec<String> {
+    sqlx::query_scalar("SELECT action FROM audit_log WHERE target_id = $1 ORDER BY occurred_at, id")
+        .bind(target)
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// AC: a report takes a reason from the closed list and a comment of 500
+/// characters at most; the same user reporting the same publication again
+/// is answered as the first time and changes nothing; an unknown
+/// publication is a 404.
+#[sqlx::test]
+async fn a_report_is_made_once_per_user(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "rep-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let (_, reader) = api_user(&db, "rep-reader@example.test").await;
+
+    for (body, code) in [
+        (None, "invalid_reason"),
+        (Some(json!({})), "invalid_reason"),
+        (Some(json!({"reason": "abuse"})), "invalid_reason"),
+        (Some(json!({"reason": "Spam"})), "invalid_reason"),
+        (
+            Some(json!({"reason": "spam", "comment": "x".repeat(501)})),
+            "comment_too_long",
+        ),
+    ] {
+        let res = report_call(&router, &published, &reader, body.clone()).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], code, "{body:?}");
+    }
+    assert_eq!(reports_on(&db, &published).await, vec![]);
+
+    let res = report_call(
+        &router,
+        &published,
+        &reader,
+        Some(json!({"reason": "copyright", "comment": "  Recopiée d'un livre.  "})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = report_call(
+        &router,
+        &published,
+        &reader,
+        Some(json!({"reason": "spam", "comment": "é".repeat(500)})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        reports_on(&db, &published).await,
+        vec![(
+            "copyright".to_string(),
+            Some("Recopiée d'un livre.".to_string()),
+            None
+        )]
+    );
+
+    // Another user's report is their own.
+    let res = report_call(
+        &router,
+        &published,
+        &author.standard.cookie,
+        Some(json!({"reason": "other", "comment": "   "})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(reports_on(&db, &published).await.len(), 2);
+    assert_eq!(reports_on(&db, &published).await[1].1, None);
+
+    let res = report_call(
+        &router,
+        &Uuid::new_v4().to_string(),
+        &reader,
+        Some(json!({"reason": "spam"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+}
+
+/// AC: the reporter is revealed to no one. Under the runtime policies, the
+/// publisher reads no report of their publication and their export holds
+/// none; the reporter reads and exports their own; the superadmin's list
+/// names no reporter.
+#[sqlx::test]
+async fn the_reporter_is_revealed_to_no_one(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "anon-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let (reader_id, reader) = api_user(&db, "anon-reader@example.test").await;
+    let res = report_call(
+        &router,
+        &published,
+        &reader,
+        Some(json!({"reason": "hateful", "comment": "Propos injurieux."})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+
+    let role = restricted_role(&db).await;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON library_reports TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    for (user, expected) in [(author.owner.id, 0_i64), (reader_id, 1)] {
+        let mut tx = as_user(&db, &role, Some((user, author.id))).await;
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM library_reports")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(n, expected, "{user}");
+        // Nor does the runtime role close or delete a report.
+        let touched = sqlx::query("UPDATE library_reports SET resolution = 'dismissed'")
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .rows_affected()
+            + sqlx::query("DELETE FROM library_reports")
+                .execute(&mut *tx)
+                .await
+                .unwrap()
+                .rows_affected();
+        assert_eq!(touched, 0, "{user}");
+    }
+
+    let (status, export) = get(&router, "/account/export", &author.owner.cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(export["library_reports"], json!([]));
+    assert!(!export.to_string().contains("Propos injurieux"));
+    let (status, export) = get(&router, "/account/export", &reader).await;
+    assert_eq!(status, StatusCode::OK);
+    let mine = export["library_reports"].as_array().unwrap();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0]["reason"], "hateful");
+    assert_eq!(mine[0]["library_recipe_id"], published.as_str());
+
+    let admin = superadmin(&db, "anon-admin").await;
+    let (status, list) = get(&router, "/admin/library/reports", &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    let reports = list["reports"].as_array().unwrap();
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["library_recipe_name"], "Tarte aux poireaux");
+    assert_eq!(reports[0]["comment"], "Propos injurieux.");
+    assert_eq!(reports[0]["resolution"], Value::Null);
+    let mut keys: Vec<&String> = reports[0].as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "closed_at",
+            "comment",
+            "created_at",
+            "id",
+            "library_recipe_id",
+            "library_recipe_name",
+            "reason",
+            "resolution"
+        ]
+    );
+    assert!(!list.to_string().contains(&reader_id.to_string()));
+}
+
+/// AC: a user who is not the superadmin is refused every
+/// `/admin/library/*` route, 403, and nothing changes.
+#[sqlx::test]
+async fn the_moderation_routes_are_the_superadmins(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "gate-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let res = report_call(
+        &router,
+        &published,
+        &author.admin.cookie,
+        Some(json!({"reason": "spam"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let report: Uuid = sqlx::query_scalar("SELECT id FROM library_reports")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+
+    for cookie in [&author.owner.cookie, &author.admin.cookie] {
+        for (method, uri) in [
+            (Method::GET, "/admin/library/reports".to_string()),
+            (
+                Method::POST,
+                format!("/admin/library/reports/{report}/dismiss"),
+            ),
+            (
+                Method::POST,
+                format!("/admin/library/recipes/{published}/withdraw"),
+            ),
+            (
+                Method::DELETE,
+                format!("/admin/library/recipes/{published}/withdrawal"),
+            ),
+        ] {
+            let res = call(&router, method.clone(), &uri, Some(cookie), None).await;
+            assert_status(&res, StatusCode::FORBIDDEN);
+        }
+    }
+    let res = call(&router, Method::GET, "/admin/library/reports", None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    assert_eq!(library_rows(&db).await, 1);
+    assert_eq!(
+        reports_on(&db, &published).await,
+        vec![("spam".to_string(), None, None)]
+    );
+}
+
+/// AC: dismissing a report closes it, the publication left in the library;
+/// a report closed already, or unknown, is a 404. Traced in `audit_log`.
+#[sqlx::test]
+async fn a_dismissed_report_leaves_the_publication(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "dis-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let (_, reader) = api_user(&db, "dis-reader@example.test").await;
+    let res = report_call(
+        &router,
+        &published,
+        &reader,
+        Some(json!({"reason": "spam"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let report: Uuid = sqlx::query_scalar("SELECT id FROM library_reports")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let admin = superadmin(&db, "dis-admin").await;
+    let uri = format!("/admin/library/reports/{report}/dismiss");
+
+    let res = call(&router, Method::POST, &uri, Some(&admin), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(
+        reports_on(&db, &published).await,
+        vec![("spam".to_string(), None, Some("dismissed".to_string()))]
+    );
+    assert_eq!(library_rows(&db).await, 1);
+    let (status, _) = get(&router, &format!("/library/recipes/{published}"), &reader).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        audit_actions(&db, &report.to_string()).await,
+        vec!["admin.library.report.dismiss"]
+    );
+
+    let res = call(&router, Method::POST, &uri, Some(&admin), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/admin/library/reports/{}/dismiss", Uuid::new_v4()),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    // Reporting again changes nothing: the closed report stands.
+    let res = report_call(
+        &router,
+        &published,
+        &reader,
+        Some(json!({"reason": "other"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(reports_on(&db, &published).await.len(), 1);
+}
+
+/// AC: withdrawing a publication takes it out of the library — the list,
+/// the detail and the copy — and closes its open reports; the copies
+/// families made stay. Its source recipe cannot be published again, by
+/// any member, until the superadmin lifts the block. Each step traced in
+/// `audit_log`.
+#[sqlx::test]
+async fn a_withdrawn_publication_leaves_the_library_and_blocks_its_recipe(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "wd-src").await;
+    let (recipe, published) = published_leek_tart(&router, &author).await;
+    let other = fam(&db, "wd").await;
+    let res = copy_call(&router, other.id, &published, &other.owner.cookie).await;
+    assert_status(&res, StatusCode::CREATED);
+    let copy = json_body(res).await["id"].as_str().unwrap().to_string();
+    for cookie in [&other.owner.cookie, &other.admin.cookie] {
+        let res = report_call(
+            &router,
+            &published,
+            cookie,
+            Some(json!({"reason": "illegal"})),
+        )
+        .await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+    }
+    let admin = superadmin(&db, "wd-admin").await;
+
+    let res = withdraw_call(&router, &published, &admin).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (_, list) = get(&router, "/library/recipes", &other.standard.cookie).await;
+    assert_eq!(list["recipes"], json!([]));
+    let (status, _) = get(
+        &router,
+        &format!("/library/recipes/{published}"),
+        &other.standard.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let third = fam(&db, "wd-third").await;
+    let res = copy_call(&router, third.id, &published, &third.owner.cookie).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(recipes_of(&db, third.id).await, 0);
+    assert_eq!(library_rows(&db).await, 0);
+    // The copy stays, its link dropped.
+    let (status, _) = get(
+        &router,
+        &format!("/groups/{}/recipes/{copy}", other.id),
+        &other.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(library_link(&db, &copy).await, None);
+    assert_eq!(
+        reports_on(&db, &published)
+            .await
+            .into_iter()
+            .map(|r| r.2)
+            .collect::<Vec<_>>(),
+        vec![Some("withdrawn".to_string()), Some("withdrawn".to_string())]
+    );
+    // Reporting what is gone is a 404.
+    let res = report_call(
+        &router,
+        &published,
+        &third.owner.cookie,
+        Some(json!({"reason": "spam"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    // Blocked, whoever publishes it.
+    for cookie in [&author.owner.cookie, &author.admin.cookie] {
+        let res = publish_call(&router, author.id, recipe, cookie, consent()).await;
+        assert_status(&res, StatusCode::CONFLICT);
+        assert_eq!(json_body(res).await["error"], "withdrawn_by_moderation");
+    }
+    assert_eq!(library_rows(&db).await, 0);
+    // Withdrawn already: nothing left to withdraw.
+    let res = withdraw_call(&router, &published, &admin).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    let lift = format!("/admin/library/recipes/{published}/withdrawal");
+    let res = call(&router, Method::DELETE, &lift, Some(&admin), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = call(&router, Method::DELETE, &lift, Some(&admin), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let res = publish_call(&router, author.id, recipe, &author.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    assert_eq!(
+        audit_actions(&db, &published).await,
+        vec!["admin.library.withdraw", "admin.library.withdrawal.lift"]
+    );
+    let metadata: Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'admin.library.withdraw'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        metadata,
+        json!({"reports_closed": 2, "source_blocked": true})
+    );
+}
+
+/// The block is the family's to read, no one else's, and the runtime role
+/// does not lift it.
+#[sqlx::test]
+async fn a_block_is_read_by_its_family_alone(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "blk-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let admin = superadmin(&db, "blk-admin").await;
+    let res = withdraw_call(&router, &published, &admin).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let other = fam(&db, "blk").await;
+
+    let role = restricted_role(&db).await;
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON library_withdrawn_sources, recipes TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    for (user, group, expected) in [
+        (author.standard.id, author.id, 1_i64),
+        (other.owner.id, other.id, 0),
+    ] {
+        let mut tx = as_user(&db, &role, Some((user, group))).await;
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM library_withdrawn_sources")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(n, expected, "{user} in {group}");
+        let lifted = sqlx::query("DELETE FROM library_withdrawn_sources")
+            .execute(&mut *tx)
+            .await
+            .unwrap()
+            .rows_affected();
+        assert_eq!(lifted, 0);
+    }
+}
+
+/// Reports are counted per user: 10 an hour, a repeated one included.
+#[sqlx::test]
+async fn reports_are_rate_limited(db: PgPool) {
+    let router = test_router(db.clone());
+    let author = fam(&db, "rrate-src").await;
+    let (_, published) = published_leek_tart(&router, &author).await;
+    let (_, reader) = api_user(&db, "rrate-reader@example.test").await;
+    for i in 0..10 {
+        let res = report_call(
+            &router,
+            &published,
+            &reader,
+            Some(json!({"reason": "spam"})),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::NO_CONTENT, "report {i}");
+    }
+    let res = report_call(
+        &router,
+        &published,
+        &reader,
+        Some(json!({"reason": "spam"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::TOO_MANY_REQUESTS);
+    let res = report_call(
+        &router,
+        &published,
+        &author.owner.cookie,
+        Some(json!({"reason": "spam"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+}
+
+/// User's decision of 2026-11-20: a member's publications go when they
+/// leave the family or are removed from it — the copies stay, the quota is
+/// freed. The other members' publications stay.
+#[sqlx::test]
+async fn a_departing_members_publications_leave_the_library(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "dep").await;
+    let mut published = Vec::new();
+    for m in [&f.owner, &f.admin, &f.standard] {
+        // The standard member publishes the recipe they wrote.
+        let recipe = new_recipe(&router, f.id, &m.cookie, leek_tart()).await;
+        let res = publish_call(&router, f.id, recipe, &m.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        published.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+    let other = fam(&db, "dep-copy").await;
+    let res = copy_call(&router, other.id, &published[1], &other.owner.cookie).await;
+    assert_status(&res, StatusCode::CREATED);
+    let copy = json_body(res).await["id"].as_str().unwrap().to_string();
+    // The admin also publishes in a family of their own: that one stays.
+    let (own_group, own_recipe) = family_with_recipe(&db, f.admin.id, "Soupe").await;
+    let res = publish_call(&router, own_group, own_recipe, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/members/{}", f.id, f.admin.id),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (status, _) = get(
+        &router,
+        &format!("/library/recipes/{}", published[1]),
+        &other.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "removed: theirs goes");
+    assert_eq!(library_rows(&db).await, 3, "the others' stay");
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{}/leave", f.id),
+        Some(&f.standard.cookie),
+        Some(json!({})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+
+    let (_, list) = get(&router, "/library/recipes", &other.owner.cookie).await;
+    let names: Vec<&str> = list["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 2);
+    assert!(names.contains(&published[0].as_str()));
+    assert!(!names.contains(&published[1].as_str()));
+    assert!(!names.contains(&published[2].as_str()));
+    assert_eq!(library_rows(&db).await, 2);
+    assert_eq!(library_link(&db, &copy).await, None);
+    let (status, _) = get(
+        &router,
+        &format!("/groups/{}/recipes/{copy}", other.id),
+        &other.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The family's count holds the owner's alone.
+    let role = restricted_role(&db).await;
+    let mut tx = as_user(&db, &role, Some((f.owner.id, f.id))).await;
+    let n: i64 = sqlx::query_scalar("SELECT group_library_publication_count($1)")
+        .bind(f.id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+}
+
+/// User's decision of 2026-11-20: the family's owner withdraws any
+/// publication of one of its recipes, whoever published it — another
+/// member, or a former one. No one else withdraws another's.
+#[sqlx::test]
+async fn the_owner_withdraws_any_publication_of_the_family(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "own").await;
+    let recipe = new_recipe(&router, f.id, &f.admin.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let mine = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, mine, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+
+    let uri = |r: Uuid| format!("/groups/{}/recipes/{r}/publish", f.id);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &uri(recipe),
+        Some(&f.standard.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    // The admin withdraws not the owner's.
+    let res = call(
+        &router,
+        Method::DELETE,
+        &uri(mine),
+        Some(&f.admin.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(library_rows(&db).await, 2);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &uri(recipe),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(library_rows(&db).await, 1);
+
+    // A former member's publication, left by a departure that predates the
+    // automatic withdrawal: written straight to the tables.
+    let (gone, _) = api_user(&db, "own-gone@example.test").await;
+    let seeded = seed_publications(&db, f.id, gone, 1, "Ancien").await;
+    assert_eq!(library_rows(&db).await, 2);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &uri(seeded[0]),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(library_rows(&db).await, 1);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &uri(seeded[0]),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+
+    // The functions of 0068, under the runtime policies: the owner's only
+    // for the owner of `app.group_id`, the departure's only for what no
+    // member stands behind.
+    let again = new_recipe(&router, f.id, &f.admin.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, again, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let role = restricted_role(&db).await;
+    let other = fam(&db, "own-other").await;
+    for (user, scope) in [
+        (f.admin.id, f.id),
+        (f.standard.id, f.id),
+        (other.owner.id, other.id),
+        (f.owner.id, other.id),
+    ] {
+        let mut tx = as_user(&db, &role, Some((user, scope))).await;
+        let n: i64 = sqlx::query_scalar("SELECT group_library_unpublish_as_owner($1, $2, NULL)")
+            .bind(f.id)
+            .bind(again)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "{user} in {scope}");
+        let n: i64 = sqlx::query_scalar("SELECT group_library_unpublish_departed($1)")
+            .bind(f.id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "{user} in {scope}");
+    }
+    assert_eq!(library_rows(&db).await, 2);
+}
+
+/// User's decision of 2026-11-20: the publication keeps its family. Its
+/// source recipe deleted, the owner still withdraws it — by its own id —
+/// and its publisher's departure still takes it.
+#[sqlx::test]
+async fn a_publication_follows_its_family_once_its_source_is_deleted(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "orph").await;
+    let mut published = Vec::new();
+    for m in [&f.admin, &f.standard, &f.standard] {
+        let recipe = new_recipe(&router, f.id, &m.cookie, leek_tart()).await;
+        let res = publish_call(&router, f.id, recipe, &m.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        let id = json_body(res).await["id"].as_str().unwrap().to_string();
+        let res = call(
+            &router,
+            Method::DELETE,
+            &format!("/groups/{}/recipes/{recipe}", f.id),
+            Some(&m.cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+        published.push((recipe, id));
+    }
+    assert_eq!(
+        library_rows(&db).await,
+        3,
+        "the publications outlive their source"
+    );
+
+    // By its source recipe, gone: nothing to name it by.
+    let (recipe, _) = &published[1];
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/recipes/{recipe}/publish", f.id),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    // By its own id: not another member's, nor from another family.
+    let by_id = |group: Uuid, id: &str| format!("/groups/{group}/library/recipes/{id}");
+    let other = fam(&db, "orph-other").await;
+    for (group, cookie) in [(f.id, &f.admin.cookie), (other.id, &other.owner.cookie)] {
+        let res = call(
+            &router,
+            Method::DELETE,
+            &by_id(group, &published[1].1),
+            Some(cookie),
+            None,
+        )
+        .await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+    assert_eq!(library_rows(&db).await, 3);
+    // The owner withdraws a member's; the publisher their own.
+    let res = call(
+        &router,
+        Method::DELETE,
+        &by_id(f.id, &published[1].1),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &by_id(f.id, &published[2].1),
+        Some(&f.standard.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(library_rows(&db).await, 1);
+
+    // The admin leaves: their publication goes, its source gone or not.
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{}/leave", f.id),
+        Some(&f.admin.cookie),
+        Some(json!({})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(library_rows(&db).await, 0);
+    let (status, _) = get(
+        &router,
+        &format!("/library/recipes/{}", published[0].1),
+        &other.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

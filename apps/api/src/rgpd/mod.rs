@@ -802,6 +802,16 @@ pub async fn export_account(
     )
     .fetch_all(&mut *library_tx)
     .await?;
+    // The reports the caller made on publications (#908), readable by
+    // their reporter alone (0068).
+    let reports = sqlx::query!(
+        r#"SELECT id, library_recipe_id, reason, comment, created_at, resolution, closed_at
+           FROM library_reports WHERE reporter_id = $1
+           ORDER BY created_at, id"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *library_tx)
+    .await?;
     let library_ingredients = sqlx::query!(
         r#"SELECT i.library_recipe_id, i.name, i.quantity, i.unit, i.is_optional,
                   i.seasonal_months
@@ -814,6 +824,16 @@ pub async fn export_account(
     .fetch_all(&mut *library_tx)
     .await?;
     library_tx.commit().await?;
+    c.library_reports = reports
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.id, "library_recipe_id": r.library_recipe_id, "reason": r.reason,
+                "comment": r.comment, "created_at": r.created_at,
+                "resolution": r.resolution, "closed_at": r.closed_at,
+            })
+        })
+        .collect();
     c.library_recipes = export::nest_ingredients(
         publications
             .into_iter()

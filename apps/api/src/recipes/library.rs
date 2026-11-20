@@ -10,7 +10,20 @@
 //!   `recipes_edit` threshold of #866). Publishing again replaces the
 //!   snapshot, in place.
 //! - `DELETE` on the same path withdraws the caller's publication of that
-//!   recipe.
+//!   recipe; the family's owner withdraws it whoever published it, a former
+//!   member included (#908). `DELETE /groups/{id}/library/recipes/{library_id}`
+//!   does the same by the publication's id, for one whose source recipe was
+//!   deleted since. A member's publications taken from the family are
+//!   withdrawn when they leave it or are removed from it, its source recipe
+//!   deleted since or not: the publication keeps its family
+//!   (`library_recipe_publishers.group_id`; `groups::leave_group`,
+//!   `groups::remove_member`, #908). Only a family deleted since leaves
+//!   none to look it up by.
+//! - `POST /library/recipes/{id}/report` and the superadmin's
+//!   `/admin/library/*` routes report a publication and moderate it
+//!   (`recipes::library_moderation`, #908). A recipe whose publication the
+//!   superadmin withdrew is refused 409 `withdrawn_by_moderation` until the
+//!   block is lifted.
 //! - `GET /library/recipes` (search by name and by ingredient, keyset
 //!   pages) and `GET /library/recipes/{id}` answer what was published and
 //!   nothing about who published it: no family, no person, no source recipe.
@@ -31,9 +44,9 @@
 //!
 //! Limits (user's decisions of 2026-11-20): at most [`FAMILY_QUOTA`]
 //! publications per family, 409 `library_quota_exceeded` past it; reads at
-//! [`READ_RATE`] and publications at [`PUBLISH_RATE`] per user, 429 past
-//! them (`rate_limit::LIMITS`); a search term of [`SEARCH_MAX_CHARS`]
-//! characters at most, 400 `search_too_long` past it; pages of
+//! [`READ_RATE`], publications at [`PUBLISH_RATE`] and reports at
+//! [`REPORT_RATE`] per user, 429 past them (`rate_limit::LIMITS`); a search
+//! term of [`SEARCH_MAX_CHARS`] characters at most, 400 `search_too_long` past it; pages of
 //! [`PAGE_DEFAULT`], [`PAGE_MAX`] at most.
 
 use std::time::Duration;
@@ -92,6 +105,15 @@ pub const READ_KIND: &str = "library_read";
 /// `rate_limit_log.kind` of [`PUBLISH_RATE`].
 pub const PUBLISH_KIND: &str = "library_publish";
 
+/// Reports of publications per user (#908), a repeated one included.
+pub const REPORT_RATE: SlidingWindow = SlidingWindow {
+    limit: 10,
+    window: Duration::from_secs(3600),
+};
+
+/// `rate_limit_log.kind` of [`REPORT_RATE`].
+pub const REPORT_KIND: &str = "library_report";
+
 /// The bounds of `library_recipes` and `library_ingredients` (0066), which
 /// `recipes` does not have: a recipe past them is refused with a 400 here
 /// rather than with a failed `CHECK`.
@@ -133,6 +155,13 @@ pub(crate) fn publish_bar(
         return Err(bad("consent_required"));
     }
     Ok(())
+}
+
+/// Whether a member of role `actor_role` withdraws a publication of a
+/// family recipe that someone else published, a former member included
+/// (user's decision of 2026-11-20): the owner alone.
+pub(crate) fn unpublishes_for_the_family(actor_role: &str) -> bool {
+    actor_role == "owner"
 }
 
 /// Whether a family holding `published` publications may publish: always
@@ -353,13 +382,14 @@ pub(crate) fn snapshot(
     })
 }
 
-/// [`READ_RATE`] and [`PUBLISH_RATE`], counted per user in
+/// [`READ_RATE`], [`PUBLISH_RATE`] and [`REPORT_RATE`], counted per user in
 /// `rate_limit_log` (#428): every replica counts against the same budget.
 /// The user's id is stored as a keyed pseudonym.
 #[derive(Debug, Clone)]
 pub struct LibraryThrottle {
     read: SlidingLimiter,
     publish: SlidingLimiter,
+    pub(crate) report: SlidingLimiter,
 }
 
 impl LibraryThrottle {
@@ -367,11 +397,17 @@ impl LibraryThrottle {
     pub fn new(db: PgPool, pseudonyms: Pseudonyms) -> Self {
         Self {
             read: SlidingLimiter::new(db.clone(), pseudonyms.clone(), READ_KIND, READ_RATE),
-            publish: SlidingLimiter::new(db, pseudonyms, PUBLISH_KIND, PUBLISH_RATE),
+            publish: SlidingLimiter::new(
+                db.clone(),
+                pseudonyms.clone(),
+                PUBLISH_KIND,
+                PUBLISH_RATE,
+            ),
+            report: SlidingLimiter::new(db, pseudonyms, REPORT_KIND, REPORT_RATE),
         }
     }
 
-    async fn admit(limiter: &SlidingLimiter, user: Uuid) -> AppResult<()> {
+    pub(crate) async fn admit(limiter: &SlidingLimiter, user: Uuid) -> AppResult<()> {
         if limiter.admit(user.as_bytes()).await? {
             Ok(())
         } else {
@@ -511,7 +547,7 @@ async fn fetch_publication(
         (status = 200, description = "Published again: the snapshot replaced", body = LibraryRecipeResponse),
         (status = 400, description = "`consent_required` (absent or not `true`, or a body that is not JSON); the recipe past a bound of the library: `name_required`, `name_too_long`, `instructions_too_long`, `invalid_servings`, `invalid_duration`, `too_many_ingredients`, `ingredient_name_required`, `ingredient_name_too_long`, `ingredient_unit_too_long`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no such recipe in the family", body = manage_our_home_shared::dto::auth::ErrorResponse),
-        (status = 409, description = "`library_quota_exceeded`: the family holds 50 publications; `published_by_another_member`: another member already published this recipe", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`withdrawn_by_moderation`: the superadmin withdrew this recipe's publication and has not lifted the block; `published_by_another_member`: another member already published this recipe; `library_quota_exceeded`: the family holds 50 publications", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 429, description = "`too_many_attempts`: 10 publications per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
@@ -549,6 +585,18 @@ pub async fn publish_recipe(
         source.created_by == auth.user_id,
         consent,
     )?;
+    // Withdrawn by moderation (#908): not again until the superadmin lifts
+    // the block. The family reads its own recipes' blocks (0068).
+    let withdrawn = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM library_withdrawn_sources
+                          WHERE source_recipe_id = $1) AS "withdrawn!""#,
+        recipe_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if withdrawn {
+        return Err(AppError::Conflict("withdrawn_by_moderation".into()));
+    }
 
     let ingredients = sqlx::query_as!(
         SourceIngredient,
@@ -583,15 +631,6 @@ pub async fn publish_recipe(
     )
     .fetch_optional(&mut *tx)
     .await?;
-    let published = sqlx::query_scalar!(
-        r#"SELECT group_library_publication_count($1) AS "n!""#,
-        group_id
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    if !within_quota(published, existing.is_some()) {
-        return Err(AppError::Conflict("library_quota_exceeded".into()));
-    }
 
     let id = match existing {
         Some(id) => {
@@ -628,11 +667,13 @@ pub async fn publish_recipe(
             .fetch_one(&mut *tx)
             .await?;
             sqlx::query!(
-                r#"INSERT INTO library_recipe_publishers (library_recipe_id, user_id, source_recipe_id)
-                   VALUES ($1, $2, $3)"#,
+                r#"INSERT INTO library_recipe_publishers
+                       (library_recipe_id, user_id, source_recipe_id, group_id)
+                   VALUES ($1, $2, $3, $4)"#,
                 id,
                 auth.user_id,
                 recipe_id,
+                group_id,
             )
             .execute(&mut *tx)
             .await
@@ -644,6 +685,19 @@ pub async fn publish_recipe(
                 }
                 e => e.into(),
             })?;
+            // Counted once written, so that a recipe another member
+            // published is refused as such rather than for the quota; this
+            // one is in the count, the family held one fewer before. A
+            // refusal rolls the writes back.
+            let published = sqlx::query_scalar!(
+                r#"SELECT group_library_publication_count($1) AS "n!""#,
+                group_id
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            if !within_quota(published - 1, false) {
+                return Err(AppError::Conflict("library_quota_exceeded".into()));
+            }
             id
         }
     };
@@ -687,8 +741,8 @@ pub async fn publish_recipe(
         ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
     ),
     responses(
-        (status = 204, description = "The caller's publication of the recipe withdrawn"),
-        (status = 404, description = "`not_found`: no such recipe in the family, or the caller has not published it", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 204, description = "The publication of the recipe withdrawn: the caller's own, or, for the family's owner, whoever published it"),
+        (status = 404, description = "`not_found`: no such recipe in the family, or no publication of it the caller may withdraw", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
     security(("session_cookie" = [])),
@@ -699,7 +753,7 @@ pub async fn unpublish_recipe(
     Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
     sqlx::query_scalar!(
         "SELECT id FROM recipes WHERE id = $1 AND group_id = $2",
         recipe_id,
@@ -708,24 +762,102 @@ pub async fn unpublish_recipe(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(AppError::NotFound)?;
-    // Its publisher withdraws it, whatever their role now: the policies of
-    // 0066 let no one else. The ingredients and the publisher row go with
-    // it (`ON DELETE CASCADE`).
-    let withdrawn = sqlx::query!(
-        r#"DELETE FROM library_recipes WHERE id = (
-               SELECT library_recipe_id FROM library_recipe_publishers
-               WHERE source_recipe_id = $1 AND user_id = $2)"#,
-        recipe_id,
+    let withdrawn = withdraw(
+        &mut tx,
+        group_id,
         auth.user_id,
+        &actor_role,
+        Some(recipe_id),
+        None,
     )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-    if withdrawn == 0 {
+    .await?;
+    if !withdrawn {
         return Err(AppError::NotFound);
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/groups/{id}/library/recipes/{library_id}",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("library_id" = uuid::Uuid, Path, description = "Publication id"),
+    ),
+    responses(
+        (status = 204, description = "The publication, taken from the family, withdrawn: the caller's own, or, for the family's owner, whoever published it — its source recipe deleted since or not"),
+        (status = 404, description = "`not_found`: no publication taken from the family the caller may withdraw", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn unpublish_library_recipe(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, library_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
+    let withdrawn = withdraw(
+        &mut tx,
+        group_id,
+        auth.user_id,
+        &actor_role,
+        None,
+        Some(library_id),
+    )
+    .await?;
+    if !withdrawn {
+        return Err(AppError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Withdraws the publication taken from `group_id`, named by its source
+/// recipe or by itself (the other `None`): the caller's own, or, for the
+/// family's owner, whoever's (#908). Whether one went.
+async fn withdraw(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    user_id: Uuid,
+    actor_role: &str,
+    recipe_id: Option<Uuid>,
+    library_id: Option<Uuid>,
+) -> AppResult<bool> {
+    // Its publisher withdraws it, whatever their role now: the policies of
+    // 0066 let no one else, the owner's function below aside. The
+    // ingredients and the publisher row go with it (`ON DELETE CASCADE`).
+    let withdrawn = sqlx::query!(
+        r#"DELETE FROM library_recipes WHERE id = (
+               SELECT library_recipe_id FROM library_recipe_publishers
+               WHERE (source_recipe_id = $1 OR library_recipe_id = $2)
+                 AND group_id = $3 AND user_id = $4)"#,
+        recipe_id,
+        library_id,
+        group_id,
+        user_id,
+    )
+    .execute(&mut **tx)
+    .await?
+    .rows_affected()
+        > 0;
+    if withdrawn || !unpublishes_for_the_family(actor_role) {
+        return Ok(withdrawn);
+    }
+    // The owner withdraws another member's, or a former member's (#908),
+    // through the function of 0068, which checks the role again.
+    let by_owner = sqlx::query_scalar!(
+        r#"SELECT group_library_unpublish_as_owner($1, $2, $3) AS "n!""#,
+        group_id,
+        recipe_id,
+        library_id,
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(by_owner > 0)
 }
 
 #[utoipa::path(
@@ -941,6 +1073,14 @@ mod tests {
                 None => assert!(got.is_ok(), "{role} under {min_role}, creator {creator}"),
                 Some(c) => assert_eq!(code(got), c, "{role} under {min_role}, creator {creator}"),
             }
+        }
+    }
+
+    #[test]
+    fn only_the_owner_withdraws_another_members_publication() {
+        assert!(unpublishes_for_the_family("owner"));
+        for role in ["admin", "standard", "", "Owner"] {
+            assert!(!unpublishes_for_the_family(role), "{role:?}");
         }
     }
 

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM library_withdrawn_sources\n                          WHERE source_recipe_id = $1) AS \"withdrawn!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "withdrawn!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "591fdd78739bcb4c0f4c040f40e067bc4326db1057f0147c175d4ecff2f0b2ca"
+}

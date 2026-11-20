@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM library_withdrawn_sources WHERE library_recipe_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b1991c9576e4046011e8415744fa9c6ff56f39421351821c164ce8025f927439"
+}

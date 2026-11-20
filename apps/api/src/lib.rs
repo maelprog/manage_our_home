@@ -499,6 +499,14 @@ pub fn build_router(state: AppState) -> Router {
             post(recipes::library::copy_library_recipe),
         )
         .route(
+            "/groups/{id}/library/recipes/{library_id}",
+            delete(recipes::library::unpublish_library_recipe),
+        )
+        .route(
+            "/library/recipes/{id}/report",
+            post(recipes::library_moderation::report_library_recipe),
+        )
+        .route(
             "/groups/{id}/recipes/{recipe_id}/meal-history",
             post(recipes::meal_history::log_meal),
         )
@@ -636,6 +644,22 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/admin/users/{id}/reactivation-request/refuse",
             post(user_admin::admin::refuse_reactivation),
+        )
+        .route(
+            "/admin/library/reports",
+            get(recipes::library_moderation::list_reports),
+        )
+        .route(
+            "/admin/library/reports/{id}/dismiss",
+            post(recipes::library_moderation::dismiss_report),
+        )
+        .route(
+            "/admin/library/recipes/{id}/withdraw",
+            post(recipes::library_moderation::withdraw_publication),
+        )
+        .route(
+            "/admin/library/recipes/{id}/withdrawal",
+            delete(recipes::library_moderation::lift_withdrawal),
         )
         .layer(CookieManagerLayer::new())
         .layer(axum::middleware::from_fn_with_state(

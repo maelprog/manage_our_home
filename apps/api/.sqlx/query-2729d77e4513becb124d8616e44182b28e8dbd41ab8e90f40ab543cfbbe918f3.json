@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM library_reports WHERE reporter_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2729d77e4513becb124d8616e44182b28e8dbd41ab8e90f40ab543cfbbe918f3"
+}

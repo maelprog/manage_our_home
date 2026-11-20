@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM library_recipes WHERE id = (\n               SELECT library_recipe_id FROM library_recipe_publishers\n               WHERE (source_recipe_id = $1 OR library_recipe_id = $2)\n                 AND group_id = $3 AND user_id = $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d19954976f1717363d37cb441c8d7acc6d3bf904149c94814056b1cc181f180"
+}

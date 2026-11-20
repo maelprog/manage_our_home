@@ -49,6 +49,8 @@ pub struct ExportCategories {
     /// The recipes the person published to the shared library (#905),
     /// each with its ingredients.
     pub library_recipes: Vec<Value>,
+    /// The reports the person made on publications of the library (#908).
+    pub library_reports: Vec<Value>,
 }
 
 /// Assembles the final export document from already-fetched, already-user-
@@ -87,6 +89,7 @@ pub fn build_export(profile: Value, categories: ExportCategories) -> Value {
         "allergies": categories.allergies,
         "dislikes": categories.dislikes,
         "library_recipes": categories.library_recipes,
+        "library_reports": categories.library_reports,
     })
 }
 
@@ -207,6 +210,7 @@ mod tests {
                 allergies: vec![json!({"id": "al2"})],
                 dislikes: vec![json!({"id": "di"})],
                 library_recipes: vec![json!({"id": "lr"})],
+                library_reports: vec![json!({"id": "lrr"})],
             },
         );
 
@@ -242,18 +246,19 @@ mod tests {
             ("allergies", "al2"),
             ("dislikes", "di"),
             ("library_recipes", "lr"),
+            ("library_reports", "lrr"),
         ] {
             assert_eq!(doc[key][0]["id"], id, "{key}");
         }
-        // The profile and the 30 categories, nothing else.
-        assert_eq!(doc.as_object().unwrap().len(), 31);
+        // The profile and the 31 categories, nothing else.
+        assert_eq!(doc.as_object().unwrap().len(), 32);
     }
 
     #[test]
     fn build_export_keeps_every_key_when_empty() {
         let doc = build_export(json!({"id": "u1"}), ExportCategories::default());
         let object = doc.as_object().unwrap();
-        assert_eq!(object.len(), 31);
+        assert_eq!(object.len(), 32);
         for (key, value) in object {
             if key != "profile" {
                 assert_eq!(value.as_array().map(Vec::len), Some(0), "{key}");

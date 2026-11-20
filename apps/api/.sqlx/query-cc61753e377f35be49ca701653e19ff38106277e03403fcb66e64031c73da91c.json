@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE library_reports SET resolution = 'withdrawn', closed_at = now()\n           WHERE library_recipe_id = $1 AND resolution IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cc61753e377f35be49ca701653e19ff38106277e03403fcb66e64031c73da91c"
+}
