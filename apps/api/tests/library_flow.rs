@@ -959,12 +959,21 @@ async fn a_family_holds_fifty_publications_at_most(db: PgPool) {
     assert_status(&res, StatusCode::CREATED);
 
     // The count is the family's members' alone, and of `app.group_id`:
-    // a number, under the runtime policies.
+    // a number, under the runtime policies. The standard member belongs to
+    // both families: scoped to one, they do not count the other.
+    sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'standard')")
+        .bind(other.id)
+        .bind(f.standard.id)
+        .execute(&db)
+        .await
+        .unwrap();
     let role = restricted_role(&db).await;
     for (user, scope, group, expected) in [
         (f.standard.id, f.id, f.id, 50_i64),
         (other.owner.id, f.id, f.id, 0),
+        (other.owner.id, other.id, f.id, 0),
         (f.standard.id, f.id, other.id, 0),
+        (f.standard.id, other.id, other.id, 1),
         (other.owner.id, other.id, other.id, 1),
     ] {
         let mut tx = as_user(&db, &role, Some((user, scope))).await;
@@ -1077,9 +1086,66 @@ async fn the_library_is_searched_and_paged(db: PgPool) {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
         assert_eq!(body["error"], "search_too_long");
     }
-    let (status, body) = get(&router, "/library/recipes?cursor=nope", &reader).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"], "invalid_cursor");
+    // A cursor chrono reads but `timestamptz` cannot hold: refused, not a
+    // database error.
+    let far = format!("-8000000000000000000.{}", Uuid::new_v4());
+    for query in ["cursor=nope".to_string(), format!("cursor={far}")] {
+        let (status, body) = get(&router, &format!("/library/recipes?{query}"), &reader).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"], "invalid_cursor");
+    }
+    for query in ["limit=-1", "limit=0", "limit=abc"] {
+        let (status, body) = get(&router, &format!("/library/recipes?{query}"), &reader).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"], "invalid_limit", "{query}");
+    }
+}
+
+/// Publications of one family arriving together at its quota: exactly the
+/// quota is published, the rest refused 409. Without the family's lock,
+/// they would all read the same count and all be written.
+#[sqlx::test]
+async fn simultaneous_publications_stop_at_the_quota(db: PgPool) {
+    const AT_ONCE: usize = 8;
+    const ROOM: usize = 3;
+    let router = common::test_router_sized(db.clone(), AT_ONCE as u32 + 2);
+    let f = fam(&db, "race").await;
+    seed_publications(&db, f.id, f.admin.id, 50 - ROOM, "Plat").await;
+    // Each publisher a member of their own recipe: no rate limit shared.
+    let mut publishers = Vec::new();
+    for i in 0..AT_ONCE {
+        let (id, cookie) = api_user(&db, &format!("race-{i}@example.test")).await;
+        sqlx::query(
+            "INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'standard')",
+        )
+        .bind(f.id)
+        .bind(id)
+        .execute(&db)
+        .await
+        .unwrap();
+        let recipe = new_recipe(&router, f.id, &cookie, json!({"name": format!("Race {i}")})).await;
+        publishers.push((recipe, cookie));
+    }
+
+    let statuses = futures::future::join_all(publishers.iter().map(|(recipe, cookie)| {
+        let router = router.clone();
+        async move {
+            publish_call(&router, f.id, *recipe, cookie, consent())
+                .await
+                .status()
+        }
+    }))
+    .await;
+    let created = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::CREATED)
+        .count();
+    let refused = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::CONFLICT)
+        .count();
+    assert_eq!((created, refused), (ROOM, AT_ONCE - ROOM), "{statuses:?}");
+    assert_eq!(library_rows(&db).await, 50);
 }
 
 /// 60 reads a minute per user and 10 publications, 429 past them; another

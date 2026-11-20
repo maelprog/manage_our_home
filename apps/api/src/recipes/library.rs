@@ -159,11 +159,33 @@ pub(crate) fn contains_pattern(term: &str) -> String {
     pattern
 }
 
-/// The page size served for `requested`: [`PAGE_DEFAULT`] when absent,
-/// between 1 and [`PAGE_MAX`] otherwise.
-pub(crate) fn page_size(requested: Option<u32>) -> i64 {
-    requested.map_or(PAGE_DEFAULT, |n| i64::from(n).clamp(1, PAGE_MAX))
+/// The page size served for `requested`: [`PAGE_DEFAULT`] when absent or
+/// empty, [`PAGE_MAX`] at most; 400 `invalid_limit` when it is no whole
+/// number of at least 1.
+///
+/// Read from the query string as text, so that a value that is no positive
+/// whole number gets the API's own 400 `invalid_limit` rather than the
+/// extractor's plain-text one. A run of digits too long for an integer is
+/// still a number, past the cap.
+pub(crate) fn page_size(requested: Option<&str>) -> AppResult<i64> {
+    let raw = match requested {
+        None | Some("") => return Ok(PAGE_DEFAULT),
+        Some(raw) => raw,
+    };
+    if !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad("invalid_limit"));
+    }
+    match raw.parse::<i64>() {
+        Ok(0) => Err(bad("invalid_limit")),
+        Ok(n) => Ok(n.min(PAGE_MAX)),
+        Err(_) => Ok(PAGE_MAX),
+    }
 }
+
+/// The latest instant a cursor may name, 9999-12-31T23:59:59.999999Z. A
+/// cursor is a `published_at`, which is never before 1970 nor after it;
+/// outside, chrono may still read the value where `timestamptz` cannot.
+const CURSOR_MAX_MICROS: i64 = 253_402_300_799_999_999;
 
 /// Where a page ends: the newest-first order is `(published_at, id)`
 /// descending, and the next page starts strictly after this pair. Sent to
@@ -185,6 +207,7 @@ impl Cursor {
         let published_at = micros
             .parse::<i64>()
             .ok()
+            .filter(|m| (0..=CURSOR_MAX_MICROS).contains(m))
             .and_then(DateTime::from_timestamp_micros)
             .ok_or_else(invalid)?;
         let id = Uuid::parse_str(id).map_err(|_| invalid())?;
@@ -411,9 +434,11 @@ pub struct LibraryQuery {
     pub ingredient: Option<String>,
     /// The `next_cursor` of the previous page (`invalid_cursor`).
     pub cursor: Option<String>,
-    /// Entries per page: 20 when absent, between 1 and 50 otherwise (a
-    /// larger value is served 50).
-    pub limit: Option<u32>,
+    /// Entries per page: 20 when absent, 50 at most (a larger value is
+    /// served 50). Anything but a whole number of at least 1 is refused
+    /// (`invalid_limit`).
+    #[param(value_type = Option<i64>, minimum = 1)]
+    pub limit: Option<String>,
 }
 
 struct LibraryRow {
@@ -700,7 +725,7 @@ pub async fn unpublish_recipe(
     params(LibraryQuery),
     responses(
         (status = 200, description = "One page of the library, newest first", body = LibraryPage),
-        (status = 400, description = "`search_too_long` or `invalid_cursor`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`search_too_long`, `invalid_cursor` or `invalid_limit`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 429, description = "`too_many_attempts`: 60 reads per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
     ),
@@ -714,7 +739,7 @@ pub async fn list_library(
     let name = search_term(query.q.as_deref())?.map(|t| contains_pattern(&t));
     let ingredient = search_term(query.ingredient.as_deref())?.map(|t| contains_pattern(&t));
     let after = query.cursor.as_deref().map(Cursor::parse).transpose()?;
-    let size = page_size(query.limit);
+    let size = page_size(query.limit.as_deref())?;
     LibraryThrottle::admit(&state.library_throttle.read, auth.user_id).await?;
 
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
@@ -878,13 +903,33 @@ mod tests {
 
     #[test]
     fn a_page_holds_20_by_default_and_50_at_most() {
-        assert_eq!(page_size(None), 20);
-        assert_eq!(page_size(Some(1)), 1);
-        assert_eq!(page_size(Some(35)), 35);
-        assert_eq!(page_size(Some(50)), 50);
-        assert_eq!(page_size(Some(51)), 50);
-        assert_eq!(page_size(Some(u32::MAX)), 50);
-        assert_eq!(page_size(Some(0)), 1);
+        assert_eq!(page_size(None).unwrap(), 20);
+        assert_eq!(page_size(Some("")).unwrap(), 20);
+        assert_eq!(page_size(Some("1")).unwrap(), 1);
+        assert_eq!(page_size(Some("35")).unwrap(), 35);
+        assert_eq!(page_size(Some("50")).unwrap(), 50);
+        assert_eq!(page_size(Some("51")).unwrap(), 50);
+        assert_eq!(page_size(Some("4294967295")).unwrap(), 50);
+        assert_eq!(
+            page_size(Some("99999999999999999999999")).unwrap(),
+            50,
+            "past i64: still a number, capped"
+        );
+    }
+
+    #[test]
+    fn a_page_size_that_is_not_a_positive_number_is_refused() {
+        for raw in [
+            "0",
+            "-1",
+            "-99999999999999999999999",
+            "abc",
+            "1.5",
+            " 5",
+            "+",
+        ] {
+            assert_eq!(code(page_size(Some(raw))), "invalid_limit", "{raw:?}");
+        }
     }
 
     #[test]
@@ -894,6 +939,13 @@ mod tests {
             id: Uuid::new_v4(),
         };
         assert_eq!(Cursor::parse(&cursor.encode()).unwrap(), cursor);
+        for micros in [0, 253_402_300_799_999_999] {
+            let edge = Cursor {
+                published_at: DateTime::from_timestamp_micros(micros).unwrap(),
+                id: cursor.id,
+            };
+            assert_eq!(Cursor::parse(&edge.encode()).unwrap(), edge, "{micros}");
+        }
     }
 
     #[test]
@@ -907,6 +959,11 @@ mod tests {
             "1763600000123456.not-a-uuid".into(),
             format!("1763600000123456.{id}.1"),
             format!("99999999999999999999.{id}"),
+            // Within chrono's range, outside `timestamptz`'s: a 500 there.
+            format!("-8000000000000000000.{id}"),
+            format!("8000000000000000000.{id}"),
+            format!("-1.{id}"),
+            format!("253402300800000000.{id}"),
         ] {
             assert_eq!(code(Cursor::parse(&raw)), "invalid_cursor", "{raw:?}");
         }
