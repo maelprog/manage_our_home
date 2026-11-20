@@ -936,6 +936,110 @@ async fn the_recap_is_pushed_to_the_members_who_have_a_device(db: PgPool) {
     );
 }
 
+// RFC 8291, Appendix A: a browser's keys, so that a push carries a payload.
+const UA_PUBLIC: &str =
+    "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+const UA_AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
+
+/// The rows of the centre, as `(member, id)`, in order.
+async fn written_entries(db: &PgPool) -> Vec<(Uuid, Uuid)> {
+    sqlx::query_as("SELECT user_id, id FROM notifications ORDER BY user_id, id")
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// What `insert_entries` returns — what the push of an alert, an agenda
+/// change or a recap names (#862) — is the rows it wrote, under their ids:
+/// a click marks read the very entry the push stood for.
+#[sqlx::test]
+async fn the_entries_returned_are_the_rows_written(db: PgPool) {
+    use manage_our_home::notifications::center::{insert_entries, Event, NewNotification};
+    let f = family(&db).await;
+    let members = [
+        user_id(&db, "owner@example.test").await,
+        user_id(&db, "member@example.test").await,
+    ];
+    let mut conn = db.acquire().await.unwrap();
+    let returned = insert_entries(
+        &mut conn,
+        &members,
+        &NewNotification {
+            group_id: f.group.parse().unwrap(),
+            event: Event::BudgetCapNear,
+            object_id: None,
+            actor_id: None,
+            dedup_key: None,
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let mut returned: Vec<(Uuid, Uuid)> = returned.iter().map(|e| (e.member, e.id)).collect();
+    returned.sort_unstable();
+    assert_eq!(returned.len(), 2);
+    assert_eq!(returned, written_entries(&db).await);
+}
+
+/// The acceptance of #862 for the recap: each member's push names the ids
+/// of their recaps in the centre — one per family — and nothing else.
+#[sqlx::test]
+async fn the_recap_s_push_names_the_rows_of_the_centre(db: PgPool) {
+    let f = family(&db).await;
+    let second = create_group(&f.router, &f.owner, "Chalet").await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+    stock_item(&db, &second, "Riz", 1.0, today).await;
+    let mut devices = Vec::new();
+    for email in ["owner@example.test", "member@example.test"] {
+        let member = user_id(&db, email).await;
+        let endpoint = format!("https://fcm.googleapis.com/fcm/send/{member}");
+        sqlx::query(
+            "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(member)
+        .bind(&endpoint)
+        .bind(UA_PUBLIC)
+        .bind(UA_AUTH)
+        .execute(&db)
+        .await
+        .unwrap();
+        devices.push((member, endpoint));
+    }
+
+    let done = recap(&db, today, 9).await.unwrap();
+    let pushed = std::sync::Mutex::new(Vec::new());
+    let send_push =
+        |endpoint: String,
+         _ttl: i64,
+         payload: Option<manage_our_home::notifications::push::Payload>| {
+            let named: Value = serde_json::from_slice(&payload.unwrap().plaintext).unwrap();
+            pushed.lock().unwrap().push((endpoint, named));
+            async { PushOutcome::Delivered }
+        };
+    push_recap(&db, &send_push, &done.entries).await.unwrap();
+    let mut pushed = pushed.into_inner().unwrap();
+    pushed.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let written = written_entries(&db).await;
+    // The owner has a recap in each family, the member in the first.
+    assert_eq!(written.len(), 3);
+    devices.sort_by(|a, b| a.1.cmp(&b.1));
+    let expected: Vec<(String, Value)> = devices
+        .into_iter()
+        .map(|(member, endpoint)| {
+            let ids: Vec<String> = written
+                .iter()
+                .filter(|(m, _)| *m == member)
+                .map(|(_, id)| id.to_string())
+                .collect();
+            (endpoint, json!({ "entries": ids }))
+        })
+        .collect();
+    assert_eq!(pushed, expected);
+}
+
 /// The hourly pass does not announce again a row the recap announced for
 /// its date; its date moved, it does.
 #[sqlx::test]
