@@ -1562,6 +1562,45 @@ mod tests {
         assert_eq!(release_placeholders(md), Vec::<String>::new());
         assert_eq!(repo_path_references(md), Vec::<String>::new());
         assert_no_raw_markdown(md, &html);
+        // Served like the text in force, so held to its other pins too: the
+        // age the registration enforces (#137), no link to a code host (#379).
+        let minimum = crate::validation::auth::MINIMUM_AGE_YEARS;
+        let ages = stated_minimum_ages(md);
+        assert!(
+            !ages.is_empty() && ages.iter().all(|&age| age == minimum),
+            "the announced CGU state the minimum ages {ages:?}, the registration enforces {minimum}"
+        );
+        let lower = md.to_lowercase();
+        for host in ["github", "gitlab", "codeberg"] {
+            assert!(!lower.contains(host), "the announced CGU point at {host}");
+        }
+    }
+
+    /// #909: a recipe published in the library is read by every user of the
+    /// service, beyond its group. The latest CGU — announced, or else in
+    /// force — must say so, forbid personal data in a published recipe, and
+    /// no longer promise that the publisher never publishes a member's
+    /// content nor that a group's content is seen by its members alone.
+    #[test]
+    fn the_latest_cgu_cover_the_recipe_library() {
+        let md = match crate::validation::auth::TERMS_ANNOUNCED {
+            Some(announced) => announced.markdown,
+            None => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/terms-of-service.md"
+            )),
+        };
+        let flat = flatten(md);
+        for stated in [
+            "Si vous publiez une recette dans la bibliothèque, elle devient lisible par tous les utilisateurs du service",
+            "N'y mettez aucune donnée personnelle, la vôtre ou celle d'un tiers",
+            "L'éditeur peut retirer une recette publiée qui enfreint les présentes conditions.",
+        ] {
+            assert!(flat.contains(stated), "the CGU do not state: {stated}");
+        }
+        for contrary in ["ne les publie pas", "et par eux seuls."] {
+            assert!(!flat.contains(contrary), "the CGU still state: {contrary}");
+        }
     }
 
     /// Every age `md` states as the service's minimum, in reading order: the
