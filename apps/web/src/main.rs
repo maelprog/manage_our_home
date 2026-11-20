@@ -391,6 +391,8 @@ fn build_router(state: AppState) -> Router {
             get(routes::recipes::import::get).post(routes::recipes::import::post),
         )
         .route("/recipes/library", get(routes::recipes::library::list))
+        // Static, so it wins over `{id}` below (#911).
+        .route("/recipes/library/mine", get(routes::recipes::mine::get))
         .route(
             "/recipes/library/{id}",
             get(routes::recipes::library::detail),
@@ -399,8 +401,24 @@ fn build_router(state: AppState) -> Router {
             "/recipes/library/{id}/add",
             post(routes::recipes::library::add),
         )
+        .route(
+            "/recipes/library/{id}/report",
+            get(routes::recipes::report::get).post(routes::recipes::report::post),
+        )
+        .route(
+            "/recipes/library/{id}/withdraw",
+            post(routes::recipes::mine::withdraw),
+        )
         .route("/recipes/{id}", get(routes::recipes::detail::get))
         .route("/recipes/{id}/cook", get(routes::recipes::cook::get))
+        .route(
+            "/recipes/{id}/publish",
+            get(routes::recipes::publish::get).post(routes::recipes::publish::post),
+        )
+        .route(
+            "/recipes/{id}/unpublish",
+            post(routes::recipes::publish::unpublish),
+        )
         .route(
             "/recipes/{id}/edit",
             get(routes::recipes::edit::get).post(routes::recipes::edit::post),

@@ -1418,6 +1418,40 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 .pager [aria-disabled] { background: var(--hover); color: var(--muted); cursor: not-allowed; }
 .spaced { padding-left: var(--s6); }
 .spaced li { margin-bottom: var(--s2x); }
+/* -- Publishing to the library and reporting (#911) ---------------------------
+   `.consent`, the box of consent to publish, framed; in the error's tint
+   once sent unticked, its message under the box (never the colour alone).
+   `.motifs`, a report's reasons: a card of radio rows split by --line. In
+   both, a row's words may wrap, so its box (--s6, the mockup's) keeps to
+   the first line. `.ticks` and `.crosses`, what a publication shows and
+   what it does not, an icon before each line. `.pubs`, « Mes
+   publications », a card per publication. `.report-foot`, « Signaler » at
+   the foot of a publication, set off by a --line. `.publish`, the form of
+   consent, as far below its card as a card is below what precedes it.
+   `.bib`, the « Bibliothèque » card of a recipe: « Mes publications » as
+   close under its buttons as the mockup draws it, --s3, the link's own
+   padding (its 44px target) and no margin. */
+.publish { margin-top: var(--s6); }
+.consent { padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-md); }
+.consent.invalid { border-color: var(--error); background: var(--error-soft); }
+:is(.consent, .motifs) .field.inline { align-items: flex-start; font-size: var(--t-base); }
+:is(.consent, .motifs) .field.inline > span { padding: var(--s2x) 0; line-height: var(--s6); }
+:is(.consent, .motifs) input { flex: none; width: var(--s6); height: var(--s6); margin: var(--s2x) 0; padding: 0; accent-color: var(--accent); }
+.motifs { padding-inline: var(--s3); }
+.motifs > :is(h2, .field-error) { padding-inline: var(--s3); }
+.motifs .field.inline { padding: var(--s2x) var(--s3); border-bottom: 1px solid var(--line); }
+.motifs .field.inline:last-of-type { border-bottom: 0; }
+:is(.motifs, .pubs) h2 { font-size: var(--t-lg); }
+.ticks, .crosses, .pubs { list-style: none; padding: 0; }
+.ticks li, .crosses li { display: flex; gap: var(--s2x); padding: var(--s1) 0; }
+.ticks .icon { flex: none; color: var(--success); }
+.crosses .icon { flex: none; color: var(--muted); }
+.pubs { display: flex; flex-direction: column; gap: var(--s3); }
+.pubs .card { display: flex; flex-direction: column; gap: var(--s2x); margin-top: 0; }
+.pubs :is(h2, p) { margin: 0; }
+.report-foot { margin-top: var(--s6); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.bib .actions { margin-bottom: 0; }
+.bib .links { margin-top: 0; }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and

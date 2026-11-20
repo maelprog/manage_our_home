@@ -4,7 +4,8 @@
 //!
 //! - `POST /library/recipes/{id}/report`: any signed-in user reports a
 //!   publication, a reason from a closed list ([`ReportReason`]) and a
-//!   comment of [`COMMENT_MAX_CHARS`] characters at most. Once per user and
+//!   comment of [`COMMENT_MAX_CHARS`] characters at most, required with
+//!   `other`. Once per user and
 //!   per publication: a second report is answered as the first, and changes
 //!   nothing. Counted at `library::REPORT_RATE` per user.
 //! - `GET /admin/library/reports`: the superadmin lists the reports, open
@@ -88,11 +89,16 @@ impl ReportReason {
 pub const COMMENT_MAX_CHARS: usize = 500;
 
 /// A report's comment as the client sent it: trimmed, `None` when absent
-/// or blank, refused past [`COMMENT_MAX_CHARS`] characters.
-pub(crate) fn report_comment(raw: Option<&str>) -> AppResult<Option<String>> {
+/// or blank, refused past [`COMMENT_MAX_CHARS`] characters. `other` says
+/// nothing by itself: its comment is required, 400 `comment_required`
+/// when absent or blank (user's decision of 2026-11-20, #911).
+pub(crate) fn report_comment(reason: ReportReason, raw: Option<&str>) -> AppResult<Option<String>> {
     let comment = raw.map(str::trim).unwrap_or("");
     if comment.is_empty() {
-        return Ok(None);
+        return match reason {
+            ReportReason::Other => Err(AppError::BadRequest("comment_required".into())),
+            _ => Ok(None),
+        };
     }
     if comment.chars().count() > COMMENT_MAX_CHARS {
         return Err(AppError::BadRequest("comment_too_long".into()));
@@ -105,7 +111,8 @@ pub struct ReportRequest {
     /// `illegal`, `copyright`, `hateful`, `spam`, `health_hazard` or
     /// `other`.
     pub reason: String,
-    /// At most 500 characters once trimmed; blank, none.
+    /// At most 500 characters once trimmed; blank, none. Required with
+    /// `other`.
     pub comment: Option<String>,
 }
 
@@ -119,7 +126,7 @@ pub struct ReportRequest {
     request_body = ReportRequest,
     responses(
         (status = 204, description = "Reported; a second report of the same publication by the same user is answered the same, and changes nothing"),
-        (status = 400, description = "`invalid_reason` (absent, not one of the six, or a body that is not JSON) or `comment_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`invalid_reason` (absent, not one of the six, or a body that is not JSON) , `comment_required` (`other` without a comment) or `comment_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no such publication", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 429, description = "`too_many_attempts`: 10 reports per user per hour", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
@@ -136,7 +143,7 @@ pub async fn report_library_recipe(
         return Err(AppError::BadRequest("invalid_reason".into()));
     };
     let reason = ReportReason::parse(&body.reason)?;
-    let comment = report_comment(body.comment.as_deref())?;
+    let comment = report_comment(reason, body.comment.as_deref())?;
     // Before any transaction opens, as the library's other limits.
     LibraryThrottle::admit(&state.library_throttle.report, auth.user_id).await?;
 
@@ -427,25 +434,65 @@ mod tests {
 
     #[test]
     fn an_absent_or_blank_comment_is_none() {
-        assert_eq!(report_comment(None).unwrap(), None);
-        assert_eq!(report_comment(Some("")).unwrap(), None);
-        assert_eq!(report_comment(Some(" \n\t ")).unwrap(), None);
+        assert_eq!(report_comment(ReportReason::Spam, None).unwrap(), None);
+        assert_eq!(report_comment(ReportReason::Spam, Some("")).unwrap(), None);
+        assert_eq!(
+            report_comment(ReportReason::Spam, Some(" \n\t ")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn other_requires_a_comment() {
+        for raw in [None, Some(""), Some(" \n\t ")] {
+            assert_eq!(
+                code(report_comment(ReportReason::Other, raw)),
+                "comment_required",
+                "{raw:?}"
+            );
+        }
+        assert_eq!(
+            report_comment(ReportReason::Other, Some(" Recette en double. "))
+                .unwrap()
+                .as_deref(),
+            Some("Recette en double.")
+        );
+        assert_eq!(
+            code(report_comment(ReportReason::Other, Some(&"é".repeat(501)))),
+            "comment_too_long"
+        );
+        // Only `other`: the five others still go without one.
+        for reason in [
+            ReportReason::Illegal,
+            ReportReason::Copyright,
+            ReportReason::Hateful,
+            ReportReason::Spam,
+            ReportReason::HealthHazard,
+        ] {
+            assert_eq!(report_comment(reason, None).unwrap(), None, "{reason:?}");
+        }
     }
 
     #[test]
     fn a_comment_is_trimmed_and_bounded_at_500_characters() {
         assert_eq!(
-            report_comment(Some("  Copié d'un livre. "))
+            report_comment(ReportReason::Spam, Some("  Copié d'un livre. "))
                 .unwrap()
                 .as_deref(),
             Some("Copié d'un livre.")
         );
         let full = "é".repeat(500);
-        assert_eq!(report_comment(Some(&full)).unwrap(), Some(full.clone()));
-        let padded = format!(" {full} ");
-        assert_eq!(report_comment(Some(&padded)).unwrap(), Some(full.clone()));
         assert_eq!(
-            code(report_comment(Some(&"é".repeat(501)))),
+            report_comment(ReportReason::Spam, Some(&full)).unwrap(),
+            Some(full.clone())
+        );
+        let padded = format!(" {full} ");
+        assert_eq!(
+            report_comment(ReportReason::Spam, Some(&padded)).unwrap(),
+            Some(full.clone())
+        );
+        assert_eq!(
+            code(report_comment(ReportReason::Spam, Some(&"é".repeat(501)))),
             "comment_too_long"
         );
         assert_eq!(COMMENT_MAX_CHARS, 500);

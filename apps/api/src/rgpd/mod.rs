@@ -792,7 +792,7 @@ pub async fn export_account(
     // `app.user_id`, and filtered on the caller a second time.
     let mut library_tx = user_scoped_tx(&state.db, auth.user_id).await?;
     let publications = sqlx::query!(
-        r#"SELECT l.id, l.name, l.instructions, l.servings, l.duration_minutes,
+        r#"SELECT l.id, l.name, l.instructions, l.source_url, l.servings, l.duration_minutes,
                   l.published_at, l.updated_at, p.source_recipe_id
            FROM library_recipes l
            JOIN library_recipe_publishers p ON p.library_recipe_id = l.id
@@ -840,7 +840,7 @@ pub async fn export_account(
             .map(|l| {
                 json!({
                     "id": l.id, "name": l.name, "instructions": l.instructions,
-                    "servings": l.servings, "duration_minutes": l.duration_minutes,
+                    "source_url": l.source_url, "servings": l.servings, "duration_minutes": l.duration_minutes,
                     "source_recipe_id": l.source_recipe_id,
                     "published_at": l.published_at, "updated_at": l.updated_at,
                 })

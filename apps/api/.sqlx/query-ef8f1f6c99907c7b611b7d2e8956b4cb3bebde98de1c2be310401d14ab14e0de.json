@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT l.id, l.name, l.instructions, l.servings, l.duration_minutes,\n                  l.published_at, l.updated_at, p.source_recipe_id\n           FROM library_recipes l\n           JOIN library_recipe_publishers p ON p.library_recipe_id = l.id\n           WHERE p.user_id = $1\n           ORDER BY l.published_at, l.id",
+  "query": "SELECT id, name, instructions, source_url, servings, duration_minutes,\n                  published_at, updated_at\n           FROM library_recipes WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "servings",
         "type_info": "Int4",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "duration_minutes",
         "type_info": "Int4",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "published_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -70,24 +81,13 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
             "table": "library_recipes",
             "name": "updated_at"
-          }
-        }
-      },
-      {
-        "ordinal": 7,
-        "name": "source_recipe_id",
-        "type_info": "Uuid",
-        "origin": {
-          "Table": {
-            "table": "library_recipe_publishers",
-            "name": "source_recipe_id"
           }
         }
       }
@@ -103,10 +103,10 @@
       true,
       true,
       true,
+      true,
       false,
-      false,
-      true
+      false
     ]
   },
-  "hash": "847aff9dfc278a27043edbe10ee77782cbd4e16b20065f9844d0e661044ad771"
+  "hash": "ef8f1f6c99907c7b611b7d2e8956b4cb3bebde98de1c2be310401d14ab14e0de"
 }

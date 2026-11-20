@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at,\n                  (SELECT count(*) FROM library_ingredients i\n                   WHERE i.library_recipe_id = l.id) AS \"ingredient_count!\"\n           FROM library_recipes l\n           JOIN library_recipe_publishers p ON p.library_recipe_id = l.id\n           WHERE p.user_id = $1\n           ORDER BY l.published_at DESC, l.id DESC",
+  "query": "SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at,\n                  (SELECT count(*) FROM library_ingredients i\n                   WHERE i.library_recipe_id = l.id) AS \"ingredient_count!\",\n                  p.source_recipe_id IS NOT NULL AS \"source_recipe_kept!\"\n           FROM library_recipes l\n           JOIN library_recipe_publishers p ON p.library_recipe_id = l.id\n           WHERE p.user_id = $1\n           ORDER BY l.published_at DESC, l.id DESC",
   "describe": {
     "columns": [
       {
@@ -74,6 +74,12 @@
         "name": "ingredient_count!",
         "type_info": "Int8",
         "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "source_recipe_kept!",
+        "type_info": "Bool",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -88,8 +94,9 @@
       true,
       false,
       false,
+      null,
       null
     ]
   },
-  "hash": "3251537672704626c9a17ae6fccd610765d6720f180a66c8d2bd1ef891544181"
+  "hash": "e9663131ee912386693fe3d6f89ae0ccd97fb274ea56b1163939ae50eb922d75"
 }

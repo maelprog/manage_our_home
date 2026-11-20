@@ -487,7 +487,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/groups/{id}/recipes/{recipe_id}/publish",
-            post(recipes::library::publish_recipe).delete(recipes::library::unpublish_recipe),
+            get(recipes::library::get_my_publication_of_recipe)
+                .post(recipes::library::publish_recipe)
+                .delete(recipes::library::unpublish_recipe),
         )
         .route("/library/recipes", get(recipes::library::list_library))
         // Static, so it wins over `{id}` below (#947).
