@@ -374,7 +374,7 @@ pub(crate) fn detail_body(
         format!("<ul>{items}</ul>")
     };
     format!(
-        r#"<div class="links"><a href="/recipes/library"><span aria-hidden="true">‹</span> Retour à la bibliothèque</a></div>
+        r#"{segment}<div class="links"><a href="/recipes/library"><span aria-hidden="true">‹</span> Retour à la bibliothèque</a></div>
 {notice}{error}
 <h1>{name}</h1>
 {meta}
@@ -382,6 +382,7 @@ pub(crate) fn detail_body(
 <h2>Ingrédients</h2>
 {ingredients}
 {steps}"#,
+        segment = kitchen_segment("/recipes"),
         name = html_escape(&recipe.name),
         steps = steps_html(recipe.instructions.as_deref()),
     )
@@ -390,10 +391,12 @@ pub(crate) fn detail_body(
 /// A publication the API no longer knows: withdrawn, by its publisher or
 /// by moderation. Its content left with it.
 pub(crate) fn withdrawn_body() -> String {
-    r#"<h1>Recette retirée</h1>
+    format!(
+        r#"{segment}<h1>Recette retirée</h1>
 <p class="notice warning" role="status">Cette recette a été retirée de la bibliothèque et ne peut plus être ajoutée.</p>
-<div class="actions"><a class="btn secondary" href="/recipes/library">Retour à la bibliothèque</a></div>"#
-        .to_string()
+<div class="actions"><a class="btn secondary" href="/recipes/library">Retour à la bibliothèque</a></div>"#,
+        segment = kitchen_segment("/recipes"),
+    )
 }
 
 // -- handlers -----------------------------------------------------------------
@@ -870,8 +873,15 @@ mod tests {
     }
 
     #[test]
+    fn a_publication_keeps_the_kitchen_segment() {
+        let html = detail_body(&publication(), None, None, None);
+        assert!(html.starts_with(&kitchen_segment("/recipes")));
+    }
+
+    #[test]
     fn a_withdrawn_publication_says_so_and_offers_nothing_to_add() {
         let html = withdrawn_body();
+        assert!(html.starts_with(&kitchen_segment("/recipes")));
         assert!(html.contains("retirée de la bibliothèque"));
         assert!(!html.contains("<form"));
         assert!(html.contains(r#"href="/recipes/library""#));
