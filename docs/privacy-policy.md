@@ -296,7 +296,9 @@ au-delà de ses groupes, et seulement s'il le demande.
   que vous ne connaissez pas, et son nom ou ses instructions peuvent vous
   désigner, vous ou un proche, s'ils portent un nom, une anecdote ou un
   détail de votre vie. N'y mettez aucune donnée personnelle, ni la vôtre ni
-  celle de quelqu'un d'autre.
+  celle de quelqu'un d'autre : les [conditions générales
+  d'utilisation](/terms-of-service) l'interdisent, et l'administrateur du
+  service peut retirer une recette publiée qui ne les respecte pas.
 - **Les copies** : tout utilisateur peut copier une recette publiée dans sa
   famille. La copie devient une recette de cette famille, qui la garde :
   elle ne suit pas la publication et ne vous désigne pas.
