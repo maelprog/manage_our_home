@@ -92,8 +92,9 @@ Vous gardez vos droits sur les contenus que vous déposez : messages,
 événements, recettes, articles de stock, dépenses, pièces jointes.
 L'éditeur ne les exploite pas et ne les cède à personne. Il les héberge
 pour vous et les rend accessibles aux autres membres de votre groupe, ce qui
-est la finalité même du service ; il ne les rend accessibles au-delà que si
-vous publiez une recette dans la bibliothèque.
+est la finalité même du service ; il ne les rend accessibles au-delà que
+pour une recette qu'un membre du groupe qui peut la modifier publie dans la
+bibliothèque.
 
 Si vous publiez une recette dans la bibliothèque, elle devient lisible par
 tous les utilisateurs du service, sans votre nom, et chacun peut la copier
