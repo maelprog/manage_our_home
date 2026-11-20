@@ -949,6 +949,7 @@ test.describe("Recipes — bibliothèque (#910)", () => {
     await page.getByRole("link", { name: "Voir ma copie" }).click();
     await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]{36}$/);
     await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
+    const copyUrl = page.url();
 
     // The list marks the copy.
     await page.goto(`/recipes/library?q=${token}`);
@@ -959,7 +960,7 @@ test.describe("Recipes — bibliothèque (#910)", () => {
     // The family has it among its own recipes.
     await openRecipeDetail(page, name);
 
-    // Withdrawn: its page says so; the copy stays, without a word of it.
+    // Withdrawn: its page says so; the copy stays whole, without a word of it.
     await withdrawFromLibrary(id);
     const response = await page.goto(`/recipes/library/${id}`);
     expect(response?.status()).toBe(404);
@@ -968,6 +969,9 @@ test.describe("Recipes — bibliothèque (#910)", () => {
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Ajouter à mes recettes" })).toHaveCount(0);
     await openRecipeDetail(page, name);
-    await expect(page.getByText("Issue de la bibliothèque")).toHaveCount(0);
+    expect(page.url()).toBe(copyUrl);
+    await expect(page.getByText("Pommes de terre")).toBeVisible();
+    await expect(page.getByText("Cuire une heure.")).toBeVisible();
+    await expect(page.getByText(/retirée/)).toHaveCount(0);
   });
 });
