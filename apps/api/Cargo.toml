@@ -80,10 +80,11 @@ p256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"]
 # The payload of a push (#862: the identifier of its entry of the
 # notification centre) is encrypted for the browser (RFC 8291): ECDH on
 # P-256, HKDF-SHA256 and AES-128-GCM. `aws-lc-rs` has all three, and is
-# already in Cargo.lock at this version (rustls and jsonwebtoken pull it),
-# so this adds no crate to the audit surface — where `aes-gcm` and `hkdf`
-# would have added the RustCrypto AEAD stack.
-aws-lc-rs = "1.18.1"
+# already in Cargo.lock (rustls and jsonwebtoken pull it, and resolve to
+# this same version), so this adds no crate to the audit surface — where
+# `aes-gcm` and `hkdf` would have added the RustCrypto AEAD stack. The
+# newest release (dependency policy).
+aws-lc-rs = "1.19.0"
 # The token's parts and the public key are unpadded base64url. The newest
 # release, next to the 0.22 that axum, reqwest and the others still pull.
 base64 = "0.23"
