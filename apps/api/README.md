@@ -236,7 +236,9 @@ Seven other things run on this pool, and none is a request handler:
   `notifications` — those it received and those it caused, whose text
   may carry its display name (#534) —, `stock_expiry_announcements`
   (#700), its food constraints (`user_allergies`, `allergy_sharing`,
-  `user_dislikes`, #817),
+  `user_dislikes`, #817), the recipes it published to the shared library
+  (`library_recipes`, with their ingredients and publisher rows, #905;
+  the copies families made of them stay),
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`
   and `calendar_imports` it created) and anonymises its `users` row. Each
   group it owned passes to an heir when a member is eligible (`UPDATE` of

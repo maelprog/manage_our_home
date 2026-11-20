@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT i.library_recipe_id, i.name, i.quantity, i.unit, i.is_optional,\n                  i.seasonal_months\n           FROM library_ingredients i\n           JOIN library_recipe_publishers p ON p.library_recipe_id = i.library_recipe_id\n           WHERE p.user_id = $1\n           ORDER BY i.library_recipe_id, i.position",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "library_recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "library_recipe_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "quantity",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "is_optional",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "is_optional"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "seasonal_months",
+        "type_info": "Int4Array",
+        "origin": {
+          "Table": {
+            "table": "library_ingredients",
+            "name": "seasonal_months"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "a703a6b1842e2a1e6174d9802dec8f00de482473c58189395717b4c3cc77e09d"
+}
