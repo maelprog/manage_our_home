@@ -879,6 +879,26 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_names_the_api_code_or_too_many_for_a_429() {
+        let body = serde_json::json!({ "error": "invalid_cursor" });
+        assert_eq!(
+            refusal_code(reqwest::StatusCode::TOO_MANY_REQUESTS, &body),
+            "too_many"
+        );
+        assert_eq!(
+            refusal_code(reqwest::StatusCode::BAD_REQUEST, &body),
+            "invalid_cursor"
+        );
+        assert_eq!(
+            refusal_code(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                &serde_json::Value::Null
+            ),
+            "unavailable"
+        );
+    }
+
+    #[test]
     fn a_withdrawn_publication_says_so_and_offers_nothing_to_add() {
         let html = withdrawn_body();
         assert!(html.starts_with(&kitchen_segment("/recipes")));
