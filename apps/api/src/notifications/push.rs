@@ -427,7 +427,7 @@ pub enum KeysError {
 /// stays that of its bytes: at most 88 characters, under the CHECK of 0065.
 pub fn parse_keys(p256dh: &str, auth: &str) -> Result<SubscriberKeys, KeysError> {
     let decode = |text: &str| {
-        let unpadded = if text.len() % 4 == 0 {
+        let unpadded = if text.len().is_multiple_of(4) {
             text.strip_suffix("==")
                 .or_else(|| text.strip_suffix('='))
                 .unwrap_or(text)
