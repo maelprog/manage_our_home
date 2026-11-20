@@ -9,13 +9,14 @@
 //!   the family's recipe) and « Retirer ».
 //! - `POST /recipes/library/:id/withdraw` — one click, no confirmation
 //!   (arbitrage of 2026-11-20): `DELETE /library/recipes/:id`, then back
-//!   to the list (PRG), `?notice=unpublished` or `?error=unpublish_failed`,
-//!   with the recipe's name to say which.
+//!   to the list (PRG), `?notice=unpublished` or `?error=unpublish_failed`.
+//!   The URL carries no name, which anyone could forge into the banner: a
+//!   failure carries the publication's id, and the page names it from the
+//!   API's list — a publication of the reader's own, or no name at all.
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::Form;
 use manage_our_home_shared::dto::recipes::{MyPublication, MyPublications};
 use uuid::Uuid;
 
@@ -39,29 +40,29 @@ pub struct MineQuery {
     notice: Option<String>,
     #[serde(default)]
     error: Option<String>,
+    /// The publication a failed withdrawal was about.
     #[serde(default)]
-    nom: Option<String>,
+    id: Option<String>,
 }
 
 /// Where « Retirer » leads, by the API's answer: the list, saying it went
-/// — gone already (404) is gone too — or that it did not, naming `name`.
-pub(crate) fn withdraw_target(status: Option<u16>, name: &str) -> String {
-    let name: String = name.trim().chars().take(NAME_MAX).collect();
-    let code = match status {
-        Some(204 | 404) => ("notice", "unpublished"),
-        _ => ("error", "unpublish_failed"),
-    };
-    let mut pairs = vec![code];
-    if !name.is_empty() {
-        pairs.push(("nom", name.as_str()));
+/// — gone already (404) is gone too — or that publication `id` did not.
+pub(crate) fn withdraw_target(status: Option<u16>, id: Uuid) -> String {
+    match status {
+        Some(204 | 404) => format!("{LIST}?notice=unpublished"),
+        _ => format!("{LIST}?error=unpublish_failed&id={id}"),
     }
-    format!(
-        "{LIST}?{}",
-        serde_urlencoded::to_string(&pairs).unwrap_or_default()
-    )
 }
 
-/// The banner of the URL's codes, naming the recipe when it says which.
+/// The name of the publication `id` of the URL, read from `list`, the
+/// API's: a forged id names nothing the reader did not publish.
+pub(crate) fn named<'a>(list: Option<&'a [MyPublication]>, id: Option<&str>) -> Option<&'a str> {
+    let id: Uuid = id?.parse().ok()?;
+    list?.iter().find(|p| p.id == id).map(|p| p.name.as_str())
+}
+
+/// The banner of the URL's codes, naming the recipe when `name`, read from
+/// the API, says which.
 pub(crate) fn banner(notice: Option<&str>, error: Option<&str>, name: Option<&str>) -> String {
     let name: Option<String> = name
         .map(|n| n.trim().chars().take(NAME_MAX).collect())
@@ -96,7 +97,7 @@ fn card(p: &MyPublication) -> String {
         r#"<li class="card"><h2>{name}</h2>
 <p class="muted"><span class="badge ok">Publiée</span> {dates}</p>
 {orphan}<div class="actions"><a class="btn secondary" href="/recipes/library/{id}" aria-label="Voir la fiche de {name} dans la bibliothèque">Voir la fiche</a>
-<form method="post" action="/recipes/library/{id}/withdraw"><input type="hidden" name="nom" value="{name}"/><button type="submit" class="secondary danger" aria-label="Retirer {name} de la bibliothèque" data-busy-label="Retrait…">Retirer</button></form></div></li>"#,
+<form method="post" action="/recipes/library/{id}/withdraw"><button type="submit" class="secondary danger" aria-label="Retirer {name} de la bibliothèque" data-busy-label="Retrait…">Retirer</button></form></div></li>"#,
         dates = html_escape(&dates_text(p.published_at, p.updated_at)),
     )
 }
@@ -165,7 +166,7 @@ pub async fn get(
     let banner = banner(
         query.notice.as_deref(),
         query.error.as_deref(),
-        query.nom.as_deref(),
+        named(list.as_deref(), query.id.as_deref()),
     );
     (
         status,
@@ -179,19 +180,12 @@ pub async fn get(
         .into_response()
 }
 
-#[derive(serde::Deserialize, Default)]
-pub struct WithdrawForm {
-    #[serde(default)]
-    nom: String,
-}
-
 /// No family needed either: the API withdraws for the publisher alone.
 pub async fn withdraw(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-    Form(form): Form<WithdrawForm>,
 ) -> Response {
     let cookie = recipes_cookie(&headers);
     let status = api_request_auth(
@@ -204,7 +198,7 @@ pub async fn withdraw(
     .await
     .ok()
     .map(|resp| resp.status.as_u16());
-    Redirect::to(&withdraw_target(status, &form.nom)).into_response()
+    Redirect::to(&withdraw_target(status, id)).into_response()
 }
 
 #[cfg(test)]
@@ -222,24 +216,42 @@ mod tests {
     }
 
     #[test]
-    fn a_withdrawal_comes_back_to_the_list_naming_the_recipe() {
-        assert_eq!(
-            withdraw_target(Some(204), "Soupe à l'oignon"),
-            "/recipes/library/mine?notice=unpublished&nom=Soupe+%C3%A0+l%27oignon"
-        );
-        assert_eq!(
-            withdraw_target(Some(404), " "),
-            "/recipes/library/mine?notice=unpublished"
-        );
-        for status in [Some(500), Some(429), None] {
+    fn a_withdrawal_comes_back_to_the_list_with_no_name_in_the_url() {
+        let id = Uuid::from_u128(7);
+        for status in [Some(204), Some(404)] {
             assert_eq!(
-                withdraw_target(status, "Cake"),
-                "/recipes/library/mine?error=unpublish_failed&nom=Cake",
+                withdraw_target(status, id),
+                "/recipes/library/mine?notice=unpublished",
                 "{status:?}"
             );
         }
-        let long = withdraw_target(Some(204), &"é".repeat(300));
-        assert_eq!(long.matches("%C3%A9").count(), 200, "capped at 200");
+        for status in [Some(500), Some(429), None] {
+            assert_eq!(
+                withdraw_target(status, id),
+                format!("/recipes/library/mine?error=unpublish_failed&id={id}"),
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_name_comes_from_the_api_list_never_from_the_url() {
+        let list = [publication(1, "Gratin", true, "2026-11-02T10:00:00Z")];
+        let id = Uuid::from_u128(1).to_string();
+        assert_eq!(named(Some(&list), Some(&id)), Some("Gratin"));
+        // An id the reader did not publish, garbage, nothing: no name.
+        let foreign = Uuid::from_u128(2).to_string();
+        assert_eq!(named(Some(&list), Some(&foreign)), None);
+        assert_eq!(named(Some(&list), Some("<b>Arnaque</b>")), None);
+        assert_eq!(named(Some(&list), None), None);
+        assert_eq!(named(None, Some(&id)), None);
+        // So a forged failure banner says « La recette », nothing more.
+        let banner = banner(
+            None,
+            Some("unpublish_failed"),
+            named(Some(&list), Some(&foreign)),
+        );
+        assert!(banner.contains("La recette est toujours dans la bibliothèque"));
     }
 
     #[test]
@@ -282,6 +294,7 @@ mod tests {
             Uuid::from_u128(2)
         )));
         assert!(cards[1].contains(r#"aria-label="Retirer Soupe de la bibliothèque""#));
+        assert!(!html.contains(r#"name="nom""#), "no name posted back");
         assert!(!html.contains("/recipes/0"), "never the family's recipe");
     }
 

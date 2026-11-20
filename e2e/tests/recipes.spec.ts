@@ -1113,8 +1113,8 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     await expect(page.getByRole("heading", { name: "Mes publications", level: 1 })).toBeVisible();
     await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
     await page.getByRole("button", { name: `Retirer ${name} de la bibliothèque` }).click();
-    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished&nom=/);
-    await expect(page.getByText(`« ${name} » retirée de la bibliothèque.`)).toBeVisible();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished$/);
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
     await reader.goto(`/recipes/library?q=${token}`);
     await expect(
@@ -1136,8 +1136,12 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
     await expect(page.getByText("Cette recette n'est plus dans vos recettes")).toBeVisible();
     await page.getByRole("button", { name: `Retirer ${name} de la bibliothèque` }).click();
-    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished&nom=/);
-    await expect(page.getByText(`« ${name} » retirée de la bibliothèque.`)).toBeVisible();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished$/);
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+    // A forged URL names nothing: the name is never read from it.
+    await page.goto("/recipes/library/mine?notice=unpublished&nom=Arnaque");
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
+    await expect(page.getByText("Arnaque")).toHaveCount(0);
   });
 });
