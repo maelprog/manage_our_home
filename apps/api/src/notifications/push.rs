@@ -422,11 +422,20 @@ pub enum KeysError {
 }
 
 /// The keys as `PushSubscription.toJSON().keys` gives them: base64url,
-/// padded or not.
+/// unpadded or padded as RFC 4648 pads it — nothing else, no whitespace
+/// nor padding beyond. A key accepted is stored as given, so its length
+/// stays that of its bytes: at most 88 characters, under the CHECK of 0065.
 pub fn parse_keys(p256dh: &str, auth: &str) -> Result<SubscriberKeys, KeysError> {
     let decode = |text: &str| {
+        let unpadded = if text.len() % 4 == 0 {
+            text.strip_suffix("==")
+                .or_else(|| text.strip_suffix('='))
+                .unwrap_or(text)
+        } else {
+            text
+        };
         URL_SAFE_NO_PAD
-            .decode(text.trim().trim_end_matches('='))
+            .decode(unpadded)
             .map_err(|_| KeysError::NotBase64)
     };
     let (p256dh, auth) = (decode(p256dh)?, decode(auth)?);
@@ -1351,6 +1360,29 @@ mod tests {
             parse_keys(UA_PUBLIC, &URL_SAFE_NO_PAD.encode([0u8; 32])),
             Err(KeysError::BadAuthSecret)
         );
+    }
+
+    /// What is accepted is stored as given, under a CHECK of 100
+    /// characters (0065): no padding beyond the canonical one, no
+    /// whitespace, so that an accepted key always fits.
+    #[test]
+    fn keys_padded_or_spaced_beyond_the_canonical_form_are_refused() {
+        let long_pad = "=".repeat(200);
+        for (p256dh, auth) in [
+            (format!("{UA_PUBLIC}{long_pad}"), AUTH.to_string()),
+            (UA_PUBLIC.to_string(), format!("{AUTH}{long_pad}")),
+            (format!("{UA_PUBLIC}=="), AUTH.to_string()),
+            (UA_PUBLIC.to_string(), format!("{AUTH}=")),
+            (format!(" {UA_PUBLIC}"), AUTH.to_string()),
+            (UA_PUBLIC.to_string(), format!("{AUTH}\n")),
+            (format!("{UA_PUBLIC}{}", " ".repeat(200)), AUTH.to_string()),
+        ] {
+            assert_eq!(
+                parse_keys(&p256dh, &auth),
+                Err(KeysError::NotBase64),
+                "{p256dh:?} / {auth:?}"
+            );
+        }
     }
 
     #[test]

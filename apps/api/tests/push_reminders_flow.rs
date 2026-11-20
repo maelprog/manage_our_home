@@ -1461,6 +1461,8 @@ async fn a_device_registers_its_keys_with_its_endpoint(db: PgPool) {
     for bad in [
         serde_json::json!({ "p256dh": "not a key", "auth": UA_AUTH }),
         serde_json::json!({ "p256dh": UA_PUBLIC, "auth": "AAAA" }),
+        // Beyond the CHECK of 0065 once stored: refused, not a 500.
+        serde_json::json!({ "p256dh": format!("{UA_PUBLIC}{}", "=".repeat(200)), "auth": UA_AUTH }),
     ] {
         let res = subscribe_with_keys(&router, &cookie, MOZILLA, bad).await;
         assert_status(&res, StatusCode::BAD_REQUEST);
