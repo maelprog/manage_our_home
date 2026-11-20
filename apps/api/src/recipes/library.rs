@@ -17,8 +17,13 @@
 //!   withdrawn when they leave it or are removed from it, its source recipe
 //!   deleted since or not: the publication keeps its family
 //!   (`library_recipe_publishers.group_id`; `groups::leave_group`,
-//!   `groups::remove_member`, #908). Only a family deleted since leaves
-//!   none to look it up by.
+//!   `groups::remove_member`, #908). A family deleted since leaves none to
+//!   look it up by: its publisher withdraws it through the routes below.
+//! - `GET /library/recipes/mine` and `DELETE /library/recipes/{id}`
+//!   (#947): the caller's own publications, listed and withdrawn through
+//!   no family — the one they were taken from deleted since or not
+//!   (user's decision of 2026-11-20). Nobody else's: the publishers'
+//!   policy (0066) shows the caller their own rows alone.
 //! - `POST /library/recipes/{id}/report` and the superadmin's
 //!   `/admin/library/*` routes report a publication and moderate it
 //!   (`recipes::library_moderation`, #908). A recipe whose publication the
@@ -472,6 +477,12 @@ pub struct LibraryPage {
     /// How many publications `q` and `ingredient` find, over every page:
     /// the cursor does not narrow it.
     pub total: i64,
+}
+
+/// The caller's own publications, newest first.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct MyPublications {
+    pub recipes: Vec<LibraryRecipeSummary>,
 }
 
 #[derive(Deserialize, utoipa::IntoParams)]
@@ -946,6 +957,83 @@ pub async fn list_library(
         next_cursor,
         total,
     }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/library/recipes/mine",
+    tag = "recipes",
+    responses(
+        (status = 200, description = "The caller's own publications, newest first, whatever became of the family they were taken from; nobody else's", body = MyPublications),
+        (status = 429, description = "`too_many_attempts`: counted with the reads of the library, 60 per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn list_my_publications(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> AppResult<impl IntoResponse> {
+    LibraryThrottle::admit(&state.library_throttle.read, auth.user_id).await?;
+    let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    // The publishers' policy shows the caller their own rows alone; the
+    // `user_id` says so again.
+    let recipes = sqlx::query_as!(
+        LibraryRecipeSummary,
+        r#"SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at,
+                  (SELECT count(*) FROM library_ingredients i
+                   WHERE i.library_recipe_id = l.id) AS "ingredient_count!"
+           FROM library_recipes l
+           JOIN library_recipe_publishers p ON p.library_recipe_id = l.id
+           WHERE p.user_id = $1
+           ORDER BY l.published_at DESC, l.id DESC"#,
+        auth.user_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(MyPublications { recipes }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/library/recipes/{id}",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Publication id"),
+    ),
+    responses(
+        (status = 204, description = "The caller's own publication withdrawn, whatever became of the family it was taken from"),
+        (status = 404, description = "`not_found`: no publication of the caller's by that id", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn withdraw_my_publication(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    // Its publisher alone, as `withdraw`, but through no family: the
+    // policies of 0066 let no one else, and the `user_id` says so again.
+    // The ingredients and the publisher row go with it.
+    let withdrawn = sqlx::query!(
+        r#"DELETE FROM library_recipes WHERE id = (
+               SELECT library_recipe_id FROM library_recipe_publishers
+               WHERE library_recipe_id = $1 AND user_id = $2)"#,
+        id,
+        auth.user_id,
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        > 0;
+    if !withdrawn {
+        return Err(AppError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

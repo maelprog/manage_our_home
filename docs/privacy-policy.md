@@ -288,7 +288,8 @@ recette la publie.
 - **Ce qui ne l'est pas : qui l'a publiée.** Ni votre nom, ni votre
   famille, ni la recette d'origine ne sont montrés à qui lit la
   bibliothèque. Le service ne montre le lien entre vous et votre
-  publication qu'à vous, dans l'export de vos données : ni aux autres
+  publication qu'à vous, dans la liste de vos publications et dans
+  l'export de vos données : ni aux autres
   utilisateurs, ni à l'administrateur du service, ni au propriétaire de
   votre famille. Un
   autre membre de votre famille qui tenterait de publier la même recette
@@ -310,10 +311,9 @@ recette la publie.
   retirée si vous quittez la famille d'où elle vient ou en êtes retiré, si
   le propriétaire de cette famille la retire, si l'administrateur du
   service la retire, et à la suppression de votre compte. Supprimer la
-  recette d'origine ne la retire pas. Si la famille d'où elle vient est
-  supprimée, la publication reste, et vous ne pouvez plus la retirer
-  vous-même : écrivez au responsable de traitement (« Pour le joindre »,
-  en tête de ce document), ou supprimez votre compte.
+  recette d'origine ne la retire pas, ni la suppression de la famille
+  d'où elle vient : la publication reste, et vous pouvez toujours la
+  retirer vous-même, comme vos autres publications.
 - **Signaler une recette** : tout utilisateur peut signaler une recette
   publiée, une fois, avec un motif (contenu illicite, atteinte au droit
   d'auteur, contenu haineux, spam, danger pour la santé, autre) et un
