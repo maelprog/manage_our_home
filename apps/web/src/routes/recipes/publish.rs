@@ -159,7 +159,7 @@ pub(crate) fn library_card(
         )
     };
     format!(
-        r#"<section class="card" id="bibliotheque" aria-labelledby="bibliotheque-h"><h2 id="bibliotheque-h">Bibliothèque</h2>
+        r#"<section class="card bib" id="bibliotheque" aria-labelledby="bibliotheque-h"><h2 id="bibliotheque-h">Bibliothèque</h2>
 {body}</section>"#
     )
 }
@@ -639,7 +639,7 @@ mod tests {
         assert!(!reader.contains("<form"));
         assert!(!reader.contains("/publish"));
         for html in [&none, &published, &gone, &reader] {
-            assert!(html.starts_with(r#"<section class="card" id="bibliotheque""#));
+            assert!(html.starts_with(r#"<section class="card bib" id="bibliotheque""#));
         }
     }
 

@@ -1427,7 +1427,10 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
    what it does not, an icon before each line. `.pubs`, « Mes
    publications », a card per publication. `.report-foot`, « Signaler » at
    the foot of a publication, set off by a --line. `.publish`, the form of
-   consent, as far below its card as a card is below what precedes it. */
+   consent, as far below its card as a card is below what precedes it.
+   `.bib`, the « Bibliothèque » card of a recipe: « Mes publications » as
+   close under its buttons as the mockup draws it, --s3, the link's own
+   padding (its 44px target) and no margin. */
 .publish { margin-top: var(--s6); }
 .consent { padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-md); }
 .consent.invalid { border-color: var(--error); background: var(--error-soft); }
@@ -1447,6 +1450,8 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 .pubs .card { display: flex; flex-direction: column; gap: var(--s2x); margin-top: 0; }
 .pubs :is(h2, p) { margin: 0; }
 .report-foot { margin-top: var(--s6); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.bib .actions { margin-bottom: 0; }
+.bib .links { margin-top: 0; }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and
