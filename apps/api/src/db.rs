@@ -23,8 +23,11 @@ const LEFT_IN_TRANSACTION: &str = "SELECT transaction_timestamp() <> statement_t
 /// server if the caller is cancelled while waiting.
 ///
 /// Use it instead of `pool.begin()`. In sqlx-postgres 0.9.0,
-/// `PgTransactionManager::begin` sends `BEGIN` and only counts the
-/// transaction as open once the server has answered. A future dropped
+/// `PgTransactionManager::begin` sent `BEGIN` and only counted the
+/// transaction as open once the server had answered. 0.9.1 counts it before
+/// the round trip (launchbadge/sqlx#4394), which closes the leak below
+/// upstream; this wrapper stays as a second guard that does not depend on
+/// sqlx keeping that order. A future dropped
 /// during that wait — which is what hyper does to a handler when the client
 /// hangs up, e.g. a WebSocket handshake cut short by a navigation — has
 /// nothing to roll back on sqlx's side, and the first query of the pool's
