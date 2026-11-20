@@ -173,6 +173,15 @@ pub(crate) enum Mode<'a> {
     Already,
 }
 
+/// The screen's title, its tab's as well as its heading: the update's in
+/// the update mode, the publication's otherwise.
+pub(crate) fn mode_title(mode: Mode<'_>) -> &'static str {
+    match mode {
+        Mode::Update(_) => "Mettre à jour la publication",
+        _ => "Publier dans la bibliothèque",
+    }
+}
+
 /// The screen of `/recipes/:id/publish`. `consent_missing` after a form
 /// sent unticked; `error` a refusal of the API.
 pub(crate) fn screen_body(
@@ -186,10 +195,7 @@ pub(crate) fn screen_body(
     let back = format!(
         r#"<div class="links"><a href="/recipes/{id}"><span aria-hidden="true">‹</span> Retour à la recette</a></div>"#
     );
-    let title = match mode {
-        Mode::Update(_) => "Mettre à jour la publication",
-        _ => "Publier dans la bibliothèque",
-    };
+    let title = mode_title(mode);
     if matches!(mode, Mode::Already) {
         return format!(
             r#"{segment}{back}
@@ -363,10 +369,7 @@ pub async fn get(
     }
     let publication = my_publication(&state, fam.gid, id, cookie.as_deref()).await;
     let mode = publication.as_ref().map_or(Mode::Publish, Mode::Update);
-    let title = match mode {
-        Mode::Update(_) => "Mettre à jour la publication",
-        _ => "Publier dans la bibliothèque",
-    };
+    let title = mode_title(mode);
     Html(shell_with_header(
         Width::Read,
         title,
@@ -447,7 +450,7 @@ pub async fn post(
         status,
         Html(shell_with_header(
             Width::Read,
-            "Publier dans la bibliothèque",
+            mode_title(mode),
             &fam.header,
             &screen_body(&recipe, mode, !consent, error),
         )),
@@ -697,5 +700,13 @@ mod tests {
         assert!(!html.contains("<form"));
         let refused = screen_body(&recipe(None), Mode::Publish, false, Some("Échec <b>"));
         assert!(refused.contains(r#"<p class="notice error" role="alert">Échec &lt;b&gt;</p>"#));
+    }
+
+    #[test]
+    fn the_tab_is_titled_by_the_mode() {
+        let p = publication("2026-11-02T10:00:00Z", "2026-11-02T10:00:00Z");
+        assert_eq!(mode_title(Mode::Update(&p)), "Mettre à jour la publication");
+        assert_eq!(mode_title(Mode::Publish), "Publier dans la bibliothèque");
+        assert_eq!(mode_title(Mode::Already), "Publier dans la bibliothèque");
     }
 }
