@@ -997,6 +997,20 @@ async fn a_family_holds_fifty_publications_at_most(db: PgPool) {
     assert_status(&res, StatusCode::CREATED);
 }
 
+/// At the quota, a recipe another member already published is refused as
+/// theirs, 409 `published_by_another_member`, not for the quota: the
+/// member learns what would still refuse it below 50. Nothing written.
+#[sqlx::test]
+async fn at_the_quota_another_members_recipe_is_refused_as_theirs(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "qorder").await;
+    let seeded = seed_publications(&db, f.id, f.admin.id, 50, "Plat").await;
+    let res = publish_call(&router, f.id, seeded[0], &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"], "published_by_another_member");
+    assert_eq!(library_rows(&db).await, 50);
+}
+
 /// Search by name and by ingredient, case aside and literally; pages of 20
 /// by default, 50 at most, chained by their cursor; a term past 100
 /// characters refused.

@@ -583,15 +583,6 @@ pub async fn publish_recipe(
     )
     .fetch_optional(&mut *tx)
     .await?;
-    let published = sqlx::query_scalar!(
-        r#"SELECT group_library_publication_count($1) AS "n!""#,
-        group_id
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    if !within_quota(published, existing.is_some()) {
-        return Err(AppError::Conflict("library_quota_exceeded".into()));
-    }
 
     let id = match existing {
         Some(id) => {
@@ -644,6 +635,19 @@ pub async fn publish_recipe(
                 }
                 e => e.into(),
             })?;
+            // Counted once written, so that a recipe another member
+            // published is refused as such rather than for the quota; this
+            // one is in the count, the family held one fewer before. A
+            // refusal rolls the writes back.
+            let published = sqlx::query_scalar!(
+                r#"SELECT group_library_publication_count($1) AS "n!""#,
+                group_id
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            if !within_quota(published - 1, false) {
+                return Err(AppError::Conflict("library_quota_exceeded".into()));
+            }
             id
         }
     };
