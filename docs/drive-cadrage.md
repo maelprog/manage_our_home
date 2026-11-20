@@ -159,9 +159,10 @@ pas substituer le nom canonique :
 - le nom canonique est fait pour classer, pas pour chercher : « Crèmes
   épaisses » ou « Parmigiano Reggiano » ne sont pas ce qu'une personne tape, et
   le second écarte les fromages vendus sous le nom de parmesan ;
-- le nom saisi est déjà une requête formulée par l'utilisateur, et c'est le seul
-  texte disponible pour une marque, qui n'a jamais de tag (la taxonomie refuse
-  un nom suivi d'une marque) ;
+- le nom saisi est déjà une requête formulée par l'utilisateur ; une marque n'a
+  le plus souvent pas de tag (un nom suivi d'une marque, « Lait demi-écrémé
+  Lactel », n'en a jamais), et quand une marque seule en a un, le nom canonique
+  efface la marque (« Kinder Maxi » devient « Barres chocolatées au lait ») ;
 - une seule règle, sans dépendance à la taxonomie pour le lien.
 
 Le tag reste utile ailleurs : regrouper les lignes, et plus tard chercher par
