@@ -4939,3 +4939,100 @@ async fn a_password_change_mails_the_notice_only_once_it_succeeds(db: PgPool) {
         "Vos autres sessions ont été fermées",
     );
 }
+
+/// #916, constat 2 (rouge sur `main`, branche jetable) : deux demandes de
+/// réinitialisation laissent deux liens valides. Utiliser le second ne
+/// supprime que lui ; le premier change encore le mot de passe pendant
+/// l'heure qui suit, après que le titulaire a repris la main.
+#[sqlx::test]
+async fn pentest_916_a_reset_invalidates_the_other_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "reset-916@example.test";
+    register_verify_login(&router, &db, email, "initial-password-916").await;
+
+    let forgot = serde_json::json!({ "email": email });
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(forgot.clone()),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let first = common::reset_token(&db, email).await;
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(forgot),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let second = common::reset_token(&db, email).await;
+    assert_ne!(first, second);
+
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": second, "new_password": "holder-password-916"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": first, "new_password": "attacker-password-916"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
+}
+
+/// #916, constat 2, côté réglages : un changement de mot de passe depuis
+/// une session laisse vivant un lien de réinitialisation émis avant lui.
+#[sqlx::test]
+async fn pentest_916_a_password_change_invalidates_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "change-916@example.test";
+    let cookie = register_verify_login(&router, &db, email, "initial-password-916").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({ "email": email })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let pending = common::reset_token(&db, email).await;
+
+    let change = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&cookie),
+        Some(serde_json::json!({
+            "current_password": "initial-password-916",
+            "new_password": "holder-password-916",
+        })),
+    )
+    .await;
+    assert_status(&change, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": pending, "new_password": "attacker-password-916"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
+}

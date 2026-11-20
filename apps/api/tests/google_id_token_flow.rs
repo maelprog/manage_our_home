@@ -616,3 +616,63 @@ async fn both_routes_share_a_rate_limit_per_address(db: PgPool) {
     assert_status(&refused, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(user_id(&db, "rate-669@example.test").await, None);
 }
+
+/// #916, constat 1 (rouge sur `main`, branche jetable) : un tiers inscrit
+/// l'adresse de la victime avec son propre mot de passe ; le compte reste
+/// non vérifié. La victime se connecte ensuite avec Google : son identité est
+/// rattachée à ce compte, qui garde le mot de passe du tiers. Le jour où
+/// l'adresse est vérifiée (lien que le tiers fait renvoyer à la victime en
+/// réinscrivant l'adresse, `RegisterAction::ResendVerification`), ce mot de
+/// passe ouvre le compte de la victime.
+#[sqlx::test]
+async fn pentest_916_google_sign_in_does_not_keep_a_preregistered_password(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "victim-916@example.test";
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email,
+            "password": "attacker-password-916",
+            "display_name": "Attaquant",
+            "declares_minimum_age": true,
+            "accepts_terms": true,
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+
+    // La victime se connecte avec Google : elle entre dans ce compte.
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-victim-916", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let session = session_cookie(&res).expect("a session");
+    let me = call(&router, Method::GET, "/auth/me", Some(&session), None).await;
+    assert_status(&me, StatusCode::OK);
+
+    // Elle suit un lien de vérification reçu dans sa boîte.
+    let verification = common::verification_token(&db, email).await;
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={verification}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+
+    // Le mot de passe du tiers ne doit pas ouvrir le compte de la victime.
+    let attacker = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": "attacker-password-916"})),
+    )
+    .await;
+    assert_status(&attacker, StatusCode::UNAUTHORIZED);
+}
