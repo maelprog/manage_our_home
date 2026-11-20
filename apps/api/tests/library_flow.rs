@@ -1679,7 +1679,7 @@ async fn audit_actions(db: &PgPool, target: &str) -> Vec<String> {
 }
 
 /// AC: a report takes a reason from the closed list and a comment of 500
-/// characters at most; the same user reporting the same publication again
+/// characters at most, required with `other` (#911); the same user reporting the same publication again
 /// is answered as the first time and changes nothing; an unknown
 /// publication is a 404.
 #[sqlx::test]
@@ -1697,6 +1697,11 @@ async fn a_report_is_made_once_per_user(db: PgPool) {
         (
             Some(json!({"reason": "spam", "comment": "x".repeat(501)})),
             "comment_too_long",
+        ),
+        (Some(json!({"reason": "other"})), "comment_required"),
+        (
+            Some(json!({"reason": "other", "comment": "  \n "})),
+            "comment_required",
         ),
     ] {
         let res = report_call(&router, &published, &reader, body.clone()).await;
@@ -1735,7 +1740,7 @@ async fn a_report_is_made_once_per_user(db: PgPool) {
         &router,
         &published,
         &author.standard.cookie,
-        Some(json!({"reason": "other", "comment": "   "})),
+        Some(json!({"reason": "illegal", "comment": "   "})),
     )
     .await;
     assert_status(&res, StatusCode::NO_CONTENT);
@@ -1938,7 +1943,7 @@ async fn a_dismissed_report_leaves_the_publication(db: PgPool) {
         &router,
         &published,
         &reader,
-        Some(json!({"reason": "other"})),
+        Some(json!({"reason": "other", "comment": "Encore là."})),
     )
     .await;
     assert_status(&res, StatusCode::NO_CONTENT);
