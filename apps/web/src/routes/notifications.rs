@@ -56,6 +56,35 @@ const FILTERS: [(Option<&str>, &str); 8] = [
 
 // -- pure logic (TDD'd below) ------------------------------------------------
 
+/// Most entries one click on a push marks read: what the API puts in a
+/// push at most (`notifications::push::MAX_PAYLOAD_ENTRIES`).
+pub(crate) const MAX_PUSHED_ENTRIES: usize = 20;
+
+/// The entries the service worker asks to mark read on a click on a push
+/// (#862), `{"entries": […]}` as the push carried them: the identifiers,
+/// each once. Anything that is not one is left out; more than
+/// [`MAX_PUSHED_ENTRIES`] is none at all — no push of the API names that
+/// many.
+pub(crate) fn pushed_entries(body: &serde_json::Value) -> Vec<Uuid> {
+    let Some(entries) = body.get("entries").and_then(|e| e.as_array()) else {
+        return Vec::new();
+    };
+    if entries.len() > MAX_PUSHED_ENTRIES {
+        return Vec::new();
+    }
+    let mut ids: Vec<Uuid> = Vec::new();
+    for id in entries
+        .iter()
+        .filter_map(|e| e.as_str())
+        .filter_map(|e| Uuid::parse_str(e).ok())
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
 /// The `?kind=` of the page, kept only when it names a kind: anything else
 /// shows every kind rather than an error, and never reaches the API.
 fn kind_filter(raw: Option<&str>) -> Option<&'static str> {
@@ -468,6 +497,38 @@ pub async fn mark_all_read(
     }
 }
 
+/// `POST /notifications/pushed/read`, `{"entries": […]}` — what the
+/// service worker sends on a click on a push (#862): the entries of the
+/// centre the push named ([`pushed_entries`]), each marked read through
+/// the API's `POST /notifications/{id}/read`, which only finds the
+/// caller's own. 204 whatever came of it: the worker opens the page
+/// anyway, and the count it shows is read again there. JSON only, as
+/// `/account/notifications/last-push`: a cross-site form cannot send that
+/// content type without a CORS preflight, which nothing here answers.
+pub async fn mark_pushed_read(
+    CurrentUser(_me): CurrentUser,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> Response {
+    let cookie = cookie_of(&headers);
+    for id in pushed_entries(&body) {
+        let _ = api_request_auth(
+            &state,
+            reqwest::Method::POST,
+            &format!("/notifications/{id}/read"),
+            cookie.as_deref(),
+            None,
+        )
+        .await;
+    }
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::http::StatusCode::NO_CONTENT,
+    )
+        .into_response()
+}
+
 /// What an entry's form posts: enough to find where it leads, never the
 /// address itself — `target` builds it, so the form cannot send the caller
 /// anywhere else.
@@ -558,6 +619,52 @@ mod tests {
     // 2026-10-30 is a Friday; Paris is UTC+1 from 2026-10-25.
     fn friday() -> NaiveDate {
         day(2026, 10, 30)
+    }
+
+    // -- a click on a push (#862) -------------------------------------------
+
+    #[test]
+    fn a_click_on_a_push_marks_the_entries_it_names() {
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let body = serde_json::json!({ "entries": [a.to_string(), b.to_string()] });
+        assert_eq!(pushed_entries(&body), vec![a, b]);
+    }
+
+    #[test]
+    fn each_entry_is_marked_once_and_only_identifiers_are() {
+        let a = Uuid::from_u128(1);
+        let body = serde_json::json!({
+            "entries": [a.to_string(), "../read", 7, null, a.to_string(), ""]
+        });
+        assert_eq!(pushed_entries(&body), vec![a]);
+    }
+
+    #[test]
+    fn a_push_without_entries_marks_nothing() {
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!(null),
+            serde_json::json!({ "entries": "x" }),
+            serde_json::json!({ "entries": [] }),
+            serde_json::json!([Uuid::from_u128(1).to_string()]),
+        ] {
+            assert_eq!(pushed_entries(&body), Vec::<Uuid>::new(), "{body}");
+        }
+    }
+
+    #[test]
+    fn more_entries_than_a_push_names_marks_none() {
+        let names = |n: usize| {
+            let entries: Vec<String> = (0..n)
+                .map(|i| Uuid::from_u128(i as u128 + 1).to_string())
+                .collect();
+            serde_json::json!({ "entries": entries })
+        };
+        assert_eq!(
+            pushed_entries(&names(MAX_PUSHED_ENTRIES)).len(),
+            MAX_PUSHED_ENTRIES
+        );
+        assert!(pushed_entries(&names(MAX_PUSHED_ENTRIES + 1)).is_empty());
     }
 
     #[tokio::test]

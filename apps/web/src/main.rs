@@ -502,6 +502,11 @@ fn build_router(state: AppState) -> Router {
             "/notifications/{id}/open",
             post(routes::notifications::open),
         )
+        // A click on a push (#862), from the service worker.
+        .route(
+            "/notifications/pushed/read",
+            post(routes::notifications::mark_pushed_read),
+        )
         .route("/admin/groups", get(routes::admin::groups::get))
         .route("/admin/groups/{id}", get(routes::admin::groups::detail))
         .route(

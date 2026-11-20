@@ -20,20 +20,21 @@
 //!
 //! Once the write committed, the members told whose channel includes
 //! notifications (`users.reminder_channel`, #306) get a push on each of
-//! their devices ([`push_in_background`], #851): no payload, as for the
-//! reminders; the service worker asks which kind of push its device got
+//! their devices ([`push_in_background`], #851), as for the reminders: the
+//! service worker asks which kind of push its device got
 //! (`notifications::push::Pending`) and shows « Agenda de la famille
-//! modifié » — neither the event's title nor its author. No email: a
-//! member on email alone reads the change in the centre.
+//! modifié » — neither the event's title nor its author. The push names
+//! the member's entry of the centre, and its click marks it read (#862).
+//! No email: a member on email alone reads the change in the centre.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::agenda::is_participant;
 use crate::error::AppResult;
-use crate::jobs::scheduled_notifications::push_devices;
+use crate::jobs::scheduled_notifications::push_entries;
 use crate::notifications::center::{self, AgendaChanges};
-use crate::notifications::{push, ReminderChannel};
+use crate::notifications::push;
 use crate::AppState;
 
 /// Who sees an event: everyone in the family when it is shared, its
@@ -240,8 +241,8 @@ pub(crate) async fn candidates(
 }
 
 /// Writes `event` for `recipients`, about the event `event_id`. Returns the
-/// recipients written, for the push to tell their devices without deciding
-/// again (#4). The transaction must be `scoped_tx` on `group_id`: the
+/// entries written, for the push to tell their devices without deciding
+/// again (#4), and to name each one (#862). The transaction must be `scoped_tx` on `group_id`: the
 /// INSERT policy of 0036 checks the family, not the recipient.
 pub(crate) async fn write(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -250,15 +251,13 @@ pub(crate) async fn write(
     event_id: Uuid,
     recipients: &[Uuid],
     event: center::Event<'_>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<center::Entry>> {
     if recipients.is_empty() {
         return Ok(Vec::new());
     }
     // No `dedup_key`: every recipient gets their row (the unique index of
-    // 0036 holds on the key alone), so the ones written are `recipients`.
-    // Not read back with `RETURNING`: the rows are other members', and the
-    // SELECT policy of 0036 would refuse them to the author.
-    center::insert_for(
+    // 0036 holds on the key alone), under an id drawn by `insert_entries`.
+    Ok(center::insert_entries(
         tx,
         recipients,
         &center::NewNotification {
@@ -269,8 +268,7 @@ pub(crate) async fn write(
             dedup_key: None,
         },
     )
-    .await?;
-    Ok(recipients.to_vec())
+    .await?)
 }
 
 /// The member whose write is reported: never told of it.
@@ -295,7 +293,7 @@ pub(crate) async fn tell_added(
     author: Author<'_>,
     event_id: Uuid,
     shown: &Shown<'_>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<center::Entry>> {
     let candidates = wanting(&candidates(tx, group_id).await?, News::Added);
     let told = recipients(&candidates, author.id, &shown.audience);
     write(
@@ -318,7 +316,7 @@ pub(crate) async fn tell_deleted(
     author: Author<'_>,
     event_id: Uuid,
     shown: &Shown<'_>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<center::Entry>> {
     let candidates = wanting(&candidates(tx, group_id).await?, News::Deleted);
     let told = recipients(&candidates, author.id, &shown.audience);
     let event = center::Event::AgendaDeleted {
@@ -341,7 +339,7 @@ pub(crate) async fn tell_changed(
     event_id: Uuid,
     before: &Shown<'_>,
     after: &Shown<'_>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<center::Entry>> {
     let changes = visible_changes(&before.visible, &after.visible);
     let candidates = candidates(tx, group_id).await?;
     let everyone: Vec<Uuid> = candidates.iter().map(|c| c.id).collect();
@@ -381,7 +379,7 @@ pub(crate) async fn tell_changed(
 /// events `touched` (#852): one row per member for the whole import, with
 /// the count of those events they see ([`import_counts`]), naming none —
 /// its `object_id` is empty, there is no single event to open. Nothing to
-/// a member who sees none of them. Returns the members written, to push
+/// a member who sees none of them. Returns the entries written, to push
 /// once committed. Same transaction rule as [`write`]; the author sees
 /// every event they just wrote, so all of `touched` is read back.
 pub(crate) async fn tell_imported(
@@ -389,7 +387,7 @@ pub(crate) async fn tell_imported(
     group_id: Uuid,
     author: Author<'_>,
     touched: &[Uuid],
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<center::Entry>> {
     if touched.is_empty() {
         return Ok(Vec::new());
     }
@@ -418,25 +416,27 @@ pub(crate) async fn tell_imported(
     for &(member, count) in &counts {
         by_count.entry(count).or_default().push(member);
     }
+    let mut told = Vec::with_capacity(counts.len());
     for (count, members) in &by_count {
-        // No `dedup_key`, no `RETURNING`: as in `write`.
-        center::insert_for(
-            tx,
-            members,
-            &center::NewNotification {
-                group_id,
-                event: center::Event::AgendaImported {
-                    author: author.name,
-                    count: *count,
+        // No `dedup_key`: as in `write`.
+        told.extend(
+            center::insert_entries(
+                tx,
+                members,
+                &center::NewNotification {
+                    group_id,
+                    event: center::Event::AgendaImported {
+                        author: author.name,
+                        count: *count,
+                    },
+                    object_id: None,
+                    actor_id: Some(author.id),
+                    dedup_key: None,
                 },
-                object_id: None,
-                actor_id: Some(author.id),
-                dedup_key: None,
-            },
-        )
-        .await?;
+            )
+            .await?,
+        );
     }
-    let told: Vec<Uuid> = counts.into_iter().map(|(member, _)| member).collect();
     Ok(told)
 }
 
@@ -444,48 +444,34 @@ pub(crate) async fn tell_imported(
 /// day. A change read later is in the notification centre anyway.
 pub const CHANGE_PUSH_TTL_SECS: i64 = 24 * 3600;
 
-/// Pushes the devices of the `told` members whose channel includes
+/// Pushes the devices of the members `told` whose channel includes
 /// notifications (`ReminderChannel::includes_push`), recording each
-/// device's answer as the reminders do (`push_devices`). Called by
+/// device's answer as the reminders do (`push_entries`). Called by
 /// [`push_in_background`]; `send_push` is the push itself, a parameter so
 /// that a test can stand in for the push services.
 pub async fn push_changes<P, PFut>(
     pool: &sqlx::PgPool,
     send_push: &P,
-    told: &[Uuid],
+    told: &[center::Entry],
 ) -> anyhow::Result<()>
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let members = sqlx::query!(
-        r#"SELECT id, reminder_channel FROM users
-           WHERE id = ANY($1) AND deactivated_at IS NULL AND deleted_at IS NULL"#,
+    push_entries(
+        pool,
+        send_push,
         told,
+        push::PushKind::AgendaChange,
+        CHANGE_PUSH_TTL_SECS,
     )
-    .fetch_all(pool)
-    .await?;
-    for member in members {
-        let pushes = ReminderChannel::parse(&member.reminder_channel)
-            .is_some_and(ReminderChannel::includes_push);
-        if pushes {
-            push_devices(
-                pool,
-                send_push,
-                member.id,
-                push::PushKind::AgendaChange,
-                CHANGE_PUSH_TTL_SECS,
-            )
-            .await?;
-        }
-    }
-    Ok(())
+    .await
 }
 
 /// [`push_changes`] on a task of its own, once the write's transaction
 /// committed: the request does not wait for the push services. Nothing
 /// without members told, nor on a server without a VAPID key.
-pub(crate) fn push_in_background(state: &AppState, told: Vec<Uuid>) {
+pub(crate) fn push_in_background(state: &AppState, told: Vec<center::Entry>) {
     let Some(vapid) = state.push.clone() else {
         return;
     };
@@ -495,9 +481,9 @@ pub(crate) fn push_in_background(state: &AppState, told: Vec<Uuid>) {
     let pool = state.db.clone();
     tokio::spawn(async move {
         let client = push::client();
-        let send_push = |endpoint: String, ttl_secs: i64| {
+        let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
             let (client, vapid) = (client.clone(), vapid.clone());
-            async move { push::send(&client, &vapid, &endpoint, ttl_secs).await }
+            async move { push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await }
         };
         if let Err(e) = push_changes(&pool, &send_push, &told).await {
             tracing::error!(error = ?e, "failed to push an agenda change");

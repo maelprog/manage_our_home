@@ -1,5 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchVerificationToken, seedMessageNotification } from "../lib/db";
 
 // Reminders by notification (#306). A new account's reminders go out as
 // notifications; with no device subscribed it would receive none, and no
@@ -26,7 +26,7 @@ const PASSWORD = "e2e-notif-password-1";
  */
 const FAMILY = "Foyer Cloche";
 
-async function registerAndLogin(page: Page, prefix: string): Promise<void> {
+async function registerAndLogin(page: Page, prefix: string): Promise<string> {
   const email = uniqueEmail(prefix);
   await page.goto("/register");
   await page.getByLabel("Email").fill(email);
@@ -44,6 +44,7 @@ async function registerAndLogin(page: Page, prefix: string): Promise<void> {
   await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
   await page.getByRole("button", { name: "Se connecter" }).click();
   await expect(page).toHaveURL("/");
+  return email;
 }
 
 async function createGroup(page: Page): Promise<void> {
@@ -129,7 +130,54 @@ test.describe("Reminder notifications", () => {
     expect(body).toContain(`title: "Rappel d'un événement à venir"`);
     expect(body).toContain(`title: "Alerte de budget"`);
     expect(body).toContain(`fetch("/account/notifications/last-push"`);
-    expect(body).not.toContain("event.data");
+    // Of the push's data, the ids of its entries alone (#862), marked read
+    // on the click: never a text to show.
+    expect(body).toContain("pushedEntries(event.data)");
+    expect(body.split("event.data").length - 1).toBe(1);
+    expect(body).toContain(`fetch("/notifications/pushed/read"`);
+  });
+
+  // The click on a push (#862): JSON only, for the member's session; a
+  // body naming no entry of theirs marks nothing and still answers 204.
+  test("the service worker's click marks entries read for the member's session", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "notif-pushed-read");
+    const res = await page.request.post("/notifications/pushed/read", {
+      data: { entries: ["00000000-0000-0000-0000-000000000001"] },
+    });
+    expect(res.status()).toBe(204);
+    expect(res.headers()["cache-control"]).toBe("no-store");
+    const read = await page.request.get("/notifications/pushed/read");
+    expect(read.status()).toBe(405);
+  });
+
+  // The acceptance of #862 through apps/web: an entry the push named is
+  // marked read through the API, the other one stays unread, and the count
+  // goes down.
+  test("a click on a push marks read the entry it names, and the count goes down", async ({
+    page,
+  }) => {
+    const email = await registerAndLogin(page, "notif-pushed-entry");
+    await createGroup(page);
+    const sam = await seedMessageNotification(email, FAMILY, "Sam a écrit dans la messagerie.");
+    await seedMessageNotification(email, FAMILY, "Lou a écrit dans la messagerie.");
+    const counter = (name: string) =>
+      page
+        .getByRole("navigation", { name: "Navigation principale" })
+        .getByRole("link", { name, exact: true });
+    await page.goto("/notifications");
+    await expect(counter("Notifications (2 non lues)")).toBeVisible();
+
+    const res = await page.request.post("/notifications/pushed/read", {
+      data: { entries: [sam] },
+    });
+    expect(res.status()).toBe(204);
+
+    await page.goto("/notifications");
+    await expect(counter("Notifications (1 non lue)")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Sam a écrit/ })).not.toContainText("Non lue");
+    await expect(page.getByRole("button", { name: /Lou a écrit/ })).toContainText("Non lue");
   });
 
   // What the worker asks on each push (#536), naming its device by its

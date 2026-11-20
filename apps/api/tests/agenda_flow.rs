@@ -2211,7 +2211,9 @@ async fn renaming_an_event_leaves_its_reminders_and_they_carry_the_new_title(db:
         Ok::<(), anyhow::Error>(())
     };
     let send_push =
-        |_: String, _: i64| async { manage_our_home::notifications::push::PushOutcome::Delivered };
+        |_: String, _: i64, _: Option<manage_our_home::notifications::push::Payload>| async {
+            manage_our_home::notifications::push::PushOutcome::Delivered
+        };
     manage_our_home::jobs::scheduled_notifications::send_due_notifications(
         &db,
         "https://maison.example",

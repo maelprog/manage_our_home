@@ -16,9 +16,11 @@
 //!
 //! Once the write committed, the members alerted whose channel includes
 //! notifications (`users.reminder_channel`, #306) get a push on each of
-//! their devices ([`push_in_background`]): no payload, as for the
-//! reminders; the service worker asks which kind of push its device got
-//! (`notifications::push::Pending`) and shows « Alerte de budget ».
+//! their devices ([`push_in_background`]), as for the reminders: the
+//! service worker asks which kind of push its device got
+//! (`notifications::push::Pending`) and shows « Alerte de budget »; the
+//! push names the member's entries of the notification centre, and its
+//! click marks them read (#862).
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -31,9 +33,9 @@ use crate::auth::session::{scoped_tx, AuthUser};
 use crate::budget::{can_access_budget, require_budget_access};
 use crate::error::{AppError, AppResult};
 use crate::groups::access::{min_role_for, Feature};
-use crate::jobs::scheduled_notifications::push_devices;
+use crate::jobs::scheduled_notifications::push_entries;
 use crate::notifications::center::{self, Event, NewNotification};
-use crate::notifications::{push, ReminderChannel};
+use crate::notifications::push;
 use crate::stocks::items::day_or_today;
 use crate::AppState;
 
@@ -261,10 +263,10 @@ pub(crate) async fn watch(
 
 impl Watch {
     /// Reads the month's totals again, now that the expense is written,
-    /// and sends an alert for each threshold crossed. Returns the members
-    /// alerted, each once, for [`push_in_background`] to push once the
-    /// transaction committed.
-    pub(crate) async fn fire(self, tx: &mut Tx<'_>) -> AppResult<Vec<Uuid>> {
+    /// and sends an alert for each threshold crossed. Returns the entries
+    /// written, for [`push_in_background`] to push once the transaction
+    /// committed: one push per member, naming them all (`center::by_member`).
+    pub(crate) async fn fire(self, tx: &mut Tx<'_>) -> AppResult<Vec<center::Entry>> {
         let mut alerted = Vec::new();
         let after = totals(
             tx,
@@ -292,8 +294,6 @@ impl Watch {
                 alerted.extend(self.send(tx, Some(category), threshold).await?);
             }
         }
-        alerted.sort_unstable();
-        alerted.dedup();
         Ok(alerted)
     }
 
@@ -302,13 +302,13 @@ impl Watch {
     /// budget (the family's threshold, #865: owners and admins by default)
     /// and whose account is active, the author of the expense included — the alert
     /// is about the month's spending, not about their own action. Returns
-    /// them, none when the alert went already.
+    /// their entries, none when the alert went already.
     async fn send(
         &self,
         tx: &mut Tx<'_>,
         category: Option<&WatchedCategory>,
         threshold: Threshold,
-    ) -> AppResult<Vec<Uuid>> {
+    ) -> AppResult<Vec<center::Entry>> {
         let first = sqlx::query_scalar!(
             r#"INSERT INTO budget_alerts (group_id, month, category_id, threshold)
                VALUES ($1, $2, $3, $4)
@@ -345,7 +345,7 @@ impl Watch {
             (None, Threshold::EightyPercent) => Event::BudgetCapNear,
             (None, _) => Event::BudgetCapReached,
         };
-        center::insert_for(
+        let entries = center::insert_entries(
             tx,
             &recipients,
             &NewNotification {
@@ -357,7 +357,7 @@ impl Watch {
             },
         )
         .await?;
-        Ok(recipients)
+        Ok(entries)
     }
 }
 
@@ -365,7 +365,7 @@ impl Watch {
 /// day. An alert read later is in the notification centre anyway.
 pub const ALERT_PUSH_TTL_SECS: i64 = 24 * 3600;
 
-/// Pushes the devices of the `alerted` members whose channel includes
+/// Pushes the devices of the members `alerted` whose channel includes
 /// notifications (`ReminderChannel::includes_push`), and records each
 /// device's answer as the reminders do (`push_devices`). A member on email
 /// only gets nothing more than the notification centre: no alert is
@@ -374,40 +374,26 @@ pub const ALERT_PUSH_TTL_SECS: i64 = 24 * 3600;
 pub async fn push_alerts<P, PFut>(
     pool: &sqlx::PgPool,
     send_push: &P,
-    alerted: &[Uuid],
+    alerted: &[center::Entry],
 ) -> anyhow::Result<()>
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let members = sqlx::query!(
-        r#"SELECT id, reminder_channel FROM users
-           WHERE id = ANY($1) AND deactivated_at IS NULL AND deleted_at IS NULL"#,
+    push_entries(
+        pool,
+        send_push,
         alerted,
+        push::PushKind::BudgetAlert,
+        ALERT_PUSH_TTL_SECS,
     )
-    .fetch_all(pool)
-    .await?;
-    for member in members {
-        let pushes = ReminderChannel::parse(&member.reminder_channel)
-            .is_some_and(ReminderChannel::includes_push);
-        if pushes {
-            push_devices(
-                pool,
-                send_push,
-                member.id,
-                push::PushKind::BudgetAlert,
-                ALERT_PUSH_TTL_SECS,
-            )
-            .await?;
-        }
-    }
-    Ok(())
+    .await
 }
 
 /// [`push_alerts`] on a task of its own, once the expense's transaction
 /// committed: the request does not wait for the push services. Nothing
 /// without alerted members, nor on a server without a VAPID key.
-pub(crate) fn push_in_background(state: &AppState, alerted: Vec<Uuid>) {
+pub(crate) fn push_in_background(state: &AppState, alerted: Vec<center::Entry>) {
     let Some(vapid) = state.push.clone() else {
         return;
     };
@@ -417,9 +403,9 @@ pub(crate) fn push_in_background(state: &AppState, alerted: Vec<Uuid>) {
     let pool = state.db.clone();
     tokio::spawn(async move {
         let client = push::client();
-        let send_push = |endpoint: String, ttl_secs: i64| {
+        let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
             let (client, vapid) = (client.clone(), vapid.clone());
-            async move { push::send(&client, &vapid, &endpoint, ttl_secs).await }
+            async move { push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await }
         };
         if let Err(e) = push_alerts(&pool, &send_push, &alerted).await {
             tracing::error!(error = ?e, "failed to push a budget alert");
