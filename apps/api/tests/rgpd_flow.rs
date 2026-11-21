@@ -808,6 +808,49 @@ async fn the_legal_notice_and_the_terms_are_public_markdown(db: PgPool) {
     }
 }
 
+/// #960: the legal notice names the licence the code is actually under
+/// (PolyForm Noncommercial 1.0.0 since #914, MIT before), and tells anyone
+/// who meets an unlawful content how to report it (LCEN art. 6, DSA art. 16):
+/// the « Signaler cette recette » button of a library publication, and the
+/// publisher's contact address given under « Éditeur du service ».
+#[sqlx::test]
+async fn the_legal_notice_names_the_licence_and_how_to_report_a_content(db: PgPool) {
+    let router = test_router(db.clone());
+
+    let response = call(&router, Method::GET, "/legal-notice", None, None).await;
+    assert_status(&response, StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let notice = std::str::from_utf8(&body).unwrap();
+
+    assert!(
+        notice.contains("PolyForm Noncommercial 1.0.0"),
+        "the legal notice does not name the PolyForm Noncommercial licence"
+    );
+    assert!(
+        notice.contains("https://polyformproject.org/licenses/noncommercial/1.0.0"),
+        "the legal notice does not link to the licence text"
+    );
+    assert!(
+        !notice.contains("MIT"),
+        "the legal notice still names the MIT licence"
+    );
+
+    let (_, report) = notice
+        .split_once("\n## Signaler un contenu illicite\n")
+        .expect("the legal notice has no « Signaler un contenu illicite » section");
+    let report = report.split("\n## ").next().unwrap();
+    assert!(
+        report.contains("« Signaler cette recette »"),
+        "the report section does not send to the library's report button"
+    );
+    assert!(
+        report.contains("Éditeur du service"),
+        "the report section does not send to the publisher's contact address"
+    );
+}
+
 /// #367: the CGU behind `/terms-of-service` change on a date, not on a
 /// deploy, so no cache may reuse them unchecked across that date — the text
 /// in force and the announced one alike. Nothing announced, or its date come,
