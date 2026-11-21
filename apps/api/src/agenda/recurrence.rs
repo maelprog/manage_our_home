@@ -709,23 +709,15 @@ pub fn carried_over(
             .map(|day| paris_start_of_day(add_days(day, days)))
             .collect()
     } else {
-        let moved = new_start - occurrence;
         let shift = paris_wall_clock(new_start) - paris_wall_clock(occurrence);
+        // Resolved on the pass the moved series unrolls on, never kept on
+        // the instant the elapsed time gives: on the repeated hour, that one
+        // can name the right wall clock on the other pass.
         let on_second_pass = is_second_pass_of_a_repeated_hour(new_start);
         instants
             .iter()
             .filter(|at| **at >= occurrence)
-            .map(|at| {
-                let wall = paris_wall_clock(*at) + shift;
-                // The elapsed time is right whenever it lands on that wall
-                // clock — always within a stretch of one offset.
-                let elapsed = *at + moved;
-                if paris_wall_clock(elapsed) == wall {
-                    elapsed
-                } else {
-                    paris_instant(wall, on_second_pass)
-                }
-            })
+            .map(|at| paris_instant(paris_wall_clock(*at) + shift, on_second_pass))
             .collect()
     }
 }
@@ -2834,5 +2826,29 @@ mod tests {
         let at = paris(2026, 10, 1, 14, 0);
         let all = [paris(2026, 10, 8, 14, 0), paris(2026, 10, 29, 14, 0)];
         assert_eq!(moved_with_series(&all, false, false, at, at), all.to_vec());
+    }
+
+    #[test]
+    fn an_instant_carried_onto_the_repeated_hour_lands_on_the_pass_the_series_unrolls_on() {
+        // A daily series moved from 10:00 to 02:30 the same day, 14 October
+        // (CEST): its exclusion of the 25th, 10:00 (CET), goes to 02:30 that
+        // day — a wall clock read twice. The moved series, anchored on a
+        // plain 02:30, unrolls on the first pass (00:30Z), not on the second
+        // one the elapsed time lands on (01:30Z).
+        let at = paris(2026, 10, 14, 10, 0);
+        let to = paris(2026, 10, 14, 2, 30);
+        let carried = carried_over(&[paris(2026, 10, 25, 10, 0)], false, at, to);
+        assert_eq!(
+            carried,
+            vec![Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap()]
+        );
+        let unrolled = expand_occurrences(
+            "FREQ=DAILY",
+            to,
+            carried[0] - Duration::hours(2),
+            carried[0] + Duration::hours(2),
+        )
+        .unwrap();
+        assert_eq!(unrolled, carried);
     }
 }
