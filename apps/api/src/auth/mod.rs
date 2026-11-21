@@ -965,13 +965,10 @@ pub async fn reset_password(
 
     // Deleted at use rather than marked consumed (#138): a used token is
     // worth nothing, so nothing of it is kept. A second use finds no row
-    // and answers 404, like a token that never existed.
-    sqlx::query!(
-        "DELETE FROM password_reset_tokens WHERE token_hash = $1",
-        &token_hash[..]
-    )
-    .execute(&mut *tx)
-    .await?;
+    // and answers 404, like a token that never existed. The account's other
+    // links go with it (#957): an older one would otherwise take the
+    // account back from the holder for the rest of its hour.
+    delete_password_reset_tokens(&mut *tx, row.user_id).await?;
     let user = sqlx::query!(
         "UPDATE users SET password_hash = $1 WHERE id = $2
          RETURNING email, display_name, email_verified",
@@ -994,6 +991,21 @@ pub async fn reset_password(
     notify_password_change(&state, &user.email, greeted, PasswordChange::Reset).await;
 
     Ok(StatusCode::OK)
+}
+
+/// Deletes every password reset link of `user_id` (#957). Called in the
+/// transaction that writes the password, so that no link outlives it.
+async fn delete_password_reset_tokens<'e>(
+    db: impl sqlx::PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "DELETE FROM password_reset_tokens WHERE user_id = $1",
+        user_id
+    )
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// AC #5: requires the current password; keeps the calling session alive
@@ -1032,13 +1044,18 @@ pub async fn change_password(
 
     validate_password(&body.new_password).map_err(unprocessable)?;
     let new_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
+    let mut tx = crate::db::begin(&state.db).await?;
     sqlx::query!(
         "UPDATE users SET password_hash = $1 WHERE id = $2",
         new_hash,
         auth.user_id
     )
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    // #957: a reset link mailed before the change would replace the new
+    // password.
+    delete_password_reset_tokens(&mut *tx, auth.user_id).await?;
+    tx.commit().await?;
 
     revoke_all_sessions(&state.db, auth.user_id, Some(auth.session_id)).await?;
 
@@ -1096,6 +1113,8 @@ pub async fn set_password(
     )
     .execute(&mut *tx)
     .await?;
+    // #957: as in `change_password`.
+    delete_password_reset_tokens(&mut *tx, auth.user_id).await?;
     let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
     let token = new_token();
     sqlx::query!(
