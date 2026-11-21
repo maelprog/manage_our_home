@@ -6,7 +6,7 @@
 #   1. The bucket Job ran in the sync and created the bucket.
 #   2. An attachment sent through the API lands in the bucket — its object
 #      is on MinIO's volume — and reads back, byte for byte, through the
-#      short-lived URL the API hands out.
+#      API, which serves it from the bucket (`…/content`, #775).
 #   3. Replayed by a new sync of the application, the bucket Job succeeds
 #      and does nothing: it says the bucket is there, and the attachment
 #      is still there.
@@ -102,20 +102,18 @@ key=$(kubectl -n "$ns" exec "$primary" -c postgres -- psql -X -At -d manage_our_
   -c "SELECT storage_key FROM event_attachments WHERE id = '$attachment'")
 echo "attachment $attachment, object $bucket/$key"
 
-# MinIO's port, for the URL the API signs: it names http://minio:9000,
-# the Service inside the cluster, and the signature covers that host.
-kubectl -n "$ns" port-forward svc/minio 19000:9000 > "$work/pf-minio.log" 2>&1 &
-pf_pids+=($!)
+# The API streams the object from the bucket (#775: no presigned URL any
+# more, the storage host is not reachable from outside). Retried, so that
+# MinIO coming back up after its restart is not read as a failure.
 read_back() { # label
-  local url code
-  url=$(ingress "/api/groups/$group/events/$event/attachments/$attachment/download" --cookie "$jar" | json '["url"]')
-  [[ "$url" == "http://minio:9000/$bucket/$key?"* ]] || { echo "::error::$1: the API hands out '$url'"; return 1; }
+  local code
   for _ in $(seq 1 30); do
-    code=$(curl --silent --connect-to minio:9000:127.0.0.1:19000 --output "$work/read.png" --write-out '%{http_code}' "$url" || true)
+    code=$(ingress "/api/groups/$group/events/$event/attachments/$attachment/content" --cookie "$jar" \
+      --output "$work/read.png" --write-out '%{http_code}' || true)
     [ "$code" = 200 ] && break
     sleep 1
   done
-  [ "$code" = 200 ] || { echo "::error::$1: the signed URL answers $code"; return 1; }
+  [ "$code" = 200 ] || { echo "::error::$1: the API's \`…/content\` answers $code"; return 1; }
   cmp "$work/sent.png" "$work/read.png" || { echo "::error::$1: the object read back differs from the one sent"; return 1; }
   # On MinIO's volume: one directory per object, its metadata inside.
   kubectl -n "$ns" exec minio-0 -- test -f "$data/$bucket/$key/xl.meta" \
@@ -157,9 +155,6 @@ echo "== MinIO restarted"
 kubectl -n "$ns" delete pod minio-0 --wait=true
 kubectl -n "$ns" wait --for=create pod/minio-0 --timeout=120s
 kubectl -n "$ns" wait --for=condition=Ready pod/minio-0 --timeout=180s
-kill "${pf_pids[@]}" 2> /dev/null || true
-kubectl -n "$ns" port-forward svc/minio 19000:9000 > "$work/pf-minio-2.log" 2>&1 &
-pf_pids+=($!)
 read_back "after a restart"
 
 # The copy set aside before a restore (README.md, "Restaurer", step 3),
