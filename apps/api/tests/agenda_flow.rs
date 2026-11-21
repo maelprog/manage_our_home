@@ -5726,3 +5726,278 @@ async fn editing_an_event_follows_the_family_s_threshold(db: PgPool) {
     )
     .await;
 }
+
+// -- #959: a series moved whole takes its exclusions and completions -------
+
+/// `day` at `hour`:00 on the Paris wall clock.
+fn paris_at(day: chrono::NaiveDate, hour: u32) -> DateTime<Utc> {
+    rrule::Tz::Europe__Paris
+        .from_local_datetime(&day.and_hms_opt(hour, 0, 0).unwrap())
+        .single()
+        .unwrap()
+        .with_timezone(&Utc)
+}
+
+/// The next Paris change of hour — the last Sunday of March or October — at
+/// least ten days from now, so a series starting a week before it is still
+/// ahead and reminded.
+fn next_change_of_hour() -> chrono::NaiveDate {
+    use chrono::{Datelike, Weekday};
+    use manage_our_home_shared::validation::agenda::paris_date;
+    let mut day = paris_date(Utc::now()) + Duration::days(10);
+    loop {
+        let last_sunday = day.weekday() == Weekday::Sun
+            && matches!(day.month(), 3 | 10)
+            && (day + Duration::days(7)).month() != day.month();
+        if last_sunday {
+            return day;
+        }
+        day += Duration::days(1);
+    }
+}
+
+/// The exclusions `event_id` stores.
+async fn stored_exdates(db: &PgPool, group_id: &str, event_id: &str) -> Vec<DateTime<Utc>> {
+    let mut tx = with_family_scope(db, group_id).await;
+    let exdates = sqlx::query_scalar("SELECT exdates FROM events WHERE id = $1")
+        .bind(Uuid::parse_str(event_id).unwrap())
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    exdates
+}
+
+/// AC (#959): a weekly series with its second occurrence deleted, moved a
+/// day later as a whole: the occurrence deleted stays absent from the
+/// agenda, moved with the series, and no reminder is scheduled for it —
+/// the pending ones are rescheduled on the occurrences the series lists
+/// (#841). Hour-bound and all-day, near a change of hour or across one
+/// (between the two starts, or between the start and the exclusion), and
+/// from one kind to the other.
+#[sqlx::test]
+async fn moving_a_whole_series_keeps_its_deleted_occurrences_deleted(db: PgPool) {
+    use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
+
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "move@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    let soon = paris_date(Utc::now()) + Duration::days(2);
+    let change = next_change_of_hour();
+    // The occurrence `n` weeks into a series on `day`: at `hour` on the
+    // Paris wall clock, or the Paris midnight opening it for an all-day one.
+    let at = |all_day: bool, day: chrono::NaiveDate, hour: u32, n: i64| {
+        let day = day + Duration::days(7 * n);
+        if all_day {
+            paris_start_of_day(day)
+        } else {
+            paris_at(day, hour)
+        }
+    };
+    // (label, all-day before, first day, all-day after, hour)
+    let cases = [
+        ("hour-bound", false, soon, false, 9),
+        ("all-day", true, soon, true, 0),
+        // The series starts the day before the change and moves onto it.
+        (
+            "hour-bound across the change",
+            false,
+            change - Duration::days(1),
+            false,
+            10,
+        ),
+        (
+            "all-day across the change",
+            true,
+            change - Duration::days(1),
+            true,
+            0,
+        ),
+        // Both starts before the change; the exclusion moves onto its day.
+        (
+            "exclusion across the change",
+            false,
+            change - Duration::days(8),
+            false,
+            10,
+        ),
+        ("hour-bound to all-day", false, soon, true, 14),
+        ("all-day to hour-bound", true, soon, false, 14),
+    ];
+    for (label, was_all_day, first, all_day, hour) in cases {
+        let start = at(was_all_day, first, hour, 0);
+        let end = if was_all_day {
+            paris_start_of_day(first + Duration::days(1))
+        } else {
+            start + Duration::hours(1)
+        };
+        let series = create_event_with(
+            &router,
+            &cookie,
+            &group_id,
+            serde_json::json!({
+                "title": label,
+                "starts_at": start,
+                "ends_at": end,
+                "all_day": was_all_day,
+                "rrule": "FREQ=WEEKLY;COUNT=4",
+            }),
+        )
+        .await;
+        let id = series["id"].as_str().unwrap().to_string();
+        let reminder = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/events/{id}/reminders"),
+            Some(&cookie),
+            Some(serde_json::json!({"offset_minutes": 0})),
+        )
+        .await;
+        assert_status(&reminder, StatusCode::CREATED);
+        let res = delete_scoped(
+            &router,
+            &cookie,
+            &group_id,
+            &id,
+            &scoped("this", at(was_all_day, first, hour, 1)),
+        )
+        .await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+
+        let moved = first + Duration::days(1);
+        let new_start = at(all_day, moved, hour, 0);
+        let new_end = if all_day {
+            paris_start_of_day(moved + Duration::days(1))
+        } else {
+            new_start + Duration::hours(1)
+        };
+        patched(
+            &router,
+            &cookie,
+            &group_id,
+            Uuid::parse_str(&id).unwrap(),
+            serde_json::json!({
+                "starts_at": new_start,
+                "ends_at": new_end,
+                "all_day": all_day,
+            }),
+        )
+        .await;
+
+        let expected: Vec<DateTime<Utc>> = [0, 2, 3].map(|n| at(all_day, moved, hour, n)).to_vec();
+        let listed: Vec<DateTime<Utc>> = listed_occurrences(
+            &router,
+            &cookie,
+            &group_id,
+            start - Duration::days(2),
+            start + Duration::days(30),
+        )
+        .await
+        .into_iter()
+        .filter(|o| o.0 == id)
+        .map(|o| o.2)
+        .collect();
+        assert_eq!(listed, expected, "{label}: listed");
+        // Reminders are scheduled `NOTIFICATION_WINDOW_DAYS` ahead: a series
+        // around a change of hour months away has none yet, and its stored
+        // exclusion below is what the reminders will be refilled from.
+        let horizon = Utc::now()
+            + Duration::days(manage_our_home::agenda::reminders::NOTIFICATION_WINDOW_DAYS);
+        let reminded: Vec<DateTime<Utc>> = expected
+            .iter()
+            .copied()
+            .filter(|at| *at <= horizon)
+            .collect();
+        assert_eq!(
+            scheduled_occurrences(&db, &id).await,
+            reminded,
+            "{label}: reminded"
+        );
+        assert_eq!(
+            stored_exdates(&db, &group_id, &id).await,
+            vec![at(all_day, moved, hour, 1)],
+            "{label}: stored"
+        );
+    }
+}
+
+/// AC (#959): a recurring task moved a day later as a whole keeps its
+/// occurrences ticked off — the completion moves with its occurrence.
+#[sqlx::test]
+async fn moving_a_whole_recurring_task_keeps_its_occurrences_ticked_off(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "task@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let series_id = daily_task_done_on(&router, &cookie, &group_id, &[2, 3]).await;
+
+    patched(
+        &router,
+        &cookie,
+        &group_id,
+        Uuid::parse_str(&series_id).unwrap(),
+        serde_json::json!({
+            "starts_at": nine_paris(1),
+            "ends_at": nine_paris(1) + Duration::hours(1),
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        completion_instants(&db, &group_id, &series_id).await,
+        vec![nine_paris(3), nine_paris(4)]
+    );
+    let done: Vec<(DateTime<Utc>, bool)> =
+        listed_occurrences(&router, &cookie, &group_id, nine_paris(-1), nine_paris(10))
+            .await
+            .into_iter()
+            .map(|o| (o.2, o.3))
+            .collect();
+    assert_eq!(
+        done,
+        (1..6)
+            .map(|n| (nine_paris(n), n == 3 || n == 4))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// AC (#959): a `PATCH` that leaves `starts_at` alone leaves the exclusions
+/// alone — a new title, or a new end that reschedules the reminders.
+#[sqlx::test]
+async fn a_patch_that_does_not_move_the_series_keeps_its_exclusions(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "keep@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let id = daily_series_with_a_reminder(&router, &cookie, &group_id, serde_json::json!({})).await;
+    let res = delete_scoped(
+        &router,
+        &cookie,
+        &group_id,
+        &id,
+        &scoped("this", nine_paris(2)),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+
+    for body in [
+        serde_json::json!({"title": "Natation"}),
+        serde_json::json!({"starts_at": nine_paris(0), "ends_at": nine_paris(0) + Duration::hours(2)}),
+    ] {
+        patched(
+            &router,
+            &cookie,
+            &group_id,
+            Uuid::parse_str(&id).unwrap(),
+            body,
+        )
+        .await;
+        assert_eq!(
+            stored_exdates(&db, &group_id, &id).await,
+            vec![nine_paris(2)]
+        );
+        assert_eq!(
+            scheduled_occurrences(&db, &id).await,
+            [0, 1, 3, 4].map(nine_paris).to_vec()
+        );
+    }
+}

@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use manage_our_home_shared::validation::agenda::{paris_date, paris_start_of_day};
 use rrule::{Frequency, RRule, RRuleSet, Tz, Unvalidated};
 
@@ -682,9 +682,13 @@ pub fn continued_after(rrule: &str, produced_before: u32) -> Result<String, rrul
 /// `occurrence` on, moved as the series moves.
 ///
 /// - **hour-bound**: from the instant of `occurrence` on, each moved by
-///   `new_start - occurrence`. A move within the day keeps its Paris wall
-///   clock on both sides of a change of hour, since the offset is the same
-///   at both ends of it.
+///   as much Paris wall clock as `occurrence` to `new_start` — what the
+///   series unrolls on, so each lands on the occurrence the moved series
+///   has there (#959). Moved by the elapsed time instead, an instant on the
+///   other side of a change of hour from its image, or a series moved
+///   across one, came out an hour off its occurrence. A wall clock Paris
+///   skips is read an hour later and a repeated one on the pass the moved
+///   series unrolls on (see `expand_occurrences`).
 /// - **all-day** (read on the old series' kind): from the Paris day of
 ///   `occurrence` on, each moved by as many civil days as the series and
 ///   written as the Paris midnight opening its new day — what an all-day
@@ -706,12 +710,73 @@ pub fn carried_over(
             .collect()
     } else {
         let moved = new_start - occurrence;
+        let shift = paris_wall_clock(new_start) - paris_wall_clock(occurrence);
+        let on_second_pass = is_second_pass_of_a_repeated_hour(new_start);
         instants
             .iter()
             .filter(|at| **at >= occurrence)
-            .map(|at| *at + moved)
+            .map(|at| {
+                let wall = paris_wall_clock(*at) + shift;
+                // The elapsed time is right whenever it lands on that wall
+                // clock — always within a stretch of one offset.
+                let elapsed = *at + moved;
+                if paris_wall_clock(elapsed) == wall {
+                    elapsed
+                } else {
+                    paris_instant(wall, on_second_pass)
+                }
+            })
             .collect()
     }
+}
+
+/// What `instants` become when their series is moved whole from
+/// `old_start` to `new_start` (#959): `carried_over` from the series' start,
+/// read as an all-day series only when it is one on both sides. A series
+/// that becomes all-day (or stops being one) carries its instants on the
+/// wall clock: from 14:00 to the next midnight, an exclusion at 14:00 lands
+/// on the next day's midnight, and the other way round.
+pub fn moved_with_series(
+    instants: &[DateTime<Utc>],
+    was_all_day: bool,
+    all_day: bool,
+    old_start: DateTime<Utc>,
+    new_start: DateTime<Utc>,
+) -> Vec<DateTime<Utc>> {
+    carried_over(instants, was_all_day && all_day, old_start, new_start)
+}
+
+/// `dt` on the Paris wall clock.
+fn paris_wall_clock(dt: DateTime<Utc>) -> NaiveDateTime {
+    dt.with_timezone(&PARIS).naive_local()
+}
+
+/// The instant an hour-bound series unrolls a Paris wall clock to: the one
+/// it names; on a repeated hour, its second pass for a series anchored on
+/// one (`second_pass`), its first otherwise; on a skipped one, the wall
+/// clock an hour later — see `expand_occurrences`.
+fn paris_instant(wall: NaiveDateTime, second_pass: bool) -> DateTime<Utc> {
+    let resolved = match PARIS.from_local_datetime(&wall) {
+        LocalResult::Single(at) => at,
+        LocalResult::Ambiguous(first, second) => {
+            if second_pass {
+                second
+            } else {
+                first
+            }
+        }
+        LocalResult::None => {
+            match PARIS
+                .from_local_datetime(&(wall + Duration::hours(1)))
+                .earliest()
+            {
+                Some(at) => at,
+                // No offset an hour later either: not a Paris change of hour.
+                None => return wall.and_utc(),
+            }
+        }
+    };
+    resolved.with_timezone(&Utc)
 }
 
 /// The `NAME=value` parts of a rule, empty ones dropped.
@@ -2667,5 +2732,107 @@ mod tests {
                 produced_before: 2,
             })
         );
+    }
+
+    #[test]
+    fn an_hour_bound_series_moved_across_a_change_of_hour_keeps_its_wall_clock() {
+        // Moved from Saturday 24 October, 10:00 (CEST) to Sunday the 25th,
+        // 10:00 (CET): 25 hours apart, one day on the wall clock. The
+        // exclusion of the 31st goes to 1 November, 10:00 — the occurrence
+        // the moved series has there.
+        let at = paris(2026, 10, 24, 10, 0);
+        let to = paris(2026, 10, 25, 10, 0);
+        assert_eq!(
+            carried_over(&[paris(2026, 10, 31, 10, 0)], false, at, to),
+            vec![paris(2026, 11, 1, 10, 0)]
+        );
+        // The other way round in March: 23 hours apart.
+        let at = paris(2026, 3, 28, 10, 0);
+        let to = paris(2026, 3, 29, 10, 0);
+        assert_eq!(
+            carried_over(&[paris(2026, 4, 4, 10, 0)], false, at, to),
+            vec![paris(2026, 4, 5, 10, 0)]
+        );
+    }
+
+    #[test]
+    fn an_instant_carried_across_a_change_of_hour_keeps_its_wall_clock() {
+        // The series moves by a day on the same side of the change; the
+        // exclusion it carries crosses it: 24 October, 10:00 CEST, becomes
+        // 25 October, 10:00 CET.
+        let at = paris(2026, 10, 17, 10, 0);
+        let to = paris(2026, 10, 18, 10, 0);
+        assert_eq!(
+            carried_over(&[paris(2026, 10, 24, 10, 0)], false, at, to),
+            vec![paris(2026, 10, 25, 10, 0)]
+        );
+    }
+
+    #[test]
+    fn an_instant_carried_onto_the_skipped_hour_lands_where_the_series_does() {
+        // A daily series at 02:30 moved a day later: its exclusion of
+        // 28 March goes to the 29th, whose 02:30 does not exist. The series
+        // unrolls that occurrence an hour later on the clock (01:30Z, 03:30
+        // CEST), and the exclusion goes there too.
+        let at = paris(2026, 3, 20, 2, 30);
+        let to = paris(2026, 3, 21, 2, 30);
+        let excluded = paris(2026, 3, 28, 2, 30);
+        let carried = carried_over(&[excluded], false, at, to);
+        assert_eq!(
+            carried,
+            vec![Utc.with_ymd_and_hms(2026, 3, 29, 1, 30, 0).unwrap()]
+        );
+        let unrolled = expand_occurrences(
+            "FREQ=DAILY",
+            to,
+            carried[0] - Duration::hours(2),
+            carried[0] + Duration::hours(2),
+        )
+        .unwrap();
+        assert_eq!(unrolled, carried);
+    }
+
+    #[test]
+    fn a_whole_series_moved_carries_its_instants_onto_its_new_kind() {
+        // Hour-bound → all-day: 14:00 to the Paris midnight of the next day.
+        // The exclusion of the 8th goes to the 9th, at its Paris midnight.
+        assert_eq!(
+            moved_with_series(
+                &[paris(2026, 10, 8, 14, 0)],
+                false,
+                true,
+                paris(2026, 10, 1, 14, 0),
+                midnight(2026, 10, 2),
+            ),
+            vec![midnight(2026, 10, 9)]
+        );
+        // All-day → hour-bound: from the 22nd to the 23rd at 14:00 (CEST).
+        // The exclusion of the 29th goes to the 30th at 14:00 (CET), across
+        // the change of hour.
+        assert_eq!(
+            moved_with_series(
+                &[midnight(2026, 10, 29)],
+                true,
+                false,
+                midnight(2026, 10, 22),
+                paris(2026, 10, 23, 14, 0),
+            ),
+            vec![paris(2026, 10, 30, 14, 0)]
+        );
+        // All-day on both sides: by civil days.
+        assert_eq!(
+            moved_with_series(
+                &[midnight(2026, 10, 29)],
+                true,
+                true,
+                midnight(2026, 10, 22),
+                midnight(2026, 10, 23),
+            ),
+            vec![midnight(2026, 10, 30)]
+        );
+        // Not moved: unchanged.
+        let at = paris(2026, 10, 1, 14, 0);
+        let all = [paris(2026, 10, 8, 14, 0), paris(2026, 10, 29, 14, 0)];
+        assert_eq!(moved_with_series(&all, false, false, at, at), all.to_vec());
     }
 }
