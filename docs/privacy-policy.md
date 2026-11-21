@@ -718,7 +718,7 @@ de la purge dépasserait.
   les événements qui vous sont assignés, y compris par un autre membre ;
   les rappels de vos événements et les envois qu'ils ont programmés, la
   façon dont ils vous parviennent et vos appareils abonnés aux
-  notifications ; les notifications qui vous sont adressées dans
+  notifications, sans leurs clés de chiffrement (voir plus bas) ; les notifications qui vous sont adressées dans
   l'application, tant qu'elles sont conservées ; vos
   pièces jointes ; les occurrences de tâches que vous avez cochées ; votre
   marqueur de lecture de la messagerie ; les invitations que vous avez
@@ -737,7 +737,13 @@ de la purge dépasserait.
   par son type et un lien de même durée : relancez l'export pour en
   obtenir un nouveau. N'y figurent ni le contenu créé par les autres
   membres, ni les secrets d'accès (identifiant de session, jeton
-  d'invitation ou de vérification, jeton Google, URL de flux calendrier).
+  d'invitation ou de vérification, jeton Google, URL de flux calendrier),
+  ni les deux clés de chiffrement de l'abonnement d'un appareil aux
+  notifications. Ces clés, créées par le navigateur de l'appareil, qui les
+  garde, ne servent qu'à chiffrer pour lui le contenu d'une notification ;
+  l'une est secrète. Les recopier dans un fichier ne vous apprendrait rien
+  sur vous et ferait circuler ce secret : l'export donne chaque appareil
+  sans elles.
 - **Droit à l'effacement (Art. 17)** : voir « Suppression de votre
   compte » ci-dessus.
 - **Droit de rectification** : modifiable directement depuis les paramètres

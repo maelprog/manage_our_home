@@ -707,7 +707,10 @@ pub async fn export_account(
     // included: it is the push service's address for that device, held
     // about the person like the rest. Unlike a session id it is no key —
     // a push service refuses any message to it not signed with this
-    // server's VAPID key.
+    // server's VAPID key. Its two keys (`p256dh`, `auth`, #862) are left
+    // out, like the ICS feed URL above: they only encrypt the payload for
+    // the browser that made them and keeps them, and `auth` is a secret.
+    // The privacy policy declares the exception (#961).
     let devices = sqlx::query!(
         r#"SELECT platform, endpoint, created_at, last_seen_at, last_success_at,
                   consecutive_failures, failing_since, pending_push_kind, pending_pushes,
