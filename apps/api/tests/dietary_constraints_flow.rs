@@ -50,7 +50,7 @@ async fn a_member_lists_adds_and_removes_their_allergies_and_dislikes(db: PgPool
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({"tag": format!(" {TAG} ")})),
+        Some(json!({"tag": format!(" {TAG} "), "consent": true})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -72,7 +72,7 @@ async fn a_member_lists_adds_and_removes_their_allergies_and_dislikes(db: PgPool
             Method::POST,
             "/me/allergies",
             &f.holder,
-            Some(json!({ "tag": tag })),
+            Some(json!({"tag": tag})),
         )
         .await;
         assert_eq!((got, body["error"].as_str()), (status, Some(code)), "{tag}");
@@ -166,7 +166,7 @@ async fn a_level_is_set_only_on_an_own_allergy_in_an_own_family(db: PgPool) {
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     for (body, status, code) in [
@@ -306,7 +306,7 @@ async fn a_private_allergy_changes_no_answer_another_member_gets(db: PgPool) {
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     assert_same(
@@ -369,7 +369,7 @@ async fn anonymous_shows_neither_tag_nor_member_and_public_shows_both(db: PgPool
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
 
@@ -431,7 +431,7 @@ async fn leaving_a_family_drops_the_levels_set_there_and_only_there(db: PgPool) 
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     set_share(&router, &f, "public").await;
@@ -510,7 +510,7 @@ async fn the_export_holds_the_allergies_their_levels_and_the_dislikes(db: PgPool
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     set_share(&router, &f, "anonymous").await;
@@ -567,7 +567,7 @@ async fn erasing_everything_takes_every_allergy_level_and_dislike(db: PgPool) {
             Method::POST,
             uri,
             &f.holder,
-            Some(json!({ "tag": tag })),
+            Some(json!({"tag": tag, "consent": true})),
         )
         .await;
     }
@@ -578,7 +578,7 @@ async fn erasing_everything_takes_every_allergy_level_and_dislike(db: PgPool) {
         Method::POST,
         "/me/allergies",
         &f.owner,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
 
@@ -837,7 +837,7 @@ async fn a_member_finds_a_category_by_its_name_and_reads_it_back_by_name(db: PgP
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({"tag": "en:kiwifruits"})),
+        Some(json!({"tag": "en:kiwifruits", "consent": true})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -877,7 +877,7 @@ async fn arriving_in_a_family_shares_nothing_until_the_member_chooses(db: PgPool
             Method::POST,
             "/me/allergies",
             &holder,
-            Some(json!({ "tag": tag })),
+            Some(json!({"tag": tag, "consent": true})),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -1006,4 +1006,144 @@ async fn sharing_rows(db: &PgPool, group: &str) -> i64 {
         .fetch_one(db)
         .await
         .unwrap()
+}
+
+/// The member's allergies, read past RLS by the harness pool.
+async fn allergy_rows(db: &PgPool, user: uuid::Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM user_allergies WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+async fn add_allergy(router: &axum::Router, cookie: &str, body: Value) -> (StatusCode, Value) {
+    send(router, Method::POST, "/me/allergies", cookie, Some(body)).await
+}
+
+fn consent_required(answer: &(StatusCode, Value)) -> bool {
+    answer.0 == StatusCode::UNPROCESSABLE_ENTITY && answer.1["error"] == "consent_required"
+}
+
+#[sqlx::test]
+async fn the_first_allergy_needs_consent_and_is_asked_again_once_none_is_left(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "consent").await;
+
+    // No allergy, no consent: refused, nothing written.
+    for body in [json!({"tag": TAG}), json!({"tag": TAG, "consent": false})] {
+        let answer = add_allergy(&router, &f.holder, body.clone()).await;
+        assert!(consent_required(&answer), "{body}: {answer:?}");
+    }
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+
+    // A dislike never asks, and holds no consent for an allergy.
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        "/me/dislikes",
+        &f.holder,
+        Some(json!({"tag": "en:mushrooms"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let answer = add_allergy(&router, &f.holder, json!({"tag": TAG})).await;
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+
+    // Given: recorded. The second needs it no more.
+    let (status, body) =
+        add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = add_allergy(&router, &f.holder, json!({"tag": "en:eggs"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 2);
+
+    // « Tout effacer » withdraws it: asked again.
+    let (status, _) = send(
+        &router,
+        Method::DELETE,
+        "/me/dietary-constraints",
+        &f.holder,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let answer = add_allergy(&router, &f.holder, json!({"tag": TAG})).await;
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+
+    // So does removing the last one.
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(
+        &router,
+        Method::DELETE,
+        "/me/allergies",
+        &f.holder,
+        Some(json!({"tag": TAG})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let answer = add_allergy(&router, &f.holder, json!({"tag": "en:eggs"})).await;
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+}
+
+#[sqlx::test]
+async fn two_first_allergies_at_once_without_consent_are_both_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "consent-twice").await;
+    let (one, two) = tokio::join!(
+        add_allergy(&router, &f.holder, json!({"tag": TAG})),
+        add_allergy(&router, &f.holder, json!({"tag": "en:eggs"})),
+    );
+    assert!(consent_required(&one), "{one:?}");
+    assert!(consent_required(&two), "{two:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+}
+
+/// The consent is read and the allergy written under the member's lock
+/// (`ALLERGIES_LOCK`): an allergy asked for while the last one is being
+/// removed waits for the removal, then finds no consent in force — not the
+/// allergy about to go.
+#[sqlx::test]
+async fn an_allergy_added_while_the_last_is_removed_waits_and_then_needs_consent(db: PgPool) {
+    use manage_our_home::recipes::constraints::ALLERGIES_LOCK;
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "consent-race").await;
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A removal in flight, as `remove_allergy` and `erase_constraints`
+    // hold it: the lock taken, the row deleted, not yet committed.
+    #[allow(clippy::disallowed_methods)]
+    let mut removal = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2::text))")
+        .bind(ALLERGIES_LOCK)
+        .bind(f.holder_id.to_string())
+        .execute(&mut *removal)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM user_allergies WHERE user_id = $1")
+        .bind(f.holder_id)
+        .execute(&mut *removal)
+        .await
+        .unwrap();
+
+    let adding = {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        tokio::spawn(async move { add_allergy(&router, &cookie, json!({"tag": "en:eggs"})).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !adding.is_finished(),
+        "the allergy did not wait for the removal"
+    );
+
+    removal.commit().await.unwrap();
+    let answer = adding.await.unwrap();
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
 }

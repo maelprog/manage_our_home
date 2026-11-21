@@ -9,6 +9,10 @@
 //! comes from `GET /groups/{id}/allergies`, read at each request through the
 //! `SECURITY DEFINER` functions of 0057, the only path across members.
 //!
+//! The first allergy is recorded only with the member's consent in the
+//! request (#958, registre line 4a): no column keeps it, the oldest
+//! allergy dates it, and with none left it is asked again.
+//!
 //! Nothing here leaves a trace of an allergy: no `audit_log` row, no log
 //! line, no notification. A database error is logged with its detail
 //! (`error::AppError::Sqlx`), which would carry the tag, so every value is
@@ -20,6 +24,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
+use manage_our_home_shared::dto::recipes::AddAllergyRequest;
 use manage_our_home_shared::validation::dietary::{
     validate_equipment, validate_tag, DietaryError, ShareLevel,
 };
@@ -55,6 +60,39 @@ pub(crate) fn tag_label(taxonomy: &Taxonomy, tag: &str) -> String {
     taxonomy
         .tag(tag)
         .map_or_else(|| tag.to_string(), |id| taxonomy.label(id).to_string())
+}
+
+/// Whether an allergy may be recorded (#958): the first one needs the
+/// member's consent in the request — with no allergy recorded, no consent
+/// is in force (registre, line 4a). Once one is, consent stands, dated by
+/// the oldest. A dislike is not health data and never asks. `Err` is the
+/// error code.
+pub(crate) fn allergy_consent(has_allergies: bool, consent: bool) -> Result<(), &'static str> {
+    if has_allergies || consent {
+        Ok(())
+    } else {
+        Err("consent_required")
+    }
+}
+
+/// Advisory lock class of a member's allergies (`pg_advisory_xact_lock`'s
+/// first key, the member's id hashed the second). Adding, removing and
+/// erasing take it first, so that the consent read before a first allergy
+/// cannot be withdrawn — the last allergy removed, everything erased —
+/// between that read and the insert: the check and the write see the same
+/// list (#958).
+pub const ALLERGIES_LOCK: i32 = i32::from_be_bytes(*b"mal4");
+
+/// Takes [`ALLERGIES_LOCK`] for the member, until the transaction ends.
+async fn lock_allergies(tx: &mut sqlx::PgConnection, user_id: Uuid) -> AppResult<()> {
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock($1, hashtext($2::text))",
+        ALLERGIES_LOCK,
+        user_id.to_string(),
+    )
+    .execute(tx)
+    .await?;
+    Ok(())
 }
 
 /// One family the member belongs to.
@@ -261,16 +299,17 @@ pub async fn list_allergies(
 }
 
 /// Records an allergy, `private` in every family until the caller says
-/// otherwise.
+/// otherwise. The first one needs `consent: true` ([`allergy_consent`]).
 #[utoipa::path(
     post,
     path = "/me/allergies",
     tag = "account",
-    request_body = TagRequest,
+    request_body = AddAllergyRequest,
     responses(
         (status = 201, description = "Allergy recorded", body = AllergyEntry),
         (status = 400, description = "`tag_required`, `tag_too_long`, `invalid_tag` or `unknown_tag`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 409, description = "`already_listed`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`consent_required`: the caller has no allergy recorded and the body does not carry `consent: true`; nothing is written", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
     ),
     security(("session_cookie" = [])),
@@ -278,10 +317,19 @@ pub async fn list_allergies(
 pub async fn add_allergy(
     State(state): State<AppState>,
     auth: AuthUser,
-    Json(body): Json<TagRequest>,
+    Json(body): Json<AddAllergyRequest>,
 ) -> AppResult<impl IntoResponse> {
     let tag = known_tag(&body.tag)?;
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    lock_allergies(&mut tx, auth.user_id).await?;
+    let has_allergies = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM user_allergies WHERE user_id = $1) AS "exists!""#,
+        auth.user_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    allergy_consent(has_allergies, body.consent)
+        .map_err(|code| AppError::Unprocessable(code.into()))?;
     let created_at = sqlx::query_scalar!(
         r#"INSERT INTO user_allergies (user_id, tag) VALUES ($1, $2)
            ON CONFLICT (user_id, tag) DO NOTHING
@@ -332,6 +380,7 @@ pub async fn remove_allergy(
 ) -> AppResult<impl IntoResponse> {
     let tag = validate_tag(&body.tag)?;
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    lock_allergies(&mut tx, auth.user_id).await?;
     let removed = sqlx::query!(
         "DELETE FROM user_allergies WHERE user_id = $1 AND tag = $2",
         auth.user_id,
@@ -532,6 +581,7 @@ pub async fn erase_constraints(
     auth: AuthUser,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    lock_allergies(&mut tx, auth.user_id).await?;
     // The levels go with their allergy (ON DELETE CASCADE); named anyway,
     // so that this does not rest on the key alone.
     sqlx::query!(
@@ -770,6 +820,18 @@ mod tests {
         for (tag, label) in INCO_ALLERGENS {
             assert_eq!(checked_tag(taxonomy(), tag), Ok(tag.to_string()), "{label}");
         }
+    }
+
+    #[test]
+    fn the_first_allergy_needs_consent() {
+        assert_eq!(allergy_consent(false, false), Err("consent_required"));
+        assert_eq!(allergy_consent(false, true), Ok(()));
+    }
+
+    #[test]
+    fn with_an_allergy_recorded_consent_is_in_force() {
+        assert_eq!(allergy_consent(true, false), Ok(()));
+        assert_eq!(allergy_consent(true, true), Ok(()));
     }
 
     #[test]

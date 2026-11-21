@@ -318,6 +318,21 @@ pub struct PublishRequest {
     pub consent: bool,
 }
 
+/// `POST /me/allergies` request body (#958), the one type the API reads
+/// and `apps/web` sends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AddAllergyRequest {
+    /// An Open Food Facts category, e.g. `en:peanuts`.
+    pub tag: String,
+    /// The member's explicit consent to the recording of their allergies,
+    /// health data (registre, line 4a). Required for the first one only:
+    /// while an allergy is recorded, consent is in force, dated by the
+    /// oldest. Absent reads as `false`.
+    #[serde(default)]
+    pub consent: bool,
+}
+
 /// `POST /library/recipes/:id/report` request body (#908).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportRequest {
