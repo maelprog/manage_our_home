@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM event_occurrence_completions WHERE event_id = $1 RETURNING occurrence_at, completed_at, completed_by",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "occurrence_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "event_occurrence_completions",
+            "name": "occurrence_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "completed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "event_occurrence_completions",
+            "name": "completed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "completed_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "event_occurrence_completions",
+            "name": "completed_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "198a689d7acd8e5f6d4c5faf09e508516ef56ef1c0e1aa0358722d457a1ce4de"
+}

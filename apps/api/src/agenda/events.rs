@@ -879,6 +879,26 @@ pub async fn update_event(
         rrule.as_deref(),
     )?;
     let (starts_at, ends_at) = normalized_bounds(all_day, starts_at, ends_at);
+    // A series moved whole takes its exclusions along (#959): left where
+    // they were, the occurrences deleted from it came back on the dates it
+    // moved them to, reminders included. Its task completions follow below,
+    // once the row is written.
+    let series_moved = existing.rrule.is_some() && starts_at != existing.starts_at;
+    let exdates = if series_moved {
+        recurrence::moved_with_series(
+            &existing.exdates,
+            existing.all_day,
+            existing.starts_at,
+            recurrence::MovedSeries {
+                rrule: rrule.as_deref(),
+                all_day,
+                starts_at,
+                ends_at,
+            },
+        )
+    } else {
+        existing.exdates.clone()
+    };
 
     if body.completed.is_some() && !existing.is_task {
         return Err(AppError::BadRequest(
@@ -930,6 +950,7 @@ pub async fn update_event(
             rrule = $9,
             completed_at = $10,
             is_private = $11,
+            exdates = $12,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
         RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
@@ -945,9 +966,13 @@ pub async fn update_event(
         rrule,
         completed_at,
         will_be_private,
+        &exdates,
     )
     .fetch_one(&mut *tx)
     .await?;
+    if series_moved && existing.is_task {
+        move_series_completions(&mut tx, &existing, &event).await?;
+    }
 
     if moves_occurrences(&existing, &event) {
         reminders::reschedule_pending(
@@ -1284,6 +1309,54 @@ async fn split_series(
 
     copy_reminders(tx, series.id, &created).await?;
     Ok(created)
+}
+
+/// Moves the task completions of a series moved whole from `before` to
+/// `after` (#959) onto the instants their occurrences have now, as its
+/// exclusions are (`recurrence::moved_with_series`): an occurrence ticked
+/// off stays ticked off. Each keeps its author and time.
+async fn move_series_completions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    before: &EventRow,
+    after: &EventRow,
+) -> AppResult<()> {
+    let rows = sqlx::query!(
+        "DELETE FROM event_occurrence_completions WHERE event_id = $1 RETURNING occurrence_at, completed_at, completed_by",
+        before.id,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in rows {
+        // One instant at a time, so each keeps its own completion.
+        let Some(occurrence_at) = recurrence::moved_with_series(
+            &[row.occurrence_at],
+            before.all_day,
+            before.starts_at,
+            recurrence::MovedSeries {
+                rrule: after.rrule.as_deref(),
+                all_day: after.all_day,
+                starts_at: after.starts_at,
+                ends_at: after.ends_at,
+            },
+        )
+        .pop() else {
+            continue;
+        };
+        sqlx::query!(
+            r#"
+            INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_at, completed_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (event_id, occurrence_at) DO NOTHING
+            "#,
+            after.id,
+            occurrence_at,
+            row.completed_at,
+            row.completed_by,
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Moves the task completions of `series` from `occurrence` on to the new
