@@ -146,7 +146,10 @@ possibles sont :
   invite, le corps d'un avis de propriété nomme le groupe et dit pourquoi
   il vous revient, et le corps de l'avertissement avant suppression, celui
   d'un avis de propriété et celui de l'avis de compte existant vous nomment
-  par votre nom affiché. L'avis de compte existant part quand quelqu'un —
+  par votre nom affiché ; celui d'une réinitialisation de mot de passe
+  aussi, si votre adresse est vérifiée, de même que celui de l'email qui
+  vous demande de confirmer votre adresse quand vous ajoutez un mot de
+  passe à votre compte. L'avis de compte existant part quand quelqu'un —
   vous ou n'importe qui d'autre — tente de créer un compte avec votre adresse alors qu'elle est
   déjà vérifiée, sauf si votre compte est désactivé ; il vous le signale,
   avec un lien vers la page « mot de passe oublié », sans que la personne

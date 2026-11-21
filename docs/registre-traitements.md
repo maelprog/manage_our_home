@@ -110,7 +110,12 @@ tourne sur un VPS loué à un hébergeur tiers (arbitrage du 2026-10-10,
   avis de propriété nomme le groupe et dit pourquoi la propriété revient
   au destinataire, son objet ne nomme aucun groupe ; le corps de
   l'avertissement avant purge et celui d'un avis de propriété nomment le
-  destinataire par son nom affiché (#832) ; le corps de l'avis de
+  destinataire par son nom affiché (#832) ; le corps d'un email de
+  réinitialisation de mot de passe nomme le titulaire du compte par son nom
+  affiché si son adresse est vérifiée, personne sinon (#831), et celui de
+  la vérification d'adresse envoyée quand un compte connecté ajoute un mot
+  de passe le nomme aussi, l'email de vérification envoyé à l'inscription
+  ne nommant personne ; le corps de l'avis de
   compte existant nomme le titulaire du compte par son nom affiché et porte
   un lien vers la page « mot de passe oublié », sans jeton, son objet est
   « Vous avez déjà un compte »). Ce dernier est déclenché par une tentative
