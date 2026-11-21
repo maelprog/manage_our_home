@@ -5960,6 +5960,48 @@ async fn moving_a_whole_recurring_task_keeps_its_occurrences_ticked_off(db: PgPo
             .map(|n| (nine_paris(n), n == 2 || n == 3))
             .collect::<Vec<_>>()
     );
+
+    // Weekly, moved a day later: its second occurrence is no longer one of
+    // its occurrences, and its completion goes along with it.
+    let weekly = daily_series_with_a_reminder(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({"is_task": true, "rrule": "FREQ=WEEKLY;COUNT=3"}),
+    )
+    .await;
+    let res = patch_event(
+        &router,
+        &cookie,
+        &group_id,
+        &weekly,
+        serde_json::json!({"completed": true, "occurrence_at": nine_paris(7)}),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    patched(
+        &router,
+        &cookie,
+        &group_id,
+        Uuid::parse_str(&weekly).unwrap(),
+        serde_json::json!({
+            "starts_at": nine_paris(1),
+            "ends_at": nine_paris(1) + Duration::hours(1),
+        }),
+    )
+    .await;
+    assert_eq!(
+        completion_instants(&db, &group_id, &weekly).await,
+        vec![nine_paris(8)]
+    );
+    let done: Vec<(DateTime<Utc>, bool)> =
+        listed_occurrences(&router, &cookie, &group_id, nine_paris(-1), nine_paris(20))
+            .await
+            .into_iter()
+            .filter(|o| o.0 == weekly)
+            .map(|o| (o.2, o.3))
+            .collect();
+    assert_eq!(done, [1, 8, 15].map(|n| (nine_paris(n), n == 8)).to_vec());
 }
 
 /// Arbitrage (#959): a series on fixed weekdays moved a day later, its rule
