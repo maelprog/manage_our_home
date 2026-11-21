@@ -680,8 +680,8 @@ pub async fn revoke_session(pool: &PgPool, session_id: Uuid) -> Result<(), sqlx:
 
 /// Revokes every active session for a user. `except` optionally keeps one
 /// session alive (used by the authenticated password-change flow, AC #5).
-pub async fn revoke_all_sessions(
-    pool: &PgPool,
+pub async fn revoke_all_sessions<'e>(
+    db: impl sqlx::PgExecutor<'e>,
     user_id: Uuid,
     except: Option<Uuid>,
 ) -> Result<(), sqlx::Error> {
@@ -694,7 +694,7 @@ pub async fn revoke_all_sessions(
         user_id,
         except
     )
-    .execute(pool)
+    .execute(db)
     .await?;
     Ok(())
 }

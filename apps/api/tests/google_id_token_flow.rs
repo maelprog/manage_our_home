@@ -616,3 +616,185 @@ async fn both_routes_share_a_rate_limit_per_address(db: PgPool) {
     assert_status(&refused, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(user_id(&db, "rate-669@example.test").await, None);
 }
+
+/// `password_hash IS NOT NULL` and `email_verified` of the account.
+async fn password_and_verified(db: &PgPool, user_id: Uuid) -> (bool, bool) {
+    sqlx::query_as("SELECT password_hash IS NOT NULL, email_verified FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// Sessions of the account not revoked.
+async fn open_sessions(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM sessions WHERE user_id = $1 AND revoked_at IS NULL")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// `POST /auth/login` with `email` and `password`.
+async fn login(router: &axum::Router, email: &str, password: &str) -> axum::response::Response {
+    call(
+        router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": password})),
+    )
+    .await
+}
+
+/// `POST /auth/register` for `email` with `password`: anyone can do it for
+/// an address that is not theirs, and the account stays unverified.
+async fn register(router: &axum::Router, email: &str, password: &str) {
+    let res = call(
+        router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email,
+            "password": password,
+            "display_name": "Attaquant",
+            "declares_minimum_age": true,
+            "accepts_terms": true,
+        })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+}
+
+async fn verification_tokens(db: &PgPool, user_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM email_verification_tokens WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// #916, finding 1 (#956): a third party registers the victim's address
+/// with their own password; the account stays unverified. The victim then
+/// signs in with Google, which proves the address: the account becomes
+/// hers, Google-only and verified. The verification link the registration
+/// mailed to her opens nothing for the third party: their password is
+/// gone, and registering the address again sends no fresh link.
+#[sqlx::test]
+async fn pentest_916_google_sign_in_does_not_keep_a_preregistered_password(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "victim-916@example.test";
+    register(&router, email, "attacker-password-916").await;
+    let user = user_id(&db, email).await.unwrap();
+
+    // The victim signs in with Google: she enters this account.
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-victim-916", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let session = session_cookie(&res).expect("a session");
+    let me = call(&router, Method::GET, "/auth/me", Some(&session), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(json_body(me).await["user_id"], user.to_string());
+    assert_eq!(identities(&db, user).await, vec!["google-sub-victim-916"]);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+
+    // She follows a verification link found in her mailbox.
+    let verification = common::verification_token(&db, email).await;
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/auth/verify-email?token={verification}"),
+        None,
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+
+    // The third party's password does not open the victim's account.
+    let attacker = login(&router, email, "attacker-password-916").await;
+    assert_status(&attacker, StatusCode::UNAUTHORIZED);
+    // Registering the address again only tells its holder she has an
+    // account (`RegisterAction::NotifyExisting`): no fresh link, and the
+    // account stays Google-only.
+    let tokens = verification_tokens(&db, user).await;
+    register(&router, email, "attacker-password-916b").await;
+    assert_eq!(verification_tokens(&db, user).await, tokens);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+}
+
+/// #956: a session open on the unverified account before Google takes it
+/// over is closed; the one the sign-in opens is the only one left.
+#[sqlx::test]
+async fn taking_over_an_unverified_account_closes_its_earlier_sessions(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "earlier-956@example.test";
+    register(&router, email, "attacker-password-956").await;
+    let user = user_id(&db, email).await.unwrap();
+    let earlier = common::insert_session(&db, user).await;
+    assert_eq!(open_sessions(&db, user).await, 1);
+
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-956", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let session = session_cookie(&res).expect("a session");
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&earlier), None).await;
+    assert_status(&me, StatusCode::UNAUTHORIZED);
+    let me = call(&router, Method::GET, "/auth/me", Some(&session), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(open_sessions(&db, user).await, 1);
+}
+
+/// #956, non-regression: bound to a verified account, the identity leaves
+/// its password and its sessions as they were.
+#[sqlx::test]
+async fn binding_a_verified_account_keeps_its_password_and_sessions(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "verified-956@example.test";
+    let user = password_account(&router, &db, email).await;
+    let earlier = common::insert_session(&db, user).await;
+
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-verified-956", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+
+    assert_eq!(identities(&db, user).await, vec!["google-sub-verified-956"]);
+    assert_eq!(password_and_verified(&db, user).await, (true, true));
+    let me = call(&router, Method::GET, "/auth/me", Some(&earlier), None).await;
+    assert_status(&me, StatusCode::OK);
+    let res = login(&router, email, "password-669-a").await;
+    assert_status(&res, StatusCode::OK);
+}
+
+/// #956: a Google account that added a password is unverified until its
+/// link is followed (`auth::set_password`); signing in again with the
+/// identity already bound to it keeps that password, and its sessions.
+#[sqlx::test]
+async fn a_bound_google_account_awaiting_its_password_link_keeps_it(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "added-956@example.test";
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-added-956", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let user = user_id(&db, email).await.unwrap();
+    sqlx::query(
+        "UPDATE users SET password_hash = 'added-hash', email_verified = false WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-added-956", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+
+    assert_eq!(password_and_verified(&db, user).await, (true, false));
+    assert_eq!(open_sessions(&db, user).await, 2, "both sign-ins' sessions");
+}

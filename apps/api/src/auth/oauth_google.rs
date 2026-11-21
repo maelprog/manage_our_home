@@ -14,7 +14,8 @@ use crate::error::{AppError, AppResult};
 use crate::{AppState, GoogleOauthClient};
 
 use super::session::{
-    client_of_headers, create_restricted_session, create_session, set_session_cookie,
+    client_of_headers, create_restricted_session, create_session, revoke_all_sessions,
+    set_session_cookie,
 };
 
 const OAUTH_STATE_COOKIE: &str = "google_oauth_state";
@@ -125,6 +126,32 @@ struct Existing {
     user_id: uuid::Uuid,
     purged: bool,
     deactivated: bool,
+    email_verified: bool,
+}
+
+/// What signing in writes to the account the Google profile found (#956).
+#[derive(Debug, PartialEq, Eq)]
+enum Binding {
+    /// The identity is already bound to it: nothing to write.
+    AlreadyBound,
+    /// Bind the identity to a verified account (or one just created),
+    /// which keeps its password and its sessions.
+    Bind,
+    /// Bind the identity to an account whose address nobody had proved,
+    /// and take the account over: Google just proved the address, so its
+    /// password — possibly set by whoever registered the address first —
+    /// is erased, the address marked verified, and every session open on
+    /// it closed. The account becomes Google-only; its holder can add a
+    /// password again (`auth::set_password`).
+    ClaimUnverified,
+}
+
+fn binding(identity_bound: bool, email_verified: bool) -> Binding {
+    match (identity_bound, email_verified) {
+        (true, _) => Binding::AlreadyBound,
+        (false, true) => Binding::Bind,
+        (false, false) => Binding::ClaimUnverified,
+    }
 }
 
 /// A Google profile whose email Google verified: what `callback` reads
@@ -270,7 +297,9 @@ pub enum SignIn {
 /// and for the native sign-in (`google_id_token`, #669) alike: the account
 /// already bound to that Google identity — or, failing that, the account
 /// with the same email, to which the identity is then bound, created if
-/// there is none. An account deactivated by support gets a restricted
+/// there is none. Bound to an account whose address was never verified,
+/// the identity takes it over (#956, [`Binding::ClaimUnverified`]). An
+/// account deactivated by support gets a restricted
 /// session on both paths, and nothing written to it (#194, #289); a purged
 /// one is refused with a bare 401. `refresh_token`, when Google gave one, is
 /// stored encrypted via `pgcrypto` and is never written to `tracing` logs.
@@ -297,7 +326,7 @@ pub(crate) async fn sign_in_profile(
     let existing_identity = sqlx::query!(
         r#"
         SELECT i.user_id, u.deleted_at IS NOT NULL AS "purged!",
-               u.deactivated_at IS NOT NULL AS "deactivated!"
+               u.deactivated_at IS NOT NULL AS "deactivated!", u.email_verified
         FROM oauth_identities i
         JOIN users u ON u.id = i.user_id
         WHERE i.provider = 'google' AND i.provider_user_id = $1
@@ -315,13 +344,14 @@ pub(crate) async fn sign_in_profile(
                 user_id: identity.user_id,
                 purged: identity.purged,
                 deactivated: identity.deactivated,
+                email_verified: identity.email_verified,
             }),
             true,
         ),
         None => {
             let existing_user = sqlx::query!(
                 r#"SELECT id, deleted_at IS NOT NULL AS "purged!",
-                          deactivated_at IS NOT NULL AS "deactivated!"
+                          deactivated_at IS NOT NULL AS "deactivated!", email_verified
                    FROM users WHERE email = $1"#,
                 email
             )
@@ -332,6 +362,7 @@ pub(crate) async fn sign_in_profile(
                     user_id: u.id,
                     purged: u.purged,
                     deactivated: u.deactivated,
+                    email_verified: u.email_verified,
                 }),
                 false,
             )
@@ -355,14 +386,17 @@ pub(crate) async fn sign_in_profile(
         return Ok(SignIn::Session);
     }
 
-    let user_id = match existing_account {
-        Some(account) => account.user_id,
+    let (user_id, binding) = match existing_account {
+        Some(account) => (
+            account.user_id,
+            binding(identity_bound, account.email_verified),
+        ),
         None => {
             let display_name = profile
                 .name
                 .clone()
                 .unwrap_or_else(|| profile.email.clone());
-            sqlx::query_scalar!(
+            let user_id = sqlx::query_scalar!(
                 r#"
                 INSERT INTO users (email, email_verified, display_name)
                 VALUES ($1, true, $2)
@@ -372,11 +406,12 @@ pub(crate) async fn sign_in_profile(
                 display_name,
             )
             .fetch_one(&mut *tx)
-            .await?
+            .await?;
+            (user_id, Binding::Bind)
         }
     };
 
-    if !identity_bound {
+    if binding != Binding::AlreadyBound {
         if let Some(refresh_token) = refresh_token {
             sqlx::query!(
                 r#"
@@ -402,6 +437,20 @@ pub(crate) async fn sign_in_profile(
             .execute(&mut *tx)
             .await?;
         }
+    }
+
+    // #956: after the identity is written, so the deferred
+    // `users_has_auth_method_trigger` finds it at commit when the password
+    // goes. In the same transaction: the account is never left Google-bound
+    // with the password of whoever registered the address first.
+    if binding == Binding::ClaimUnverified {
+        sqlx::query!(
+            "UPDATE users SET password_hash = NULL, email_verified = true WHERE id = $1",
+            user_id
+        )
+        .execute(&mut *tx)
+        .await?;
+        revoke_all_sessions(&mut *tx, user_id, None).await?;
     }
 
     tx.commit().await?;
@@ -438,6 +487,26 @@ mod tests {
 
     /// A 43-character verifier, the RFC 7636 minimum.
     const VERIFIER: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+
+    /// #956: a Google account that added a password is unverified again
+    /// until its link is followed (`auth::set_password`); signing in with
+    /// the identity already bound to it leaves that password alone.
+    #[test]
+    fn an_identity_already_bound_writes_nothing_verified_or_not() {
+        assert_eq!(binding(true, true), Binding::AlreadyBound);
+        assert_eq!(binding(true, false), Binding::AlreadyBound);
+    }
+
+    #[test]
+    fn a_verified_account_gets_the_identity_and_keeps_its_password() {
+        assert_eq!(binding(false, true), Binding::Bind);
+    }
+
+    /// #956: whoever registered the address first may not be its holder.
+    #[test]
+    fn an_unverified_account_is_taken_over_by_the_identity() {
+        assert_eq!(binding(false, false), Binding::ClaimUnverified);
+    }
 
     #[test]
     fn authorization_url_carries_an_s256_challenge_of_the_returned_verifier() {
