@@ -1,6 +1,6 @@
 # Mentions légales — Manage Our Home
 
-Dernière mise à jour : 2026-10-15.
+Dernière mise à jour : 2026-11-21.
 
 Ces mentions répondent à l'article 1-1 de la loi n° 2004-575 du 21 juin 2004
 pour la confiance dans l'économie numérique, dans sa rédaction issue de la
@@ -50,8 +50,11 @@ Le service ouvert au public est hébergé par ce prestataire, et par lui seul.
 
 ## Propriété intellectuelle
 
-Le code source du service est publié par l'éditeur sous licence MIT, qui en
-autorise la réutilisation à ses propres conditions.
+Le code source du service est publié par l'éditeur sous licence
+[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) :
+elle permet à chacun de l'utiliser, de le copier, de le modifier et de le
+redistribuer à toute fin non commerciale, et elle en interdit tout usage
+commercial sans l'accord de l'éditeur.
 
 Les contenus que vous déposez dans le service — messages, événements,
 recettes, articles de stock, dépenses, pièces jointes — ne sont pas couverts
@@ -75,6 +78,21 @@ du ministère de l'Éducation nationale, publié sous
 [Licence Ouverte v2.0 (Etalab)](https://www.etalab.gouv.fr/licence-ouverte-open-licence/).
 Le service en garde une copie, relue chaque jour ; seuls les libellés et les
 dates des périodes de vacances des zones A, B et C en sont repris.
+
+## Signaler un contenu illicite
+
+Les recettes de la bibliothèque sont lisibles par tous les utilisateurs du
+service. Si l'une d'elles vous paraît illicite — propos haineux, données
+personnelles d'un tiers, contrefaçon, mise en danger — signalez-la :
+
+- depuis le service, avec le bouton « Signaler cette recette » en bas de la
+  recette dans la bibliothèque. Vous choisissez un motif et pouvez ajouter
+  un commentaire, obligatoire pour le motif « Autre » ; le signalement est
+  lu par l'éditeur, et l'auteur de la recette n'en est pas informé ;
+- sinon, et pour tout autre contenu, à l'adresse de contact donnée plus
+  haut, à la rubrique « Éditeur du service ». Indiquez où se trouve le
+  contenu, pourquoi vous le jugez illicite, et votre nom et votre adresse
+  électronique.
 
 ## Données personnelles
 
