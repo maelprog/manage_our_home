@@ -730,3 +730,16 @@ jobs:
         env:
           WEB_BASE_URL: https://localhost
           API_LOG_PATH: ${{ runner.temp }}/api-https.log
+      # A failed test leaves its trace and its video in e2e/test-results/
+      # (`retain-on-failure`, e2e/playwright.config.ts): kept with the run, so
+      # a failure that does not come back on a rerun can still be read (#963).
+      # A failure of the first suite stops the job before the HTTPS run,
+      # which would start test-results/ afresh.
+      - name: Keep the traces of the failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

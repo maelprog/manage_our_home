@@ -24,7 +24,11 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL,
+    // With `retries: 0`, `on-first-retry` would record nothing: the trace
+    // and the video of a failed test are kept instead, and CI uploads
+    // test-results/ when the suite fails (#963).
     trace: "retain-on-failure",
+    video: "retain-on-failure",
     // The suite browses as a visitor who asked for reduced motion, which
     // turns off the page transition (#523: `@view-transition` is only asked
     // for under `prefers-reduced-motion: no-preference`). Playwright launches
