@@ -1249,6 +1249,19 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
         await page.goto(path);
         await expect(page.getByRole("heading", { level: 1 }), path).toHaveText(longDate(parisDay()));
       }
+
+      // Today's line of the current time lets the pointer through to the
+      // block or the half hour under it (#963): it took the click across
+      // the whole width of its hour.
+      const now = page.locator(".hours .now");
+      await now.scrollIntoViewIfNeeded();
+      const line = await now.boundingBox();
+      if (!line) throw new Error("today's hours have no line of the current time");
+      const under = await page.evaluate(([x, y]) => {
+        const hit = document.elementFromPoint(x, y);
+        return hit === null ? "nothing" : hit.closest(".now") ? "the line" : "under it";
+      }, [line.x + 24, line.y + line.height / 2]);
+      expect(under).toBe("under it");
     });
 
     // #794 — a half hour of the hours, free or under a block, opens the

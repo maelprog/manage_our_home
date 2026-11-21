@@ -933,8 +933,10 @@ progress::-moz-progress-bar { background: currentColor; }
 /* The current time across its hour, to the quarter, drawn when the page
    is: from the hour's name to the scroller's edge, which clips it, a dot
    at its head as the mock-up draws it (#836), centred on the line: a
-   border, which forced colours repaint rather than drop. */
-.now { position: absolute; z-index: 2; top: 0; left: 100%; width: 100vw; border-top: var(--s2) solid var(--accent); }
+   border, which forced colours repaint rather than drop. Above the
+   blocks, it lets the pointer through to them and to the half hours
+   (#963). */
+.now { position: absolute; z-index: 2; top: 0; left: 100%; width: 100vw; border-top: var(--s2) solid var(--accent); pointer-events: none; }
 .now::before { content: ""; position: absolute; top: calc(var(--s2) / -2); left: 0; border: var(--s1) solid var(--accent); border-radius: 50%; translate: -50% -50%; }
 .now.q1 { top: 25%; }
 .now.q2 { top: 50%; }
