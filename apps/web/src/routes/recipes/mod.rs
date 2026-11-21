@@ -23,10 +23,13 @@ pub mod equipment;
 pub mod import;
 pub mod library;
 pub mod list;
+pub mod mine;
 pub mod missing;
 pub mod new;
 pub mod outcome;
+pub mod publish;
 pub mod replace;
+pub mod report;
 pub mod start;
 pub mod week;
 

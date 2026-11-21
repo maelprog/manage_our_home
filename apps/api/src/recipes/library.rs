@@ -5,10 +5,13 @@
 //!
 //! - `POST /groups/{id}/recipes/{recipe_id}/publish` takes a snapshot of
 //!   the recipe — name, method, servings, duration, ingredients with their
-//!   seasons — once the caller says `{"consent": true}`. Who may: whoever
+//!   seasons, and the page it was imported from (#911) — once the caller
+//!   says `{"consent": true}`. Who may: whoever
 //!   may edit the recipe (`recipes::can_modify`, the family's
 //!   `recipes_edit` threshold of #866). Publishing again replaces the
-//!   snapshot, in place.
+//!   snapshot, in place. `GET` on the same path answers the caller's own
+//!   publication of the recipe, if any (#911): the recipe's page offers to
+//!   publish it, or to publish it again and to withdraw it.
 //! - `DELETE` on the same path withdraws the caller's publication of that
 //!   recipe; the family's owner withdraws it whoever published it, a former
 //!   member included (#908). `DELETE /groups/{id}/library/recipes/{library_id}`
@@ -17,8 +20,14 @@
 //!   withdrawn when they leave it or are removed from it, its source recipe
 //!   deleted since or not: the publication keeps its family
 //!   (`library_recipe_publishers.group_id`; `groups::leave_group`,
-//!   `groups::remove_member`, #908). Only a family deleted since leaves
-//!   none to look it up by.
+//!   `groups::remove_member`, #908). A family deleted since leaves none to
+//!   look it up by: its publisher withdraws it through the routes below.
+//! - `GET /library/recipes/mine` and `DELETE /library/recipes/{id}`
+//!   (#947): the caller's own publications, listed and withdrawn through
+//!   no family — the one they were taken from deleted since or not
+//!   (user's decision of 2026-11-20). Nobody else's: the publishers'
+//!   policy (0066) shows the caller their own rows alone. Each says
+//!   whether its source recipe still exists (#911).
 //! - `POST /library/recipes/{id}/report` and the superadmin's
 //!   `/admin/library/*` routes report a publication and moderate it
 //!   (`recipes::library_moderation`, #908). A recipe whose publication the
@@ -27,6 +36,8 @@
 //! - `GET /library/recipes` (search by name and by ingredient, keyset
 //!   pages) and `GET /library/recipes/{id}` answer what was published and
 //!   nothing about who published it: no family, no person, no source recipe.
+//!   The detail also says when the caller reported it, if they did (#911):
+//!   their own report, which nobody else reads.
 //!   Their JSON is built from `library_recipes` and `library_ingredients`
 //!   alone, which hold none of these.
 //! - `POST /groups/{id}/library/recipes/{library_id}/copy` (#907): any
@@ -69,6 +80,7 @@ use crate::groups::require_role;
 use crate::rate_limit::{SlidingLimiter, SlidingWindow};
 use crate::recipes::can_modify;
 use crate::recipes::crud::{read_recipe, DURATION_MAX};
+use crate::recipes::import::valid_source_url;
 use crate::recipes::selections::SERVINGS_MAX;
 use crate::AppState;
 
@@ -258,6 +270,8 @@ impl Cursor {
 pub(crate) struct SourceRecipe {
     pub name: String,
     pub instructions: Option<String>,
+    /// The page it was imported from (#405), if any.
+    pub source_url: Option<String>,
     pub servings: Option<i32>,
     pub duration_minutes: Option<i32>,
 }
@@ -276,6 +290,9 @@ pub(crate) struct SourceIngredient {
 pub(crate) struct Snapshot {
     pub name: String,
     pub instructions: Option<String>,
+    /// The page the recipe was imported from (#911): an `http` or `https`
+    /// address, or none.
+    pub source_url: Option<String>,
     pub servings: Option<i32>,
     pub duration_minutes: Option<i32>,
     pub ingredients: Vec<SnapshotIngredient>,
@@ -376,6 +393,7 @@ pub(crate) fn snapshot(
     Ok(Snapshot {
         name,
         instructions,
+        source_url: recipe.source_url.as_deref().and_then(valid_source_url),
         servings: recipe.servings,
         duration_minutes: recipe.duration_minutes,
         ingredients,
@@ -442,12 +460,18 @@ pub struct LibraryRecipeResponse {
     pub id: Uuid,
     pub name: String,
     pub instructions: Option<String>,
+    /// The page the recipe was imported from (#911): an `http` or `https`
+    /// address; absent for a recipe typed by hand.
+    pub source_url: Option<String>,
     pub servings: Option<i32>,
     pub duration_minutes: Option<i32>,
     pub ingredients: Vec<LibraryIngredientResponse>,
     pub published_at: DateTime<Utc>,
     /// When it was last published again; `published_at` on a first one.
     pub updated_at: DateTime<Utc>,
+    /// When the caller reported it (#908, #911); absent when they did not,
+    /// and always in the answer to a publication.
+    pub reported_at: Option<DateTime<Utc>>,
 }
 
 /// A publication in a list.
@@ -474,6 +498,38 @@ pub struct LibraryPage {
     pub total: i64,
 }
 
+/// One of the caller's own publications.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct MyPublication {
+    pub id: Uuid,
+    pub name: String,
+    pub servings: Option<i32>,
+    pub duration_minutes: Option<i32>,
+    /// How many ingredients it lists.
+    pub ingredient_count: i64,
+    pub published_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Whether the recipe it was taken from still exists (#911): `false`
+    /// once it was deleted, or went with its family. The publication stays
+    /// until it is withdrawn.
+    pub source_recipe_kept: bool,
+}
+
+/// The caller's own publications, newest first.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct MyPublications {
+    pub recipes: Vec<MyPublication>,
+}
+
+/// The caller's own publication of a recipe of the family (#911).
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct PublicationOfRecipe {
+    pub library_recipe_id: Uuid,
+    pub published_at: DateTime<Utc>,
+    /// When it was last published again; `published_at` on a first one.
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct LibraryQuery {
@@ -496,6 +552,7 @@ struct LibraryRow {
     id: Uuid,
     name: String,
     instructions: Option<String>,
+    source_url: Option<String>,
     servings: Option<i32>,
     duration_minutes: Option<i32>,
     published_at: DateTime<Utc>,
@@ -509,7 +566,8 @@ async fn fetch_publication(
 ) -> AppResult<Option<LibraryRecipeResponse>> {
     let Some(row) = sqlx::query_as!(
         LibraryRow,
-        r#"SELECT id, name, instructions, servings, duration_minutes, published_at, updated_at
+        r#"SELECT id, name, instructions, source_url, servings, duration_minutes,
+                  published_at, updated_at
            FROM library_recipes WHERE id = $1"#,
         id
     )
@@ -530,11 +588,13 @@ async fn fetch_publication(
         id: row.id,
         name: row.name,
         instructions: row.instructions,
+        source_url: row.source_url,
         servings: row.servings,
         duration_minutes: row.duration_minutes,
         ingredients,
         published_at: row.published_at,
         updated_at: row.updated_at,
+        reported_at: None,
     }))
 }
 
@@ -575,7 +635,7 @@ pub async fn publish_recipe(
     // The source: a recipe of this family, read under its policy — never
     // an id the client chose (see the module's note).
     let source = sqlx::query!(
-        r#"SELECT created_by, name, instructions, servings, duration_minutes
+        r#"SELECT created_by, name, instructions, source_url, servings, duration_minutes
            FROM recipes WHERE id = $1 AND group_id = $2"#,
         recipe_id,
         group_id,
@@ -615,6 +675,7 @@ pub async fn publish_recipe(
         SourceRecipe {
             name: source.name,
             instructions: source.instructions,
+            source_url: source.source_url,
             servings: source.servings,
             duration_minutes: source.duration_minutes,
         },
@@ -642,13 +703,14 @@ pub async fn publish_recipe(
             sqlx::query!(
                 r#"UPDATE library_recipes
                    SET name = $2, instructions = $3, servings = $4, duration_minutes = $5,
-                       updated_at = now()
+                       source_url = $6, updated_at = now()
                    WHERE id = $1"#,
                 id,
                 snap.name,
                 snap.instructions,
                 snap.servings,
                 snap.duration_minutes,
+                snap.source_url,
             )
             .execute(&mut *tx)
             .await?;
@@ -662,12 +724,14 @@ pub async fn publish_recipe(
         }
         None => {
             let id = sqlx::query_scalar!(
-                r#"INSERT INTO library_recipes (name, instructions, servings, duration_minutes)
-                   VALUES ($1, $2, $3, $4) RETURNING id"#,
+                r#"INSERT INTO library_recipes
+                       (name, instructions, servings, duration_minutes, source_url)
+                   VALUES ($1, $2, $3, $4, $5) RETURNING id"#,
                 snap.name,
                 snap.instructions,
                 snap.servings,
                 snap.duration_minutes,
+                snap.source_url,
             )
             .fetch_one(&mut *tx)
             .await?;
@@ -735,6 +799,50 @@ pub async fn publish_recipe(
         StatusCode::CREATED
     };
     Ok((status, Json(publication)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/{recipe_id}/publish",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 200, description = "The caller's own publication of the recipe", body = PublicationOfRecipe),
+        (status = 404, description = "`not_found`: no such recipe in the family, or the caller has not published it (another member's publication of it is not shown)", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn get_my_publication_of_recipe(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+    // The recipe read under the family's policy, as the publication does:
+    // its id names nothing outside the family. Then the caller's own
+    // publication of it, which the publishers' policy alone shows them;
+    // the `user_id` says so again.
+    let publication = sqlx::query_as!(
+        PublicationOfRecipe,
+        r#"SELECT l.id AS library_recipe_id, l.published_at, l.updated_at
+           FROM recipes r
+           JOIN library_recipe_publishers p ON p.source_recipe_id = r.id
+           JOIN library_recipes l ON l.id = p.library_recipe_id
+           WHERE r.id = $1 AND r.group_id = $2 AND p.user_id = $3"#,
+        recipe_id,
+        group_id,
+        auth.user_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(publication))
 }
 
 #[utoipa::path(
@@ -950,13 +1058,91 @@ pub async fn list_library(
 
 #[utoipa::path(
     get,
+    path = "/library/recipes/mine",
+    tag = "recipes",
+    responses(
+        (status = 200, description = "The caller's own publications, newest first, whatever became of the family they were taken from, each saying whether its source recipe still exists; nobody else's", body = MyPublications),
+        (status = 429, description = "`too_many_attempts`: counted with the reads of the library, 60 per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn list_my_publications(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> AppResult<impl IntoResponse> {
+    LibraryThrottle::admit(&state.library_throttle.read, auth.user_id).await?;
+    let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    // The publishers' policy shows the caller their own rows alone; the
+    // `user_id` says so again.
+    let recipes = sqlx::query_as!(
+        MyPublication,
+        r#"SELECT l.id, l.name, l.servings, l.duration_minutes, l.published_at, l.updated_at,
+                  (SELECT count(*) FROM library_ingredients i
+                   WHERE i.library_recipe_id = l.id) AS "ingredient_count!",
+                  p.source_recipe_id IS NOT NULL AS "source_recipe_kept!"
+           FROM library_recipes l
+           JOIN library_recipe_publishers p ON p.library_recipe_id = l.id
+           WHERE p.user_id = $1
+           ORDER BY l.published_at DESC, l.id DESC"#,
+        auth.user_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Json(MyPublications { recipes }))
+}
+
+#[utoipa::path(
+    delete,
     path = "/library/recipes/{id}",
     tag = "recipes",
     params(
         ("id" = uuid::Uuid, Path, description = "Publication id"),
     ),
     responses(
-        (status = 200, description = "The publication", body = LibraryRecipeResponse),
+        (status = 204, description = "The caller's own publication withdrawn, whatever became of the family it was taken from"),
+        (status = 404, description = "`not_found`: no publication of the caller's by that id", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn withdraw_my_publication(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    // Its publisher alone, as `withdraw`, but through no family: the
+    // policies of 0066 let no one else, and the `user_id` says so again.
+    // The ingredients and the publisher row go with it.
+    let withdrawn = sqlx::query!(
+        r#"DELETE FROM library_recipes WHERE id = (
+               SELECT library_recipe_id FROM library_recipe_publishers
+               WHERE library_recipe_id = $1 AND user_id = $2)"#,
+        id,
+        auth.user_id,
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        > 0;
+    if !withdrawn {
+        return Err(AppError::NotFound);
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/library/recipes/{id}",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Publication id"),
+    ),
+    responses(
+        (status = 200, description = "The publication, with when the caller reported it if they did", body = LibraryRecipeResponse),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 429, description = "`too_many_attempts`: 60 reads per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
@@ -970,9 +1156,19 @@ pub async fn get_library_recipe(
 ) -> AppResult<impl IntoResponse> {
     LibraryThrottle::admit(&state.library_throttle.read, auth.user_id).await?;
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
-    let publication = fetch_publication(&mut tx, id)
+    let mut publication = fetch_publication(&mut tx, id)
         .await?
         .ok_or(AppError::NotFound)?;
+    // The caller's own report, which the reporters' policy (0068) alone
+    // shows them; the `reporter_id` says so again.
+    publication.reported_at = sqlx::query_scalar!(
+        r#"SELECT created_at FROM library_reports
+           WHERE library_recipe_id = $1 AND reporter_id = $2"#,
+        id,
+        auth.user_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Json(publication))
 }
@@ -1226,6 +1422,7 @@ mod tests {
         SourceRecipe {
             name: "Tarte aux poireaux".into(),
             instructions: Some("Cuire.".into()),
+            source_url: Some("https://www.marmiton.org/recettes/tarte.aspx".into()),
             servings: Some(4),
             duration_minutes: Some(45),
         }
@@ -1251,6 +1448,7 @@ mod tests {
             Snapshot {
                 name: "Tarte aux poireaux".into(),
                 instructions: Some("Cuire.".into()),
+                source_url: Some("https://www.marmiton.org/recettes/tarte.aspx".into()),
                 servings: Some(4),
                 duration_minutes: Some(45),
                 ingredients: vec![
@@ -1292,6 +1490,36 @@ mod tests {
         assert_eq!(got.ingredients[0].unit, None);
         assert_eq!(got.ingredients[0].seasonal_months, None);
         assert_eq!(got.ingredients[1].seasonal_months, Some(vec![10, 11, 12]));
+    }
+
+    /// The page the recipe was imported from goes with it (#911), trimmed;
+    /// what is no web address, or is past the bound of `recipes`, is left
+    /// out rather than refused: the recipe holds it already, the library
+    /// shows only a link it can follow.
+    #[test]
+    fn the_source_page_is_published_when_it_is_a_web_address() {
+        let with = |url: Option<&str>| {
+            let mut r = recipe();
+            r.source_url = url.map(str::to_string);
+            snapshot(r, vec![]).unwrap().source_url
+        };
+        assert_eq!(
+            with(Some("  http://e.fr/tarte ")).as_deref(),
+            Some("http://e.fr/tarte")
+        );
+        let at_limit = format!("https://e.fr/{}", "a".repeat(2048 - 13));
+        assert_eq!(with(Some(&at_limit)), Some(at_limit.clone()));
+        for dropped in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("javascript:alert(1)"),
+            Some("ftp://e.fr/x"),
+            Some("e.fr/tarte"),
+        ] {
+            assert_eq!(with(dropped), None, "{dropped:?}");
+        }
+        assert_eq!(with(Some(&format!("{at_limit}a"))), None, "past 2048");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO library_recipes (name, instructions, servings, duration_minutes)\n                   VALUES ($1, $2, $3, $4) RETURNING id",
+  "query": "INSERT INTO library_recipes\n                       (name, instructions, servings, duration_minutes, source_url)\n                   VALUES ($1, $2, $3, $4, $5) RETURNING id",
   "describe": {
     "columns": [
       {
@@ -20,12 +20,13 @@
         "Text",
         "Text",
         "Int4",
-        "Int4"
+        "Int4",
+        "Text"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "2d40142f966cac07c7d70ccc52348dfd6a625cb31436a6108850a4636d83fb0c"
+  "hash": "0674358ebb02c8abd52a5e48a55fa48ddf3be61ab4687022690c9946b753257a"
 }

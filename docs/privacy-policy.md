@@ -51,7 +51,7 @@ données sont-elles conservées ? ».
 | Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue, les deux clés de cet abonnement avec lesquelles le message qui lui est envoyé est chiffré pour votre navigateur, et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue ; dans l'application Android, la notification est programmée sur le téléphone et affiche le titre de l'événement et son heure (voir « Application Android ») | Exécution du contrat |
 | Notifications dans l'application | pour chaque notification qui vous est adressée : son type (rappel d'événement, article bientôt périmé, récapitulatif quotidien des articles bientôt périmés ou périmés, message, invitation, ajout à la liste de courses, alerte de plafond du budget pour les propriétaires et administrateurs d'une famille), la famille concernée, l'élément visé, un texte court (titre de l'événement et sa date, nom de l'article, nom affiché du membre à l'origine de l'action, nom du groupe, nom de la catégorie de dépense — jamais le contenu d'un message), la date de création, la date à laquelle vous l'avez lue et le membre à l'origine de l'action ; l'heure à laquelle vous recevez le récapitulatif des articles bientôt périmés (9 h par défaut), le jour du dernier, et les articles qu'il vous a déjà annoncés, pour ne pas vous les annoncer deux fois | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
-| Bibliothèque de recettes | si vous publiez une recette : ce qui en est publié, lisible par tous les utilisateurs (nom, instructions, nombre de personnes, durée, ingrédients et leurs saisons, dates de publication et de dernière mise à jour), et, visibles de vous seul, le lien entre vous et cette publication et la recette de votre famille d'où elle vient ; si vous copiez une recette de la bibliothèque dans votre famille, la publication d'où vient la copie | **Consentement explicite** pour la publication : rien n'est publié sans que vous le confirmiez, recette par recette, et vous le retirez en retirant la recette (voir « La bibliothèque de recettes ») ; exécution du contrat pour la copie |
+| Bibliothèque de recettes | si vous publiez une recette : ce qui en est publié, lisible par tous les utilisateurs (nom, instructions, nombre de personnes, durée, ingrédients et leurs saisons, adresse de la page d'où la recette a été importée s'il y en a une, dates de publication et de dernière mise à jour), et, visibles de vous seul, le lien entre vous et cette publication et la recette de votre famille d'où elle vient ; si vous copiez une recette de la bibliothèque dans votre famille, la publication d'où vient la copie | **Consentement explicite** pour la publication : rien n'est publié sans que vous le confirmiez, recette par recette, et vous le retirez en retirant la recette (voir « La bibliothèque de recettes ») ; exécution du contrat pour la copie |
 | Signalements de la bibliothèque | si vous signalez une recette publiée : la recette visée, le motif choisi, votre commentaire facultatif (500 caractères au plus), la date, puis la décision prise et sa date | Intérêt légitime (modérer un contenu visible de tous les utilisateurs) |
 | Allergies alimentaires | si vous en déclarez : la catégorie d'aliment concernée (par exemple les arachides) et sa date d'ajout ; pour chaque famille dont vous êtes membre, ce que vous choisissez d'en dire — **rien** (le choix par défaut), **anonymement** (la famille sait seulement qu'un de ses membres est allergique), ou **publiquement** (la famille voit votre nom et l'allergie). Une allergie est une **donnée de santé** : vous seul la voyez et la modifiez, ni le propriétaire ni les administrateurs d'une famille n'y ont accès, et elle n'apparaît ni dans le journal d'audit, ni dans les journaux techniques, ni dans une notification. Elle ne sert qu'à écarter ou signaler les recettes qui ne vous conviennent pas, à vous ou à votre famille | **Consentement explicite** (art. 9(2)(a)) : vous la saisissez vous-même, après avoir coché, pour la première, une case de consentement distincte des conditions d'utilisation, et vous le retirez aussi simplement — retirer une allergie, la repasser à « rien » dans une famille, ou tout effacer d'un coup |
 | Aversions alimentaires et équipement de cuisine | les aliments que vous n'aimez pas, jamais montrés à personne, qui n'agissent que sur ce qui vous est proposé ; l'équipement de cuisine du foyer (four, robot…) et celui qu'une recette demande | Exécution du contrat |
@@ -280,15 +280,19 @@ recette la publie.
   publie 50 recettes au plus.
 - **Ce qui est visible** : une copie de la recette prise au moment de la
   publication — nom, instructions, nombre de personnes, durée, ingrédients
-  avec leurs quantités et leurs saisons —, lisible par tout utilisateur
-  connecté, avec ses dates de publication et de dernière mise à jour. Ni photo, ni pièce jointe, ni l'adresse de la page d'où la
-  recette a été importée. Si vous modifiez ensuite la recette, la
-  publication ne change pas, sauf si vous la publiez de nouveau : la
-  nouvelle version remplace alors l'ancienne.
+  avec leurs quantités et leurs saisons, et, pour une recette importée,
+  l'adresse de la page d'où elle vient, montrée comme sa source —,
+  lisible par tout utilisateur connecté, avec ses dates de publication et
+  de dernière mise à jour. Ni photo, ni pièce jointe. Si vous modifiez
+  ensuite la recette, la publication ne change pas, sauf si vous la
+  publiez de nouveau (« Mettre à jour la publication ») : la nouvelle
+  version remplace alors l'ancienne, après que vous avez confirmé de
+  nouveau votre accord.
 - **Ce qui ne l'est pas : qui l'a publiée.** Ni votre nom, ni votre
   famille, ni la recette d'origine ne sont montrés à qui lit la
   bibliothèque. Le service ne montre le lien entre vous et votre
-  publication qu'à vous, dans l'export de vos données : ni aux autres
+  publication qu'à vous, dans la liste de vos publications et dans
+  l'export de vos données : ni aux autres
   utilisateurs, ni à l'administrateur du service, ni au propriétaire de
   votre famille. Un
   autre membre de votre famille qui tenterait de publier la même recette
@@ -304,20 +308,22 @@ recette la publie.
   famille. La copie devient une recette de cette famille, qui la garde :
   elle ne suit pas la publication et ne vous désigne pas.
 - **Retirer une recette** : vous pouvez retirer votre publication à tout
-  moment ; elle quitte aussitôt la bibliothèque. C'est aussi le retrait de
+  moment, depuis la recette ou depuis « Mes publications », la liste de
+  vos publications dans la bibliothèque ; elle quitte aussitôt la
+  bibliothèque. C'est aussi le retrait de
   votre consentement. Il ne reprend pas les copies déjà faites, qui restent
   dans les familles qui les ont faites. Votre publication est aussi
   retirée si vous quittez la famille d'où elle vient ou en êtes retiré, si
   le propriétaire de cette famille la retire, si l'administrateur du
   service la retire, et à la suppression de votre compte. Supprimer la
-  recette d'origine ne la retire pas. Si la famille d'où elle vient est
-  supprimée, la publication reste, et vous ne pouvez plus la retirer
-  vous-même : écrivez au responsable de traitement (« Pour le joindre »,
-  en tête de ce document), ou supprimez votre compte.
+  recette d'origine ne la retire pas, ni la suppression de la famille
+  d'où elle vient : la publication reste, et vous pouvez toujours la
+  retirer vous-même, comme vos autres publications.
 - **Signaler une recette** : tout utilisateur peut signaler une recette
-  publiée, une fois, avec un motif (contenu illicite, atteinte au droit
-  d'auteur, contenu haineux, spam, danger pour la santé, autre) et un
-  commentaire facultatif. L'administrateur du service lit le signalement
+  publiée, une fois, avec un motif (inapproprié ou choquant ; illégal,
+  dont les données personnelles d'un tiers ; erreur ou danger ; droits
+  d'auteur ; spam ; autre) et un commentaire, facultatif sauf pour le
+  motif « autre ». L'administrateur du service lit le signalement
   et décide de le classer ou de retirer la recette de la bibliothèque ; les
   copies restent alors, et la recette d'origine ne peut plus être publiée
   tant qu'il ne l'a pas permis. Le service ne lui montre pas qui a

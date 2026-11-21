@@ -12,6 +12,10 @@
 //! Issue #908: reporting a publication, its moderation by the superadmin,
 //! and the publications that end with a member's departure or by the
 //! family owner's hand.
+//!
+//! Issue #947: the publisher lists their own publications and withdraws
+//! one by its id alone, through no family — its family deleted since
+//! included.
 
 mod common;
 
@@ -173,6 +177,9 @@ async fn another_family_reads_a_publication_that_names_no_one(db: PgPool) {
                 "duration_minutes",
                 "published_at",
                 "updated_at",
+                // #911: the page the recipe was imported from, which names
+                // a site, not who published it.
+                "source_url",
             ],
         ),
         (
@@ -661,10 +668,7 @@ async fn the_library_names_neither_the_family_nor_the_person(db: PgPool) {
     let forbidden: Vec<String> = [f.id, f.owner.id, f.admin.id, f.standard.id, recipe]
         .iter()
         .flat_map(|u| [u.to_string(), u.simple().to_string()])
-        .chain([
-            "anon-owner@example.test".to_string(),
-            "example.test/tarte".to_string(),
-        ])
+        .chain(["anon-owner@example.test".to_string()])
         .collect();
     for (what, body) in [
         ("publish", &published),
@@ -710,7 +714,9 @@ async fn the_library_names_neither_the_family_nor_the_person(db: PgPool) {
             "instructions",
             "name",
             "published_at",
+            "reported_at",
             "servings",
+            "source_url",
             "updated_at"
         ]
     );
@@ -728,6 +734,9 @@ async fn the_library_names_neither_the_family_nor_the_person(db: PgPool) {
     assert_eq!(detail["name"], "Tarte aux poireaux");
     assert_eq!(detail["servings"], 4);
     assert_eq!(detail["duration_minutes"], 45);
+    // The page it was imported from (#911): a site, published with it.
+    assert_eq!(detail["source_url"], "https://example.test/tarte");
+    assert_eq!(detail["reported_at"], Value::Null);
     let names = |v: &Value| -> Vec<String> {
         v["ingredients"]
             .as_array()
@@ -1670,7 +1679,7 @@ async fn audit_actions(db: &PgPool, target: &str) -> Vec<String> {
 }
 
 /// AC: a report takes a reason from the closed list and a comment of 500
-/// characters at most; the same user reporting the same publication again
+/// characters at most, required with `other` (#911); the same user reporting the same publication again
 /// is answered as the first time and changes nothing; an unknown
 /// publication is a 404.
 #[sqlx::test]
@@ -1688,6 +1697,11 @@ async fn a_report_is_made_once_per_user(db: PgPool) {
         (
             Some(json!({"reason": "spam", "comment": "x".repeat(501)})),
             "comment_too_long",
+        ),
+        (Some(json!({"reason": "other"})), "comment_required"),
+        (
+            Some(json!({"reason": "other", "comment": "  \n "})),
+            "comment_required",
         ),
     ] {
         let res = report_call(&router, &published, &reader, body.clone()).await;
@@ -1726,7 +1740,7 @@ async fn a_report_is_made_once_per_user(db: PgPool) {
         &router,
         &published,
         &author.standard.cookie,
-        Some(json!({"reason": "other", "comment": "   "})),
+        Some(json!({"reason": "illegal", "comment": "   "})),
     )
     .await;
     assert_status(&res, StatusCode::NO_CONTENT);
@@ -1929,7 +1943,7 @@ async fn a_dismissed_report_leaves_the_publication(db: PgPool) {
         &router,
         &published,
         &reader,
-        Some(json!({"reason": "other"})),
+        Some(json!({"reason": "other", "comment": "Encore là."})),
     )
     .await;
     assert_status(&res, StatusCode::NO_CONTENT);
@@ -2392,4 +2406,341 @@ async fn a_publication_follows_its_family_once_its_source_is_deleted(db: PgPool)
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// --- #947: the publisher's own routes ----------------------------------------
+
+/// The ids of `GET /library/recipes/mine` for `cookie`, in its order.
+async fn mine(router: &axum::Router, cookie: &str) -> Vec<String> {
+    let (status, body) = get(router, "/library/recipes/mine", cookie).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// AC of #947: the family deleted, its publisher still withdraws their
+/// publication — 2xx, then gone from the library — and no one else can.
+#[sqlx::test]
+async fn the_publisher_withdraws_once_the_family_is_deleted(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "gone").await;
+    let mut ids = Vec::new();
+    for m in [&f.admin, &f.owner] {
+        let recipe = new_recipe(&router, f.id, &m.cookie, leek_tart()).await;
+        let res = publish_call(&router, f.id, recipe, &m.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        ids.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+    let (admins, owners) = (ids[0].clone(), ids[1].clone());
+    let other = fam(&db, "gone-other").await;
+    let recipe = new_recipe(&router, other.id, &other.owner.cookie, leek_tart()).await;
+    let res = publish_call(&router, other.id, recipe, &other.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let others = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}", f.id),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(library_rows(&db).await, 3, "the publications outlive it");
+
+    // Each lists their own, and nothing of anyone else's.
+    assert_eq!(mine(&router, &f.admin.cookie).await, vec![admins.clone()]);
+    assert_eq!(mine(&router, &f.owner.cookie).await, vec![owners.clone()]);
+    assert_eq!(mine(&router, &other.owner.cookie).await, vec![others]);
+    assert!(mine(&router, &f.standard.cookie).await.is_empty());
+    let (_, body) = get(&router, "/library/recipes/mine", &f.admin.cookie).await;
+    let mut keys: Vec<&str> = body["recipes"][0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "duration_minutes",
+            "id",
+            "ingredient_count",
+            "name",
+            "published_at",
+            "servings",
+            "source_recipe_kept",
+            "updated_at"
+        ],
+        "a publication, as the library lists it, and whether its recipe \
+         still exists (#911): no family, no source"
+    );
+    assert_eq!(
+        body["recipes"][0]["source_recipe_kept"], false,
+        "its recipe went with the family"
+    );
+
+    // No one else withdraws it: the family's former owner and members, a
+    // stranger, nor anyone through a family route.
+    let uri = format!("/library/recipes/{admins}");
+    for cookie in [&f.owner.cookie, &f.standard.cookie, &other.owner.cookie] {
+        let res = call(&router, Method::DELETE, &uri, Some(cookie), None).await;
+        assert_status(&res, StatusCode::NOT_FOUND);
+    }
+    let res = call(&router, Method::DELETE, &uri, None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/library/recipes/{admins}", other.id),
+        Some(&other.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(library_rows(&db).await, 3);
+
+    // Its publisher does.
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (_, list) = get(&router, "/library/recipes", &other.standard.cookie).await;
+    let listed: Vec<&str> = list["recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(!listed.contains(&admins.as_str()), "{listed:?}");
+    assert_eq!(listed.len(), 2);
+    let (status, _) = get(&router, &uri, &other.standard.cookie).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(mine(&router, &f.admin.cookie).await.is_empty());
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM library_recipe_publishers WHERE library_recipe_id = $1::uuid",
+    )
+    .bind(&admins)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(n, 0, "its publisher row goes with it");
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(mine(&router, &f.owner.cookie).await, vec![owners]);
+}
+
+/// The publisher's own route withdraws a publication whose family still
+/// exists, too, and the family's owner gets nothing from it; `mine` lists
+/// the publications newest first.
+#[sqlx::test]
+async fn the_publisher_lists_and_withdraws_their_own(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "own").await;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let recipe = new_recipe(&router, f.id, &f.admin.cookie, leek_tart()).await;
+        let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        ids.push(json_body(res).await["id"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        mine(&router, &f.admin.cookie).await,
+        vec![ids[1].clone(), ids[0].clone()]
+    );
+    assert!(mine(&router, &f.owner.cookie).await.is_empty());
+    let uri = format!("/library/recipes/{}", ids[0]);
+    let res = call(&router, Method::DELETE, &uri, Some(&f.owner.cookie), None).await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(mine(&router, &f.admin.cookie).await, vec![ids[1].clone()]);
+    assert_eq!(library_rows(&db).await, 1);
+    let res = call(&router, Method::GET, "/library/recipes/mine", None, None).await;
+    assert_status(&res, StatusCode::UNAUTHORIZED);
+}
+
+// --- #911: what the screens of publication and report read -------------------
+
+/// The recipe's page reads the caller's own publication of it: none before,
+/// its id and dates once published, none again once withdrawn — and never
+/// another member's.
+#[sqlx::test]
+async fn the_recipe_page_reads_its_publishers_own_publication(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "state").await;
+    let recipe = new_recipe(&router, f.id, &f.admin.cookie, leek_tart()).await;
+    let uri = format!("/groups/{}/recipes/{recipe}/publish", f.id);
+
+    let (status, _) = get(&router, &uri, &f.admin.cookie).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "not published yet");
+    let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let published = json_body(res).await;
+
+    let (status, state) = get(&router, &uri, &f.admin.cookie).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    assert_eq!(state["library_recipe_id"], published["id"]);
+    assert_eq!(state["published_at"], published["published_at"]);
+    assert_eq!(state["updated_at"], published["updated_at"]);
+    let mut keys: Vec<&String> = state.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["library_recipe_id", "published_at", "updated_at"]);
+
+    // Published again: the same publication, a later update.
+    let res = publish_call(&router, f.id, recipe, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::OK);
+    let (_, again) = get(&router, &uri, &f.admin.cookie).await;
+    assert_eq!(again["library_recipe_id"], published["id"]);
+    assert_eq!(again["published_at"], published["published_at"]);
+    assert_ne!(again["updated_at"], published["updated_at"]);
+
+    // Another member, the owner included, reads no publication of theirs.
+    for cookie in [&f.owner.cookie, &f.standard.cookie] {
+        let (status, _) = get(&router, &uri, cookie).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    // Another family, under its own path or this one's.
+    let other = fam(&db, "state-other").await;
+    let (status, _) = get(
+        &router,
+        &format!("/groups/{}/recipes/{recipe}/publish", other.id),
+        &other.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = get(&router, &uri, &other.owner.cookie).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let res = call(&router, Method::DELETE, &uri, Some(&f.admin.cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (status, _) = get(&router, &uri, &f.admin.cookie).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "withdrawn");
+}
+
+/// The page a recipe was imported from is published with it, replaced when
+/// it is published again, and absent for a recipe typed by hand (#911).
+#[sqlx::test]
+async fn the_source_page_goes_with_the_publication(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "source").await;
+    let (_, reader) = api_user(&db, "source-reader@example.test").await;
+    let imported = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let typed = new_recipe(&router, f.id, &f.owner.cookie, json!({"name": "Soupe"})).await;
+
+    let res = publish_call(&router, f.id, imported, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let id = json_body(res).await["id"].as_str().unwrap().to_string();
+    let res = publish_call(&router, f.id, typed, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let typed_id = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let (_, detail) = get(&router, &format!("/library/recipes/{id}"), &reader).await;
+    assert_eq!(detail["source_url"], "https://example.test/tarte");
+    let (_, detail) = get(&router, &format!("/library/recipes/{typed_id}"), &reader).await;
+    assert_eq!(detail["source_url"], Value::Null);
+
+    // The recipe's source changed, then published again: the new one.
+    sqlx::query("UPDATE recipes SET source_url = 'https://example.test/autre' WHERE id = $1")
+        .bind(imported)
+        .execute(&db)
+        .await
+        .unwrap();
+    let (_, before) = get(&router, &format!("/library/recipes/{id}"), &reader).await;
+    assert_eq!(
+        before["source_url"], "https://example.test/tarte",
+        "a snapshot"
+    );
+    let res = publish_call(&router, f.id, imported, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::OK);
+    let (_, after) = get(&router, &format!("/library/recipes/{id}"), &reader).await;
+    assert_eq!(after["source_url"], "https://example.test/autre");
+
+    // The publisher's export holds it.
+    let (status, export) = get(&router, "/account/export", &f.owner.cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    let exported: Vec<&Value> = export["library_recipes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["id"] == id.as_str())
+        .collect();
+    assert_eq!(exported.len(), 1);
+    assert_eq!(exported[0]["source_url"], "https://example.test/autre");
+}
+
+/// « Mes publications » says which publications lost their recipe (#911),
+/// and the detail tells its reader when they reported it — them alone.
+#[sqlx::test]
+async fn a_publication_says_what_its_reader_and_its_publisher_need(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "says").await;
+    let (_, reader) = api_user(&db, "says-reader@example.test").await;
+    let kept = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let gone = new_recipe(&router, f.id, &f.owner.cookie, json!({"name": "Soupe"})).await;
+    for recipe in [kept, gone] {
+        let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/recipes/{gone}", f.id),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert!(res.status().is_success(), "{}", res.status());
+
+    let (_, list) = get(&router, "/library/recipes/mine", &f.owner.cookie).await;
+    let by_name = |name: &str| {
+        list["recipes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_name("Tarte aux poireaux")["source_recipe_kept"], true);
+    assert_eq!(by_name("Soupe")["source_recipe_kept"], false);
+    let id = by_name("Tarte aux poireaux")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let detail_uri = format!("/library/recipes/{id}");
+    let (_, detail) = get(&router, &detail_uri, &reader).await;
+    assert_eq!(detail["reported_at"], Value::Null);
+    let res = report_call(
+        &router,
+        &id,
+        &reader,
+        Some(json!({"reason": "spam", "comment": "Publicité"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (_, detail) = get(&router, &detail_uri, &reader).await;
+    let reported_at: chrono::DateTime<chrono::Utc> = detail["reported_at"]
+        .as_str()
+        .expect("reported_at")
+        .parse()
+        .unwrap();
+    let stored: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+        "SELECT created_at FROM library_reports WHERE library_recipe_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(reported_at, stored);
+    // Its publisher, and anyone else, read no report.
+    for cookie in [&f.owner.cookie, &f.admin.cookie] {
+        let (_, detail) = get(&router, &detail_uri, cookie).await;
+        assert_eq!(detail["reported_at"], Value::Null);
+    }
 }

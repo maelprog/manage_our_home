@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, name, instructions, servings, duration_minutes, published_at, updated_at\n           FROM library_recipes WHERE id = $1",
+  "query": "SELECT id, name, instructions, source_url, servings, duration_minutes,\n                  published_at, updated_at\n           FROM library_recipes WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -38,6 +38,17 @@
       },
       {
         "ordinal": 3,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "library_recipes",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
         "name": "servings",
         "type_info": "Int4",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "duration_minutes",
         "type_info": "Int4",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "published_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,9 +103,10 @@
       true,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "d2ae2e627ece5389b2cac169f097acdbd54b75d828379a10491a367a89bee317"
+  "hash": "ef8f1f6c99907c7b611b7d2e8956b4cb3bebde98de1c2be310401d14ab14e0de"
 }
