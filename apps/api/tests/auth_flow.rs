@@ -4073,6 +4073,52 @@ async fn a_google_profile_in_other_capitals_signs_in_to_the_existing_account(db:
     assert_eq!(google_identity_rows(&db, user_id).await, 1);
 }
 
+/// #956, on `callback` as on the ID-token route: a Google profile that
+/// finds an account nobody verified takes it over — the password whoever
+/// registered the address set is erased, the address verified, and the
+/// sessions opened before are closed.
+#[sqlx::test]
+async fn google_callback_takes_over_an_unverified_account(db: PgPool) {
+    let email = "victim-956@example.test";
+    let router = router_with_google_stub(db.clone(), "google-sub-956", email).await;
+    let res = register_with(&router, email, "attacker-password-956", "Attaquant").await;
+    assert_status(&res, StatusCode::CREATED);
+    let user_id = user_id_by_email(&db, email).await;
+    let earlier = common::insert_session(&db, user_id).await;
+
+    let res = google_callback(&router).await;
+    assert!(res.status().is_redirection(), "{}", res.status());
+    assert!(opens_a_session(&res));
+    assert_eq!(google_identity_rows(&db, user_id).await, 1);
+    let (has_password, verified): (bool, bool) =
+        sqlx::query_as("SELECT password_hash IS NOT NULL, email_verified FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!((has_password, verified), (false, true));
+    let me = call(&router, Method::GET, "/auth/me", Some(&earlier), None).await;
+    assert_status(&me, StatusCode::UNAUTHORIZED);
+    let me = call(
+        &router,
+        Method::GET,
+        "/auth/me",
+        Some(&session_cookie_of(&res)),
+        None,
+    )
+    .await;
+    assert_status(&me, StatusCode::OK);
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": "attacker-password-956"})),
+    )
+    .await;
+    assert_status(&login, StatusCode::UNAUTHORIZED);
+}
+
 /// #459: a Google sign-up stores the address in the same form as a
 /// password registration.
 #[sqlx::test]

@@ -51,7 +51,13 @@ async fn no_log_audit_or_notification_carries_an_allergy(db: PgPool) {
         .init();
     {
         let steps: Vec<(Method, &str, Option<Value>)> = vec![
+            // Refused: the first, without consent.
             (Method::POST, "/me/allergies", Some(json!({ "tag": TAG }))),
+            (
+                Method::POST,
+                "/me/allergies",
+                Some(json!({"tag": TAG, "consent": true})),
+            ),
             // Refused: already there.
             (Method::POST, "/me/allergies", Some(json!({ "tag": TAG }))),
             (
@@ -84,7 +90,11 @@ async fn no_log_audit_or_notification_carries_an_allergy(db: PgPool) {
             (Method::DELETE, "/me/allergies", Some(json!({ "tag": TAG }))),
             // Refused: already gone.
             (Method::DELETE, "/me/allergies", Some(json!({ "tag": TAG }))),
-            (Method::POST, "/me/allergies", Some(json!({ "tag": TAG }))),
+            (
+                Method::POST,
+                "/me/allergies",
+                Some(json!({"tag": TAG, "consent": true})),
+            ),
             (Method::DELETE, "/me/dietary-constraints", None),
         ];
         for (method, uri, body) in steps {
