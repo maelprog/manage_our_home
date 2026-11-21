@@ -535,7 +535,7 @@ test.describe("Stocks — permission bar", () => {
     // The member sees the adjust form (shared inventory) but no edit/delete.
     await openItemDetail(member, "Beurre du proprio");
     await expect(
-      member.getByText("Seul le créateur ou un administrateur peut modifier ou supprimer"),
+      member.getByText("Seuls le créateur, les administrateurs et le propriétaire peuvent modifier ou supprimer"),
     ).toBeVisible();
     await expect(member.getByRole("link", { name: "Modifier l'article" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Supprimer" })).toHaveCount(0);

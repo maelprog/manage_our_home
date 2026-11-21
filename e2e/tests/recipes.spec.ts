@@ -685,7 +685,7 @@ test.describe("Recipes — permission bar", () => {
     // The member sees the log form but no edit/delete controls.
     await openRecipeDetail(member, "Gratin du proprio");
     await expect(
-      member.getByText("Seul le créateur ou un administrateur peut modifier ou supprimer"),
+      member.getByText("Seuls le créateur, les administrateurs et le propriétaire peuvent modifier ou supprimer"),
     ).toBeVisible();
     await expect(member.getByRole("link", { name: "Modifier la recette" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Supprimer" })).toHaveCount(0);
