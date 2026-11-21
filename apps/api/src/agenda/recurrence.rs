@@ -686,9 +686,11 @@ pub fn continued_after(rrule: &str, produced_before: u32) -> Result<String, rrul
 ///   series unrolls on, so each lands on the occurrence the moved series
 ///   has there (#959). Moved by the elapsed time instead, an instant on the
 ///   other side of a change of hour from its image, or a series moved
-///   across one, came out an hour off its occurrence. A wall clock Paris
-///   skips is read an hour later and a repeated one on the pass the moved
-///   series unrolls on (see `expand_occurrences`).
+///   across one, came out an hour off its occurrence. An instant the
+///   series unrolled an hour late, its wall clock skipped, is moved from
+///   the wall clock it stands for. The wall clock reached is resolved as
+///   the moved series unrolls it (see `expand_occurrences`): a skipped one
+///   an hour later, a repeated one on the pass the series is anchored on.
 /// - **all-day** (read on the old series' kind): from the Paris day of
 ///   `occurrence` on, each moved by as many civil days as the series and
 ///   written as the Paris midnight opening its new day — what an all-day
@@ -709,7 +711,27 @@ pub fn carried_over(
             .map(|day| paris_start_of_day(add_days(day, days)))
             .collect()
     } else {
-        let shift = paris_wall_clock(new_start) - paris_wall_clock(occurrence);
+        // The wall clock the series keeps, read where no skipped hour moved
+        // it: on `occurrence`, or on the first instant past such an hour.
+        let kept = std::iter::once(&occurrence)
+            .chain(instants)
+            .find(|at| !follows_a_skipped_hour(**at))
+            .map_or(paris_wall_clock(occurrence).time(), |at| {
+                paris_wall_clock(*at).time()
+            });
+        // An occurrence unrolled an hour later because its wall clock was
+        // skipped (02:30 read 03:30 on the last Sunday of March) is moved
+        // from the wall clock it stands for, not from the one it shows.
+        let nominal = |at: DateTime<Utc>| {
+            let wall = paris_wall_clock(at);
+            let before = wall - Duration::hours(1);
+            if follows_a_skipped_hour(at) && before.time() == kept {
+                before
+            } else {
+                wall
+            }
+        };
+        let shift = paris_wall_clock(new_start) - nominal(occurrence);
         // Resolved on the pass the moved series unrolls on, never kept on
         // the instant the elapsed time gives: on the repeated hour, that one
         // can name the right wall clock on the other pass.
@@ -717,7 +739,7 @@ pub fn carried_over(
         instants
             .iter()
             .filter(|at| **at >= occurrence)
-            .map(|at| paris_instant(paris_wall_clock(*at) + shift, on_second_pass))
+            .map(|at| paris_instant(nominal(*at) + shift, on_second_pass))
             .collect()
     }
 }
@@ -2850,5 +2872,123 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unrolled, carried);
+    }
+
+    #[test]
+    fn an_instant_unrolled_after_the_skipped_hour_is_carried_from_its_own_wall_clock() {
+        // A daily series at 02:30 from 18 March: on the 29th, whose 02:30
+        // does not exist, it unrolls at 03:30 (CEST). Moved a day later, that
+        // occurrence's exclusion goes to 02:30 on the 30th — the 02:30 it
+        // stands for — not to 03:30.
+        let at = paris(2026, 3, 18, 2, 30);
+        let to = paris(2026, 3, 19, 2, 30);
+        let excluded = Utc.with_ymd_and_hms(2026, 3, 29, 1, 30, 0).unwrap();
+        assert_eq!(
+            expand_occurrences("FREQ=DAILY", at, excluded, excluded).unwrap(),
+            vec![excluded]
+        );
+        assert_eq!(
+            carried_over(&[excluded], false, at, to),
+            vec![paris(2026, 3, 30, 2, 30)]
+        );
+    }
+
+    /// Every series around the two changes of hour of 2026 — hour-bound at
+    /// wall clocks inside, next to and away from the hour changed, all-day —
+    /// moved by days or to another wall clock, of either kind: each of its
+    /// first occurrences, excluded and moved with the series, excludes the
+    /// occurrence of the same rank in the moved series, and that one alone.
+    #[test]
+    fn a_moved_series_excludes_the_occurrence_of_the_same_rank() {
+        use manage_our_home_shared::validation::agenda::paris_start_of_day;
+        // Every instant a Paris wall clock names: none, one or two.
+        let passes = |d: NaiveDate, h: u32, m: u32| {
+            let resolved = PARIS.from_local_datetime(&d.and_hms_opt(h, m, 0).unwrap());
+            let mut at: Vec<DateTime<Utc>> = Vec::new();
+            for pass in [resolved.earliest(), resolved.latest()]
+                .into_iter()
+                .flatten()
+            {
+                let pass = pass.with_timezone(&Utc);
+                if !at.contains(&pass) {
+                    at.push(pass);
+                }
+            }
+            at
+        };
+        let starts = |all_day: bool, d: NaiveDate| -> Vec<OccurrenceSpan> {
+            if all_day {
+                return vec![(paris_start_of_day(d), paris_start_of_day(add_days(d, 1)))];
+            }
+            [(2, 30), (10, 0), (1, 30), (23, 30), (3, 30)]
+                .into_iter()
+                .flat_map(|(h, m)| passes(d, h, m))
+                .map(|s| (s, s + Duration::hours(1)))
+                .collect()
+        };
+        let days: Vec<NaiveDate> = (0..14)
+            .map(|i| add_days(day(2026, 3, 15), i))
+            .chain((0..14).map(|i| add_days(day(2026, 10, 12), i)))
+            .collect();
+        let mut failures = Vec::new();
+        let mut checked = 0u32;
+        for rule in ["FREQ=DAILY", "FREQ=WEEKLY", "FREQ=DAILY;INTERVAL=2"] {
+            for &first in &days {
+                for was_all_day in [false, true] {
+                    for (old_start, old_end) in starts(was_all_day, first) {
+                        for days_moved in [-8, -1, 0, 1, 2, 7] {
+                            for all_day in [false, true] {
+                                for (new_start, new_end) in
+                                    starts(all_day, add_days(first, days_moved))
+                                {
+                                    if new_start == old_start {
+                                        continue;
+                                    }
+                                    let unroll = |all_day, start, end| {
+                                        expand_series(
+                                            rule,
+                                            all_day,
+                                            start,
+                                            end,
+                                            start - Duration::days(1),
+                                            start + Duration::days(40),
+                                            &[],
+                                        )
+                                        .unwrap()
+                                    };
+                                    let old = unroll(was_all_day, old_start, old_end);
+                                    let new = unroll(all_day, new_start, new_end);
+                                    let n = old.len().min(new.len()).min(12);
+                                    for k in 0..n {
+                                        checked += 1;
+                                        let moved = moved_with_series(
+                                            &[old[k].0],
+                                            was_all_day,
+                                            all_day,
+                                            old_start,
+                                            new_start,
+                                        );
+                                        let kept =
+                                            without_excluded(new[..n].to_vec(), &moved, all_day);
+                                        let mut wanted = new[..n].to_vec();
+                                        wanted.remove(k);
+                                        if kept != wanted && failures.len() < 10 {
+                                            failures.push(format!(
+                                                "{rule} all_day {was_all_day}→{all_day} \
+                                                 {old_start}→{new_start} #{k} {}: {moved:?}, \
+                                                 wanted {}",
+                                                old[k].0, new[k].0
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 100_000, "{checked} checked");
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }
