@@ -5923,7 +5923,8 @@ async fn moving_a_whole_series_keeps_its_deleted_occurrences_deleted(db: PgPool)
 }
 
 /// AC (#959): a recurring task moved a day later as a whole keeps its
-/// occurrences ticked off — the completion moves with its occurrence.
+/// occurrences ticked off. Daily, every occurrence it had past its new
+/// start is still one of its occurrences: each completion stays on it.
 #[sqlx::test]
 async fn moving_a_whole_recurring_task_keeps_its_occurrences_ticked_off(db: PgPool) {
     let router = test_router(db.clone());
@@ -5945,7 +5946,7 @@ async fn moving_a_whole_recurring_task_keeps_its_occurrences_ticked_off(db: PgPo
 
     assert_eq!(
         completion_instants(&db, &group_id, &series_id).await,
-        vec![nine_paris(3), nine_paris(4)]
+        vec![nine_paris(2), nine_paris(3)]
     );
     let done: Vec<(DateTime<Utc>, bool)> =
         listed_occurrences(&router, &cookie, &group_id, nine_paris(-1), nine_paris(10))
@@ -5956,9 +5957,135 @@ async fn moving_a_whole_recurring_task_keeps_its_occurrences_ticked_off(db: PgPo
     assert_eq!(
         done,
         (1..6)
-            .map(|n| (nine_paris(n), n == 3 || n == 4))
+            .map(|n| (nine_paris(n), n == 2 || n == 3))
             .collect::<Vec<_>>()
     );
+}
+
+/// Arbitrage (#959): a series on fixed weekdays moved a day later, its rule
+/// unchanged, keeps its occurrences on those weekdays. Its exclusion and its
+/// completion still fall on one, and stay there: carried a day along, the
+/// deleted occurrence came back and the ticked-off one was no longer ticked.
+#[sqlx::test]
+async fn moving_a_series_on_fixed_weekdays_leaves_its_exclusions_and_completions_in_place(
+    db: PgPool,
+) {
+    use chrono::{Datelike, Weekday};
+    use manage_our_home_shared::validation::agenda::paris_date;
+
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "byday@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let mut monday = paris_date(Utc::now()) + Duration::days(2);
+    while monday.weekday() != Weekday::Mon {
+        monday += Duration::days(1);
+    }
+    // (rule, its weekdays, day excluded, day ticked off — days after `monday`)
+    let cases = [
+        (
+            "FREQ=WEEKLY;BYDAY=MO,WE",
+            &[Weekday::Mon, Weekday::Wed][..],
+            9,
+            7,
+        ),
+        ("FREQ=WEEKLY;BYDAY=MO", &[Weekday::Mon][..], 14, 7),
+    ];
+    for (rule, weekdays, excluded, ticked) in cases {
+        let on = |n: i64| paris_at(monday + Duration::days(n), 10);
+        let series = create_event_with(
+            &router,
+            &cookie,
+            &group_id,
+            serde_json::json!({
+                "title": rule,
+                "starts_at": on(0),
+                "ends_at": on(0) + Duration::hours(1),
+                "is_task": true,
+                "rrule": rule,
+            }),
+        )
+        .await;
+        let id = series["id"].as_str().unwrap().to_string();
+        let reminder = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/events/{id}/reminders"),
+            Some(&cookie),
+            Some(serde_json::json!({"offset_minutes": 0})),
+        )
+        .await;
+        assert_status(&reminder, StatusCode::CREATED);
+        let res = delete_scoped(
+            &router,
+            &cookie,
+            &group_id,
+            &id,
+            &scoped("this", on(excluded)),
+        )
+        .await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+        let res = patch_event(
+            &router,
+            &cookie,
+            &group_id,
+            &id,
+            serde_json::json!({"completed": true, "occurrence_at": on(ticked)}),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+
+        patched(
+            &router,
+            &cookie,
+            &group_id,
+            Uuid::parse_str(&id).unwrap(),
+            serde_json::json!({"starts_at": on(1), "ends_at": on(1) + Duration::hours(1)}),
+        )
+        .await;
+
+        assert_eq!(
+            stored_exdates(&db, &group_id, &id).await,
+            vec![on(excluded)],
+            "{rule}: stored"
+        );
+        assert_eq!(
+            completion_instants(&db, &group_id, &id).await,
+            vec![on(ticked)],
+            "{rule}: ticked off"
+        );
+        // From the Wednesday on: whether the rule lists its own start, a
+        // Tuesday outside its weekdays, is not what is checked here.
+        let (from, to) = (on(2) - Duration::hours(1), on(20));
+        let expected: Vec<(DateTime<Utc>, bool)> = (2..=20)
+            .filter(|n| *n != excluded)
+            .filter(|n| weekdays.contains(&(monday + Duration::days(*n)).weekday()))
+            .map(|n| (on(n), n == ticked))
+            .collect();
+        let listed: Vec<(DateTime<Utc>, bool)> =
+            listed_occurrences(&router, &cookie, &group_id, from, to)
+                .await
+                .into_iter()
+                .filter(|o| o.0 == id)
+                .map(|o| (o.2, o.3))
+                .collect();
+        assert_eq!(listed, expected, "{rule}: listed");
+        let horizon = Utc::now()
+            + Duration::days(manage_our_home::agenda::reminders::NOTIFICATION_WINDOW_DAYS);
+        let reminded: Vec<DateTime<Utc>> = scheduled_occurrences(&db, &id)
+            .await
+            .into_iter()
+            .filter(|at| (from..=to).contains(at))
+            .collect();
+        assert_eq!(
+            reminded,
+            expected
+                .iter()
+                .map(|(at, _)| *at)
+                .filter(|at| *at <= horizon)
+                .collect::<Vec<_>>(),
+            "{rule}: reminded"
+        );
+    }
 }
 
 /// AC (#959): a `PATCH` that leaves `starts_at` alone leaves the exclusions

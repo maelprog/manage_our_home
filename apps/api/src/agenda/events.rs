@@ -888,9 +888,13 @@ pub async fn update_event(
         recurrence::moved_with_series(
             &existing.exdates,
             existing.all_day,
-            all_day,
             existing.starts_at,
-            starts_at,
+            recurrence::MovedSeries {
+                rrule: rrule.as_deref(),
+                all_day,
+                starts_at,
+                ends_at,
+            },
         )
     } else {
         existing.exdates.clone()
@@ -1327,9 +1331,13 @@ async fn move_series_completions(
         let Some(occurrence_at) = recurrence::moved_with_series(
             &[row.occurrence_at],
             before.all_day,
-            after.all_day,
             before.starts_at,
-            after.starts_at,
+            recurrence::MovedSeries {
+                rrule: after.rrule.as_deref(),
+                all_day: after.all_day,
+                starts_at: after.starts_at,
+                ends_at: after.ends_at,
+            },
         )
         .pop() else {
             continue;

@@ -683,8 +683,7 @@ pub fn continued_after(rrule: &str, produced_before: u32) -> Result<String, rrul
 ///
 /// - **hour-bound**: from the instant of `occurrence` on, each moved by
 ///   as much Paris wall clock as `occurrence` to `new_start` — what the
-///   series unrolls on, so each lands on the occurrence the moved series
-///   has there (#959). Moved by the elapsed time instead, an instant on the
+///   series unrolls on (#959). Moved by the elapsed time instead, an instant on the
 ///   other side of a change of hour from its image, or a series moved
 ///   across one, came out an hour off its occurrence. An instant the
 ///   series unrolled an hour late, its wall clock skipped, is moved from
@@ -695,6 +694,19 @@ pub fn continued_after(rrule: &str, produced_before: u32) -> Result<String, rrul
 ///   `occurrence` on, each moved by as many civil days as the series and
 ///   written as the Paris midnight opening its new day — what an all-day
 ///   occurrence starts on.
+///
+/// Each instant moves by the series' own shift, which lands it on the
+/// occurrence of the same rank only when the rule spaces its occurrences
+/// from the start alone: daily, weekly without `BYDAY`, every n days. It is
+/// not a promise for every rule. One that pins its occurrences to days the
+/// move does not shift — a `BYDAY` with a move other than whole weeks, a
+/// `BYMONTHDAY` — keeps them where they were, and an instant shifted off
+/// them names none (`moved_with_series` leaves in place those that still
+/// name one). A monthly series anchored on the 29th to the 31st skips the
+/// months without that day, and a rule that steps by less than a day
+/// (`FREQ=HOURLY;INTERVAL=5`) does not hold one wall clock from day to day:
+/// there the shifted instant can land on no occurrence, or on another one
+/// than its own. An instant that names no occurrence is without effect.
 pub fn carried_over(
     instants: &[DateTime<Utc>],
     all_day: bool,
@@ -744,20 +756,91 @@ pub fn carried_over(
     }
 }
 
-/// What `instants` become when their series is moved whole from
-/// `old_start` to `new_start` (#959): `carried_over` from the series' start,
-/// read as an all-day series only when it is one on both sides. A series
-/// that becomes all-day (or stops being one) carries its instants on the
-/// wall clock: from 14:00 to the next midnight, an exclusion at 14:00 lands
-/// on the next day's midnight, and the other way round.
+/// What `instants` — the exclusions or completed task occurrences of a
+/// series — become when the series is moved whole from `old_start` to `to`
+/// (#959). Those before `old_start`, which name none of its occurrences,
+/// are dropped.
+///
+/// - An instant that still names an occurrence of the moved series stays
+///   where it is: the same instant for an hour-bound series, the same Paris
+///   day (written as its midnight) for an all-day one — what
+///   `without_excluded` compares on. « Lundi et mercredi » moved from
+///   Monday to Tuesday still has its Wednesdays: an excluded Wednesday stays
+///   excluded, a ticked-off one stays ticked off. Carried a day along, both
+///   landed on a Thursday the series does not have, and the Wednesday came
+///   back.
+/// - Any other is `carried_over` from the series' start, read as an all-day
+///   series only when it is one on both sides. A series that becomes
+///   all-day (or stops being one) carries its instants on the wall clock:
+///   from 14:00 to the next midnight, an exclusion at 14:00 lands on the
+///   next day's midnight, and the other way round.
+///
+/// An instant carried onto one left in place, or onto another carried one,
+/// is kept once. A rule the moved series does not unroll (or no rule at
+/// all) leaves nothing to compare with: every instant is carried.
 pub fn moved_with_series(
     instants: &[DateTime<Utc>],
     was_all_day: bool,
-    all_day: bool,
     old_start: DateTime<Utc>,
-    new_start: DateTime<Utc>,
+    to: MovedSeries<'_>,
 ) -> Vec<DateTime<Utc>> {
-    carried_over(instants, was_all_day && all_day, old_start, new_start)
+    let mut moved: Vec<DateTime<Utc>> = Vec::with_capacity(instants.len());
+    for &at in instants {
+        let Some(carried) =
+            carried_over(&[at], was_all_day && to.all_day, old_start, to.starts_at).pop()
+        else {
+            continue;
+        };
+        let landed = if !names_an_occurrence(&to, at) {
+            carried
+        } else if to.all_day {
+            paris_start_of_day(paris_date(at))
+        } else {
+            at
+        };
+        if !moved.contains(&landed) {
+            moved.push(landed);
+        }
+    }
+    moved
+}
+
+/// Whether `at`, as an exclusion of `series`, would drop one of its
+/// occurrences — see `without_excluded`.
+fn names_an_occurrence(series: &MovedSeries<'_>, at: DateTime<Utc>) -> bool {
+    let Some(rrule) = series.rrule else {
+        return false;
+    };
+    let (from, to) = if series.all_day {
+        let day = paris_date(at);
+        (
+            paris_start_of_day(day),
+            paris_start_of_day(add_days(day, 1)) - Duration::seconds(1),
+        )
+    } else {
+        (at, at)
+    };
+    expand_series(
+        rrule,
+        series.all_day,
+        series.starts_at,
+        series.ends_at,
+        from,
+        to,
+        &[],
+    )
+    .is_ok_and(|spans| without_excluded(spans.clone(), &[at], series.all_day) != spans)
+}
+
+/// A series as a whole-series move leaves it (#959): what
+/// `moved_with_series` checks each instant against.
+#[derive(Debug, Clone, Copy)]
+pub struct MovedSeries<'a> {
+    /// Its rule after the move; `None` when the same change drops it.
+    pub rrule: Option<&'a str>,
+    pub all_day: bool,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: DateTime<Utc>,
 }
 
 /// `dt` on the Paris wall clock.
@@ -2806,6 +2889,18 @@ mod tests {
         assert_eq!(unrolled, carried);
     }
 
+    /// The series `rrule` becomes, moved to `starts_at`: an hour long, or a
+    /// day when all-day.
+    fn moved_to(rrule: &str, all_day: bool, starts_at: DateTime<Utc>) -> MovedSeries<'_> {
+        let ends_at = starts_at + Duration::hours(if all_day { 24 } else { 1 });
+        MovedSeries {
+            rrule: Some(rrule),
+            all_day,
+            starts_at,
+            ends_at,
+        }
+    }
+
     #[test]
     fn a_whole_series_moved_carries_its_instants_onto_its_new_kind() {
         // Hour-bound → all-day: 14:00 to the Paris midnight of the next day.
@@ -2814,9 +2909,8 @@ mod tests {
             moved_with_series(
                 &[paris(2026, 10, 8, 14, 0)],
                 false,
-                true,
                 paris(2026, 10, 1, 14, 0),
-                midnight(2026, 10, 2),
+                moved_to("FREQ=WEEKLY", true, midnight(2026, 10, 2)),
             ),
             vec![midnight(2026, 10, 9)]
         );
@@ -2827,9 +2921,8 @@ mod tests {
             moved_with_series(
                 &[midnight(2026, 10, 29)],
                 true,
-                false,
                 midnight(2026, 10, 22),
-                paris(2026, 10, 23, 14, 0),
+                moved_to("FREQ=WEEKLY", false, paris(2026, 10, 23, 14, 0)),
             ),
             vec![paris(2026, 10, 30, 14, 0)]
         );
@@ -2838,16 +2931,109 @@ mod tests {
             moved_with_series(
                 &[midnight(2026, 10, 29)],
                 true,
-                true,
                 midnight(2026, 10, 22),
-                midnight(2026, 10, 23),
+                moved_to("FREQ=WEEKLY", true, midnight(2026, 10, 23)),
             ),
             vec![midnight(2026, 10, 30)]
         );
         // Not moved: unchanged.
         let at = paris(2026, 10, 1, 14, 0);
         let all = [paris(2026, 10, 8, 14, 0), paris(2026, 10, 29, 14, 0)];
-        assert_eq!(moved_with_series(&all, false, false, at, at), all.to_vec());
+        assert_eq!(
+            moved_with_series(&all, false, at, moved_to("FREQ=WEEKLY", false, at)),
+            all.to_vec()
+        );
+    }
+
+    #[test]
+    fn a_moved_series_leaves_in_place_the_instants_still_on_one_of_its_occurrences() {
+        // « Lundi et mercredi » from Monday 5 October, 10:00, moved to
+        // Tuesday the 6th, its rule unchanged: Wednesday the 14th is still
+        // one of its occurrences, and its exclusion stays there. Carried a
+        // day later, onto Thursday the 15th, it excluded nothing and
+        // Wednesday the 14th came back.
+        let from = paris(2026, 10, 5, 10, 0);
+        let wednesday = paris(2026, 10, 14, 10, 0);
+        assert_eq!(
+            moved_with_series(
+                &[wednesday],
+                false,
+                from,
+                moved_to("FREQ=WEEKLY;BYDAY=MO,WE", false, paris(2026, 10, 6, 10, 0)),
+            ),
+            vec![wednesday]
+        );
+        // « Le lundi », moved to the Tuesday: Monday the 12th is still one.
+        let monday = paris(2026, 10, 12, 10, 0);
+        assert_eq!(
+            moved_with_series(
+                &[monday],
+                false,
+                from,
+                moved_to("FREQ=WEEKLY;BYDAY=MO", false, paris(2026, 10, 6, 10, 0)),
+            ),
+            vec![monday]
+        );
+        // The same, all-day: compared on the Paris day.
+        assert_eq!(
+            moved_with_series(
+                &[midnight(2026, 10, 14)],
+                true,
+                midnight(2026, 10, 5),
+                moved_to("FREQ=WEEKLY;BYDAY=MO,WE", true, midnight(2026, 10, 6)),
+            ),
+            vec![midnight(2026, 10, 14)]
+        );
+        // A daily series moved a day later: every instant past its new start
+        // is still an occurrence. The one on its old first day is not, and
+        // is carried onto the new first day.
+        assert_eq!(
+            moved_with_series(
+                &[from, paris(2026, 10, 8, 10, 0)],
+                false,
+                from,
+                moved_to("FREQ=DAILY", false, paris(2026, 10, 6, 10, 0)),
+            ),
+            vec![paris(2026, 10, 6, 10, 0), paris(2026, 10, 8, 10, 0)]
+        );
+    }
+
+    #[test]
+    fn a_moved_series_carries_the_instants_no_longer_on_one_of_its_occurrences() {
+        // Weekly on Mondays, moved to Tuesdays: Monday the 12th goes to
+        // Tuesday the 13th.
+        let from = paris(2026, 10, 5, 10, 0);
+        let to = paris(2026, 10, 6, 10, 0);
+        assert_eq!(
+            moved_with_series(
+                &[paris(2026, 10, 12, 10, 0)],
+                false,
+                from,
+                moved_to("FREQ=WEEKLY", false, to),
+            ),
+            vec![paris(2026, 10, 13, 10, 0)]
+        );
+        // Its rule dropped by the same change: nothing to compare with, the
+        // instant is carried.
+        assert_eq!(
+            moved_with_series(
+                &[paris(2026, 10, 12, 10, 0)],
+                false,
+                from,
+                MovedSeries {
+                    rrule: None,
+                    ..moved_to("FREQ=DAILY", false, to)
+                },
+            ),
+            vec![paris(2026, 10, 13, 10, 0)]
+        );
+        // An instant carried onto one left in place is kept once: daily,
+        // moved from the 5th to the 6th, 10:00 on the 5th is carried onto
+        // 10:00 on the 6th, which stays where it is.
+        assert_eq!(
+            moved_with_series(&[from, to], false, from, moved_to("FREQ=DAILY", false, to)),
+            vec![to]
+        );
     }
 
     #[test]
@@ -2896,10 +3082,11 @@ mod tests {
     /// Every series around the two changes of hour of 2026 — hour-bound at
     /// wall clocks inside, next to and away from the hour changed, all-day —
     /// moved by days or to another wall clock, of either kind: each of its
-    /// first occurrences, excluded and moved with the series, excludes the
-    /// occurrence of the same rank in the moved series, and that one alone.
+    /// first occurrences, excluded and moved with the series, excludes one
+    /// occurrence of the moved series, and that one alone — itself when it
+    /// is still one, the one of the same rank otherwise.
     #[test]
-    fn a_moved_series_excludes_the_occurrence_of_the_same_rank() {
+    fn a_moved_series_excludes_the_occurrence_its_exclusion_stands_for() {
         use manage_our_home_shared::validation::agenda::paris_start_of_day;
         // Every instant a Paris wall clock names: none, one or two.
         let passes = |d: NaiveDate, h: u32, m: u32| {
@@ -2944,34 +3131,55 @@ mod tests {
                                     if new_start == old_start {
                                         continue;
                                     }
-                                    let unroll = |all_day, start, end| {
+                                    let unroll = |all_day, start, end, days| {
                                         expand_series(
                                             rule,
                                             all_day,
                                             start,
                                             end,
                                             start - Duration::days(1),
-                                            start + Duration::days(40),
+                                            start + Duration::days(days),
                                             &[],
                                         )
                                         .unwrap()
                                     };
-                                    let old = unroll(was_all_day, old_start, old_end);
-                                    let new = unroll(all_day, new_start, new_end);
+                                    let old = unroll(was_all_day, old_start, old_end, 40);
+                                    // Wider, so that every old occurrence
+                                    // that is also a new one is found.
+                                    let new = unroll(all_day, new_start, new_end, 60);
                                     let n = old.len().min(new.len()).min(12);
                                     for k in 0..n {
                                         checked += 1;
                                         let moved = moved_with_series(
                                             &[old[k].0],
                                             was_all_day,
-                                            all_day,
                                             old_start,
-                                            new_start,
+                                            MovedSeries {
+                                                rrule: Some(rule),
+                                                all_day,
+                                                starts_at: new_start,
+                                                ends_at: new_end,
+                                            },
                                         );
                                         let kept =
                                             without_excluded(new[..n].to_vec(), &moved, all_day);
+                                        // Still an occurrence of the moved
+                                        // series: that one; otherwise the
+                                        // one of the same rank.
+                                        let target = new
+                                            .iter()
+                                            .position(|(s, _)| {
+                                                if all_day {
+                                                    paris_date(*s) == paris_date(old[k].0)
+                                                } else {
+                                                    *s == old[k].0
+                                                }
+                                            })
+                                            .unwrap_or(k);
                                         let mut wanted = new[..n].to_vec();
-                                        wanted.remove(k);
+                                        if target < n {
+                                            wanted.remove(target);
+                                        }
                                         if kept != wanted && failures.len() < 10 {
                                             failures.push(format!(
                                                 "{rule} all_day {was_all_day}→{all_day} \
