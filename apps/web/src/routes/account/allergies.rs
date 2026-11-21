@@ -27,6 +27,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::{DateTime, Datelike, Utc};
 use manage_our_home_shared::dto::auth::MeResponse;
+use manage_our_home_shared::dto::recipes::AddAllergyRequest;
 use manage_our_home_shared::validation::budget::month_name_fr;
 use manage_our_home_shared::validation::dietary::{
     inco_label, validate_tag, ShareLevel, INCO_ALLERGENS, SEARCH_QUERY_MAX_LEN,
@@ -128,7 +129,8 @@ pub(crate) fn name_of<'a>(tag: &str, label: &'a str) -> &'a str {
 
 /// Whether an allergy may be recorded (#819): the first one needs the box
 /// of consent ticked — the member has no allergy yet, so no consent in
-/// force. A dislike needs none. `Err` is the error code.
+/// force. A dislike needs none. `Err` is the error code. apps/api holds the
+/// same rule (#958); this one only spares the call.
 pub(crate) fn consent_check(
     kind: Kind,
     has_allergies: bool,
@@ -138,6 +140,20 @@ pub(crate) fn consent_check(
         Err("consent_required")
     } else {
         Ok(())
+    }
+}
+
+/// The body of `POST /me/allergies` or `/me/dislikes`. An allergy carries
+/// the box of consent, which apps/api checks for the first one (#958); a
+/// dislike carries the tag alone.
+pub(crate) fn add_body(kind: Kind, tag: &str, consent: bool) -> serde_json::Value {
+    match kind {
+        Kind::Allergy => serde_json::to_value(AddAllergyRequest {
+            tag: tag.to_string(),
+            consent,
+        })
+        .expect("a string and a bool serialize"),
+        Kind::Dislike => serde_json::json!({ "tag": tag }),
     }
 }
 
@@ -693,7 +709,7 @@ pub async fn add(
         reqwest::Method::POST,
         kind.api_path(),
         cookie.as_deref(),
-        Some(serde_json::json!({ "tag": tag })),
+        Some(add_body(kind, tag, given)),
     )
     .await;
     match result {
@@ -708,6 +724,10 @@ pub async fn add(
         }
         Ok(resp) if resp.status == reqwest::StatusCode::BAD_REQUEST => {
             back_given("error", "unknown_tag", given)
+        }
+        // apps/api's own check (#958): the list emptied since it was read.
+        Ok(resp) if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
+            back("error", "consent_required")
         }
         _ => back_given("error", "unavailable", given),
     }
@@ -995,6 +1015,23 @@ mod tests {
     #[test]
     fn a_dislike_needs_no_consent() {
         assert_eq!(consent_check(Kind::Dislike, false, false), Ok(()));
+    }
+
+    #[test]
+    fn an_allergy_carries_the_consent_to_the_api_and_a_dislike_does_not() {
+        use serde_json::json;
+        assert_eq!(
+            add_body(Kind::Allergy, "en:peanuts", true),
+            json!({"tag": "en:peanuts", "consent": true})
+        );
+        assert_eq!(
+            add_body(Kind::Allergy, "en:peanuts", false),
+            json!({"tag": "en:peanuts", "consent": false})
+        );
+        assert_eq!(
+            add_body(Kind::Dislike, "en:mushrooms", true),
+            json!({"tag": "en:mushrooms"})
+        );
     }
 
     #[test]

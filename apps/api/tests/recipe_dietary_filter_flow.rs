@@ -37,7 +37,7 @@ async fn allergy(router: &axum::Router, f: &Family, tag: &str, share: &str) {
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": tag })),
+        Some(json!({"tag": tag, "consent": true})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
