@@ -86,8 +86,8 @@ jobs:
   # them in Traefik's form. The only other guard, ci/ingress-test.sh on
   # `deploy`, runs on pull requests to `deploy`: #830 added
   # 'wasm-unsafe-eval' to the Caddyfile's CSP, nothing said so on its pull
-  # request, and the promotion #789 was red 8 runs in a row until #954
-  # aligned `deploy` by hand.
+  # request, and the promotion #789 stayed red for 8 days (58 failed runs
+  # of promote/staging) until #954 aligned `deploy` by hand.
   #
   # A warning, not a failing check (decision of 2026-11-21): ingress-test.sh
   # compares `deploy` to main's HEAD, so whichever side is fixed first, one

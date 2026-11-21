@@ -25,8 +25,10 @@
 # quoting is removed (Caddyfile: "…" or `…`; YAML: "…" or '…'), then
 # character for character.
 #
-# What it reads of the Caddyfile: the lines of the unscoped `header {`
-# blocks, each `Name value`, the last one winning. It is not the parser of
+# What it reads of the Caddyfile: the lines of every `header {` block
+# without a matcher, each `Name value`, the last one winning — wherever the
+# block sits: one inside a `handle /api/* { … }` or another route block is
+# read as if it applied to every response. It is not the parser of
 # apps/web/src/csp.rs (`caddy_header`), which follows Caddy's semantics —
 # matchers, `>`/`?`/`-` prefixes, `defer`, one-line `header Name value` —
 # to pin the CSP the browser receives; this one only has to read the block
