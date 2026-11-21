@@ -1023,6 +1023,20 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn an_admin_under_an_owner_threshold_is_told_the_owner_alone_edits() {
+        // #962: the line follows the group's `recipes_edit` threshold.
+        let recipe = recipe_with(serde_json::json!({}));
+        let can_edit = can_modify("admin", "owner", false);
+        let html = page(
+            "", &recipe, None, None, None, None, false, can_edit, "owner", "", "",
+        );
+        assert!(
+            html.contains(r#"<p class="muted">Seul le propriétaire ou le créateur peut modifier ou supprimer cette recette.</p>"#),
+            "{html}"
+        );
+    }
+
     fn render(recipe: &RecipeResponse) -> String {
         page(
             "", recipe, None, None, None, None, false, false, "admin", "", "",

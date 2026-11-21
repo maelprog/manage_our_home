@@ -1640,6 +1640,30 @@ mod tests {
         )
     }
 
+    #[test]
+    fn an_admin_under_an_owner_threshold_is_told_the_owner_alone_edits() {
+        // #962: the line follows the group's `agenda_edit` threshold.
+        let html = page(
+            "",
+            &event(false),
+            Some(&[]),
+            Some(&[]),
+            &[member(uid(1), "Alice")],
+            can_modify("admin", "owner", false),
+            "owner",
+            None,
+            None,
+            None,
+            None,
+            "",
+            None,
+        );
+        assert!(
+            html.contains(r#"<p class="muted">Seul le propriétaire ou le créateur peut modifier ou supprimer cet événement.</p>"#),
+            "{html}"
+        );
+    }
+
     // -- an event of another family (#622) ----------------------------------
 
     /// A one-off task with a PDF, a picture with its thumbnail and a video,
