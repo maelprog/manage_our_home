@@ -34,6 +34,7 @@ use manage_our_home_shared::dto::recipes::{
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
+use crate::edit_rule::{who_may, Guarded};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -264,6 +265,7 @@ pub async fn get(
     let library = super::publish::library_card(
         recipe_id,
         can_edit,
+        &fam.edit_min_role,
         publication.as_ref(),
         query.notice.as_deref() == Some("unpublished"),
     );
@@ -299,6 +301,7 @@ pub async fn get(
         planned,
         is_plan_error(query.error.as_deref()),
         can_edit,
+        &fam.edit_min_role,
         &format!("{notice_html}{incomplete}{error_html}"),
         &library,
     ))
@@ -462,6 +465,7 @@ fn page(
     planned: Option<&RecipeSelectionResponse>,
     plan_open: bool,
     can_edit: bool,
+    edit_min_role: &str,
     banners: &str,
     library: &str,
 ) -> String {
@@ -512,7 +516,10 @@ fn page(
 </div>"#
         )
     } else {
-        r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cette recette.</p>"#.to_string()
+        format!(
+            r#"<p class="muted">{}</p>"#,
+            who_may(edit_min_role, Guarded::Recipe)
+        )
     };
 
     let source_html = source_html(recipe.source_url.as_deref());
@@ -1017,7 +1024,9 @@ mod tests {
     }
 
     fn render(recipe: &RecipeResponse) -> String {
-        page("", recipe, None, None, None, None, false, false, "", "")
+        page(
+            "", recipe, None, None, None, None, false, false, "admin", "", "",
+        )
     }
 
     #[test]
@@ -1043,6 +1052,7 @@ mod tests {
             Some(&selection),
             false,
             false,
+            "admin",
             "",
             "",
         );
@@ -1055,8 +1065,10 @@ mod tests {
     #[test]
     fn the_library_card_comes_before_editing() {
         let recipe = recipe_with(serde_json::json!({}));
-        let card = super::super::publish::library_card(recipe.id, true, None, false);
-        let html = page("", &recipe, None, None, None, None, false, true, "", &card);
+        let card = super::super::publish::library_card(recipe.id, true, "admin", None, false);
+        let html = page(
+            "", &recipe, None, None, None, None, false, true, "admin", "", &card,
+        );
         let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
         assert!(at("Logger ce repas") < at(r#"id="bibliotheque""#));
         assert!(at(r#"id="bibliotheque""#) < at("Modifier la recette"));

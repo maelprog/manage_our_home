@@ -28,6 +28,7 @@ use manage_our_home_shared::dto::recipes::{PublicationOfRecipe, PublishRequest, 
 use uuid::Uuid;
 
 use crate::app::{html_escape, kitchen_segment, shell_with_header, Width};
+use crate::edit_rule::{who_may, Guarded};
 use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::account::allergies::long_date;
@@ -126,16 +127,22 @@ pub(crate) fn dates_text(published_at: DateTime<Utc>, updated_at: DateTime<Utc>)
 /// The « Bibliothèque » card of a recipe's page (`detail.rs`), before
 /// « Modifier » and « Supprimer ». `publication` is the caller's own
 /// publication of it; `withdrawn` says the page follows a withdrawal.
+/// `edit_min_role`, the family's `recipes_edit` threshold, says who may
+/// publish to a reader who may not (#962).
 pub(crate) fn library_card(
     id: Uuid,
     can_edit: bool,
+    edit_min_role: &str,
     publication: Option<&PublicationOfRecipe>,
     withdrawn: bool,
 ) -> String {
     const MINE: &str =
         r#"<div class="links"><a href="/recipes/library/mine">Mes publications</a></div>"#;
     let body = if !can_edit {
-        r#"<p class="muted">Seul le créateur ou un administrateur peut publier cette recette dans la bibliothèque.</p>"#.to_string()
+        format!(
+            r#"<p class="muted">{}</p>"#,
+            who_may(edit_min_role, Guarded::Publication)
+        )
     } else if let Some(p) = publication {
         format!(
             r#"<p><span class="badge ok">Publiée</span> <span class="muted">{dates}</span></p>
@@ -614,7 +621,7 @@ mod tests {
     #[test]
     fn the_card_offers_what_the_reader_may_do() {
         let id = Uuid::from_u128(7);
-        let none = library_card(id, true, None, false);
+        let none = library_card(id, true, "admin", None, false);
         assert!(none.contains(&format!(
             r#"<a class="btn" href="/recipes/{id}/publish">Publier dans la bibliothèque</a>"#
         )));
@@ -622,7 +629,7 @@ mod tests {
         assert!(!none.contains("<form"));
 
         let p = publication("2026-11-18T09:00:00Z", "2026-11-18T09:00:00Z");
-        let published = library_card(id, true, Some(&p), false);
+        let published = library_card(id, true, "admin", Some(&p), false);
         assert!(published.contains(r#"<span class="badge ok">Publiée</span> <span class="muted">le 18 novembre 2026</span>"#));
         assert!(published.contains("Mettre à jour la publication"));
         assert!(published.contains(&format!(
@@ -630,12 +637,19 @@ mod tests {
         )));
         assert!(published.contains("Retirer de la bibliothèque"));
 
-        let gone = library_card(id, true, None, true);
+        let gone = library_card(id, true, "admin", None, true);
         assert!(gone.contains("Cette recette n'est plus dans la bibliothèque."));
         assert!(gone.contains("Publier à nouveau"));
 
-        let reader = library_card(id, false, Some(&p), false);
-        assert!(reader.contains("Seul le créateur ou un administrateur peut publier"));
+        let reader = library_card(id, false, "admin", Some(&p), false);
+        assert!(reader.contains(
+            r#"<p class="muted">Seuls le créateur, les administrateurs et le propriétaire peuvent publier cette recette dans la bibliothèque.</p>"#
+        ));
+        // Under an `owner` threshold, an admin is not among them (#962).
+        let admin_under_owner = library_card(id, false, "owner", Some(&p), false);
+        assert!(admin_under_owner.contains(
+            "Seul le propriétaire ou le créateur peut publier cette recette dans la bibliothèque."
+        ));
         assert!(!reader.contains("<form"));
         assert!(!reader.contains("/publish"));
         for html in [&none, &published, &gone, &reader] {

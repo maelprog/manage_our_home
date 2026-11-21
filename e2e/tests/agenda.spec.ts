@@ -268,7 +268,9 @@ test.describe("Agenda — permission bar", () => {
 
     // The member sees the event but gets no edit/delete controls.
     await openEventDetail(member, "Événement du proprio");
-    await expect(member.getByText("Seul le créateur ou un administrateur")).toBeVisible();
+    await expect(
+      member.getByText("Seuls le créateur, les administrateurs et le propriétaire peuvent modifier ou supprimer"),
+    ).toBeVisible();
     await expect(member.getByRole("link", { name: "Modifier" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Supprimer" })).toHaveCount(0);
     await context.close();
