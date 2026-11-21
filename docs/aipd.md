@@ -248,8 +248,10 @@ elle reste une donnée personnelle. Le minimum d'un an du décret
 n° 2021-1362 a été **écarté** : il vise les hébergeurs et les services de
 communication au public, pas une application familiale portée par une
 personne physique — arbitrage du responsable de traitement du 2026-09-19
-(#138), à revoir si le service change de nature. Il n'appelle donc aucune
-mesure ici.
+(#138), à revoir si le service change de nature. La bibliothèque de
+recettes, lisible par tous les utilisateurs connectés quelle que soit leur
+famille, ne change pas cette nature — arbitrage du 2026-11-21 (#961). Il
+n'appelle donc aucune mesure ici.
 
 ## 7. Conclusion
 

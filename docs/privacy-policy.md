@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-11-20.
+Dernière mise à jour : 2026-11-21.
 
 ## Qui est responsable de vos données ?
 
@@ -50,7 +50,7 @@ données sont-elles conservées ? ».
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
 | Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue, les deux clés de cet abonnement avec lesquelles le message qui lui est envoyé est chiffré pour votre navigateur, et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue ; dans l'application Android, la notification est programmée sur le téléphone et affiche le titre de l'événement et son heure (voir « Application Android ») | Exécution du contrat |
 | Notifications dans l'application | pour chaque notification qui vous est adressée : son type (rappel d'événement, article bientôt périmé, récapitulatif quotidien des articles bientôt périmés ou périmés, message, invitation, ajout à la liste de courses, alerte de plafond du budget pour les propriétaires et administrateurs d'une famille), la famille concernée, l'élément visé, un texte court (titre de l'événement et sa date, nom de l'article, nom affiché du membre à l'origine de l'action, nom du groupe, nom de la catégorie de dépense — jamais le contenu d'un message), la date de création, la date à laquelle vous l'avez lue et le membre à l'origine de l'action ; l'heure à laquelle vous recevez le récapitulatif des articles bientôt périmés (9 h par défaut), le jour du dernier, et les articles qu'il vous a déjà annoncés, pour ne pas vous les annoncer deux fois | Exécution du contrat |
-| Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
+| Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; l'historique des repas : pour chaque recette marquée faite, le jour, le membre qui l'a marquée et son avis — aimé, neutre ou pas aimé, neutre par défaut, et, s'il en écrit un, un avis libre de 200 caractères au plus, que tous les membres de la famille peuvent lire (un texte libre : aucune information de santé n'y est demandée, mais il garde ce que vous y écrivez) ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
 | Bibliothèque de recettes | si vous publiez une recette : ce qui en est publié, lisible par tous les utilisateurs (nom, instructions, nombre de personnes, durée, ingrédients et leurs saisons, adresse de la page d'où la recette a été importée s'il y en a une, dates de publication et de dernière mise à jour), et, visibles de vous seul, le lien entre vous et cette publication et la recette de votre famille d'où elle vient ; si vous copiez une recette de la bibliothèque dans votre famille, la publication d'où vient la copie | **Consentement explicite** pour la publication : rien n'est publié sans que vous le confirmiez, recette par recette, et vous le retirez en retirant la recette (voir « La bibliothèque de recettes ») ; exécution du contrat pour la copie |
 | Signalements de la bibliothèque | si vous signalez une recette publiée : la recette visée, le motif choisi, votre commentaire facultatif (500 caractères au plus), la date, puis la décision prise et sa date | Intérêt légitime (modérer un contenu visible de tous les utilisateurs) |
 | Allergies alimentaires | si vous en déclarez : la catégorie d'aliment concernée (par exemple les arachides) et sa date d'ajout ; pour chaque famille dont vous êtes membre, ce que vous choisissez d'en dire — **rien** (le choix par défaut), **anonymement** (la famille sait seulement qu'un de ses membres est allergique), ou **publiquement** (la famille voit votre nom et l'allergie). Une allergie est une **donnée de santé** : vous seul la voyez et la modifiez, ni le propriétaire ni les administrateurs d'une famille n'y ont accès, et elle n'apparaît ni dans le journal d'audit, ni dans les journaux techniques, ni dans une notification. Elle ne sert qu'à écarter ou signaler les recettes qui ne vous conviennent pas, à vous ou à votre famille | **Consentement explicite** (art. 9(2)(a)) : vous la saisissez vous-même, après avoir coché, pour la première, une case de consentement distincte des conditions d'utilisation, et vous le retirez aussi simplement — retirer une allergie, la repasser à « rien » dans une famille, ou tout effacer d'un coup |
@@ -146,7 +146,10 @@ possibles sont :
   invite, le corps d'un avis de propriété nomme le groupe et dit pourquoi
   il vous revient, et le corps de l'avertissement avant suppression, celui
   d'un avis de propriété et celui de l'avis de compte existant vous nomment
-  par votre nom affiché. L'avis de compte existant part quand quelqu'un —
+  par votre nom affiché ; celui d'une réinitialisation de mot de passe
+  aussi, si votre adresse est vérifiée, de même que celui de l'email qui
+  vous demande de confirmer votre adresse quand vous ajoutez un mot de
+  passe à votre compte. L'avis de compte existant part quand quelqu'un —
   vous ou n'importe qui d'autre — tente de créer un compte avec votre adresse alors qu'elle est
   déjà vérifiée, sauf si votre compte est désactivé ; il vous le signale,
   avec un lien vers la page « mot de passe oublié », sans que la personne
@@ -258,7 +261,8 @@ possibles sont :
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
 stock, repas récents, saison, avis « aimé » ou « pas aimé » donnés par le
-foyer quand une recette est faite) : aucun modèle d'intelligence artificielle
+foyer quand une recette est faite — l'avis libre n'y entre pas, il n'est
+gardé que pour le foyer) : aucun modèle d'intelligence artificielle
 n'est appelé, ni sur le serveur ni chez un tiers.
 
 Au sein du service, ce que vous déposez dans un groupe n'est visible que de
@@ -481,7 +485,10 @@ de la purge dépasserait.
 - **Vérification d'email et réinitialisation du mot de passe** : un jeton
   de vérification est valable 24 heures, un jeton de réinitialisation
   1 heure, et chacun ne sert qu'une fois. Un jeton de réinitialisation est
-  supprimé dès qu'il sert. Sinon, un jeton est supprimé au premier passage
+  supprimé dès qu'il sert, et avec lui tous les autres jetons de
+  réinitialisation du compte ; ils le sont aussi dès que le mot de passe
+  est changé depuis les paramètres ou ajouté à un compte qui n'en avait
+  pas. Sinon, un jeton est supprimé au premier passage
   de purge qui suit sa durée de conservation : 48 heures après sa création
   pour la vérification, 1 heure pour la réinitialisation — ou à la purge du
   compte, ou à la suppression d'un compte jamais confirmé (voir
@@ -548,7 +555,9 @@ de la purge dépasserait.
   que le contenu n'est pas supprimé, et au plus tant que le groupe existe —
   la suppression d'un groupe supprime son contenu. Quand le compte de son
   auteur est anonymisé, le contenu reste dans le groupe sans être rattaché
-  à son identité. Le fichier d'une pièce jointe que le serveur a reçu sans
+  à son identité. Un repas de l'historique, avec son avis et son avis
+  libre, ne se supprime pas seul : il reste tant que la recette existe, et
+  disparaît avec elle ou avec le groupe. Le fichier d'une pièce jointe que le serveur a reçu sans
   pouvoir l'enregistrer est supprimé par un balayage quotidien moins de
   48 heures après son dépôt, tant que le serveur tourne et que sa
   configuration permet ce balayage, aux mêmes conditions que le passage de
@@ -706,12 +715,13 @@ de la purge dépasserait.
   retourne, au format JSON, l'intégralité des données qui vous concernent :
   votre profil, déclaration d'âge et version acceptée des conditions
   d'utilisation comprises, avec leurs dates ; le contenu que vous avez créé dans chaque groupe (les
-  recettes avec leurs ingrédients), y compris un groupe que vous avez
-  quitté ou dont vous avez été retiré, tant que ce contenu y est conservé ;
+  recettes avec leurs ingrédients, les repas que vous avez marqués faits
+  avec l'avis et l'avis libre que vous avez donnés), y compris un groupe
+  que vous avez quitté ou dont vous avez été retiré, tant que ce contenu y est conservé ;
   les événements qui vous sont assignés, y compris par un autre membre ;
   les rappels de vos événements et les envois qu'ils ont programmés, la
   façon dont ils vous parviennent et vos appareils abonnés aux
-  notifications ; les notifications qui vous sont adressées dans
+  notifications, sans leurs clés de chiffrement (voir plus bas) ; les notifications qui vous sont adressées dans
   l'application, tant qu'elles sont conservées ; vos
   pièces jointes ; les occurrences de tâches que vous avez cochées ; votre
   marqueur de lecture de la messagerie ; les invitations que vous avez
@@ -730,7 +740,13 @@ de la purge dépasserait.
   par son type et un lien de même durée : relancez l'export pour en
   obtenir un nouveau. N'y figurent ni le contenu créé par les autres
   membres, ni les secrets d'accès (identifiant de session, jeton
-  d'invitation ou de vérification, jeton Google, URL de flux calendrier).
+  d'invitation ou de vérification, jeton Google, URL de flux calendrier),
+  ni les deux clés de chiffrement de l'abonnement d'un appareil aux
+  notifications. Ces clés, créées par le navigateur de l'appareil, qui les
+  garde, ne servent qu'à chiffrer pour lui le contenu d'une notification ;
+  l'une est secrète. Les recopier dans un fichier ne vous apprendrait rien
+  sur vous et ferait circuler ce secret : l'export donne chaque appareil
+  sans elles.
 - **Droit à l'effacement (Art. 17)** : voir « Suppression de votre
   compte » ci-dessus.
 - **Droit de rectification** : modifiable directement depuis les paramètres
