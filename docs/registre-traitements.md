@@ -1,6 +1,12 @@
 # Registre des traitements — Manage Our Home
 
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
+2026-11-21 (emails de réinitialisation et de vérification à l'ajout d'un
+mot de passe, qui nomment le destinataire ; export sans les clés
+d'abonnement aux notifications, ligne 12 ; conservation du journal
+d'audit maintenue malgré la bibliothèque de recettes ; suppression des
+jetons de réinitialisation à l'écriture d'un mot de passe, ligne 1b,
+#957 ; #961) ;
 2026-11-20 (bibliothèque de recettes partagée entre toutes les familles :
 publication anonyme sur consentement, copie dans une famille, signalements
 et modération par le superadmin, lignes 4b et 4c, #905 à #909 ; retrait par
