@@ -1103,13 +1103,113 @@ async fn two_first_allergies_at_once_without_consent_are_both_refused(db: PgPool
     assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
 }
 
+/// A transaction of the harness holding the member's `ALLERGIES_LOCK`, as
+/// an add, a removal or an erase in flight holds it, until committed.
+async fn holding_allergies_lock(
+    db: &PgPool,
+    user: uuid::Uuid,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    use manage_our_home::recipes::constraints::ALLERGIES_LOCK;
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2::text))")
+        .bind(ALLERGIES_LOCK)
+        .bind(user.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+/// Removing one allergy waits for an add in flight: it cannot take the
+/// last allergy away between the add's consent check and its insert.
+#[sqlx::test]
+async fn removing_an_allergy_waits_for_an_add_in_flight(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "remove-race").await;
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let adding = holding_allergies_lock(&db, f.holder_id).await;
+    let removing = {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        tokio::spawn(async move {
+            send(
+                &router,
+                Method::DELETE,
+                "/me/allergies",
+                &cookie,
+                Some(json!({"tag": TAG})),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !removing.is_finished(),
+        "the removal did not wait for the add"
+    );
+
+    adding.commit().await.unwrap();
+    let (status, body) = removing.await.unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+}
+
+/// « Tout effacer » waits for an add in flight, then erases what it wrote
+/// too: no allergy escapes the erase by being written while it runs.
+#[sqlx::test]
+async fn erasing_everything_waits_for_an_add_in_flight_and_takes_it_too(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "erase-race").await;
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // An add in flight: the lock taken, the allergy written, not yet
+    // committed.
+    let mut adding = holding_allergies_lock(&db, f.holder_id).await;
+    sqlx::query("INSERT INTO user_allergies (user_id, tag) VALUES ($1, 'en:eggs')")
+        .bind(f.holder_id)
+        .execute(&mut *adding)
+        .await
+        .unwrap();
+
+    let erasing = {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        tokio::spawn(async move {
+            send(
+                &router,
+                Method::DELETE,
+                "/me/dietary-constraints",
+                &cookie,
+                None,
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let waited = !erasing.is_finished();
+
+    adding.commit().await.unwrap();
+    let (status, body) = erasing.await.unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    // Checked before the wait: what an erase that did not wait leaves.
+    assert_eq!(
+        allergy_rows(&db, f.holder_id).await,
+        0,
+        "an allergy escaped the erase"
+    );
+    assert!(waited, "the erase did not wait for the add");
+}
+
 /// The consent is read and the allergy written under the member's lock
 /// (`ALLERGIES_LOCK`): an allergy asked for while the last one is being
 /// removed waits for the removal, then finds no consent in force — not the
 /// allergy about to go.
 #[sqlx::test]
 async fn an_allergy_added_while_the_last_is_removed_waits_and_then_needs_consent(db: PgPool) {
-    use manage_our_home::recipes::constraints::ALLERGIES_LOCK;
     let router = test_router(db.clone());
     let f = family(&router, &db, "consent-race").await;
     let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
@@ -1117,14 +1217,7 @@ async fn an_allergy_added_while_the_last_is_removed_waits_and_then_needs_consent
 
     // A removal in flight, as `remove_allergy` and `erase_constraints`
     // hold it: the lock taken, the row deleted, not yet committed.
-    #[allow(clippy::disallowed_methods)]
-    let mut removal = db.begin().await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2::text))")
-        .bind(ALLERGIES_LOCK)
-        .bind(f.holder_id.to_string())
-        .execute(&mut *removal)
-        .await
-        .unwrap();
+    let mut removal = holding_allergies_lock(&db, f.holder_id).await;
     sqlx::query("DELETE FROM user_allergies WHERE user_id = $1")
         .bind(f.holder_id)
         .execute(&mut *removal)
