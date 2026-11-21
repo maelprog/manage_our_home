@@ -24,7 +24,7 @@ metadata:
 spec:
   headers:
     customResponseHeaders:
-      Content-Security-Policy: "default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; report-uri /api/csp-report; report-to csp"
+      Content-Security-Policy: "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; report-uri /api/csp-report; report-to csp"
       Reporting-Endpoints: 'csp="/api/csp-report"'
       Strict-Transport-Security: max-age=31536000
       X-Content-Type-Options: nosniff
