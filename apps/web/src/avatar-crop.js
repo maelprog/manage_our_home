@@ -322,9 +322,10 @@ var MHomeAvatarCrop = (function () {
   }
 
   // Le carré en JPEG, encodé sur-le-champ (#963). Dans Chromium, `toBlob`
-  // n'encode que pendant les temps morts de la page, et ne s'y force
-  // qu'après 1 s sans qu'aucun ne vienne, ou 5,7 s après le début (4 s et
-  // 9 s sur mobile) : sur un appareil chargé, l'envoi attendait jusque-là
+  // n'encode que pendant les temps morts de la page. Il ne s'y force
+  // qu'après 1 s si aucun n'est venu, et, si l'encodage a commencé sans
+  // finir, 5,7 s après ce premier délai (≈ 6,7 s après l'appel ; 4 s puis
+  // 9 s sur Android) : sur un appareil chargé, l'envoi attendait jusque-là
   // sans rien faire. Un carré de 256 px au plus s'encode en quelques
   // millisecondes.
   function jpeg(canvas) {
