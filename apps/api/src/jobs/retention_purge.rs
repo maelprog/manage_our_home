@@ -98,6 +98,9 @@ pub struct AccountForRetention {
     pub email_verified: bool,
     /// A row in `oauth_identities`: the Google account that added a
     /// password is unverified again (`auth::set_password`) but in use.
+    /// The only case: an unverified account a Google identity is bound to
+    /// later comes out verified (`oauth_google::Binding::ClaimUnverified`,
+    /// #956).
     pub google_identity: bool,
     /// A row in `group_members`.
     pub group_member: bool,

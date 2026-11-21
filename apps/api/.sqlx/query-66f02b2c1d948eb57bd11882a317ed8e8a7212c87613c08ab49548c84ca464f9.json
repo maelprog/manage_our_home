@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, deleted_at IS NOT NULL AS \"purged!\",\n                          deactivated_at IS NOT NULL AS \"deactivated!\"\n                   FROM users WHERE email = $1",
+  "query": "SELECT id, deleted_at IS NOT NULL AS \"purged!\",\n                          deactivated_at IS NOT NULL AS \"deactivated!\", email_verified\n                   FROM users WHERE email = $1",
   "describe": {
     "columns": [
       {
@@ -25,6 +25,17 @@
         "name": "deactivated!",
         "type_info": "Bool",
         "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "email_verified",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "email_verified"
+          }
+        }
       }
     ],
     "parameters": {
@@ -35,8 +46,9 @@
     "nullable": [
       false,
       null,
-      null
+      null,
+      false
     ]
   },
-  "hash": "89263bbb0c4dd6ea395a7eb014eeeb3474bb545959fa9c14c1d1cbeefdf1404f"
+  "hash": "66f02b2c1d948eb57bd11882a317ed8e8a7212c87613c08ab49548c84ca464f9"
 }
