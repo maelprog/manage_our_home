@@ -485,7 +485,10 @@ de la purge dépasserait.
 - **Vérification d'email et réinitialisation du mot de passe** : un jeton
   de vérification est valable 24 heures, un jeton de réinitialisation
   1 heure, et chacun ne sert qu'une fois. Un jeton de réinitialisation est
-  supprimé dès qu'il sert. Sinon, un jeton est supprimé au premier passage
+  supprimé dès qu'il sert, et avec lui tous les autres jetons de
+  réinitialisation du compte ; ils le sont aussi dès que le mot de passe
+  est changé depuis les paramètres ou ajouté à un compte qui n'en avait
+  pas. Sinon, un jeton est supprimé au premier passage
   de purge qui suit sa durée de conservation : 48 heures après sa création
   pour la vérification, 1 heure pour la réinitialisation — ou à la purge du
   compte, ou à la suppression d'un compte jamais confirmé (voir
