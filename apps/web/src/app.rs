@@ -4551,12 +4551,51 @@ mod tests {
         // isolating the content column ends it: every `z-index` inside
         // `<main>` is then ranked within `<main>` alone, and `<main>` as a
         // whole sits at the root's level 0, under any positive bar.
+        //
+        // On a phone only: on a PC the bar is a static sidebar that nothing
+        // overlaps, and an isolated `<main>` is composited apart there,
+        // which turns Chromium's subpixel text antialiasing into greyscale
+        // across the whole column — a visible change the issue rules out.
+        //
+        // Every rule on the content column is read, in source order, with
+        // the media it sits in, so that a later `.content` rule cannot undo
+        // the isolation unnoticed.
+        const PHONE: &str = "@media not all and (min-width: 861px)";
+        const PC: &str = "@media (min-width: 861px)";
         let css = css();
-        let (content, _) = block_after(&css, "\n.content {", 0);
+        let isolation: Vec<(String, String)> = css_rules(&css)
+            .into_iter()
+            .filter(|r| {
+                r.selector
+                    .split(", ")
+                    .any(|s| matches!(s, ".content" | "main" | "#main"))
+            })
+            .flat_map(|r| {
+                r.body
+                    .split(';')
+                    .filter_map(|d| d.split_once(':'))
+                    .filter(|(name, _)| name.trim() == "isolation")
+                    .map(|(_, value)| (r.context.clone(), value.trim().to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let effective = |media: &str| {
+            isolation
+                .iter()
+                .rfind(|(context, _)| context.is_empty() || context == media)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(
+            effective(PHONE),
+            Some("isolate"),
+            "on a phone the content column should be its own stacking \
+             context, or a `z-index` in it can paint over the tab bar: \
+             {isolation:?}"
+        );
         assert!(
-            content.contains("isolation: isolate"),
-            "the content column should be its own stacking context, or a \
-             `z-index` in it can paint over the tab bar: {content}"
+            matches!(effective(PC), None | Some("auto")),
+            "on a PC the content column should not be isolated — it changes \
+             how its text is antialiased: {isolation:?}"
         );
         let (tabs, _) = block_after(&css, "\n.tabs {", 0);
         let z = tabs
