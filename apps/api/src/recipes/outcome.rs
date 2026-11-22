@@ -22,8 +22,8 @@
 //! already capped, so a larger quantity means the stock changed since, or a
 //! request asking for more than there is. A line gone since is 409
 //! `stock_item_gone`. The stock is decremented, a `meal_history` entry is
-//! inserted as « log a meal » does, with the taste tags given (#821,
-//! `recipes::taste`), and the selection becomes `done`. A
+//! inserted as « log a meal » does, with the opinion and the note given
+//! (#822, `recipes::taste`), and the selection becomes `done`. A
 //! line taken from that is left at 0 without a reorder threshold is
 //! deleted (#801), the rule of a quantity-only adjustment
 //! (`should_remove_at_zero`, #800); the response gives its last state with
@@ -40,8 +40,9 @@
 //! name and unit, the quantity used brought back to the recipe's number of
 //! people, unless the recipe already has an ingredient of that name
 //! (`article_key`), so that replaying adds it once. Changing the recipe
-//! stays for its creator, an admin or the owner (`can_modify`, as for
-//! `PATCH`): anyone else gets 403 for an `add_to_recipe` that adds
+//! stays for its creator or a member whose role meets the family's
+//! `recipes_edit` threshold (#866; `can_modify`, as for `PATCH`): anyone
+//! else gets 403 for an `add_to_recipe` that adds
 //! something (products the recipe already names add nothing), and the
 //! preview says whether the caller may (`can_edit_recipe`).
 //!
@@ -67,8 +68,9 @@
 //! two applications at once end with one 200 and one 404. Any member may
 //! apply either action, like logging a meal. Removing from the stock is a
 //! quantity-only adjustment, already open to any member (#39). Removing
-//! grocery items is not otherwise: deleting one directly is for its creator,
-//! an admin or the owner (`grocery_list::can_modify`). Through an abandon it
+//! grocery items is not otherwise: deleting one directly is for its creator
+//! or a member whose role meets the family's `grocery_edit` threshold
+//! (`grocery_list::can_modify`, #866). Through an abandon it
 //! is open to any member, by user arbitration of 2026-10-25, as for the
 //! reception of the groceries (#471), and `can_modify` is deliberately not
 //! called: only unchecked items generated for the abandoned recipe can go,
@@ -87,11 +89,12 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::planned::{scale_quantity, without_binary_noise};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::recipes::can_modify;
 use crate::recipes::meal_history::MealHistoryEntryResponse;
 use crate::recipes::selections::SelectionResponse;
-use crate::recipes::taste::{taste_tags_to_store, TasteTag};
+use crate::recipes::taste::{taste_note_to_store, Taste};
 use crate::stocks::items::{
     day_or_today, should_remove_at_zero, today, StockItemResponse, StockItemRow,
 };
@@ -666,7 +669,12 @@ pub async fn preview_done(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, false).await?;
-    let can_edit_recipe = can_modify(&role, selection.recipe_created_by == auth.user_id);
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    let can_edit_recipe = can_modify(
+        &role,
+        &min_role,
+        selection.recipe_created_by == auth.user_id,
+    );
     let rows = ingredients(&mut tx, group_id, recipe_id).await?;
     let stock = sqlx::query_as!(
         StockItemRow,
@@ -742,19 +750,23 @@ pub struct DoneRequest {
     /// Products used that the recipe does not call for (#540).
     #[serde(default)]
     pub others: Vec<OtherRemoval>,
-    /// Adds `others` to the recipe, for the recipe's creator, an admin or
-    /// the owner (`can_modify`).
+    /// Adds `others` to the recipe, for the recipe's creator or a member
+    /// whose role meets the family's `recipes_edit` threshold (`can_modify`).
     #[serde(default)]
     pub add_to_recipe: bool,
     /// Changes to the recipe's ingredients (#558), for the same people as
     /// `add_to_recipe`.
     #[serde(default)]
     pub recipe_updates: Vec<RecipeUpdate>,
-    /// Taste tags kept with the meal (#821), none required. « Aimé » and
-    /// « Pas aimé » feed the suggestions (`recipes::taste`); both at once
-    /// are 400 `conflicting_taste_tags`.
+    /// The opinion kept with the meal (#822), `neutre` when omitted.
+    /// « Aimé » and « Pas aimé » feed the suggestions (`recipes::taste`).
     #[serde(default)]
-    pub taste_tags: Vec<TasteTag>,
+    pub taste: Taste,
+    /// A free note kept with the meal, trimmed, its line breaks as `\n`
+    /// (a `\r\n` counts one); blank is none. Above 200 characters: 400
+    /// `taste_note_too_long`, nothing applied.
+    #[serde(default)]
+    pub taste_note: Option<String>,
 }
 
 /// An ingredient added by `add_to_recipe`.
@@ -779,7 +791,7 @@ pub struct AddedIngredientResponse {
     request_body = DoneRequest,
     responses(
         (status = 200, description = "Cooked: stock taken, meal logged, selection closed", body = crate::api_docs::schemas::DoneOutcome),
-        (status = 400, description = "`stock_item_not_in_recipe`, `duplicate_stock_item`, `duplicate_ingredient`, `invalid_quantity` or `conflicting_taste_tags`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`stock_item_not_in_recipe`, `duplicate_stock_item`, `duplicate_ingredient`, `invalid_quantity` or `taste_note_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no planned selection", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 409, description = "`stock_item_gone` or `insufficient_stock`, with the stock item concerned next to `error`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
@@ -795,12 +807,17 @@ pub async fn apply_done(
     let mut to_apply = removals_to_apply(&body.removals)?;
     let others = check_others(&body.removals, &body.others)?;
     check_recipe_updates(&body.recipe_updates)?;
-    let taste_tags = taste_tags_to_store(&body.taste_tags)?;
+    let taste_note = taste_note_to_store(body.taste_note.as_deref())?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let role = require_role(&mut tx, group_id, auth.user_id).await?;
     let selection = planned_selection(&mut tx, group_id, recipe_id, true).await?;
-    let may_change = can_modify(&role, selection.recipe_created_by == auth.user_id);
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    let may_change = can_modify(
+        &role,
+        &min_role,
+        selection.recipe_created_by == auth.user_id,
+    );
     if !body.recipe_updates.is_empty() && !may_change {
         return Err(AppError::Forbidden);
     }
@@ -936,15 +953,16 @@ pub async fn apply_done(
     let meal = sqlx::query_as!(
         MealHistoryEntryResponse,
         r#"
-        INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by, taste_tags)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste_tags
+        INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by, taste, taste_note)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste, taste_note
         "#,
         group_id,
         recipe_id,
         day_or_today(body.eaten_on, Utc::now()),
         auth.user_id,
-        &taste_tags as &[&str],
+        body.taste.as_str(),
+        taste_note,
     )
     .fetch_one(&mut *tx)
     .await?;

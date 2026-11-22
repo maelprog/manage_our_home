@@ -479,7 +479,11 @@ pub async fn get(
         _ => return service_unavailable_page().into_response(),
     };
 
-    if !can_modify(&fam.role, event.created_by == me.user_id) {
+    if !can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        event.created_by == me.user_id,
+    ) {
         return forbidden_page().into_response();
     }
 

@@ -1,14 +1,17 @@
 import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
+import { skipMealStart } from "../lib/meal-start";
+import { fillIngredients } from "../lib/recipe-form";
 
 // Front epic #4 — Stocks (issue #19) + follow-up #39: every user journey the
 // epic introduces, happy paths plus the documented error states from
 // apps/api/src/stocks/'s error tables. Note the two-tier permission bar: a
 // quantity-only adjustment is open to any family member (shared inventory), so
 // every member sees the adjust form; the full-record edit and delete stay
-// behind can_modify (creator/admin/owner), so a standard member gets no
-// edit/delete controls on another member's item.
+// behind can_modify (the creator, or a role meeting the family's `stocks_edit`
+// threshold, #866 — admin/owner by default), so under that default a standard
+// member gets no edit/delete controls on another member's item.
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
@@ -532,7 +535,7 @@ test.describe("Stocks — permission bar", () => {
     // The member sees the adjust form (shared inventory) but no edit/delete.
     await openItemDetail(member, "Beurre du proprio");
     await expect(
-      member.getByText("Seul le créateur ou un administrateur peut modifier ou supprimer"),
+      member.getByText("Seuls le créateur, les administrateurs et le propriétaire peuvent modifier ou supprimer"),
     ).toBeVisible();
     await expect(member.getByRole("link", { name: "Modifier l'article" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Supprimer" })).toHaveCount(0);
@@ -579,6 +582,111 @@ test.describe("Stocks — permission bar", () => {
     await member.goto("/stocks");
     await expect(member.locator("li", { hasText: "Café" }).getByText("Stock bas")).toBeVisible();
     await expect(member.getByRole("button", { name: "Retirer 1 à Café" })).toBeDisabled();
+    await context.close();
+  });
+});
+
+// #904: an article no category recognizes counts for no recipe; its page
+// asks which ingredient it is, and once linked, the recipe that needs that
+// ingredient becomes possible.
+test.describe("Stocks — rattacher un article à un ingrédient (#904)", () => {
+  const ARTICLE = "Mon p'tit plaisir";
+  const CREAMS = "Crèmes épaisses";
+
+  // The recipe list would open the first questions about meals (#820).
+  test.beforeEach(async ({ context }) => {
+    await skipMealStart(context);
+  });
+
+  /** A recipe « Tarte » needing « Crème fraîche », and the article in stock. */
+  async function tartAndArticle(page: Page): Promise<void> {
+    await page.goto("/recipes/new");
+    await page.getByLabel("Nom").fill("Tarte");
+    await fillIngredients(page, "Crème fraîche");
+    await page.getByRole("button", { name: "Créer la recette" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+    await createItem(page, { name: ARTICLE, quantity: "1", unit: "pot" });
+  }
+
+  async function possibles(page: Page, count: number): Promise<void> {
+    await page.goto("/recipes?vue=possibles");
+    const tabs = page.getByRole("navigation", { name: "Groupes de recettes" });
+    await expect(tabs.getByRole("link", { name: `Possibles · ${count}` })).toBeVisible();
+  }
+
+  test("link an article from its suggestions, then see the recipe become possible", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-stlink", "Link User");
+    await createGroup(page, "Famille Rattachement");
+    await tartAndArticle(page);
+    await possibles(page, 0);
+
+    await openItemDetail(page, ARTICLE);
+    const card = page.getByRole("region", { name: "Rattacher à un ingrédient" });
+    await expect(card.getByText("Cet article ne compte pour aucune recette.")).toBeVisible();
+    const field = card.getByRole("combobox", { name: "Ingrédient" });
+    await field.fill("crèmes épaisses");
+    await expect(card.getByRole("status")).toContainText("trouvé");
+    await expect(field).toHaveAttribute("aria-expanded", "true");
+    await card.getByRole("option", { name: CREAMS, exact: true }).click();
+
+    await expect(page).toHaveURL(/\?notice=ingredient_linked$/);
+    await expect(page.getByText(`Article rattaché à « ${CREAMS} ».`)).toBeVisible();
+    await expect(page.getByText(`Ingrédient : ${CREAMS}`)).toBeVisible();
+    await expect(page.getByRole("region", { name: "Rattacher à un ingrédient" })).toHaveCount(0);
+    await possibles(page, 1);
+
+    // « Changer » shows the card again; « Annuler » comes back unchanged.
+    await openItemDetail(page, ARTICLE);
+    await page.getByRole("link", { name: `Changer l'ingrédient de ${ARTICLE}` }).click();
+    await expect(page.getByText(`Actuellement : ${CREAMS}.`)).toBeVisible();
+    await page.getByRole("link", { name: "Annuler" }).click();
+    await expect(page.getByText(`Ingrédient : ${CREAMS}`)).toBeVisible();
+
+    // « Retirer »: the invitation comes back, the recipe is no longer possible.
+    await page
+      .getByRole("button", { name: `Retirer le rattachement de ${ARTICLE} à l'ingrédient ${CREAMS}` })
+      .click();
+    await expect(page).toHaveURL(/\?notice=ingredient_unlinked$/);
+    await expect(
+      page.getByText("Rattachement retiré. Cet article ne compte plus pour aucune recette."),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Rattacher à un ingrédient" }).getByText(
+        "Cet article ne compte pour aucune recette.",
+      ),
+    ).toBeVisible();
+    await possibles(page, 0);
+  });
+
+  test("without JavaScript, the search comes back as radios, and nothing found is said", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-stlinknojs", "Link Without Script");
+    await createGroup(page, "Famille Rattachement Sans Script");
+    await tartAndArticle(page);
+    await openItemDetail(page, ARTICLE);
+
+    const field = page.getByRole("searchbox", { name: "Ingrédient" });
+    await field.fill("xyzzy");
+    await page.getByRole("button", { name: "Rattacher" }).click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Aucun ingrédient ne correspond à « xyzzy »." }),
+    ).toBeVisible();
+    await expect(field).toHaveValue("xyzzy");
+
+    await field.fill("crèmes épaisses");
+    await page.getByRole("button", { name: "Rattacher" }).click();
+    const picks = page.getByRole("group", { name: /correspond/ });
+    await expect(picks).toBeVisible();
+    await picks.getByRole("radio", { name: CREAMS, exact: true }).check();
+    await page.getByRole("button", { name: "Rattacher" }).click();
+    await expect(page).toHaveURL(/\?notice=ingredient_linked$/);
+    await expect(page.getByText(`Ingrédient : ${CREAMS}`)).toBeVisible();
+    await possibles(page, 1);
     await context.close();
   });
 });

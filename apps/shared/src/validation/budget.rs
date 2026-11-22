@@ -9,11 +9,12 @@
 //!   `AMOUNT_MAX_EUROS`, through `amount_to_cents`) in the same
 //!   order the backend checks them (name, then amount), so the first error the
 //!   form surfaces is the one a forged request would hit.
-//! - `can_access_budget` is the bar in front of the whole budget (#531): only
-//!   an owner or an admin reaches it. The backend uses this very function.
+//! - `can_access_budget` is the bar in front of the whole budget (#531): the
+//!   family's `budget` threshold (#865), owners and admins by default. The
+//!   backend uses this very function.
 //! - `can_modify` mirrors `apps/api/src/budget/mod.rs::can_modify`: the entry's
 //!   creator, or a group owner/admin, may edit or delete it — past
-//!   `can_access_budget`, which already keeps a standard member out.
+//!   `can_access_budget`, which keeps out whoever is under the threshold.
 //! - `format_euros` / `amount_input_value` format the euro `f64` the API
 //!   returns for display (two decimals, French comma + `€`) and for
 //!   number-input pre-fill (two decimals, dot). The backend stores cents; the
@@ -34,6 +35,8 @@
 //!   colour key in French.
 
 use chrono::{Datelike, Months, NaiveDate};
+
+use super::groups::role_meets;
 
 /// Why a budget-entry add/edit form was rejected. Ordered to match the
 /// backend's check order (`create_budget_entry` / `update_budget_entry`): name
@@ -114,16 +117,18 @@ pub fn can_modify(role: &str, is_creator: bool) -> bool {
     is_creator || role == "owner" || role == "admin"
 }
 
-/// Whether a member of the given role reaches the family's budget at all
-/// (#531): owners and admins do, a standard member — a child of the family —
-/// does not, nor does any role this function does not name. This is the bar
+/// Whether a member of the given role reaches the family's budget at all,
+/// `min_role` being the family's `budget` threshold (#865, `role_meets`).
+/// By default (`admin`) owners and admins do, a standard member — a child of
+/// the family — does not (#531); the owner may lower it to `standard` or
+/// raise it to `owner`. A role off the list reaches nothing. This is the bar
 /// in front of every `/groups/:id/budget-entries*` route and the grocery
 /// item's price (`apps/api/src/budget/`), and the one `apps/web` reads to
 /// leave out the Budget tab, the home page's budget card, the price field on
 /// the grocery list and the `/budget` pages. `can_modify` only applies past
 /// it.
-pub fn can_access_budget(role: &str) -> bool {
-    role == "owner" || role == "admin"
+pub fn can_access_budget(role: &str, min_role: &str) -> bool {
+    role_meets(role, min_role)
 }
 
 /// Formats a euro amount for display: two decimals, French decimal comma, and a
@@ -686,22 +691,41 @@ mod tests {
     // -- can_access_budget ---------------------------------------------------
 
     #[test]
-    fn owner_and_admin_reach_the_budget() {
-        assert!(can_access_budget("owner"));
-        assert!(can_access_budget("admin"));
+    fn the_default_threshold_keeps_the_budget_to_owners_and_admins() {
+        // A family whose owner has not set `budget` (#865): the bar of #531.
+        assert!(can_access_budget("owner", "admin"));
+        assert!(can_access_budget("admin", "admin"));
+        assert!(!can_access_budget("standard", "admin"));
     }
 
     #[test]
-    fn a_standard_member_does_not_reach_the_budget() {
-        assert!(!can_access_budget("standard"));
+    fn the_budget_follows_the_familys_threshold() {
+        // (role, threshold, reaches the budget), #865.
+        let cases = [
+            ("standard", "standard", true),
+            ("admin", "standard", true),
+            ("owner", "standard", true),
+            ("standard", "owner", false),
+            ("admin", "owner", false),
+            ("owner", "owner", true),
+        ];
+        for (role, min_role, expected) in cases {
+            assert_eq!(
+                can_access_budget(role, min_role),
+                expected,
+                "{role} against {min_role}"
+            );
+        }
     }
 
     #[test]
     fn an_unknown_role_does_not_reach_the_budget() {
         // Closed by default: a role added later is kept out until it is
-        // named here.
-        assert!(!can_access_budget(""));
-        assert!(!can_access_budget("Owner"));
+        // named, whatever the threshold.
+        for min_role in ["standard", "admin", "owner"] {
+            assert!(!can_access_budget("", min_role), "{min_role}");
+            assert!(!can_access_budget("Owner", min_role), "{min_role}");
+        }
     }
 
     // -- format_euros / amount_input_value -----------------------------------

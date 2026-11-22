@@ -15,6 +15,9 @@ mod dietary;
 use axum::http::{Method, StatusCode};
 use common::{call, test_router};
 use dietary::{create_group, family, join, register_verify_login, send, Family, TAG};
+
+/// The French name the warning gives `TAG` (#825).
+const LABEL: &str = "Cacahuètes";
 use http_body_util::BodyExt;
 use manage_our_home::api_docs::openapi;
 use serde_json::{json, Value};
@@ -47,7 +50,7 @@ async fn a_member_lists_adds_and_removes_their_allergies_and_dislikes(db: PgPool
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({"tag": format!(" {TAG} ")})),
+        Some(json!({"tag": format!(" {TAG} "), "consent": true})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -69,7 +72,7 @@ async fn a_member_lists_adds_and_removes_their_allergies_and_dislikes(db: PgPool
             Method::POST,
             "/me/allergies",
             &f.holder,
-            Some(json!({ "tag": tag })),
+            Some(json!({"tag": tag})),
         )
         .await;
         assert_eq!((got, body["error"].as_str()), (status, Some(code)), "{tag}");
@@ -163,7 +166,7 @@ async fn a_level_is_set_only_on_an_own_allergy_in_an_own_family(db: PgPool) {
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     for (body, status, code) in [
@@ -303,7 +306,7 @@ async fn a_private_allergy_changes_no_answer_another_member_gets(db: PgPool) {
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     assert_same(
@@ -366,7 +369,7 @@ async fn anonymous_shows_neither_tag_nor_member_and_public_shows_both(db: PgPool
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
 
@@ -428,7 +431,7 @@ async fn leaving_a_family_drops_the_levels_set_there_and_only_there(db: PgPool) 
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     set_share(&router, &f, "public").await;
@@ -507,7 +510,7 @@ async fn the_export_holds_the_allergies_their_levels_and_the_dislikes(db: PgPool
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
     set_share(&router, &f, "anonymous").await;
@@ -564,7 +567,7 @@ async fn erasing_everything_takes_every_allergy_level_and_dislike(db: PgPool) {
             Method::POST,
             uri,
             &f.holder,
-            Some(json!({ "tag": tag })),
+            Some(json!({"tag": tag, "consent": true})),
         )
         .await;
     }
@@ -575,7 +578,7 @@ async fn erasing_everything_takes_every_allergy_level_and_dislike(db: PgPool) {
         Method::POST,
         "/me/allergies",
         &f.owner,
-        Some(json!({ "tag": TAG })),
+        Some(json!({"tag": TAG, "consent": true})),
     )
     .await;
 
@@ -612,19 +615,52 @@ async fn the_household_equipment_and_what_a_recipe_needs(db: PgPool) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({"codes": []}));
 
-    // Any member sets it; the list is stored sorted.
+    // The owner and the admins set it (#819), the list stored sorted; every
+    // member reads it.
     let (status, body) = send(
         &router,
         Method::PUT,
         &uri,
-        &f.holder,
+        &f.owner,
         Some(json!({"codes": ["oven", "blender"]})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+    let (_, body) = send(&router, Method::GET, &uri, &f.holder, None).await;
+    assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+
+    // A standard member does not change it.
+    let (status, _) = send(
+        &router,
+        Method::PUT,
+        &uri,
+        &f.holder,
+        Some(json!({"codes": ["oven"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let (_, body) = send(&router, Method::GET, &uri, &f.owner, None).await;
     assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+
+    // An admin does.
+    sqlx::query(
+        "UPDATE group_members SET role = 'admin' WHERE group_id = $1::uuid AND role = 'standard'",
+    )
+    .bind(&f.group)
+    .execute(&db)
+    .await
+    .unwrap();
+    let (status, body) = send(
+        &router,
+        Method::PUT,
+        &uri,
+        &f.holder,
+        Some(json!({"codes": ["blender", "oven", "hob"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"codes": ["blender", "hob", "oven"]}));
 
     for (codes, code) in [
         (json!(["oven", "teleporter"]), "unknown_equipment"),
@@ -644,7 +680,7 @@ async fn the_household_equipment_and_what_a_recipe_needs(db: PgPool) {
         );
     }
     let (_, body) = send(&router, Method::GET, &uri, &f.owner, None).await;
-    assert_eq!(body, json!({"codes": ["blender", "oven"]}));
+    assert_eq!(body, json!({"codes": ["blender", "hob", "oven"]}));
 
     let stranger = register_verify_login(&router, &db, "equipment-stranger@example.test").await;
     let (status, _) = send(&router, Method::GET, &uri, &stranger, None).await;
@@ -738,4 +774,469 @@ async fn the_household_equipment_and_what_a_recipe_needs(db: PgPool) {
         (status, body["error"].as_str()),
         (StatusCode::BAD_REQUEST, Some("unknown_equipment"))
     );
+}
+
+/// #819: the account page names an allergy or a dislike beyond the INCO
+/// fourteen by searching the taxonomy, and shows each one by its name.
+#[sqlx::test]
+async fn a_member_finds_a_category_by_its_name_and_reads_it_back_by_name(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "search").await;
+    let search = |query: Value| {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        async move {
+            send(
+                &router,
+                Method::POST,
+                "/taxonomy/search",
+                &cookie,
+                Some(json!({ "query": query })),
+            )
+            .await
+        }
+    };
+
+    let (status, body) = search(json!("Kiwi")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["results"][0],
+        json!({"tag": "en:kiwifruits", "label": "Kiwis"})
+    );
+    assert!(body["results"].as_array().unwrap().len() <= 20, "{body}");
+
+    let (status, body) = search(json!("")).await;
+    assert_eq!((status, body), (StatusCode::OK, json!({"results": []})));
+
+    // The bound counts characters, as the page's `maxlength` does: 128 « é »
+    // (256 bytes) are read, 129 are not.
+    let (status, body) = search(json!("é".repeat(128))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for long in ["a".repeat(129), "é".repeat(129)] {
+        let (status, body) = search(json!(long)).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("query_too_long"))
+        );
+    }
+
+    // Signed in only.
+    let res = call(
+        &router,
+        Method::POST,
+        "/taxonomy/search",
+        None,
+        Some(json!({"query": "kiwi"})),
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+    // What was found is what is recorded, and read back by its name.
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        "/me/allergies",
+        &f.holder,
+        Some(json!({"tag": "en:kiwifruits", "consent": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["label"], "Kiwis");
+    let (_, body) = send(&router, Method::GET, "/me/allergies", &f.holder, None).await;
+    assert_eq!(body["allergies"][0]["label"], "Kiwis");
+
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        "/me/dislikes",
+        &f.holder,
+        Some(json!({"tag": "en:mushrooms"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["label"], "Champignons");
+    let (_, body) = send(&router, Method::GET, "/me/dislikes", &f.holder, None).await;
+    assert_eq!(body["dislikes"][0]["label"], "Champignons");
+}
+
+/// #827: creating a family or joining one writes no level there. Until the
+/// member chooses, each of their allergies is private in it: no
+/// `allergy_sharing` row, and what the family is answered — #817's
+/// `GET /groups/{id}/allergies`, #818's warning on a recipe — takes the
+/// absence for `private`. Nothing of an allergy goes out in the invitation
+/// email or in a notification.
+#[sqlx::test]
+async fn arriving_in_a_family_shares_nothing_until_the_member_chooses(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let owner = register_verify_login(&router, &db, "arrive-owner@example.test").await;
+    let holder_email = "arrive-holder@example.test";
+    let holder = register_verify_login(&router, &db, holder_email).await;
+    for tag in [TAG, "en:eggs"] {
+        let (status, body) = send(
+            &router,
+            Method::POST,
+            "/me/allergies",
+            &holder,
+            Some(json!({"tag": tag, "consent": true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    // Creating: a family of the holder's own.
+    let own = create_group(&router, &holder, "Chez moi").await;
+    // Joining: the owner's, through the link the invitation email carries.
+    let group = create_group(&router, &owner, "Maison").await;
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        &format!("/groups/{group}/invitations"),
+        &owner,
+        Some(json!({ "invited_email": holder_email })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let token = common::mailed_token(
+        &outbox,
+        holder_email,
+        "http://localhost:5173/groups/invitations/",
+    );
+    let (status, _) = send(
+        &router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        &holder,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(sharing_rows(&db, &own).await, 0, "created");
+    assert_eq!(sharing_rows(&db, &group).await, 0, "joined");
+    let (_, body) = send(&router, Method::GET, "/me/allergies", &holder, None).await;
+    let levels: Vec<&Value> = body["allergies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|a| a["sharing"].as_array().unwrap())
+        .map(|s| &s["share"])
+        .collect();
+    assert_eq!(levels, vec!["private"; 4], "{body}");
+
+    // What the family is answered takes the absence for `private`.
+    let (status, body) = send(
+        &router,
+        Method::GET,
+        &format!("/groups/{group}/allergies"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"public": [], "anonymous": false}));
+    let (status, recipe) = send(
+        &router,
+        Method::POST,
+        &format!("/groups/{group}/recipes"),
+        &owner,
+        Some(json!({"name": "Satay", "ingredients": [{"name": "Cacahuètes"}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{recipe}");
+    let card = format!("/groups/{group}/recipes/{}", recipe["id"].as_str().unwrap());
+    let (_, read) = send(&router, Method::GET, &card, &owner, None).await;
+    assert_eq!(
+        read["allergy_warning"],
+        json!({"mine": [], "public": [], "anonymous": false, "unverifiable": []})
+    );
+    // The holder's own warning is theirs, whatever the level.
+    let (_, read) = send(&router, Method::GET, &card, &holder, None).await;
+    assert_eq!(
+        read["allergy_warning"]["mine"],
+        json!([{"tag": TAG, "label": LABEL}])
+    );
+
+    // Nothing of an allergy in an email or a notification.
+    let notifications: String =
+        sqlx::query_scalar("SELECT coalesce(string_agg(body, ' | '), '') FROM notifications")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let emails = outbox.emails();
+    assert!(emails.iter().any(|e| e.to == holder_email));
+    for word in ["peanut", "Arachide", "Cacahu", "eggs", "Œuf", "allerg"] {
+        assert!(!notifications.contains(word), "{word}: {notifications}");
+        for e in &emails {
+            assert!(
+                !e.subject.contains(word) && !e.body.contains(word),
+                "{word} in the email to {}: {}",
+                e.to,
+                e.body
+            );
+        }
+    }
+
+    // Once the member chooses, the level they set is the one row there.
+    let (status, _) = send(
+        &router,
+        Method::PUT,
+        "/me/allergies/sharing",
+        &holder,
+        Some(json!({"tag": TAG, "group_id": group, "share": "public"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(sharing_rows(&db, &group).await, 1);
+    assert_eq!(sharing_rows(&db, &own).await, 0);
+    let (_, body) = send(
+        &router,
+        Method::GET,
+        &format!("/groups/{group}/allergies"),
+        &owner,
+        None,
+    )
+    .await;
+    assert_eq!(body["public"][0]["tag"], TAG);
+}
+
+/// The levels set in one family, read past RLS by the harness pool.
+async fn sharing_rows(db: &PgPool, group: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM allergy_sharing WHERE group_id = $1::uuid")
+        .bind(group)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// The member's allergies, read past RLS by the harness pool.
+async fn allergy_rows(db: &PgPool, user: uuid::Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM user_allergies WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+async fn add_allergy(router: &axum::Router, cookie: &str, body: Value) -> (StatusCode, Value) {
+    send(router, Method::POST, "/me/allergies", cookie, Some(body)).await
+}
+
+fn consent_required(answer: &(StatusCode, Value)) -> bool {
+    answer.0 == StatusCode::UNPROCESSABLE_ENTITY && answer.1["error"] == "consent_required"
+}
+
+#[sqlx::test]
+async fn the_first_allergy_needs_consent_and_is_asked_again_once_none_is_left(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "consent").await;
+
+    // No allergy, no consent: refused, nothing written.
+    for body in [json!({"tag": TAG}), json!({"tag": TAG, "consent": false})] {
+        let answer = add_allergy(&router, &f.holder, body.clone()).await;
+        assert!(consent_required(&answer), "{body}: {answer:?}");
+    }
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+
+    // A dislike never asks, and holds no consent for an allergy.
+    let (status, body) = send(
+        &router,
+        Method::POST,
+        "/me/dislikes",
+        &f.holder,
+        Some(json!({"tag": "en:mushrooms"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let answer = add_allergy(&router, &f.holder, json!({"tag": TAG})).await;
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+
+    // Given: recorded. The second needs it no more.
+    let (status, body) =
+        add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = add_allergy(&router, &f.holder, json!({"tag": "en:eggs"})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 2);
+
+    // « Tout effacer » withdraws it: asked again.
+    let (status, _) = send(
+        &router,
+        Method::DELETE,
+        "/me/dietary-constraints",
+        &f.holder,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let answer = add_allergy(&router, &f.holder, json!({"tag": TAG})).await;
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+
+    // So does removing the last one.
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = send(
+        &router,
+        Method::DELETE,
+        "/me/allergies",
+        &f.holder,
+        Some(json!({"tag": TAG})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let answer = add_allergy(&router, &f.holder, json!({"tag": "en:eggs"})).await;
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+}
+
+#[sqlx::test]
+async fn two_first_allergies_at_once_without_consent_are_both_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "consent-twice").await;
+    let (one, two) = tokio::join!(
+        add_allergy(&router, &f.holder, json!({"tag": TAG})),
+        add_allergy(&router, &f.holder, json!({"tag": "en:eggs"})),
+    );
+    assert!(consent_required(&one), "{one:?}");
+    assert!(consent_required(&two), "{two:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+}
+
+/// A transaction of the harness holding the member's `ALLERGIES_LOCK`, as
+/// an add, a removal or an erase in flight holds it, until committed.
+async fn holding_allergies_lock(
+    db: &PgPool,
+    user: uuid::Uuid,
+) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    use manage_our_home::recipes::constraints::ALLERGIES_LOCK;
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2::text))")
+        .bind(ALLERGIES_LOCK)
+        .bind(user.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+/// Removing one allergy waits for an add in flight: it cannot take the
+/// last allergy away between the add's consent check and its insert.
+#[sqlx::test]
+async fn removing_an_allergy_waits_for_an_add_in_flight(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "remove-race").await;
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let adding = holding_allergies_lock(&db, f.holder_id).await;
+    let removing = {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        tokio::spawn(async move {
+            send(
+                &router,
+                Method::DELETE,
+                "/me/allergies",
+                &cookie,
+                Some(json!({"tag": TAG})),
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !removing.is_finished(),
+        "the removal did not wait for the add"
+    );
+
+    adding.commit().await.unwrap();
+    let (status, body) = removing.await.unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+}
+
+/// « Tout effacer » waits for an add in flight, then erases what it wrote
+/// too: no allergy escapes the erase by being written while it runs.
+#[sqlx::test]
+async fn erasing_everything_waits_for_an_add_in_flight_and_takes_it_too(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "erase-race").await;
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // An add in flight: the lock taken, the allergy written, not yet
+    // committed.
+    let mut adding = holding_allergies_lock(&db, f.holder_id).await;
+    sqlx::query("INSERT INTO user_allergies (user_id, tag) VALUES ($1, 'en:eggs')")
+        .bind(f.holder_id)
+        .execute(&mut *adding)
+        .await
+        .unwrap();
+
+    let erasing = {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        tokio::spawn(async move {
+            send(
+                &router,
+                Method::DELETE,
+                "/me/dietary-constraints",
+                &cookie,
+                None,
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let waited = !erasing.is_finished();
+
+    adding.commit().await.unwrap();
+    let (status, body) = erasing.await.unwrap();
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    // Checked before the wait: what an erase that did not wait leaves.
+    assert_eq!(
+        allergy_rows(&db, f.holder_id).await,
+        0,
+        "an allergy escaped the erase"
+    );
+    assert!(waited, "the erase did not wait for the add");
+}
+
+/// The consent is read and the allergy written under the member's lock
+/// (`ALLERGIES_LOCK`): an allergy asked for while the last one is being
+/// removed waits for the removal, then finds no consent in force — not the
+/// allergy about to go.
+#[sqlx::test]
+async fn an_allergy_added_while_the_last_is_removed_waits_and_then_needs_consent(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = family(&router, &db, "consent-race").await;
+    let (status, _) = add_allergy(&router, &f.holder, json!({"tag": TAG, "consent": true})).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A removal in flight, as `remove_allergy` and `erase_constraints`
+    // hold it: the lock taken, the row deleted, not yet committed.
+    let mut removal = holding_allergies_lock(&db, f.holder_id).await;
+    sqlx::query("DELETE FROM user_allergies WHERE user_id = $1")
+        .bind(f.holder_id)
+        .execute(&mut *removal)
+        .await
+        .unwrap();
+
+    let adding = {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        tokio::spawn(async move { add_allergy(&router, &cookie, json!({"tag": "en:eggs"})).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !adding.is_finished(),
+        "the allergy did not wait for the removal"
+    );
+
+    removal.commit().await.unwrap();
+    let answer = adding.await.unwrap();
+    assert!(consent_required(&answer), "{answer:?}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
 }

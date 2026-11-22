@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Timelike, Utc};
 use leptos::prelude::*;
 use manage_our_home_shared::dto::agenda::OccurrenceResponse;
 use manage_our_home_shared::dto::auth::MeResponse;
@@ -11,9 +11,12 @@ use manage_our_home_shared::dto::budget::{BudgetPeriodTotal, BudgetSummary};
 use manage_our_home_shared::dto::grocery_list::{GroceryItemList, GroceryItemResponse};
 use manage_our_home_shared::dto::groups::{GroupDetailResponse, GroupMember, GroupSummary};
 use manage_our_home_shared::dto::messagerie::{MessageList, MessageResponse};
+use manage_our_home_shared::dto::recipes::{PlannedSelection, RecipeList};
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
 use manage_our_home_shared::validation::budget::{can_access_budget, format_euros, month_name_fr};
+use manage_our_home_shared::validation::groups::Feature;
 use manage_our_home_shared::validation::messagerie::author_name;
+use manage_our_home_shared::validation::recipes::duration_label;
 use uuid::Uuid;
 
 use crate::app::{
@@ -30,6 +33,9 @@ use crate::routes::agenda::{
 };
 use crate::routes::groups::ownership::ownership_notices;
 use crate::routes::groups::{cookie_of, header_parts};
+use crate::routes::recipes::allergy;
+use crate::routes::recipes::missing::missing_dialog;
+use crate::routes::recipes::planned_with_stock;
 use crate::state::{api_request_auth, AppState};
 
 /// How far ahead the agenda card reads: today plus this many civil days
@@ -151,12 +157,13 @@ fn truncate_message(content: &str, max_chars: usize) -> String {
 /// authenticated header (nav + family switcher, #17). Built the same way as
 /// every other family-scoped route (`routes/agenda`, `routes/stocks`, …);
 /// `None` means the user has no group yet, handled separately by `get`
-/// before this is even called. `role` is the caller's in that family, which
-/// decides the budget card (#531); `unread_notifications`, the bell's
-/// count (#535).
+/// before this is even called. `reaches_budget` is whether the caller's
+/// role in that family meets its `budget` threshold, which decides the
+/// budget card (#531, #865); `unread_notifications`, the bell's count
+/// (#535).
 struct FamilyContext {
     gid: Uuid,
-    role: String,
+    reaches_budget: bool,
     header: String,
     unread_notifications: Option<u64>,
 }
@@ -171,7 +178,7 @@ async fn family_context(
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
     let fam = active.map(|g| FamilyContext {
         gid: g.group_id,
-        role: g.role.clone(),
+        reaches_budget: can_access_budget(&g.role, g.min_role(Feature::Budget)),
         header: header.clone(),
         unread_notifications,
     });
@@ -635,6 +642,135 @@ fn stocks_block(items: &[&StockItemResponse]) -> String {
     )
 }
 
+/// The meal the « Ce soir » card speaks of (#814).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Meal {
+    Lunch,
+    Dinner,
+}
+
+impl Meal {
+    /// The `meal_slot` a selection says it with (#811).
+    fn slot(self) -> &'static str {
+        match self {
+            Meal::Lunch => "lunch",
+            Meal::Dinner => "dinner",
+        }
+    }
+
+    /// The card's title.
+    fn title(self) -> &'static str {
+        match self {
+            Meal::Lunch => "Ce midi",
+            Meal::Dinner => "Ce soir",
+        }
+    }
+}
+
+/// The hour, in the family's time, from which the card speaks of dinner.
+const LUNCH_UNTIL_HOUR: u32 = 15;
+
+/// The meal of the card at `now`: lunch before 15:00 in Paris — the
+/// family's time, as everywhere on the site (`DISPLAY_TZ`) — dinner from
+/// then on.
+fn meal_at(now: DateTime<Utc>) -> Meal {
+    if now.with_timezone(&DISPLAY_TZ).hour() < LUNCH_UNTIL_HOUR {
+        Meal::Lunch
+    } else {
+        Meal::Dinner
+    }
+}
+
+/// The planned recipes of `today` for `meal`, in the order the card shows
+/// them: the earliest planned first, then by name. A selection carries no
+/// hour of its own (#811), so « by time » is the time it was planned at.
+/// A recipe dated today without a meal is no meal's: the planning lists it
+/// under « Non précisé », the card leaves it out.
+fn tonight_picks(
+    planned: &[PlannedSelection],
+    today: NaiveDate,
+    meal: Meal,
+) -> Vec<&PlannedSelection> {
+    let mut picks: Vec<&PlannedSelection> = planned
+        .iter()
+        .filter(|p| p.selection.planned_on == Some(today))
+        .filter(|p| p.selection.meal_slot.as_deref() == Some(meal.slot()))
+        .collect();
+    picks.sort_by(|a, b| {
+        (a.selection.created_at, &a.selection.recipe_name)
+            .cmp(&(b.selection.created_at, &b.selection.recipe_name))
+    });
+    picks
+}
+
+/// « Il vous manque n ingrédient(s) », the link `missing_badge` makes to
+/// the list of what is missing, opened in its dialog with JavaScript; or
+/// « Tout est en stock ».
+fn availability_badge(p: &PlannedSelection) -> String {
+    let id = p.selection.recipe_id;
+    match p.missing.len() {
+        0 => r#"<span class="badge ok">Tout est en stock</span>"#.to_string(),
+        n => format!(
+            r#"<a class="badge soon" href="/recipes/{id}/missing" data-dialog="missing-{id}" aria-haspopup="dialog">Il vous manque {n} ingrédient{s}</a>"#,
+            s = if n > 1 { "s" } else { "" },
+        ),
+    }
+}
+
+/// The « Ce soir » card (#814) — « Ce midi » before 15:00 —, at the head
+/// of the cards, or nothing when no recipe is planned today for that meal:
+/// no empty card. The first recipe in full: its name to its page, its
+/// duration, what the stock lacks of it (`missing`, #559). A second one
+/// under it, greyed, its name and its duration; beyond two, « … » to the
+/// planning. The title is no link: the card is today's meal, not a page.
+fn tonight_block(
+    picks: &[&PlannedSelection],
+    meal: Meal,
+    durations: &HashMap<Uuid, i32>,
+) -> String {
+    let Some((first, rest)) = picks.split_first() else {
+        return String::new();
+    };
+    let duration = |p: &PlannedSelection| durations.get(&p.selection.recipe_id).copied();
+    let link = |p: &PlannedSelection| {
+        format!(
+            r#"<a href="/recipes/{id}">{name}</a>"#,
+            id = p.selection.recipe_id,
+            name = html_escape(&p.selection.recipe_name),
+        )
+    };
+    let first_duration = duration(first)
+        .map(|m| format!("<span>{}</span>", duration_label(m)))
+        .unwrap_or_default();
+    let also = rest
+        .first()
+        .map(|p| {
+            let duration = duration(p)
+                .map(|m| format!(" · {}", duration_label(m)))
+                .unwrap_or_default();
+            format!(r#"<p class="also">{}{duration}</p>"#, link(p))
+        })
+        .unwrap_or_default();
+    let more = match rest.len().saturating_sub(1) {
+        0 => String::new(),
+        n => format!(
+            r#"<a class="more-recipes" href="/recipes/week" aria-label="{n} autre{s} recette{s} {when}, voir le planning">…</a>"#,
+            s = if n > 1 { "s" } else { "" },
+            when = meal.title().to_lowercase(),
+        ),
+    };
+    format!(
+        "<section class=\"card tonight\">\n<h2>{title}</h2>\n<p class=\"dish\">{name}</p><p class=\"meta\">{first_duration}{badge}</p>{allergy}{dialog}{also}{more}\n</section>",
+        title = meal.title(),
+        name = link(first),
+        badge = availability_badge(first),
+        // The first recipe's allergy warning (#825), the aim with it: the
+        // only banner of the page.
+        allergy = allergy::banner(&first.allergy_warning, true, true),
+        dialog = missing_dialog(first),
+    )
+}
+
 /// "Budget d'octobre", "Budget de mars": French elides `de` before a vowel,
 /// and three months start with one.
 fn budget_title(month: u32) -> String {
@@ -735,6 +871,9 @@ fn messages_block(
 /// and expiry tiles, the budget, the low stock and the unread chat. The
 /// week and "Aujourd'hui" are two readings of the one agenda call, and the
 /// low-stock card and the expiry tile two readings of the one stock call.
+/// Since #814 « Ce soir » (« Ce midi » before 15:00) leads them, when a
+/// recipe is planned today for that meal: one more call for the planned
+/// recipes, and one for the recipes' durations when the card is drawn.
 ///
 /// Each domain is one more API call to apps/api at render time — this app is
 /// SSR-only, with no client-side hydration to defer work to (see
@@ -874,7 +1013,7 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         Err(_) => return service_unavailable_page().into_response(),
     };
 
-    let budget = if can_access_budget(&fam.role) {
+    let budget = if fam.reaches_budget {
         let budget_summary: BudgetSummary = match api_request_auth(
             &state,
             reqwest::Method::GET,
@@ -921,11 +1060,43 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
 
     let members = fetch_members(&state, fam.gid, cookie.as_deref()).await;
 
+    // « Ce soir » (#814): the planned recipes, with what the stock lacks of
+    // each; the recipes themselves only when one is planned for this meal,
+    // for its duration. A read that fails draws no card, as no recipe does.
+    let meal = meal_at(chrono::Utc::now());
+    let planned = planned_with_stock(&state, fam.gid, cookie.as_deref())
+        .await
+        .unwrap_or_default();
+    let picks = tonight_picks(&planned, today, meal);
+    let durations: HashMap<Uuid, i32> = if picks.is_empty() {
+        HashMap::new()
+    } else {
+        match api_request_auth(
+            &state,
+            reqwest::Method::GET,
+            &format!("/groups/{}/recipes", fam.gid),
+            cookie.as_deref(),
+            None,
+        )
+        .await
+        {
+            Ok(resp) if resp.status == reqwest::StatusCode::OK => {
+                serde_json::from_value::<RecipeList>(resp.body)
+                    .map(|l| l.recipes)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|r| r.duration_minutes.map(|m| (r.id, m)))
+                    .collect()
+            }
+            Ok(_) | Err(_) => HashMap::new(),
+        }
+    };
+
     let body = format!(
         r#"{greeting}
 {terms}{ownership}{week}
 <div class="dash">
-{agenda}
+{tonight}{agenda}
 {grocery}
 {expiry}
 {budget}
@@ -941,6 +1112,7 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         // they acknowledge it — from the same `GET /groups` the header uses.
         ownership = ownership_notices(&groups),
         week = week_block(occurrences.as_deref(), today),
+        tonight = tonight_block(&picks, meal, &durations),
         agenda = agenda_block(
             occurrences.as_deref(),
             chrono::Utc::now(),
@@ -1389,6 +1561,7 @@ mod pure_logic_tests {
             source_recipe_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            pack: None,
         }
     }
 
@@ -2347,5 +2520,346 @@ mod pure_logic_tests {
     #[test]
     fn a_title_s_text_is_escaped_inside_its_link() {
         assert!(card_head("A & B", "/x").contains(r#"<h2><a href="/x">A &amp; B</a></h2>"#));
+    }
+
+    // -- « Ce soir » (#814) -------------------------------------------------
+
+    use manage_our_home_shared::dto::recipes::{MissingIngredient, RecipeSelectionResponse};
+
+    /// `h:m` on the wall clocks of Paris, that day.
+    fn paris_at(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
+        DISPLAY_TZ
+            .with_ymd_and_hms(y, mo, d, h, mi, 0)
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn the_morning_and_noon_speak_of_lunch() {
+        assert_eq!(meal_at(paris_at(2026, 11, 16, 0, 0)), Meal::Lunch);
+        assert_eq!(meal_at(paris_at(2026, 11, 16, 9, 30)), Meal::Lunch);
+        assert_eq!(meal_at(paris_at(2026, 11, 16, 12, 0)), Meal::Lunch);
+        assert_eq!(meal_at(paris_at(2026, 11, 16, 14, 59)), Meal::Lunch);
+    }
+
+    #[test]
+    fn from_three_in_the_afternoon_it_is_dinner() {
+        assert_eq!(meal_at(paris_at(2026, 11, 16, 15, 0)), Meal::Dinner);
+        assert_eq!(meal_at(paris_at(2026, 11, 16, 19, 45)), Meal::Dinner);
+        assert_eq!(meal_at(paris_at(2026, 11, 16, 23, 59)), Meal::Dinner);
+    }
+
+    #[test]
+    fn the_hour_is_read_in_paris_not_in_utc() {
+        // Winter, UTC+1: 14:30 UTC is 15:30 in Paris, 13:30 UTC is 14:30.
+        let winter = |h, m| Utc.with_ymd_and_hms(2026, 1, 15, h, m, 0).unwrap();
+        assert_eq!(meal_at(winter(14, 30)), Meal::Dinner);
+        assert_eq!(meal_at(winter(13, 30)), Meal::Lunch);
+        // Summer, UTC+2: 13:30 UTC is already 15:30 in Paris.
+        let summer = |h, m| Utc.with_ymd_and_hms(2026, 7, 15, h, m, 0).unwrap();
+        assert_eq!(meal_at(summer(13, 30)), Meal::Dinner);
+        assert_eq!(meal_at(summer(12, 59)), Meal::Lunch);
+    }
+
+    fn today_814() -> NaiveDate {
+        ymd(2026, 11, 16)
+    }
+
+    /// A planned recipe `id`, on `on` for `meal`, planned at `minute`
+    /// past 08:00 on the 10th, lacking `missing`.
+    fn dish(
+        id: u128,
+        name: &str,
+        on: Option<NaiveDate>,
+        meal: Option<&str>,
+        minute: u32,
+        missing: &[&str],
+    ) -> PlannedSelection {
+        let planned_at = Utc.with_ymd_and_hms(2026, 11, 10, 8, minute, 0).unwrap();
+        PlannedSelection {
+            selection: RecipeSelectionResponse {
+                id: Uuid::from_u128(id + 1000),
+                recipe_id: Uuid::from_u128(id),
+                recipe_name: name.into(),
+                status: "planned".into(),
+                servings: Some(4),
+                planned_on: on,
+                meal_slot: meal.map(str::to_string),
+                created_by: Uuid::from_u128(200),
+                created_at: planned_at,
+                updated_at: planned_at,
+            },
+            missing: missing
+                .iter()
+                .map(|n| MissingIngredient {
+                    name: n.to_string(),
+                    quantity: None,
+                    unit: None,
+                })
+                .collect(),
+            use_by: None,
+            days_left: None,
+            allergy_warning: Default::default(),
+        }
+    }
+
+    fn names(picks: &[&PlannedSelection]) -> Vec<String> {
+        picks
+            .iter()
+            .map(|p| p.selection.recipe_name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn only_today_s_recipes_for_that_meal_are_picked() {
+        let today = Some(today_814());
+        let planned = [
+            dish(1, "Gratin", today, Some("dinner"), 0, &[]),
+            dish(2, "Salade", today, Some("lunch"), 0, &[]),
+            dish(3, "Soupe", Some(ymd(2026, 11, 17)), Some("dinner"), 0, &[]),
+            dish(4, "Tarte", today, None, 0, &[]),
+            dish(5, "Curry", None, None, 0, &[]),
+        ];
+        assert_eq!(
+            names(&tonight_picks(&planned, today_814(), Meal::Dinner)),
+            ["Gratin"]
+        );
+        assert_eq!(
+            names(&tonight_picks(&planned, today_814(), Meal::Lunch)),
+            ["Salade"]
+        );
+    }
+
+    #[test]
+    fn nothing_planned_today_picks_nothing() {
+        let planned = [dish(
+            1,
+            "Soupe",
+            Some(ymd(2026, 11, 17)),
+            Some("dinner"),
+            0,
+            &[],
+        )];
+        assert!(tonight_picks(&planned, today_814(), Meal::Dinner).is_empty());
+        assert!(tonight_picks(&[], today_814(), Meal::Dinner).is_empty());
+    }
+
+    #[test]
+    fn several_recipes_on_one_meal_go_by_time_then_by_name() {
+        let today = Some(today_814());
+        let planned = [
+            dish(1, "Tarte", today, Some("dinner"), 30, &[]),
+            dish(2, "Gratin", today, Some("dinner"), 10, &[]),
+            dish(3, "Blanquette", today, Some("dinner"), 30, &[]),
+        ];
+        assert_eq!(
+            names(&tonight_picks(&planned, today_814(), Meal::Dinner)),
+            ["Gratin", "Blanquette", "Tarte"]
+        );
+    }
+
+    fn render_tonight(
+        planned: &[PlannedSelection],
+        meal: Meal,
+        durations: &[(u128, i32)],
+    ) -> String {
+        let picks = tonight_picks(planned, today_814(), meal);
+        let durations: HashMap<Uuid, i32> = durations
+            .iter()
+            .map(|(id, m)| (Uuid::from_u128(*id), *m))
+            .collect();
+        tonight_block(&picks, meal, &durations)
+    }
+
+    #[test]
+    fn no_recipe_today_draws_no_card_at_all() {
+        let planned = [dish(1, "Salade", Some(today_814()), Some("lunch"), 0, &[])];
+        assert_eq!(render_tonight(&planned, Meal::Dinner, &[]), "");
+        assert_eq!(render_tonight(&[], Meal::Lunch, &[]), "");
+    }
+
+    #[test]
+    fn the_card_warns_of_its_first_recipes_allergies_with_the_aim() {
+        // #825: always shown on « Ce soir », under the duration line.
+        let mut first = dish(1, "Gratin", Some(today_814()), Some("dinner"), 0, &[]);
+        first.allergy_warning = serde_json::from_value(serde_json::json!({
+            "mine": [{"tag": "en:milks", "label": "Laits"}],
+            "unverifiable": ["sauce soja"],
+        }))
+        .unwrap();
+        let second = dish(2, "Soupe", Some(today_814()), Some("dinner"), 1, &[]);
+        let html = render_tonight(&[first, second], Meal::Dinner, &[(1, 75)]);
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        assert!(at("<span>1 h 15</span>") < at(r#"<div class="allergy sm" role="status">"#));
+        assert!(at(r#"<div class="allergy sm" role="status">"#) < at("Soupe"));
+        assert!(
+            html.contains("Contient lait : vous y êtes allergique."),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"<p class="aim">{}</p>"#, allergy::AIM)),
+            "{html}"
+        );
+        assert_eq!(html.matches(r#"class="allergy"#).count(), 1, "{html}");
+        // Nothing to warn of: the card as before.
+        let plain = [dish(1, "Gratin", Some(today_814()), Some("dinner"), 0, &[])];
+        let html = render_tonight(&plain, Meal::Dinner, &[]);
+        assert!(!html.contains(r#"class="allergy"#), "{html}");
+        assert!(!html.contains("Aide uniquement"), "{html}");
+    }
+
+    #[test]
+    fn the_card_names_the_meal_without_a_link_and_the_recipe_with_one() {
+        let planned = [dish(
+            1,
+            "Gratin & co",
+            Some(today_814()),
+            Some("dinner"),
+            0,
+            &[],
+        )];
+        let html = render_tonight(&planned, Meal::Dinner, &[(1, 45)]);
+        assert!(
+            html.starts_with(r#"<section class="card tonight">"#),
+            "{html}"
+        );
+        assert!(html.contains("<h2>Ce soir</h2>"), "{html}");
+        assert!(!html.contains("<h2><a"), "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"<a href="/recipes/{}">Gratin &amp; co</a>"#,
+                Uuid::from_u128(1)
+            )),
+            "{html}"
+        );
+        assert!(html.contains("<span>45 min</span>"), "{html}");
+    }
+
+    #[test]
+    fn before_three_the_card_is_ce_midi() {
+        let planned = [dish(1, "Salade", Some(today_814()), Some("lunch"), 0, &[])];
+        let html = render_tonight(&planned, Meal::Lunch, &[]);
+        assert!(html.contains("<h2>Ce midi</h2>"), "{html}");
+        assert!(html.contains(">Salade</a>"), "{html}");
+    }
+
+    #[test]
+    fn a_recipe_without_a_duration_says_none() {
+        let planned = [dish(1, "Gratin", Some(today_814()), Some("dinner"), 0, &[])];
+        let html = render_tonight(&planned, Meal::Dinner, &[]);
+        assert!(!html.contains(" min<"), "{html}");
+        assert!(!html.contains("<span></span>"), "{html}");
+    }
+
+    #[test]
+    fn everything_in_stock_says_so_in_the_ok_badge() {
+        let planned = [dish(1, "Gratin", Some(today_814()), Some("dinner"), 0, &[])];
+        let html = render_tonight(&planned, Meal::Dinner, &[]);
+        assert!(
+            html.contains(r#"<span class="badge ok">Tout est en stock</span>"#),
+            "{html}"
+        );
+        assert!(!html.contains("manque"), "{html}");
+        assert!(!html.contains("<dialog"), "{html}");
+    }
+
+    #[test]
+    fn what_is_missing_is_counted_and_opens_its_list() {
+        let planned = [dish(
+            1,
+            "Gratin",
+            Some(today_814()),
+            Some("dinner"),
+            0,
+            &["Lait", "Gruyère", "Beurre"],
+        )];
+        let html = render_tonight(&planned, Meal::Dinner, &[]);
+        let id = Uuid::from_u128(1);
+        assert!(
+            html.contains(&format!(
+                r#"<a class="badge soon" href="/recipes/{id}/missing" data-dialog="missing-{id}" aria-haspopup="dialog">Il vous manque 3 ingrédients</a>"#
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(r#"<dialog id="missing-{id}""#)),
+            "{html}"
+        );
+        assert!(html.contains("<li>Gruyère</li>"), "{html}");
+        assert!(!html.contains("Tout est en stock"), "{html}");
+    }
+
+    #[test]
+    fn one_missing_ingredient_is_singular() {
+        let planned = [dish(
+            1,
+            "Gratin",
+            Some(today_814()),
+            Some("dinner"),
+            0,
+            &["Lait"],
+        )];
+        let html = render_tonight(&planned, Meal::Dinner, &[]);
+        assert!(html.contains(">Il vous manque 1 ingrédient</a>"), "{html}");
+    }
+
+    #[test]
+    fn a_second_recipe_follows_greyed_with_its_own_link() {
+        let today = Some(today_814());
+        let planned = [
+            dish(1, "Gratin", today, Some("dinner"), 0, &["Lait"]),
+            dish(2, "Salade verte", today, Some("dinner"), 5, &["Laitue"]),
+        ];
+        let html = render_tonight(&planned, Meal::Dinner, &[(2, 10)]);
+        let also = &html[html.find(r#"<p class="also">"#).expect(&html)..];
+        assert!(
+            also.contains(&format!(
+                r#"<a href="/recipes/{}">Salade verte</a>"#,
+                Uuid::from_u128(2)
+            )),
+            "{also}"
+        );
+        assert!(also.contains("10 min"), "{also}");
+        // Its availability is the first recipe's job, not the line's.
+        assert!(!also.contains("badge"), "{also}");
+        assert_eq!(html.matches("<dialog").count(), 1, "{html}");
+        assert!(!html.contains("more-recipes"), "{html}");
+    }
+
+    #[test]
+    fn beyond_two_recipes_an_ellipsis_leads_to_the_planning() {
+        let today = Some(today_814());
+        let planned = [
+            dish(1, "Gratin", today, Some("dinner"), 0, &[]),
+            dish(2, "Salade", today, Some("dinner"), 1, &[]),
+            dish(3, "Tarte", today, Some("dinner"), 2, &[]),
+            dish(4, "Crème", today, Some("dinner"), 3, &[]),
+        ];
+        let html = render_tonight(&planned, Meal::Dinner, &[]);
+        assert!(
+            html.contains(
+                r#"<a class="more-recipes" href="/recipes/week" aria-label="2 autres recettes ce soir, voir le planning">…</a>"#
+            ),
+            "{html}"
+        );
+        assert!(!html.contains(">Tarte<"), "{html}");
+        assert!(!html.contains(">Crème<"), "{html}");
+        assert_eq!(html.matches(r#"class="also""#).count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_third_recipe_at_lunch_is_said_in_the_singular() {
+        let today = Some(today_814());
+        let planned = [
+            dish(1, "Gratin", today, Some("lunch"), 0, &[]),
+            dish(2, "Salade", today, Some("lunch"), 1, &[]),
+            dish(3, "Tarte", today, Some("lunch"), 2, &[]),
+        ];
+        let html = render_tonight(&planned, Meal::Lunch, &[]);
+        assert!(
+            html.contains(r#"aria-label="1 autre recette ce midi, voir le planning">…</a>"#),
+            "{html}"
+        );
     }
 }

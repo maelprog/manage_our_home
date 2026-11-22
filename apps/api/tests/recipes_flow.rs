@@ -2,6 +2,7 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use chrono::{Days, NaiveDate, Utc};
+use common::thresholds::{assert_edit_follows_the_threshold, Editable};
 use common::{assert_status, call, json_body, set_cookie, test_router};
 use manage_our_home_shared::validation::auth::paris_day;
 use sqlx::PgPool;
@@ -206,7 +207,8 @@ async fn non_member_cannot_access_group_recipes(db: PgPool) {
 }
 
 /// AC: a regular member may create/read recipes, but only the recipe's
-/// creator or a group admin/owner may delete it.
+/// creator or a member meeting the family's `recipes_edit` threshold
+/// (`admin` by default, as here; #866) may delete it.
 #[sqlx::test]
 async fn only_creator_or_admin_can_delete_recipe(db: PgPool) {
     let router = test_router(db.clone());
@@ -549,7 +551,8 @@ async fn suggestions_rank_by_stock_match_and_variety(db: PgPool) {
 
 /// AC (#821): the suggestions' variety window is 28 days, counted back from
 /// today in Paris: a recipe eaten 28 days ago is penalized, one eaten 29
-/// days ago is not. A meal logged without taste tags changes nothing else.
+/// days ago is not. A meal logged without an opinion is « Neutre » (#822)
+/// and changes nothing else.
 #[sqlx::test]
 async fn suggestions_variety_window_is_28_days(db: PgPool) {
     let router = test_router(db.clone());
@@ -584,7 +587,9 @@ async fn suggestions_variety_window_is_28_days(db: PgPool) {
         )
         .await;
         assert_status(&log, StatusCode::CREATED);
-        assert_eq!(json_body(log).await["taste_tags"], serde_json::json!([]));
+        let entry = json_body(log).await;
+        assert_eq!(entry["taste"], "neutre");
+        assert_eq!(entry["taste_note"], serde_json::Value::Null);
         ids.push(id);
     }
 
@@ -1139,6 +1144,80 @@ async fn any_member_resizes_or_deselects_a_planned_selection(db: PgPool) {
     assert_status(&reselect, StatusCode::CREATED);
 }
 
+/// Issue #846: any member changes the number of people of a planned
+/// selection, or removes it with `"servings": null` — the quantities are
+/// then taken as the recipe writes them. An omitted `servings` leaves it,
+/// a refused one changes nothing, and none of them touches the day or the
+/// meal.
+#[sqlx::test]
+async fn any_member_changes_or_removes_the_number_of_people(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-servings").await;
+    let recipe_id = create_recipe(&router, &owner_cookie, &group_id, "Gratin").await;
+    let path = format!("/groups/{group_id}/recipes/{recipe_id}/selection");
+    let day = paris_day(Utc::now())
+        .checked_add_days(Days::new(2))
+        .unwrap();
+    let select = call(
+        &router,
+        Method::POST,
+        &path,
+        Some(&owner_cookie),
+        Some(serde_json::json!({"servings": 4, "planned_on": day, "meal_slot": "dinner"})),
+    )
+    .await;
+    assert_status(&select, StatusCode::CREATED);
+
+    let patch = |body: serde_json::Value| {
+        let router = router.clone();
+        let path = path.clone();
+        let cookie = member_cookie.clone();
+        async move { call(&router, Method::PATCH, &path, Some(&cookie), Some(body)).await }
+    };
+    let stored_servings = || async {
+        sqlx::query_scalar::<_, Option<i32>>(
+            "SELECT servings FROM recipe_selections WHERE recipe_id = $1::uuid",
+        )
+        .bind(&recipe_id)
+        .fetch_one(&db)
+        .await
+        .unwrap()
+    };
+
+    let res = patch(serde_json::json!({"servings": 6})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], 6);
+
+    // Omitted: left as it is.
+    let res = patch(serde_json::json!({})).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(json_body(res).await["servings"], 6);
+
+    // Refused: nothing changes.
+    for servings in [0, 51] {
+        let res = patch(serde_json::json!({"servings": servings})).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "invalid_servings");
+    }
+    assert_eq!(stored_servings().await, Some(6));
+
+    // `null` removes it.
+    let res = patch(serde_json::json!({"servings": null})).await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    assert!(body["servings"].is_null(), "{body}");
+    assert_eq!(stored_servings().await, None);
+    let listed = planned_selections(&router, &owner_cookie, &group_id).await;
+    assert!(listed[0]["servings"].is_null());
+
+    // The day and the meal were never touched.
+    assert_eq!(
+        stored_plan(&db, &recipe_id).await,
+        (Some(day), Some("dinner".into()))
+    );
+}
+
 /// Issue #469: deselecting only deletes a `planned` selection. A `done` or
 /// `abandoned` one (#473) is history: it is neither listed, nor deleted, nor
 /// resized, and it does not stop the recipe from being planned again.
@@ -1666,6 +1745,89 @@ async fn planned_selections_list_what_the_stock_lacks(db: PgPool) {
         listed[0]["missing"][1],
         serde_json::json!({"name": "Oeufs", "quantity": 1.0, "unit": "unité"})
     );
+}
+
+/// Issue #900: a planned recipe's ingredient is covered by a stock line of
+/// its category, as the suggestions match the stock — « Parmesan » by
+/// « Parmigiano Reggiano » (same taxonomy tag), « Lait » by a scanned
+/// semi-skimmed milk — so neither is listed as missing nor added to the
+/// grocery list with what the recipe lacks; « Beurre » still is.
+#[sqlx::test]
+async fn planned_missing_match_the_stock_by_category(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner_cookie, member_cookie, group_id) =
+        group_with_member(&router, &db, "sel-category").await;
+
+    // What a scan would have cached (#402), written directly: the test
+    // must not reach Open Food Facts.
+    sqlx::query("INSERT INTO off_products (code, name, categories_tags) VALUES ($1, $2, $3)")
+        .bind("4006381333931")
+        .bind("Lactel")
+        .bind(vec!["en:dairies", "en:milks", "en:semi-skimmed-milks"])
+        .execute(&db)
+        .await
+        .unwrap();
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Lactel", "quantity": 1.0, "unit": "L", "barcode": "4006381333931"}),
+    )
+    .await;
+    stock_line(
+        &router,
+        &owner_cookie,
+        &group_id,
+        serde_json::json!({"name": "Parmigiano Reggiano", "quantity": 150.0, "unit": "g"}),
+    )
+    .await;
+    let recipe_id = planned_recipe(
+        &router,
+        &owner_cookie,
+        &group_id,
+        "Gratin",
+        serde_json::json!([
+            {"name": "Parmesan", "quantity": 100.0, "unit": "g", "is_optional": false},
+            {"name": "Lait", "quantity": 0.5, "unit": "L", "is_optional": false},
+            {"name": "Beurre", "quantity": 1.0, "unit": "plaquette", "is_optional": false}
+        ]),
+    )
+    .await;
+
+    let listed = planned_selections(&router, &member_cookie, &group_id).await;
+    assert_eq!(
+        listed[0]["missing"],
+        serde_json::json!([{"name": "Beurre", "quantity": 1.0, "unit": "plaquette"}])
+    );
+
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes/{recipe_id}/selection/missing"),
+        Some(&member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let created: Vec<_> = json_body(res).await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(created, vec!["Beurre"]);
+
+    // Generating the list matches the stock the same way: nothing more.
+    assert_eq!(
+        generate_grocery_list(&router, &member_cookie, &group_id).await,
+        0
+    );
+    let names: Vec<String> = grocery_lines(&router, &member_cookie, &group_id)
+        .await
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, vec!["Beurre"]);
 }
 
 /// Issue #559: a line past its date still counts, but dates the recipe
@@ -2199,6 +2361,13 @@ async fn replacing_a_dated_recipe_keeps_its_plan_and_follows_on_the_grocery_list
     )
     .await;
 
+    // The soup says how long it takes, the rice does not (#816).
+    sqlx::query("UPDATE recipes SET duration_minutes = 45 WHERE id = $1::uuid")
+        .bind(&soupe)
+        .execute(&db)
+        .await
+        .unwrap();
+
     assert_eq!(
         generate_grocery_list(&router, &owner_cookie, &group_id).await,
         3
@@ -2221,13 +2390,22 @@ async fn replacing_a_dated_recipe_keeps_its_plan_and_follows_on_the_grocery_list
     )
     .await;
     assert_status(&offer, StatusCode::OK);
-    let offered: Vec<String> = json_body(offer).await["replacements"]
+    let offer = json_body(offer).await;
+    let offered: Vec<String> = offer["replacements"]
         .as_array()
         .unwrap()
         .iter()
         .map(|r| r["recipe_id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(offered, [soupe.clone(), riz.clone()]);
+    // Each offer carries its duration, `null` when the recipe has none.
+    let durations: Vec<serde_json::Value> = offer["replacements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["duration_minutes"].clone())
+        .collect();
+    assert_eq!(durations, [serde_json::json!(45), serde_json::Value::Null]);
 
     let replace = call(
         &router,
@@ -2727,4 +2905,22 @@ async fn a_replacement_leaves_checked_items_and_follows_unchecked_required_ones(
             ("Sel".to_string(), Some(soupe.clone())),
         ]
     );
+}
+
+/// AC #866: the edit and the delete of a recipe follow the family's `recipes_edit` threshold, the creator
+/// keeping the hand on what they wrote (`common::thresholds`).
+#[sqlx::test]
+async fn editing_a_recipe_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_edit_follows_the_threshold(
+        &router,
+        &db,
+        Editable {
+            feature: "recipes_edit",
+            collection: "recipes",
+            create: serde_json::json!({"name": "Tarte", "ingredients": []}),
+            edit: serde_json::json!({"name": "Quiche"}),
+        },
+    )
+    .await;
 }

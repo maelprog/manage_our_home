@@ -23,19 +23,23 @@ const LEFT_IN_TRANSACTION: &str = "SELECT transaction_timestamp() <> statement_t
 /// server if the caller is cancelled while waiting.
 ///
 /// Use it instead of `pool.begin()`. In sqlx-postgres 0.9.0,
-/// `PgTransactionManager::begin` sends `BEGIN` and only counts the
-/// transaction as open once the server has answered. A future dropped
+/// `PgTransactionManager::begin` sent `BEGIN` and only counted the
+/// transaction as open once the server had answered. A future dropped
 /// during that wait — which is what hyper does to a handler when the client
-/// hangs up, e.g. a WebSocket handshake cut short by a navigation — has
+/// hangs up, e.g. a WebSocket handshake cut short by a navigation — had
 /// nothing to roll back on sqlx's side, and the first query of the pool's
-/// release path then consumes the pending reply (the `after_release` query
+/// release path then consumed the pending reply (the `after_release` query
 /// of [`pool_options`], which sqlx runs before its release ping, or that
 /// ping on a pool without the hook). Without the `after_release` check, the
-/// connection goes back to the pool inside a transaction that sqlx believes
-/// closed and the server holds open. The next autocommit write on it
-/// (`AuthUser`'s `UPDATE sessions SET last_seen_at`) takes its row lock
-/// inside that transaction and never releases it: every later request of
-/// that session waits on it.
+/// connection went back to the pool inside a transaction that sqlx believed
+/// closed and the server held open. The next autocommit write on it
+/// (`AuthUser`'s `UPDATE sessions SET last_seen_at`) took its row lock
+/// inside that transaction and never released it: every later request of
+/// that session waited on it.
+///
+/// sqlx-postgres 0.9.1 counts the transaction before the round trip
+/// (launchbadge/sqlx#4394), which closes that leak upstream. This wrapper
+/// stays as a second guard that does not depend on sqlx keeping that order.
 ///
 /// Here the `BEGIN` runs in its own task. If the caller is dropped, the task
 /// still completes, and the `Transaction` it produces is dropped with its

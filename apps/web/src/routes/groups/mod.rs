@@ -5,6 +5,7 @@
 //! copy, PRG (`?notice=`/`?error=` codes) after mutating actions so a
 //! refresh never replays them.
 
+pub mod allergies;
 pub mod avatar;
 pub mod invitations;
 pub mod list;

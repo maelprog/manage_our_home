@@ -11,7 +11,7 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::auth::{MAX_PASSWORD_LEN, MIN_PASSWORD_LEN};
 use manage_our_home_shared::validation::budget::can_access_budget;
-use manage_our_home_shared::validation::groups::Accent;
+use manage_our_home_shared::validation::groups::{Accent, Feature};
 use uuid::Uuid;
 
 use crate::icons::{icon, Icon as Glyph};
@@ -331,8 +331,9 @@ pub(crate) fn expiring_badge(expiring: u64) -> String {
 /// through its card on the home page. Cuisine is a link of its own rather
 /// than a second label of Stocks: it stands for the stocks and the recipes
 /// both, so it is the current tab on either (`app_header`), where the PC
-/// lights Stocks or Recettes. Budget is left out for a standard member of
-/// the active family (#531, `can_access_budget`). Notifications (#535) is
+/// lights Stocks or Recettes. Budget is left out for a member under the
+/// active family's `budget` threshold (#531, #865, `can_access_budget`):
+/// a standard member by default. Notifications (#535) is
 /// on a PC only: a phone reaches the centre through the home's bell.
 ///
 /// `/admin/users` is appended for the single technical superadmin only,
@@ -403,7 +404,7 @@ pub fn app_header(
     expiring_stocks: u64,
 ) -> String {
     // No family yet: the link stays, `/budget` sends to `/groups/new`.
-    let budget = active.is_none_or(|g| can_access_budget(&g.role));
+    let budget = active.is_none_or(|g| can_access_budget(&g.role, g.min_role(Feature::Budget)));
     let links: String = NAV
         .iter()
         .copied()
@@ -490,6 +491,25 @@ pub fn kitchen_segment(current_path: &str) -> String {
 /// `/assets` (`assets::Script::Enhance`). They were inline event handlers
 /// until #325, which infra/Caddyfile's CSP no longer runs (`csp.rs`).
 pub(crate) const ENHANCE_SCRIPT: &str = include_str!("enhance.js");
+
+/// A setting that applies itself (#844): its fields carry
+/// `data-submit-on-change` and its form `data-keep-scroll`, so a click
+/// sends it and the page comes back with the focus on that field. This
+/// sentence says so (WCAG 3.2.2); rendered `hidden`, `enhance.js` shows it
+/// (`data-shown-with-js`), since without the script nothing applies itself.
+pub(crate) const APPLIES_ON_CHANGE: &str = r#"<p class="muted" data-shown-with-js hidden>Le choix s'applique dès que vous le touchez.</p>"#;
+
+/// The other half of `APPLIES_ON_CHANGE`: the form's button and the
+/// sentence that says it sends the choice, which `enhance.js` hides
+/// (`data-hidden-with-js`, on each). Without the script, or when it fails
+/// to load, they stay and the form posts as before. No wrapper: the button
+/// stays a child of the form, whose column stretches it to the full width
+/// like any form's button.
+pub(crate) fn submit_fallback(label: &str) -> String {
+    format!(
+        "<p class=\"muted\" data-hidden-with-js>Sans JavaScript, le choix s'envoie avec le bouton.</p>\n<button type=\"submit\" data-hidden-with-js>{label}</button>"
+    )
+}
 
 /// Password `<label>` block shared by login/register/reset-password
 /// (embed via `<div inner_html=...></div>` like `app_header`).
@@ -1498,6 +1518,7 @@ mod tests {
             role: "owner".to_string(),
             accent: "sarcelle".to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         }
     }
 
@@ -1672,6 +1693,27 @@ mod tests {
         let mut admin = family("Famille Martin");
         admin.role = "admin".to_string();
         let header = app_header(&me(false), Some(&admin), "/", 0, 0, 0);
+        assert!(header.contains(r#"href="/budget""#), "{header}");
+    }
+
+    #[test]
+    fn the_budget_link_follows_the_familys_threshold() {
+        // #865: the owner lowers the budget to `standard`, or raises it to
+        // `owner`.
+        let with = |role: &str, min_role: &str| {
+            let mut g = family("Famille Martin");
+            g.role = role.to_string();
+            g.access_policies = vec![manage_our_home_shared::dto::groups::AccessPolicy {
+                feature: "budget".to_string(),
+                min_role: min_role.to_string(),
+            }];
+            app_header(&me(false), Some(&g), "/", 0, 0, 0)
+        };
+        let header = with("standard", "standard");
+        assert!(header.contains(r#"href="/budget""#), "{header}");
+        let header = with("admin", "owner");
+        assert!(!header.contains("/budget"), "{header}");
+        let header = with("owner", "owner");
         assert!(header.contains(r#"href="/budget""#), "{header}");
     }
 
@@ -2566,7 +2608,7 @@ mod tests {
         ("--fg", "--surface", ".card, header, inputs, a .msg bubble"),
         ("--fg", "--border", ".badge, .chip:hover, .chip.done:hover"),
         ("--fg", "--hover", ".chip, a hovered row, a .thumb's name"),
-        ("--fg", "--accent-soft", ".current"),
+        ("--fg", "--accent-soft", ".current, .dur (#823)"),
         ("--muted", "--bg", ".muted, th, dt, .mini .outside"),
         ("--muted", "--surface", ".muted in a card"),
         ("--muted", "--hover", "a hovered .list-row, .thumb .kind"),
@@ -2611,13 +2653,14 @@ mod tests {
             "--error-soft",
             ".notice.error, .danger:hover, .badge.late",
         ),
-        ("--success", "--success-soft", ".notice.success"),
+        ("--success", "--success-soft", ".notice.success, .badge.ok"),
         (
             "--warning",
             "--warning-soft",
-            ".notice.warning, .badge.soon",
+            ".notice.warning, .badge.soon, .trow.ended (#823)",
         ),
-        ("--fg", "--warning-soft", ".ad.gen (#793)"),
+        ("--fg", "--warning-soft", ".ad.gen (#793), .allergy (#825)"),
+        ("--fg", "--error-soft", ".consent.invalid (#911)"),
     ];
 
     /// `color-mix(in srgb, …)` of equal parts, which is what
@@ -3706,9 +3749,12 @@ mod tests {
     }
 
     /// The links #752 sets in bold rather than underlined: every link with
-    /// no class of its own, but the kitchen segment's halves, plus the two
-    /// accent links that carry one (`.more`, `.replies`).
-    const TEXT_LINK: &str = ":where(:not(.segment) > a:not([class]), .more, .replies)";
+    /// no class of its own, but the kitchen segment's halves, plus the
+    /// accent links that carry one (`.more`, `.replies`, the « … » of
+    /// « Ce soir », `.more-recipes`, #814, « Changer ce plat », `.change`,
+    /// #816, and « Quitter le mode cuisine », `.quit`, #823).
+    const TEXT_LINK: &str =
+        ":where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change, .quit)";
 
     #[test]
     fn a_text_link_is_bold_in_the_accent_and_not_underlined_at_rest() {

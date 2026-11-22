@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM recipes\n                          WHERE group_id = $1 AND library_recipe_id = $2) AS \"copied!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "copied!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f4ea350702dee12400514e8cdf51e014b48fdabc0483894da635e5cc5305f204"
+}

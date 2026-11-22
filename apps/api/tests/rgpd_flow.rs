@@ -149,10 +149,11 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
     // and an export that handed back one under another's name would still
     // match. Move each to an instant of its own before exporting.
     // #700: the recap's hour is a setting held about the person; moved off
-    // its default of 9 so that the export shows the value on file. #848:
-    // the agenda-change setting likewise, off its default of true.
+    // its default of 9 so that the export shows the value on file. #853:
+    // the agenda and recap switches likewise, off their default of true.
     sqlx::query(
-        "UPDATE users SET expiry_digest_hour = 18, notify_agenda_changes = false
+        "UPDATE users SET expiry_digest_hour = 18, expiry_digest_enabled = false,
+                          notify_agenda_changed = false
          WHERE email = 'export-owner@example.test'",
     )
     .execute(&db)
@@ -186,7 +187,10 @@ async fn export_returns_owned_data_across_categories(db: PgPool) {
 
     assert_eq!(doc["profile"]["email"], "export-owner@example.test");
     assert_eq!(doc["profile"]["expiry_digest_hour"], 18);
-    assert_eq!(doc["profile"]["notify_agenda_changes"], false);
+    assert_eq!(doc["profile"]["expiry_digest_enabled"], false);
+    assert_eq!(doc["profile"]["notify_agenda_added"], true);
+    assert_eq!(doc["profile"]["notify_agenda_changed"], false);
+    assert_eq!(doc["profile"]["notify_agenda_deleted"], true);
     // #137, #317: the art. 8 GDPR age declaration is data held about the
     // person, so art. 15 hands it back — the very instant on file, not just a
     // non-null field.
@@ -804,6 +808,49 @@ async fn the_legal_notice_and_the_terms_are_public_markdown(db: PgPool) {
     }
 }
 
+/// #960: the legal notice names the licence the code is actually under
+/// (PolyForm Noncommercial 1.0.0 since #914, MIT before), and tells anyone
+/// who meets an unlawful content how to report it (LCEN art. 6, DSA art. 16):
+/// the « Signaler cette recette » button of a library publication, and the
+/// publisher's contact address given under « Éditeur du service ».
+#[sqlx::test]
+async fn the_legal_notice_names_the_licence_and_how_to_report_a_content(db: PgPool) {
+    let router = test_router(db.clone());
+
+    let response = call(&router, Method::GET, "/legal-notice", None, None).await;
+    assert_status(&response, StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let notice = std::str::from_utf8(&body).unwrap();
+
+    assert!(
+        notice.contains("PolyForm Noncommercial 1.0.0"),
+        "the legal notice does not name the PolyForm Noncommercial licence"
+    );
+    assert!(
+        notice.contains("https://polyformproject.org/licenses/noncommercial/1.0.0"),
+        "the legal notice does not link to the licence text"
+    );
+    assert!(
+        !notice.contains("MIT"),
+        "the legal notice still names the MIT licence"
+    );
+
+    let (_, report) = notice
+        .split_once("\n## Signaler un contenu illicite\n")
+        .expect("the legal notice has no « Signaler un contenu illicite » section");
+    let report = report.split("\n## ").next().unwrap();
+    assert!(
+        report.contains("« Signaler cette recette »"),
+        "the report section does not send to the library's report button"
+    );
+    assert!(
+        report.contains("Éditeur du service"),
+        "the report section does not send to the publisher's contact address"
+    );
+}
+
 /// #367: the CGU behind `/terms-of-service` change on a date, not on a
 /// deploy, so no cache may reuse them unchecked across that date — the text
 /// in force and the announced one alike. Nothing announced, or its date come,
@@ -875,7 +922,7 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
         .await;
         assert_status(&res, StatusCode::CREATED);
     }
-    // #821: the Crepes cooked, with taste tags kept with the meal.
+    // #822: the Crepes cooked, with the opinion and its note kept with the meal.
     let crepes_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM recipes WHERE name = 'Crepes'")
         .fetch_one(&db)
         .await
@@ -884,7 +931,7 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
         ("selection", serde_json::json!({"servings": 4})),
         (
             "selection/done",
-            serde_json::json!({"removals": [], "taste_tags": ["aime", "trop_long"]}),
+            serde_json::json!({"removals": [], "taste": "aime", "taste_note": "Trop long un soir de semaine."}),
         ),
     ] {
         let res = call(
@@ -903,10 +950,8 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
     let doc = json_body(export).await;
     let meals = doc["meal_history"].as_array().unwrap();
     assert_eq!(meals.len(), 1);
-    assert_eq!(
-        meals[0]["taste_tags"],
-        serde_json::json!(["trop_long", "aime"])
-    );
+    assert_eq!(meals[0]["taste"], "aime");
+    assert_eq!(meals[0]["taste_note"], "Trop long un soir de semaine.");
     let recipes = doc["recipes"].as_array().unwrap();
     let crepes = recipes.iter().find(|r| r["name"] == "Crepes").unwrap();
     assert_eq!(
@@ -938,6 +983,77 @@ async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
         .map(|r| r["ingredients"].as_array().unwrap().len())
         .sum();
     assert_eq!(exported as i64, held, "every ingredient held is exported");
+}
+
+/// Issue #905: the recipes the caller published to the shared library come
+/// out of their export, each with its ingredients in their order and the
+/// recipe it was taken from; another user's publication does not.
+#[sqlx::test]
+async fn export_lists_the_callers_library_publications(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "publisher@example.test", "owner-password1").await;
+    register_verify_login(&router, &db, "other-pub@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer Bibliotheque").await;
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        Some(serde_json::json!({"name": "Tarte", "ingredients": []})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let recipe = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    for (email, name, source) in [
+        (
+            "publisher@example.test",
+            "Tarte aux poireaux",
+            Some(recipe.clone()),
+        ),
+        ("other-pub@example.test", "Soupe", None),
+    ] {
+        sqlx::query(
+            "WITH l AS (
+                 INSERT INTO library_recipes (name, instructions, servings, duration_minutes)
+                 VALUES ($2, 'Cuire.', 4, 45) RETURNING id
+             ), p AS (
+                 INSERT INTO library_recipe_publishers (library_recipe_id, user_id, source_recipe_id)
+                 SELECT l.id, u.id, $3::uuid FROM l, users u WHERE u.email = $1
+             )
+             INSERT INTO library_ingredients (library_recipe_id, position, name, quantity, unit,
+                                              seasonal_months)
+             SELECT id, 1, 'Pâte brisée', 1, NULL, NULL::int[] FROM l
+             UNION ALL SELECT id, 0, 'Poireau', 3, 'pièce', '{10,11}'::int[] FROM l",
+        )
+        .bind(email)
+        .bind(name)
+        .bind(source.map(|s| uuid::Uuid::parse_str(&s).unwrap()))
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let export = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+    assert_status(&export, StatusCode::OK);
+    let doc = json_body(export).await;
+    let published = doc["library_recipes"].as_array().unwrap();
+    assert_eq!(published.len(), 1, "{published:?}");
+    let tarte = &published[0];
+    assert_eq!(tarte["name"], "Tarte aux poireaux");
+    assert_eq!(tarte["instructions"], "Cuire.");
+    assert_eq!(tarte["servings"], 4);
+    assert_eq!(tarte["duration_minutes"], 45);
+    assert_eq!(tarte["source_recipe_id"], recipe.as_str());
+    assert!(tarte["id"].is_string() && tarte["published_at"].is_string());
+    assert_eq!(
+        tarte["ingredients"],
+        serde_json::json!([
+            {"name": "Poireau", "quantity": 3.0, "unit": "pièce", "is_optional": false, "seasonal_months": [10, 11]},
+            {"name": "Pâte brisée", "quantity": 1.0, "unit": null, "is_optional": false, "seasonal_months": null},
+        ])
+    );
 }
 
 /// Issue #140: an invitation another member sent to the caller's address is
@@ -1149,8 +1265,17 @@ async fn export_accounts_for_every_table(db: PgPool) {
         ("user_allergies", "allergies"),
         ("allergy_sharing", "allergies"),
         ("user_dislikes", "dislikes"),
+        ("library_recipes", "library_recipes"),
+        ("library_ingredients", "library_recipes"),
+        ("library_recipe_publishers", "library_recipes"),
+        ("library_reports", "library_reports"),
     ];
     const LEFT_OUT: &[(&str, &str)] = &[
+        (
+            "library_withdrawn_sources",
+            "the family recipes whose publication the superadmin withdrew (#908): a recipe, \
+             no account; the family's content, not the person's",
+        ),
         (
             "account_reactivation_requests",
             "exists only while the account is deactivated, when AuthUser refuses the export",
@@ -1203,6 +1328,17 @@ async fn export_accounts_for_every_table(db: PgPool) {
         (
             "group_equipment",
             "the household's kitchen equipment (#817): equipment codes of a family, no account",
+        ),
+        (
+            "group_access_policies",
+            "a family's access policy (#863): the lowest role admitted to each restricted \
+             feature, a family's setting, no account",
+        ),
+        (
+            "ingredient_links",
+            "a family's links from an article's name to an ingredient category (#903): \
+             family content, no personal data; who set a link is a current member only, \
+             and the link goes with the membership (0064)",
         ),
         (
             "off_products",
@@ -1289,6 +1425,11 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
         // Its key is onto the membership (`group_members`), which deletes
         // it when the membership ends; read with the allergies.
         ("allergy_sharing", "user_id"),
+        // #905: who published what to the shared library, under
+        // `app.user_id`; read with the publications.
+        ("library_recipe_publishers", "user_id"),
+        // #908: the reports the person made, under `app.user_id`.
+        ("library_reports", "reporter_id"),
     ];
     const LEFT_OUT: &[(&str, &str, &str)] = &[
         (
@@ -1325,6 +1466,13 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
             "stock_expiry_announcements",
             "user_id",
             "which item a recap announced to the account; the recaps are exported",
+        ),
+        // #903: who set an ingredient link. Its key is onto the membership
+        // and cascades when it ends (0064): a current member only.
+        (
+            "ingredient_links",
+            "created_by",
+            "who set a family's ingredient link; deleted with the membership",
         ),
     ];
 

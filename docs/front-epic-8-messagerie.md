@@ -197,8 +197,8 @@ escaped and rendered as plain text with newlines preserved.
 | GET | `/messagerie` | `messagerie::thread::get` | The family thread (live view), composer, per-row edit/delete for `can_modify`; `?before_created_at`+`?before_id` render an older window, `?limit` sets the page size | `GET /groups/:id/messages`, `GET /groups/:id` (author names) |
 | POST | `/messagerie` | `messagerie::thread::post` | Send a message | `POST /groups/:id/messages` |
 | POST | `/messagerie/read` | `messagerie::thread::mark_read` | Advance the read marker to the newest message the live view rendered (#781: the `GET` writes nothing). Posted by the live script on load and after each refresh; without JS, the « Tout marquer comme lu » button | `POST /groups/:id/messages/read?up_to=` |
-| POST | `/messagerie/:id/edit` | `messagerie::thread::edit` | Edit a message (author/admin/owner) | `PATCH /groups/:id/messages/:message_id` |
-| POST | `/messagerie/:id/delete` | `messagerie::thread::delete` | Delete a message (author/admin/owner) | `DELETE /groups/:id/messages/:message_id` |
+| POST | `/messagerie/:id/edit` | `messagerie::thread::edit` | Edit a message (author, or a role meeting `messagerie_moderate`) | `PATCH /groups/:id/messages/:message_id` |
+| POST | `/messagerie/:id/delete` | `messagerie::thread::delete` | Delete a message (author, or a role meeting `messagerie_moderate`) | `DELETE /groups/:id/messages/:message_id` |
 | (browser) | `{API_PUBLIC_BASE_URL}/groups/:id/messages/ws` | — | Push-only live channel, opened by the live script on the live view | `GET /groups/:id/messages/ws` |
 
 No active family → every route redirects to `/groups/new` (same as Budget /
@@ -268,16 +268,20 @@ and both surface the same copy.
 ## Permission bar (front mirror of `messagerie::can_modify`)
 
 Backend bar (`apps/api/src/messagerie/mod.rs::can_modify`): the message's
-**author**, or a group **owner/admin**, may edit or delete it; **any** member may
+**author**, or a member whose role meets the family's `messagerie_moderate`
+threshold (#866; **admin/owner** by default, which the owner may lower to
+`standard` or raise to `owner`), may edit or delete it; **any** member may
 read the thread, post a message, and open the WS. The front mirrors it
 (`manage_our_home_shared::validation::messagerie::can_modify`, unit-tested,
-re-exported by `routes/messagerie`):
+re-exported by `routes/messagerie`, with the threshold `GET /groups` hands
+apps/web):
 
 - The thread, the composer, the `Charger les messages plus anciens` link and the
   live channel render for **every** member.
 - A row's `Modifier` disclosure and `Supprimer` button render only when
-  `can_modify(role, is_author)` — a standard member sees neither on another
-  member's message, while an admin/owner sees both on every message.
+  `can_modify(role, min_role, is_author)` — a member below the threshold sees
+  neither on another member's message, while one meeting it sees both on
+  every message.
 
 The backend stays the authority: a forged edit/delete is still `403`'d and
 mapped to the forbidden page per the tables above.
@@ -291,7 +295,8 @@ mapped to the forbidden page per the tables above.
    **live**, without that session reloading — the WS push triggers a
    server-rendered re-render of `#thread`. (This is the journey the backend epic
    #7 explicitly deferred to F8.)
-3. The author (or an admin/owner) can edit a message inline — the row shows the
+3. The author (or a member meeting the `messagerie_moderate` threshold) can
+   edit a message inline — the row shows the
    updated text and a `modifié` marker — and delete it, each returning to
    `/messagerie` with a banner.
 4. A standard member sees neither `Modifier` nor `Supprimer` on another member's

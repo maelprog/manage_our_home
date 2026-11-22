@@ -63,9 +63,10 @@ GET screen: the checkout action is a one-field, high-frequency gesture, so an
 inline form (same lightweight approach as F6's inline manual-add) beats a
 full page round-trip. The field appears only once an item is checked (bought),
 matching the "prix au checkout" framing. Any member may set a price (same bar
-as the check-off itself), so it renders for everyone — superseded by #531: the
-budget, the price included, is now reserved to owners and admins, and a
-standard member gets neither the field nor the `/budget` pages (404). The
+as the check-off itself), so it renders for everyone — superseded by #531 and
+#865: the budget, the price included, is now reserved to the roles that meet
+the family's `budget` threshold (`admin` by default), and a member under it
+gets neither the field nor the `/budget` pages (404). The
 backend upsert makes a re-tap idempotent (re-tarifies, never double-counts — see below), so it needs
 no confirmation and stays visible even after a price is set. F7 also removes the
 "Budget hook out of scope" note F6 left in `routes/grocery_list/mod.rs`, since
@@ -156,7 +157,7 @@ row is the exact `(status, code)` → French UI state.
 | 400 | `name_required` | inline on the form |
 | 400 | `amount_must_be_non_negative` | inline on the form |
 | 409 | `grocery_item_already_priced` | inline (unreachable — the form sends no `grocery_item_id`; mapped defensively) |
-| 403 | `forbidden` | forbidden page (unreachable — only an owner or an admin reaches `/budget/new` since #531, and a standard member gets 404, not 403; defensive) |
+| 403 | `forbidden` | forbidden page (unreachable — only a role that meets the family's `budget` threshold reaches `/budget/new` since #531/#865, and a member under it gets 404, not 403; defensive) |
 | 404 | `not_found` | inline (unreachable — the form sends no `grocery_item_id`; defensive) |
 | — | transport / other | inline "Service momentanément indisponible…" |
 
@@ -214,12 +215,16 @@ defensive fallback.
 
 ## Permission bar (front mirror of `budget::can_modify`)
 
-> Superseded by #531: the budget — entries, summary, and the grocery-item
-> price — is reserved to owners and admins (`can_access_budget`). A standard
-> member gets 404 on every budget route and on the price endpoint, and the
-> front shows them neither the `/budget` link, nor the budget card, nor the
-> price form. The text below describes the original F7 bar, which now applies
-> only past that gate.
+> Superseded by #531 and #865: the budget — entries, summary, settings,
+> categories, alerts and the grocery-item price — is reserved to the roles
+> that meet the family's `budget` threshold (`can_access_budget(role,
+> min_role)`; `admin` by default, which the owner may lower to `standard` or
+> raise to `owner`). A member under it gets 404 on every budget route and on
+> the price endpoint, and the front shows them neither the `/budget` link, nor
+> the budget card, nor the price form. The text below describes the original
+> F7 bar, which now applies only past that gate; setting again the price of an
+> item whose expense another member wrote down is an edit of that expense, and
+> takes the same bar (403).
 
 Backend bar (`apps/api/src/budget/mod.rs::can_modify`): the entry's creator, or
 a group **owner/admin**, may edit (name/amount/date) or delete it; **any**

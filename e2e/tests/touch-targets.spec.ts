@@ -1,6 +1,13 @@
 import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
 import { fetchVerificationToken } from "../lib/db";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Issue #74 — "Toute cible interactive ≥ 44 px" (DESIGN.md → Espacement).
 // The Rust guards in apps/web/src/app.rs can read a padding or a min-height

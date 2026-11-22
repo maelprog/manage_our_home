@@ -451,6 +451,108 @@ async fn stock_items_isolated_without_scoping(db: PgPool) {
         .unwrap();
 }
 
+/// Issue #903: a family's article-to-ingredient links (migration 0064) hold
+/// against a query that forgets `WHERE group_id = ...` — nothing without a
+/// family scope, only the scoped family's links with one, and no link
+/// written into another family.
+#[sqlx::test]
+async fn ingredient_links_isolated_without_scoping(db: PgPool) {
+    let ((owner_a, group_a), (owner_b, group_b)) = two_owned_groups(&db).await;
+    for (group, owner, name) in [(group_a, owner_a, "lait A"), (group_b, owner_b, "lait B")] {
+        sqlx::query(
+            "INSERT INTO ingredient_links (group_id, name_key, name, tag, created_by) \
+             VALUES ($1, $2, $2, 'lait', $3)",
+        )
+        .bind(group)
+        .bind(name)
+        .bind(owner)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ingredient_links TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let unscoped: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM ingredient_links")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        unscoped.is_empty(),
+        "no family scope must see no link at all"
+    );
+
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM ingredient_links")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        visible,
+        vec![group_a],
+        "group A's scope sees its own link and never group B's"
+    );
+
+    let touched = sqlx::query("UPDATE ingredient_links SET tag = 'beurre' WHERE group_id = $1")
+        .bind(group_b)
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(
+        touched, 0,
+        "group A's scope must not rewrite group B's link"
+    );
+
+    let cross = sqlx::query(
+        "INSERT INTO ingredient_links (group_id, name_key, name, tag, created_by) \
+         VALUES ($1, 'beurre', 'beurre', 'beurre', $2)",
+    )
+    .bind(group_b)
+    .bind(owner_b)
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        cross.is_err(),
+        "group A's scope must not write a link into group B"
+    );
+
+    tx.rollback().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON ingredient_links FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
+        .execute(&db)
+        .await
+        .unwrap();
+}
+
 /// AC #15 analog for the Recipes epic: `recipes` isolation must hold even
 /// against a bug that forgets `WHERE group_id = ...` in application code.
 #[sqlx::test]
@@ -2138,4 +2240,275 @@ async fn food_constraints_are_their_holders_alone(db: PgPool) {
     .await
     .unwrap();
     assert_eq!(kept, 5, "the holder's rows are untouched");
+}
+
+/// The SQLSTATE a statement was refused with; `None` when it was not
+/// refused, or not by the database.
+fn sqlstate(result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>) -> Option<String> {
+    result.err().and_then(|e| {
+        e.as_database_error()
+            .and_then(|d| d.code())
+            .map(|c| c.into_owned())
+    })
+}
+
+/// Issue #863: a family's access policy (`group_access_policies`, 0062) is
+/// read by its members, and by nobody else — even through a query with no
+/// `WHERE` at all. A member scoped to their own family can neither read,
+/// change, delete nor add a row of another family's policy; with no family
+/// scope, nothing is readable.
+///
+/// Seeded as the harness role, which bypasses RLS. Checked as a role that
+/// **owns** the table (#864): only `FORCE ROW LEVEL SECURITY` subjects an
+/// owner to its own policy, so without it the checks below fail, whereas a
+/// role holding mere grants would pass them with or without `FORCE`. Each
+/// refused write is asserted on its SQLSTATE, 42501, the policy's refusal.
+#[sqlx::test]
+async fn group_access_policies_isolated_without_scoping(db: PgPool) {
+    let ((_, group_a), (_, group_b)) = two_owned_groups(&db).await;
+    for (group, feature, min_role) in [
+        (group_a, "budget", "owner"),
+        (group_a, "stocks_edit", "standard"),
+        (group_b, "budget", "standard"),
+    ] {
+        sqlx::query(
+            "INSERT INTO group_access_policies (group_id, feature, min_role) \
+             VALUES ($1, $2, $3::group_role)",
+        )
+        .bind(group)
+        .bind(feature)
+        .bind(min_role)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let harness_role: String = sqlx::query_scalar("SELECT current_user::text")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        // A new table owner must hold CREATE on the schema.
+        format!("GRANT USAGE, CREATE ON SCHEMA public TO {role}"),
+        format!("ALTER TABLE group_access_policies OWNER TO {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // No family scope: no row at all.
+    let unscoped: i64 = sqlx::query_scalar("SELECT count(*) FROM group_access_policies")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(unscoped, 0, "no family scope, no policy row");
+
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // A member reads their own family's rows, and only them.
+    let read: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT group_id, feature FROM group_access_policies ORDER BY feature")
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        read,
+        vec![
+            (group_a, "budget".to_string()),
+            (group_a, "stocks_edit".to_string()),
+        ],
+        "group A's scope reads A's policy and nothing of B's"
+    );
+
+    // Nor change nor delete B's rows: they are invisible to the statement.
+    let updated =
+        sqlx::query("UPDATE group_access_policies SET min_role = 'owner' WHERE group_id = $1")
+            .bind(group_b)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(
+        updated.rows_affected(),
+        0,
+        "B's policy is not updatable from A"
+    );
+    let deleted = sqlx::query("DELETE FROM group_access_policies WHERE group_id = $1")
+        .bind(group_b)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        deleted.rows_affected(),
+        0,
+        "B's policy is not deletable from A"
+    );
+
+    // Nor move one of A's rows over to B.
+    sqlx::query("SAVEPOINT moved")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let moved =
+        sqlx::query("UPDATE group_access_policies SET group_id = $1 WHERE feature = 'stocks_edit'")
+            .bind(group_b)
+            .execute(&mut *tx)
+            .await;
+    assert_eq!(
+        sqlstate(moved).as_deref(),
+        Some("42501"),
+        "a row of A cannot be moved to B"
+    );
+    sqlx::query("ROLLBACK TO SAVEPOINT moved")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // Nor add a row to B's policy.
+    let inserted = sqlx::query(
+        "INSERT INTO group_access_policies (group_id, feature, min_role) \
+         VALUES ($1, 'agenda_edit', 'owner')",
+    )
+    .bind(group_b)
+    .execute(&mut *tx)
+    .await;
+    assert_eq!(
+        sqlstate(inserted).as_deref(),
+        Some("42501"),
+        "group A's scope cannot write B's policy"
+    );
+    tx.rollback().await.unwrap();
+
+    for statement in [
+        format!("ALTER TABLE group_access_policies OWNER TO {harness_role}"),
+        format!("REVOKE ALL ON SCHEMA public FROM {role}"),
+        format!("DROP ROLE {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    let b_rows: Vec<String> = sqlx::query_scalar(
+        "SELECT feature || ':' || min_role::text FROM group_access_policies WHERE group_id = $1",
+    )
+    .bind(group_b)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        b_rows,
+        vec!["budget:standard".to_string()],
+        "B's policy untouched"
+    );
+}
+
+/// Issue #863: the base refuses a feature or a role outside the closed
+/// lists, a missing role, and a second row for the same feature of one
+/// family; a family's policy goes with the family. Checked as the harness
+/// role: constraints, not RLS. Each refusal is asserted on its SQLSTATE,
+/// and each is tried on a (family, feature) pair with no row yet, so no
+/// other constraint can be what refuses it.
+///
+/// The values are written as untyped SQL literals, so the column's own
+/// type decides: a `min_role` declared `TEXT` would accept `superuser`.
+#[sqlx::test]
+async fn group_access_policies_refuse_what_is_off_the_lists(db: PgPool) {
+    let ((_, group_a), _) = two_owned_groups(&db).await;
+    // `None` writes `NULL`. Test-only literals, no input.
+    let insert = |feature: &'static str, min_role: Option<&'static str>| {
+        let db = db.clone();
+        let min_role = min_role.map_or("NULL".to_string(), |r| format!("'{r}'"));
+        async move {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO group_access_policies (group_id, feature, min_role) \
+                 VALUES ($1, '{feature}', {min_role})"
+            )))
+            .bind(group_a)
+            .execute(&db)
+            .await
+        }
+    };
+    let refused_with = |result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>| {
+        result.err().and_then(|e| {
+            e.as_database_error()
+                .and_then(|d| d.code())
+                .map(|c| c.into_owned())
+        })
+    };
+    let rows = |db: PgPool| async move {
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM group_access_policies")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        n
+    };
+
+    // A role off the list, and no role: refused on `min_role` itself, on
+    // an empty table.
+    assert_eq!(
+        refused_with(insert("budget", Some("superuser")).await).as_deref(),
+        Some("22P02"),
+        "min_role off the list"
+    );
+    assert_eq!(
+        refused_with(insert("budget", None).await).as_deref(),
+        Some("23502"),
+        "min_role is required"
+    );
+    assert_eq!(rows(db.clone()).await, 0);
+
+    // A feature off the list: refused by the CHECK.
+    for feature in ["stocks", "", "Budget"] {
+        assert_eq!(
+            refused_with(insert(feature, Some("admin")).await).as_deref(),
+            Some("23514"),
+            "feature {feature:?} is not on the list"
+        );
+    }
+    assert_eq!(rows(db.clone()).await, 0);
+
+    // The three roles and the seven features are accepted.
+    for (feature, min_role) in [
+        ("budget", "standard"),
+        ("google_calendar", "admin"),
+        ("stocks_edit", "owner"),
+        ("recipes_edit", "admin"),
+        ("grocery_edit", "admin"),
+        ("agenda_edit", "admin"),
+        ("messagerie_moderate", "admin"),
+    ] {
+        insert(feature, Some(min_role))
+            .await
+            .unwrap_or_else(|e| panic!("{feature} / {min_role} is on the lists: {e}"));
+    }
+    assert_eq!(rows(db.clone()).await, 7);
+
+    // One row per feature and family.
+    assert_eq!(
+        refused_with(insert("budget", Some("owner")).await).as_deref(),
+        Some("23505"),
+        "one row per feature and family"
+    );
+
+    sqlx::query("DELETE FROM groups WHERE id = $1")
+        .bind(group_a)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(rows(db.clone()).await, 0, "the policy goes with its family");
 }

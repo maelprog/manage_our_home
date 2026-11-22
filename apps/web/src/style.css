@@ -347,6 +347,27 @@ label, .field { display: flex; flex-direction: column; gap: var(--s1); font-size
    toggles its checkbox, so its height is the target (#74), and says so by
    its cursor (#804). */
 .field.inline { flex-direction: row; align-items: center; gap: var(--s2x); min-height: var(--s12); cursor: pointer; }
+/* A setting on or off (#853): a native box with `role="switch"`, drawn as
+   a track and its knob, at the left of its words on a row of 48px — the
+   row is the label, and the target. The knob changes side with the state,
+   so the colour never says it alone (WCAG 1.4.1). Off: track --hover, rim
+   and knob --muted; on: track --accent, knob --accent-fg. No motion of the
+   knob, so no reduced-motion rule; locked while the form is sent (`data-
+   lock-on-change`). In forced colours the knob takes the text's colour,
+   its backgrounds being dropped. 52px, 3px and 23px are off the scales:
+   the validated mockup's (v7); --r-sm rounds the 24px knob. */
+.switch { flex-direction: row; align-items: flex-start; gap: var(--s3); min-height: var(--s12); cursor: pointer; }
+.switch > span { flex: 1; padding: var(--s3) 0; line-height: var(--s6); }
+.switch input { appearance: none; flex: none; position: relative; width: 52px; height: var(--s8); margin: var(--s2x) 0; padding: 0; border-color: var(--muted); border-radius: var(--r-lg); background: var(--hover); cursor: inherit; }
+.switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: var(--s6); height: var(--s6); border-radius: var(--r-sm); background: var(--muted); }
+.switch input:checked { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); }
+.switch input:checked::after { left: 23px; background: var(--accent-fg); }
+.switch :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Locked while its form is sent: the whole row fades, words with the
+   control, as the mock-ups of #853 and #867 draw it — a switch, or a pill
+   of the family's thresholds. */
+.switch:has(:disabled), .pick:has(:disabled) { opacity: 0.6; cursor: progress; }
+@media (forced-colors: active) { .switch input::after { background: CanvasText; } }
 input, select, textarea {
   font-size: var(--t-base);
   /* No form control inherits the page font by default: measured in Chromium,
@@ -709,6 +730,12 @@ hgroup > h1 { margin: 0; }
 /* What expires this week, in the warning tint, flat on the page. */
 .tile.warn { background: var(--warning-soft); color: var(--warning); box-shadow: none; }
 .tile.warn .icon { background: var(--surface); color: var(--warning); }
+/* « Ce soir » (#814), first of the cards: the recipe's name a size up,
+   then its duration and what it lacks as on the planning (`.meta`, with
+   `.meals`); a second recipe greyed, link and all; « … » a 48px target. */
+.tonight .dish { font-size: var(--t-lg); }
+.also, .also a { color: var(--muted); }
+.more-recipes { display: inline-flex; align-items: center; min-width: var(--s12); min-height: var(--s12); }
 /* The grocery tile's gauge, the password gauge's shape: the track in
    --line, the fill in currentColor. `appearance: none` hands its two parts
    to the sheet; each engine names them its own way, and a selector list
@@ -722,6 +749,9 @@ progress::-moz-progress-bar { background: currentColor; }
    it is for, the avatar at the end. */
 .when { flex: none; min-width: var(--s16); padding: var(--s1) var(--s2x); border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent); font-weight: 600; text-align: center; font-variant-numeric: tabular-nums; }
 .what { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* A grocery line counted in packs (#824): after the muted need, the packs
+   to buy stand out in the text colour. */
+.what .pack { color: var(--fg); font-weight: 600; }
 /* The PC's seven days, one column each; today's wears `.current`. */
 .days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--s2x); margin: 0; padding: 0; list-style: none; }
 .days > li { padding: var(--s1); border-radius: var(--r-sm); }
@@ -903,8 +933,10 @@ progress::-moz-progress-bar { background: currentColor; }
 /* The current time across its hour, to the quarter, drawn when the page
    is: from the hour's name to the scroller's edge, which clips it, a dot
    at its head as the mock-up draws it (#836), centred on the line: a
-   border, which forced colours repaint rather than drop. */
-.now { position: absolute; z-index: 2; top: 0; left: 100%; width: 100vw; border-top: var(--s2) solid var(--accent); }
+   border, which forced colours repaint rather than drop. Above the
+   blocks, it lets the pointer through to them and to the half hours
+   (#963). */
+.now { position: absolute; z-index: 2; top: 0; left: 100%; width: 100vw; border-top: var(--s2) solid var(--accent); pointer-events: none; }
 .now::before { content: ""; position: absolute; top: calc(var(--s2) / -2); left: 0; border: var(--s1) solid var(--accent); border-radius: 50%; translate: -50% -50%; }
 .now.q1 { top: 25%; }
 .now.q2 { top: 50%; }
@@ -994,6 +1026,44 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 .picks { display: flex; flex-wrap: wrap; gap: var(--s2x); }
 .pick { padding: 0 var(--s3) 0 var(--s2x); border: 1px solid var(--border); border-radius: var(--r-sm); accent-color: var(--accent); }
 .pick:has(:checked) { border-color: var(--accent); background: var(--accent-soft); }
+/* An allergy's three levels in one family (#819): each says what it does,
+   the chosen one alone shown; all three where :has() is unsupported. */
+.share:has([value=public]:not(:checked)) .public, .share:has([value=anonymous]:not(:checked)) .anonymous, .share:has([value=private]:not(:checked)) .private { display: none; }
+/* The effect in a --hover box (maquette #819). The levels, the kind of an
+   allergy and the box of consent are `label.list-row.pick`: framed, tinted
+   once ticked, two lines tall, one under the other. */
+.share > p { padding: var(--s2x) var(--s3); border-radius: var(--r-sm); background: var(--hover); font-size: var(--t-sm); }
+label.list-row.pick { padding-block: var(--s2x); }
+label.list-row.pick + label.list-row.pick { margin-top: var(--s2x); }
+/* An allergy's level in a family just created or joined (#827, maquette
+   validée le 2026-11-16): the three as a segmented control, one row of
+   `.pick`s. Where `:has()` is supported, the radio is laid unseen over its
+   box and the chosen box says it — the tint, the accent's text, a dot: not
+   the colour alone; elsewhere the selector drops and the radio stays in
+   sight, the sign of the choice. */
+.levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s2x); }
+.level { position: relative; align-items: center; justify-content: center; min-height: var(--s12); padding: var(--s2x); font-weight: 600; cursor: pointer; }
+.levels:has(input) input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.level:has(:checked) { color: var(--accent); }
+.level:has(:checked)::after { content: ""; position: absolute; top: var(--s1); right: var(--s1); width: var(--s2x); height: var(--s2x); border-radius: 50%; background: currentColor; }
+/* The opinion on a meal (#822, maquette validée le 2026-11-17) is a row of
+   `.pick`s whose radios stay in sight: the pill takes the ring, as a level
+   does. */
+.level:has(:focus-visible), .taste .pick:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Its « Autre avis »: taller only, the column is its width; the count of
+   characters under it, in figures that do not dance as they change. */
+textarea[data-count] { resize: vertical; }
+/* Its card lays its rows --s3 apart, as the maquette does: a `.card` alone
+   is a block, which left the pills touching « Autre avis » and the count
+   1px under the field. The legend sits in the border, out of the flow. */
+.card.opinion { display: flex; flex-direction: column; gap: var(--s3); }
+.opinion > p { margin: 0; }
+.count { font-size: var(--t-xs); font-variant-numeric: tabular-nums; }
+/* What each level means, its name in a column of its own. */
+.key { display: grid; gap: var(--s2x); padding: 0; list-style: none; font-size: var(--t-sm); }
+.key li { display: grid; grid-template-columns: 5.5rem 1fr; gap: var(--s2x); }
+/* The line under the card: where to change the choices later. */
+.hint { color: var(--muted); font-size: var(--t-xs); }
 /* -- The grocery list (#526) ----------------------------------------------
    One card — the basket's count, the quick-add form, the two sections — and
    on a PC the suggestions and the recipes to cook beside it, under it when
@@ -1030,8 +1100,31 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
 /* -- The stocks (#527) ----------------------------------------------------
    The search field draws its magnifier inside the box, so the box is the
    label and the input inside it loses its own edge. */
-.search label { flex-direction: row; align-items: center; gap: var(--s2x); padding-left: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--muted); }
-.search input { flex: 1; min-width: 0; border: 0; }
+.search label, .ing-box { display: flex; flex-direction: row; align-items: center; gap: var(--s2x); padding-left: var(--s3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--muted); }
+.search input, .ing-box input { flex: 1; min-width: 0; border: 0; }
+/* An article's ingredient (#904, maquette validée le 2026-11-19): a card
+   marked by an --accent rule on its left edge alone — no fill, no alert
+   colour (DESIGN.md → Composants). Its field is the box of `.search`
+   under a visible label; the suggestions, a `.combo-list` under it; the
+   results without JavaScript, `label.list-row.pick`s. Linked, a line of
+   the article's facts, « Retirer » a text in --error. */
+.ing { border-left: 4px solid var(--accent); }
+.ing .lead { margin: 0 0 var(--s3); font-size: var(--t-sm); }
+.ing .help { margin: 0; font-size: var(--t-xs); color: var(--muted); }
+.ing .status { margin: var(--s2x) 0 0; color: var(--muted); }
+/* « Annuler » closes the card under its own 48 px target: no paragraph
+   margin below it, as in the maquette (état 8). */
+.ing .cancel { margin: var(--s2x) 0 0; }
+.ing-field { position: relative; display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t-sm); }
+.ing-picks { margin-top: var(--s4); }
+/* Up to twenty suggestions: five and a half options shown, the half one
+   saying that the rest scrolls, rather than a list running over the
+   phone's navigation bar. */
+.ing .combo-list { max-height: calc(5.5 * var(--s12)); overflow-y: auto; overscroll-behavior: contain; }
+/* « Retirer » keeps only its --error text: `button.secondary.danger`
+   draws a box (0,2,1), so the type is named to outweigh it; its hover,
+   later and as heavy, still lays --error-soft. */
+.ing-row button.secondary.danger { border-color: transparent; background: none; }
 /* The filters, a row of pills: every place, « Stock bas », the order. The
    one shown takes the accent, as a current tab does. */
 .filters { display: flex; flex-wrap: wrap; gap: var(--s2x); margin: var(--s4) 0; }
@@ -1050,6 +1143,8 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
    week. Its words say which; the tint repeats them. */
 .badge.late { background: var(--error-soft); color: var(--error); }
 .badge.soon { background: var(--warning-soft); color: var(--warning); }
+/* « Tout est en stock » (#814): the success pair. */
+.badge.ok { background: var(--success-soft); color: var(--success); }
 /* The add sheet: quantity and unit share a line; the scan comes first, in
    the accent's dashed box, then « ou saisir » between two fine lines. */
 .pair { display: flex; gap: var(--s2x); }
@@ -1120,13 +1215,245 @@ input.picked { border-color: var(--accent); background: var(--accent-soft); }
    leaves no band and is still announced. */
 .live:not([data-state]) > .status { position: absolute; min-height: 0; }
 .status.ok, .status.ok .icon { color: var(--success); font-weight: 600; }
+/* Framing the profile photo (#860), revealed by avatar-crop.js: the whole
+   photo, fixed, in the proportions the script gives the stage; on it the
+   square that is sent, its four corners 48px targets around a 16px dot.
+   Outside the square the photo is dimmed by the square's own shadow — the
+   one colour here that is no token: a black veil darkens in both themes.
+   While it is dragged or has the focus, the thirds show, with no fade
+   (the sheet transitions nothing but background, border and shadow). */
+.crop { display: flex; flex-direction: column; gap: var(--s3); }
+.crop > * { margin: 0; }
+.crop > p { font-size: var(--t-sm); }
+.crop-stage { position: relative; width: 100%; margin-inline: auto; aspect-ratio: 3 / 2; overflow: hidden; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--hover); user-select: none; }
+.crop-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.crop-box { position: absolute; border: var(--s2) solid var(--surface); border-radius: var(--r-md); box-shadow: 0 0 0 100vmax rgb(0 0 0 / 0.55); cursor: grab; touch-action: none; }
+.crop-box:active { cursor: grabbing; }
+.crop-box:focus-visible { outline-width: 3px; outline-offset: 3px; }
+.crop-box:is(:active, :focus-visible)::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0.55; background: linear-gradient(90deg, transparent 33.3%, var(--surface) 0 calc(33.3% + 1px), transparent 0 66.6%, var(--surface) 0 calc(66.6% + 1px), transparent 0), linear-gradient(transparent 33.3%, var(--surface) 0 calc(33.3% + 1px), transparent 0 66.6%, var(--surface) 0 calc(66.6% + 1px), transparent 0); }
+.crop-box > span { position: absolute; width: var(--s12); height: var(--s12); margin: calc(-1 * var(--s6)); cursor: nwse-resize; }
+.crop-box > span::before { content: ""; position: absolute; inset: var(--s4); border: var(--s2) solid var(--accent); border-radius: 50%; background: var(--surface); }
+[data-corner^="n"] { top: 0; }
+[data-corner^="s"] { top: 100%; }
+[data-corner$="w"] { left: 0; }
+[data-corner$="e"] { left: 100%; }
+:is([data-corner="ne"], [data-corner="sw"]) { cursor: nesw-resize; }
+.crop-preview { display: flex; align-items: center; gap: var(--s3); color: var(--muted); }
+/* The icon as the profile's head draws it: a `.avatar` at --s16, which it
+   is not, so that the section's one `.avatar` stays the member's own. */
+.crop-preview > span { flex: none; width: var(--s16); height: var(--s16); overflow: clip; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
+.crop-preview canvas { width: 100%; height: 100%; }
+.crop-error { display: flex; flex-direction: column; align-items: center; gap: var(--s2x); padding: var(--s6) var(--s4); border: 1px dashed var(--error); border-radius: var(--r-md); background: var(--error-soft); color: var(--error); text-align: center; }
+.crop-error p { margin: 0; color: var(--fg); }
+.crop-error strong { color: var(--error); }
+.keys { padding: 0 var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.keys dl { display: grid; grid-template-columns: auto 1fr; gap: var(--s1) var(--s3); margin: 0 0 var(--s3); font-size: var(--t-sm); }
+.keys dd { margin: 0; color: var(--muted); }
+kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var(--s1); background: var(--bg); font: inherit; font-size: var(--t-xs); }
+/* Waiting: « Enregistrer la photo » while the file is read, « Choisir une
+   autre photo » while the square is sent, dimmed with the tokens of a
+   disabled control; the square, locked, is out of the pointer's reach and
+   faded as the mock-up has it. */
+.crop button:disabled { border-color: var(--line); background: var(--hover); color: var(--muted); cursor: default; }
+.crop[data-state="sending"] .crop-box { pointer-events: none; opacity: 0.85; }
 /* The day and the meal of a planned recipe (#812): a `.card.inline` whose
    meals are `.picks` in a fieldset, which draws no box of its own here, its
    legend the size of a field's label; the line that says the day takes the
-   whole row, above the fields. */
-.when-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-.when-form legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
+   whole row, above the fields. `.plain` is the same boxless fieldset
+   elsewhere (#819): the levels of an allergy, the kind of a new one, the
+   household's equipment. */
+.when-form fieldset, fieldset.plain { border: 0; padding: 0; margin: 0; min-width: 0; }
+.when-form legend, .plain > legend { padding: 0; margin-bottom: var(--s1); font-size: var(--t-sm); }
 .when-form .when-state { flex: 1 0 100%; }
+/* « Accès » of the family's settings (#867): a fieldset per feature, a
+   --line between them, its legend a bold line of body text. Floated, the
+   legend leaves the border it would otherwise sit in. The status line,
+   empty until its choice is sent, takes no room. */
+.access fieldset { margin: 0; padding: var(--s3) 0 0; border: 0; border-top: 1px solid var(--line); min-width: 0; }
+.access fieldset:first-of-type { padding-top: 0; border-top: 0; }
+.access legend { float: left; width: 100%; padding: 0; margin-bottom: var(--s1); font-weight: 700; }
+.access legend + * { clear: both; }
+.access fieldset > p { margin: 0 0 var(--s2x); }
+.access fieldset > .status { margin: var(--s2x) 0 0; }
+.access .status:empty, .ing .status:empty { min-height: 0; margin: 0; }
+/* The number of people of a planned recipe (#846), at the end of its
+   actions: the form, its label and its fallback « Appliquer » on one line,
+   « Personnes » left of the field and never wrapped from it. Wider blank,
+   for its « Optionnel ». */
+.servings-form, .servings-form label { flex-direction: row; align-items: center; gap: var(--s2x); }
+.servings-form label { white-space: nowrap; }
+.servings-form input { width: 5rem; }
+.servings-form input[placeholder] { width: 7rem; }
+/* -- The planning of the meals (#813) ----------------------------------------
+   ‹ Aujourd'hui › then the window in words: its own line on a phone, beside
+   the arrows on a PC. */
+.week-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2x); margin-bottom: var(--s4); }
+.week-nav .range { flex: 1 1 100%; margin: 0; font-weight: 600; }
+/* An arrow past the one-year horizon: muted, and no hover ground. */
+.week-nav button:disabled { color: var(--muted); pointer-events: none; }
+/* The window's counts, on a card (the one elevation), in the headings' face. */
+.summary { display: flex; flex-wrap: wrap; gap: var(--s2x) var(--s6); margin: 0 0 var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-md); }
+.summary strong { font-family: "Fraunces", Georgia, serif; font-size: var(--t-xl); font-variant-numeric: tabular-nums; }
+/* One day per row, midi and soir under its heading; today wears `.current`,
+   its tint reaching past the text by --s2x. */
+.meals { margin: 0; padding: 0; list-style: none; }
+.meals > li { padding: var(--s2x) 0 var(--s3); border-bottom: 1px solid var(--line); }
+.meals > .current { margin-inline: calc(-1 * var(--s2x)); padding-inline: var(--s2x); border-radius: var(--r-sm); }
+.meals h2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2x); margin: 0 0 var(--s1); font-size: var(--t-lg); }
+/* A meal: its name in the pill of the home's rows (`.when`), on the surface
+   on today's tint; then its recipes, each over its duration and what it
+   lacks; or « Ajouter », a link 48px tall. */
+.meals > li > ul { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.meals > li > ul > li { display: flex; align-items: flex-start; gap: var(--s3); min-height: var(--s12); padding: var(--s2x) 0; }
+.meals > li > ul > li + li { border-top: 1px solid var(--line); }
+.meals .current .when { background: var(--surface); }
+.meals .what { gap: var(--s1); }
+.meals .meta, .tonight .meta, .prop .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2x); color: var(--muted); font-size: var(--t-sm); }
+.meals .empty { align-items: center; }
+.meals .empty a { display: inline-flex; align-items: center; min-height: var(--s12); padding-inline: var(--s2x); margin-left: calc(-1 * var(--s2x)); }
+/* On a PC, a row per day: the day, midi, soir — each meal a flat box. */
+@media (min-width: 861px) {
+  .week-nav .range { flex: 0 1 auto; margin-left: var(--s2x); }
+  .meals > li { display: grid; grid-template-columns: 11rem 1fr 1fr; gap: var(--s4); align-items: start; padding: var(--s3) var(--s2x); }
+  .meals > .current { margin-inline: 0; }
+  .meals h2 { flex-direction: column; align-items: flex-start; margin: var(--s2x) 0 0; }
+  .meals > li > ul { display: contents; }
+  .meals > li > ul > li { flex-direction: column; gap: var(--s1); padding: var(--s2x) var(--s3); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+  .meals .empty { flex-direction: row; justify-content: space-between; }
+  /* « Non précisé », a day's third box: under midi and soir, not the day. */
+  .meals > li > ul > li:nth-child(3) { grid-column: 2 / -1; }
+  .meals .when, .meals .current .when { min-width: 0; padding: 0; background: none; color: var(--muted); text-align: left; }
+}
+/* « Changer ce plat » (#816): under a planned recipe, a text link 48px
+   tall, its text in line with the name above it. Its page: what is
+   replaced on a card, then up to three offers, a card each — one column on
+   a phone, three on a PC —, « Choisir » at the foot of each. */
+.change { display: inline-flex; align-self: flex-start; align-items: center; min-height: var(--s12); margin-left: calc(-1 * var(--s2x)); padding-inline: var(--s2x); font-size: var(--t-sm); }
+.ctx { margin-top: 0; }
+.ctx p { margin: var(--s1) 0 0; }
+.ctx-name, .prop .name { font-family: "Fraunces", Georgia, serif; font-size: var(--t-xl); font-weight: 600; }
+.prop .name { font-size: var(--t-lg); }
+.props { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.props > .card { margin: 0; }
+.prop form { display: flex; flex-direction: column; gap: var(--s3); height: 100%; }
+.prop button { margin-top: auto; }
+@media (min-width: 861px) {
+  .props { grid-template-columns: repeat(3, 1fr); }
+  .prop button { align-self: flex-start; }
+}
+/* -- The allergy warning of a recipe (#825) ----------------------------------
+   Non-blocking: the warning icon in --warning, a --warning border on
+   --warning-soft, the words in --fg (the pair of .ad.gen) — the words carry
+   the alert, never the tint alone. `.sm`, denser, in a slot of the
+   planning, an offer, « Ce soir ». `.allergy-aim` says « Aide uniquement »
+   once for a page of several banners; `.avoid` is the box over the
+   suggestions and the offers. */
+.allergy { display: flex; gap: var(--s3); align-items: flex-start; margin: var(--s4) 0; padding: var(--s3); border: 1px solid var(--warning); border-radius: var(--r-md); background: var(--warning-soft); color: var(--fg); font-size: var(--t-sm); }
+.allergy > .icon { flex: none; width: var(--s6); height: var(--s6); margin-top: var(--s1); color: var(--warning); }
+.allergy ul { display: flex; flex-direction: column; gap: var(--s2x); margin: 0; padding: 0; list-style: none; }
+.allergy .aim { margin: var(--s2x) 0 0; font-size: var(--t-xs); }
+.allergy.sm { gap: var(--s2x); margin: var(--s2x) 0; padding: var(--s2x) var(--s3); font-size: var(--t-xs); }
+.allergy.sm > .icon { margin-top: 0; }
+.allergy-aim { margin: 0 0 var(--s3); font-size: var(--t-xs); }
+/* -- Cooking a recipe (#823, `routes::recipes::cook`) ------------------------
+   Read from the hob: one step at a time in --t-2xl, each duration of it on
+   --accent-soft (the pair of the current tab), a timer button for each. A
+   finished timer takes the pair of .notice.warning and says « Terminé ! »
+   in words. Précédent and Suivant stay at the foot of the screen, over the
+   tab bar on a phone. Without JavaScript, `.nojs-list`: the steps in a
+   larger type. */
+.quit { display: inline-flex; align-items: center; gap: var(--s1); min-height: var(--s12); }
+.cook-title { margin: 0; font-size: var(--t-lg); }
+.cook-head { margin: var(--s2x) 0 var(--s3); }
+.cook-head .eyebrow { margin: var(--s2x) 0; color: var(--fg); font-size: var(--t-lg); letter-spacing: 0; text-transform: none; }
+.wake { display: flex; align-items: center; gap: var(--s2x); margin: var(--s2x) 0 0; color: var(--muted); font-size: var(--t-sm); }
+/* The step sits under « Ingrédients » at that button's --s4, not at the
+   --s6 a card keeps from what is above it: the mock-up's gap. */
+.step { margin-top: 0; padding: var(--s6) var(--s4); }
+.big { margin: 0 0 var(--s6); font-size: var(--t-2xl); line-height: 1.35; }
+.dur { padding: 0 var(--s1); border-radius: var(--s1); background: var(--accent-soft); font-weight: 600; white-space: nowrap; }
+.timers-start { display: flex; flex-wrap: wrap; gap: var(--s2x); }
+.timers-start button { font-size: var(--t-base); }
+.none { margin: 0; color: var(--muted); font-size: var(--t-sm); }
+.ing-btn, .timers { margin-bottom: var(--s4); }
+.timers h2 { margin-top: 0; font-size: var(--t-lg); }
+.trow { display: grid; grid-template-columns: 1fr auto; gap: var(--s1) var(--s3); align-items: center; margin-bottom: var(--s2x); padding: var(--s2x) var(--s4); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--shadow); }
+.trow .what { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: var(--t-sm); }
+.left { font-size: var(--t-xl); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tbtns { display: flex; gap: var(--s2x); }
+.trow.ended, .trow.ended .what { color: var(--warning); }
+.trow.ended { background: var(--warning-soft); box-shadow: none; }
+.trow.ended .left { font-family: "Fraunces", Georgia, serif; }
+.trow.paused .left { color: var(--muted); }
+.cook-nav { position: sticky; bottom: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2x); padding: var(--s3) 0; border-top: 1px solid var(--line); background: var(--bg); }
+.cook-link, .ing-btn, .timers-start button, .cook-nav > * { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2x); }
+.cook-nav > * { min-height: calc(var(--s12) + var(--s2x)); font-size: var(--t-lg); }
+.cook-nav button:disabled { border-color: var(--line); background: var(--surface); color: var(--muted); cursor: default; }
+.nojs-list, .cook-ing ul { font-size: var(--t-lg); }
+.nojs-list li { margin-bottom: var(--s3); }
+/* On a PC, the timers in a column of their own beside the step, and the
+   two buttons under the step's column. */
+@media (min-width: 861px) {
+  .cook-layout { display: grid; grid-template-columns: minmax(0, 1fr) 20rem; gap: var(--s8); align-items: start; }
+  .cook-layout > .timers { grid-column: 2; grid-row: 1; }
+  .cook-layout > div { grid-column: 1; grid-row: 1; }
+  .cook-nav { grid-template-columns: 1fr 2fr; padding-right: calc(20rem + var(--s8)); }
+}
+.avoid { flex-flow: row wrap; align-items: center; gap: var(--s2x) var(--s3); margin: var(--s2x) 0; }
+/* -- The recipe library (#910, `routes::recipes::library`) ------------------
+   `.find`, its search: a `.card.inline` whose field takes the row, and whose
+   button, alone on its line once the row wraps (phone), takes the width.
+   `.lib`, its rows: an `a.list-row` whose name, summary and « Issue de la
+   bibliothèque » stack beside the chevron. `.void`, a card that says why
+   there is nothing to list. `.pager`, « Précédent », the page, « Suivant »:
+   a link with nowhere to go is drawn out of use. `.spaced`, a publication's
+   ingredients, aired as the mockup draws them (the family's page keeps its own). */
+.find { margin-top: var(--s4); }
+.find label { flex: 999 1 16rem; }
+.find button { flex: 1 0 auto; }
+.lib a.list-row > span { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s1); min-width: 0; }
+.lib strong { color: var(--accent); overflow-wrap: anywhere; }
+.lib .icon { color: var(--muted); }
+.void { text-align: center; }
+.pager { display: flex; align-items: center; gap: var(--s3); margin: var(--s4) 0; }
+.pager > span { flex: 1; text-align: center; }
+.pager [aria-disabled] { background: var(--hover); color: var(--muted); cursor: not-allowed; }
+.spaced { padding-left: var(--s6); }
+.spaced li { margin-bottom: var(--s2x); }
+/* -- Publishing to the library and reporting (#911) ---------------------------
+   `.consent`, the box of consent to publish, framed; in the error's tint
+   once sent unticked, its message under the box (never the colour alone).
+   `.motifs`, a report's reasons: a card of radio rows split by --line. In
+   both, a row's words may wrap, so its box (--s6, the mockup's) keeps to
+   the first line. `.ticks` and `.crosses`, what a publication shows and
+   what it does not, an icon before each line. `.pubs`, « Mes
+   publications », a card per publication. `.report-foot`, « Signaler » at
+   the foot of a publication, set off by a --line. `.publish`, the form of
+   consent, as far below its card as a card is below what precedes it.
+   `.bib`, the « Bibliothèque » card of a recipe: « Mes publications » as
+   close under its buttons as the mockup draws it, --s3, the link's own
+   padding (its 44px target) and no margin. */
+.publish { margin-top: var(--s6); }
+.consent { padding: var(--s3); border: 1px solid var(--border); border-radius: var(--r-md); }
+.consent.invalid { border-color: var(--error); background: var(--error-soft); }
+:is(.consent, .motifs) .field.inline { align-items: flex-start; font-size: var(--t-base); }
+:is(.consent, .motifs) .field.inline > span { padding: var(--s2x) 0; line-height: var(--s6); }
+:is(.consent, .motifs) input { flex: none; width: var(--s6); height: var(--s6); margin: var(--s2x) 0; padding: 0; accent-color: var(--accent); }
+.motifs { padding-inline: var(--s3); }
+.motifs > :is(h2, .field-error) { padding-inline: var(--s3); }
+.motifs .field.inline { padding: var(--s2x) var(--s3); border-bottom: 1px solid var(--line); }
+.motifs .field.inline:last-of-type { border-bottom: 0; }
+:is(.motifs, .pubs) h2 { font-size: var(--t-lg); }
+.ticks, .crosses, .pubs { list-style: none; padding: 0; }
+.ticks li, .crosses li { display: flex; gap: var(--s2x); padding: var(--s1) 0; }
+.ticks .icon { flex: none; color: var(--success); }
+.crosses .icon { flex: none; color: var(--muted); }
+.pubs { display: flex; flex-direction: column; gap: var(--s3); }
+.pubs .card { display: flex; flex-direction: column; gap: var(--s2x); margin-top: 0; }
+.pubs :is(h2, p) { margin: 0; }
+.report-foot { margin-top: var(--s6); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.bib .actions { margin-bottom: 0; }
+.bib .links { margin-top: 0; }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and
@@ -1331,6 +1658,7 @@ input[name="no_expiry"] { accent-color: var(--accent); width: 1.25rem; height: 1
    reduced motion (below). */
 button[aria-busy="true"] { cursor: progress; }
 .spin,
+.status:not(:empty)[data-busy-status]::before,
 button[aria-busy="true"]::before {
   content: "";
   display: inline-block;
@@ -1365,15 +1693,15 @@ html { -webkit-tap-highlight-color: transparent; }
    4.34:1 (light) and 4.38:1 (dark) on --border. Hovered, it reads --fg. */
 .chip:hover { background: var(--border); color: var(--fg); }
 /* A text link (#752): every link without a class, but the halves of the
-   kitchen segment, and the two accent links that have one. Bold in the
+   kitchen segment, and the four accent links that have one. Bold in the
    accent rather than underlined — it reads better. `:where()` weighs
    nothing, so a link with a box of its own (`.filters a`, `.mini a`, the
    card title) keeps its colour and decoration. The accent is never the
    only sign (WCAG 1.4.1): the weight is one, and the underline comes back
    under the pointer and the keyboard — beside the focus ring below. A
    background would box a run of body text. */
-:where(:not(.segment) > a:not([class]), .more, .replies) { color: var(--accent); font-weight: 600; text-decoration: none; }
-:where(:not(.segment) > a:not([class]), .more, .replies):is(:hover, :focus-visible) { text-decoration-line: underline; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change, .quit) { color: var(--accent); font-weight: 600; text-decoration: none; }
+:where(:not(.segment) > a:not([class]), .more, .replies, .more-recipes, .change, .quit):is(:hover, :focus-visible) { text-decoration-line: underline; }
 /* An underline a link already has (the card title, `.member`) thickens. */
 a:hover { text-decoration-thickness: 2px; }
 /* The password toggle is a `<button>` with no box at all — the primary hover
@@ -1457,6 +1785,8 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
   .sheet { margin-inline: calc(var(--s4) * -1); border-radius: var(--r-lg) var(--r-lg) 0 0; }
   /* The send box stuck above the tab bar (#528): its floor is the bar. */
   .content > .composer { padding-bottom: var(--s16); }
+  /* Précédent and Suivant over the tab bar (#823), on the same floor. */
+  .cook-nav { padding-bottom: calc(var(--s3) + var(--s16)); }
 }
 /* Page transitions without JavaScript (#523): a cross-fade from one page to
    the next, for whoever has not asked for less motion. Asked for in the
@@ -1471,7 +1801,7 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
    still says the form is on its way. */
 @media (prefers-reduced-motion: reduce) {
   :root { --dur: 0s; }
-  .spin, button[aria-busy="true"]::before { animation: none; }
+  .spin, .status:not(:empty)[data-busy-status]::before, button[aria-busy="true"]::before { animation: none; }
 }
 /* Forced colours drop `box-shadow`, and with it the school holiday's band
    (#565): a top border of the same width, which they repaint instead of

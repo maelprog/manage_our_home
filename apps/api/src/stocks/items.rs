@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::stocks::barcode::normalize;
 use crate::stocks::{can_modify, planned_usage};
@@ -90,7 +91,8 @@ impl UpdateStockItemRequest {
     /// member — the shared-inventory "any member may adjust the quantity"
     /// tier from issue #19. Touching any full-record field (name, category,
     /// unit, reorder_threshold, expires_on) makes it a full edit, which stays behind
-    /// `can_modify` (creator/admin/owner), the same bar as delete.
+    /// `can_modify` (the creator, or a role meeting the family's
+    /// `stocks_edit` threshold, #866), the same bar as delete.
     fn touches_full_record(&self) -> bool {
         self.name.is_some()
             || self.category.is_some()
@@ -483,11 +485,15 @@ pub async fn update_stock_item(
     .ok_or(AppError::NotFound)?;
 
     // A quantity-only adjustment is allowed to any member (shared inventory);
-    // touching any full-record field requires the creator/admin/owner bar.
+    // touching any full-record field requires the creator or a role meeting
+    // the family's `stocks_edit` threshold (#866).
     let full_edit = body.touches_full_record();
     let quantity_adjustment = body.adjusts_quantity_only();
-    if full_edit && !can_modify(&actor_role, existing.created_by == auth.user_id) {
-        return Err(AppError::Forbidden);
+    if full_edit {
+        let min_role = min_role_for(&mut tx, group_id, Feature::StocksEdit).await?;
+        if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
+            return Err(AppError::Forbidden);
+        }
     }
 
     let name = match body.name.as_deref().map(str::trim) {
@@ -601,7 +607,8 @@ pub async fn delete_stock_item(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::StocksEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 

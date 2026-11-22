@@ -270,6 +270,7 @@ mod tests {
             role: "owner".to_string(),
             accent: accent.to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         }
     }
 
@@ -320,6 +321,7 @@ mod tests {
             role: "owner".to_string(),
             accent: "sarcelle".to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         }
     }
 

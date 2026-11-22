@@ -77,12 +77,14 @@ pub async fn run(
             let email = email.clone();
             async move { email.send_html(&to, &subject, content).await }
         };
-        let send_push = |endpoint: String, ttl_secs: i64| {
+        let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
             let client = client.clone();
             let vapid = push.clone();
             async move {
                 match vapid {
-                    Some(vapid) => push::send(&client, &vapid, &endpoint, ttl_secs).await,
+                    Some(vapid) => {
+                        push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await
+                    }
                     None => push::PushOutcome::Failed(
                         "notifications are not configured on this server".into(),
                     ),
@@ -114,7 +116,7 @@ pub async fn send_pass<F, Fut, P, PFut>(
 where
     F: Fn(String, String, EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
     exclusively(
@@ -221,7 +223,7 @@ pub async fn send_due_notifications<F, Fut, P, PFut>(
 where
     F: Fn(String, String, EmailContent) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
     ensure_admin_pool(pool, "sending due reminders").await?;
@@ -324,7 +326,7 @@ async fn push_all<P, PFut>(
     mut taken: mpsc::Receiver<Reached>,
 ) -> usize
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
     let mut in_flight = FuturesUnordered::new();
@@ -366,6 +368,8 @@ struct DueRow {
 /// channel includes email, waiting for its pushes and its settlement.
 struct Reached {
     id: Uuid,
+    /// Its entry of the notification centre, which its push names (#862).
+    entry: Option<Uuid>,
     attempts: i32,
     created_by: Uuid,
     occurrence_at: DateTime<Utc>,
@@ -403,6 +407,7 @@ where
     // not any device is subscribed. Keyed on the scheduled notification, so
     // a pass that retries it after a failed email or push writes no second
     // one.
+    let dedup_key = format!("agenda_reminder:{}", row.id);
     center::insert_for(
         &mut *pool.acquire().await?,
         &[row.created_by],
@@ -415,12 +420,21 @@ where
             },
             object_id: Some(row.event_id),
             actor_id: None,
-            dedup_key: Some(format!("agenda_reminder:{}", row.id)),
+            dedup_key: Some(dedup_key.clone()),
         },
     )
     .await?;
+    // The entry the push names (#862): this pass's, or the one an earlier
+    // pass wrote. None if the member deleted it meanwhile.
+    let entry = sqlx::query_scalar!(
+        "SELECT id FROM notifications WHERE user_id = $1 AND dedup_key = $2",
+        row.created_by,
+        dedup_key,
+    )
+    .fetch_optional(pool)
+    .await?;
 
-    // The column's CHECK (0020) admits nothing else.
+    // The column's CHECK (0020, 0063) admits nothing else.
     let channel = ReminderChannel::parse(&recipient.reminder_channel).ok_or_else(|| {
         anyhow::anyhow!("unknown reminder_channel {:?}", recipient.reminder_channel)
     })?;
@@ -444,6 +458,7 @@ where
 
     Ok(Some(Reached {
         id: row.id,
+        entry,
         attempts: row.attempts,
         created_by: row.created_by,
         occurrence_at: row.occurrence_at,
@@ -460,7 +475,7 @@ async fn push_and_settle<P, PFut>(
     reached: Reached,
 ) -> (Uuid, anyhow::Result<()>)
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
     let id = reached.id;
@@ -474,8 +489,14 @@ where
                 reached.created_by,
                 push::PushKind::AgendaReminder,
                 ttl,
+                reached.entry.as_slice(),
             )
             .await?;
+        }
+        // Both switches off (`none`, #853): the centre's row, written
+        // above, is all the member asked for — sent, not a device missing.
+        if !reached.push && reached.email.is_none() {
+            return mark_sent(pool, id).await;
         }
         match settle(reached.email, &pushed) {
             Settlement::Sent => mark_sent(pool, id).await,
@@ -486,31 +507,77 @@ where
     (id, settled.await)
 }
 
+/// Pushes the devices of the members of `entries` whose channel includes
+/// notifications (`ReminderChannel::includes_push`), active accounts only:
+/// one push per member per device ([`push_devices`]), naming that
+/// member's entries (`center::by_member`, #862). The push of the budget
+/// alerts (#536), of the agenda changes (#851) and of the expiry recap
+/// (#566).
+pub(crate) async fn push_entries<P, PFut>(
+    pool: &PgPool,
+    send_push: &P,
+    entries: &[center::Entry],
+    kind: push::PushKind,
+    ttl: i64,
+) -> anyhow::Result<()>
+where
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
+    PFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let by_member = center::by_member(entries);
+    let members: Vec<Uuid> = by_member.iter().map(|(member, _)| *member).collect();
+    let channels: std::collections::HashMap<Uuid, String> = sqlx::query!(
+        r#"SELECT id, reminder_channel FROM users
+           WHERE id = ANY($1) AND deactivated_at IS NULL AND deleted_at IS NULL"#,
+        &members,
+    )
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| (row.id, row.reminder_channel))
+    .collect();
+    for (member, ids) in by_member {
+        let pushes = channels
+            .get(&member)
+            .and_then(|channel| ReminderChannel::parse(channel))
+            .is_some_and(ReminderChannel::includes_push);
+        if pushes {
+            push_devices(pool, send_push, member, kind, ttl, &ids).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Pushes every device of `user`, up to [`MAX_CONCURRENT_DEVICES`] at
 /// once, with a TTL of `ttl` seconds, and records each one's answer. Every
 /// device is pushed and recorded even when one fails to be; the first such
 /// error is returned once they all answered. Also the budget alerts' push
 /// (#536, `budget::alerts::push_alerts`): `kind` is what each device is
-/// told it got (`push::Pending`).
+/// told it got (`push::Pending`). `entries` are the entries of the
+/// notification centre the push stands for: each device registered with
+/// its keys gets their identifiers, encrypted for it (`push::payload`,
+/// #862), and marks them read on the click; the others get no payload.
 pub(crate) async fn push_devices<P, PFut>(
     pool: &PgPool,
     send_push: &P,
     user: Uuid,
     kind: push::PushKind,
     ttl: i64,
+    entries: &[Uuid],
 ) -> anyhow::Result<Vec<push::PushOutcome>>
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
     let devices = sqlx::query_as!(
         Device,
-        r#"SELECT id, endpoint, consecutive_failures, failing_since FROM push_subscriptions
-                   WHERE user_id = $1 ORDER BY created_at"#,
+        r#"SELECT id, endpoint, consecutive_failures, failing_since, p256dh, auth
+                   FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at"#,
         user,
     )
     .fetch_all(pool)
     .await?;
+    let plaintext = push::payload(entries);
 
     let mut in_flight = FuturesOrdered::new();
     let mut answers = Vec::with_capacity(devices.len());
@@ -518,7 +585,8 @@ where
         if in_flight.len() == MAX_CONCURRENT_DEVICES {
             answers.extend(in_flight.next().await);
         }
-        in_flight.push_back(push_device(pool, send_push, device, kind, ttl));
+        let payload = device_payload(plaintext.as_deref(), &device);
+        in_flight.push_back(push_device(pool, send_push, device, kind, ttl, payload));
     }
     while let Some(answer) = in_flight.next().await {
         answers.push(answer);
@@ -532,6 +600,20 @@ struct Device {
     endpoint: String,
     consecutive_failures: i32,
     failing_since: Option<DateTime<Utc>>,
+    /// Its subscription's keys (#862), `None` for a device registered
+    /// without them.
+    p256dh: Option<String>,
+    auth: Option<String>,
+}
+
+/// What `device` is pushed: `plaintext` encrypted for its keys, or no
+/// payload — no entry to name, or no usable keys.
+fn device_payload(plaintext: Option<&[u8]>, device: &Device) -> Option<push::Payload> {
+    let keys = push::parse_keys(device.p256dh.as_deref()?, device.auth.as_deref()?).ok()?;
+    Some(push::Payload {
+        keys,
+        plaintext: plaintext?.to_vec(),
+    })
 }
 
 /// Pushes one device and records its answer. The push is counted on the
@@ -546,16 +628,17 @@ async fn push_device<P, PFut>(
     device: Device,
     kind: push::PushKind,
     ttl_secs: i64,
+    payload: Option<push::Payload>,
 ) -> anyhow::Result<push::PushOutcome>
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
     note_pending(pool, device.id, |pending| {
         push::pending_after_push(pending, kind, Utc::now(), ttl_secs)
     })
     .await?;
-    let outcome = send_push(device.endpoint, ttl_secs).await;
+    let outcome = send_push(device.endpoint, ttl_secs, payload).await;
     match outcome {
         push::PushOutcome::Delivered => {}
         push::PushOutcome::Unanswered(_) => {

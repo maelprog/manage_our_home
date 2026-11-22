@@ -3,7 +3,8 @@
 //! when the caller already belongs to 10 groups; the empty-name rule is
 //! enforced client-side via the shared `validate_group_name` (the same
 //! rule the API applies on rename). On success (201) the new group
-//! becomes the active family immediately.
+//! becomes the active family immediately, and a member who holds an
+//! allergy is asked its level there (`allergies.rs`, #827).
 
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -18,6 +19,7 @@ use crate::family::set_active_group_cookie;
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
+use super::allergies::{after_arrival, has_allergies, Arrival};
 use super::{cookie_of, header_with_groups};
 
 fn page(header: &str, name: &str, error: Option<&str>) -> String {
@@ -84,17 +86,17 @@ pub async fn post(
     match result {
         Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
             let mut response_headers = HeaderMap::new();
-            // The freshly created group becomes the active family.
+            let mut to = "/groups?notice=group_created".to_string();
+            // The freshly created group becomes the active family; a member
+            // who holds an allergy chooses its level there first (#827).
             if let Ok(group) = serde_json::from_value::<GroupResponse>(resp.body) {
                 if let Ok(v) = set_active_group_cookie(group.id).parse() {
                     response_headers.insert(axum::http::header::SET_COOKIE, v);
                 }
+                let has = has_allergies(&state, cookie.as_deref()).await;
+                to = after_arrival(group.id, Arrival::Created, has);
             }
-            (
-                response_headers,
-                Redirect::to("/groups?notice=group_created"),
-            )
-                .into_response()
+            (response_headers, Redirect::to(&to)).into_response()
         }
         Ok(resp) if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY => Html(page(
             &header,

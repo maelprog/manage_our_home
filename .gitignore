@@ -14,5 +14,7 @@ target/
 # recopie à chaque `npx cap sync` est ignoré par apps/mobile/android/.gitignore.
 apps/mobile/node_modules/
 
-# Guides locaux (propres à la machine)
-docs/guides/
+# Guides locaux (propres à la machine), sauf ceux du dépôt listés après.
+# `/*` et non `/` : un répertoire ignoré ne peut rien ré-inclure.
+docs/guides/*
+!docs/guides/banc-attaque.md

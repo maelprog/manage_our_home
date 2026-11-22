@@ -25,11 +25,11 @@ use manage_our_home_shared::dto::grocery_list::{
 };
 use manage_our_home_shared::dto::recipes::RecipeSelectionResponse;
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
-use manage_our_home_shared::validation::budget::{can_access_budget, validate_entry_form};
+use manage_our_home_shared::validation::budget::validate_entry_form;
 use manage_our_home_shared::validation::grocery_list::{
     can_modify, quantity_label, source_label, validate_item_form,
 };
-use manage_our_home_shared::validation::stocks::format_quantity;
+use manage_our_home_shared::validation::stocks::{format_quantity, packs_label};
 use uuid::Uuid;
 
 use crate::app::{html_escape, shell_with_header, Width};
@@ -158,8 +158,9 @@ fn error_html(error: Option<&str>) -> String {
 /// `POST /grocery-list/:id/price`. A re-tap updates the expense the item is
 /// linked to rather than double-counting — unless that expense carries
 /// other items too (#633), which only the budget page corrects. `can_price` is
-/// `can_access_budget` of the caller's role (#531): a standard member gets no
-/// price field, an owner or an admin adds the spend later.
+/// `can_access_budget` of the caller's role against the family's `budget`
+/// threshold (#531, #865): a member under it gets no price field, one who
+/// reaches the budget adds the spend later.
 fn item_row(item: &GroceryItemResponse, can_edit: bool, can_price: bool) -> String {
     let next = !item.checked;
     let (toggle_label, tick_class, tick_icon, name_class) = if item.checked {
@@ -169,7 +170,20 @@ fn item_row(item: &GroceryItemResponse, can_edit: bool, can_price: bool) -> Stri
     };
 
     let qty = quantity_label(item.quantity, item.unit.as_deref());
-    let qty_html = if qty.is_empty() {
+    // A line counted in packs of a scanned article (#824): the exact need,
+    // then the packs; the arrow is for the eye, the screen reader hears
+    // « soit ». The line itself keeps its exact quantity.
+    let rounded = item
+        .pack
+        .as_ref()
+        .zip(item.quantity.zip(item.unit.as_deref()));
+    let qty_html = if let Some((pack, (quantity, unit))) = rounded {
+        let need = html_escape(&format_quantity(quantity, unit));
+        format!(
+            r#"<span class="muted"><span class="sr-only">{need}, soit </span><span aria-hidden="true">{need} →</span> <span class="pack">{}</span></span>"#,
+            html_escape(&packs_label(pack))
+        )
+    } else if qty.is_empty() {
         String::new()
     } else {
         format!(r#"<span class="muted">{}</span>"#, html_escape(&qty))
@@ -439,8 +453,9 @@ pub async fn get(
         generate = generate_html(planned_count(planned.as_deref())),
         progress = progress_html(checked, items.len()),
         plus = icon(Icon::Plus),
-        list = sections_html(&items, can_access_budget(&fam.role), |item| can_modify(
+        list = sections_html(&items, fam.reaches_budget, |item| can_modify(
             &fam.role,
+            &fam.edit_min_role,
             item.created_by == me.user_id
         )),
         suggestions = suggestions_html(suggestions.as_deref()),
@@ -959,6 +974,7 @@ mod tests {
             source_recipe_id: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            pack: None,
         }
     }
 
@@ -1142,6 +1158,45 @@ mod tests {
         );
         assert!(html.contains(">Modifier</a>"), "{html}");
         assert!(!item_row(&it, false, true).contains("Modifier"));
+    }
+
+    fn packed(name: &str, checked: bool, quantity: f64, unit: &str) -> GroceryItemResponse {
+        use manage_our_home_shared::validation::stocks::{PackRounding, PackSize};
+        let mut it = item(name, checked);
+        it.quantity = Some(quantity);
+        it.unit = Some(unit.into());
+        it.pack = Some(PackRounding {
+            count: 3,
+            size: PackSize {
+                quantity: 500.0,
+                unit: "g".into(),
+            },
+        });
+        it
+    }
+
+    #[test]
+    fn a_line_rounded_in_packs_shows_the_need_then_the_packs() {
+        // #824: « 1,2 kg → 3 paquets (500 g) », the arrow left to the eye,
+        // the screen reader told « 1,2 kg, soit 3 paquets (500 g) ».
+        let html = item_row(&packed("Riz", false, 1.2, "kg"), true, true);
+        assert!(
+            html.contains(concat!(
+                r#"<span class="muted"><span class="sr-only">1,2 kg, soit </span>"#,
+                r#"<span aria-hidden="true">1,2 kg →</span> "#,
+                r#"<span class="pack">3 paquets (500 g)</span></span>"#
+            )),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_checked_line_is_rounded_too() {
+        let html = item_row(&packed("Riz", true, 1.2, "kg"), true, true);
+        assert!(
+            html.contains(r#"<span class="pack">3 paquets (500 g)</span>"#),
+            "{html}"
+        );
     }
 
     #[test]

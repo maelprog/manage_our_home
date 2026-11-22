@@ -2,7 +2,9 @@
 //! at the hour each member chose (#700).
 //!
 //! Every member has a recap hour, Europe/Paris (`users.expiry_digest_hour`,
-//! 9 by default, migration 0049). From that hour on, once a day
+//! 9 by default, migration 0049); one who turned the recap off
+//! (`users.expiry_digest_enabled`, #853) keeps it and gets none. From that
+//! hour on, once a day
 //! ([`member_due`], `users.expiry_digest_sent_on`), the member gets, for
 //! each of their families with items of quantity > 0 whose « à consommer
 //! jusqu'au » date is at most `EXPIRY_SOON_DAYS` days ahead — expired ones
@@ -16,9 +18,10 @@
 //!
 //! Once committed, the members whose channel includes notifications
 //! (`users.reminder_channel`, as for the budget alerts) get a push on each
-//! of their devices ([`push_recap`]): no payload, the service worker shows
-//! the fixed text of `stock_expiry`. A member without a device reads the
-//! recap in the notification centre only.
+//! of their devices ([`push_recap`]): the service worker shows the fixed
+//! text of `stock_expiry`, and the push names the member's recaps of the
+//! centre — one per family —, which its click marks read (#862). A member
+//! without a device reads the recap in the notification centre only.
 //!
 //! It completes `jobs::stock_expiry`, which stays (user's decision of
 //! 2026-11-05): that hourly pass writes one notification per item entering
@@ -36,10 +39,10 @@ use tokio::time::{interval, MissedTickBehavior};
 use uuid::Uuid;
 
 use crate::attachment_reconcile::ensure_bypasses_rls;
-use crate::jobs::scheduled_notifications::push_devices;
+use crate::jobs::scheduled_notifications::push_entries;
 use crate::jobs::single_runner::{exclusively, Job};
 use crate::notifications::center::{self, Event, NewNotification};
-use crate::notifications::{push, ReminderChannel};
+use crate::notifications::push;
 
 /// How often the worker looks for the members whose recap is due: a recap
 /// goes at most this late after its member's hour.
@@ -96,11 +99,11 @@ pub async fn run(pool: PgPool, vapid: Option<std::sync::Arc<push::Vapid>>) {
     loop {
         ticker.tick().await;
         let (today, hour) = paris_clock(Utc::now());
-        let recipients =
+        let entries =
             match exclusively(&pool, Job::StockExpiryRecap, recap(&pool, today, hour)).await {
                 Ok(Some(recap)) => {
                     tracing::debug!(written = recap.written, "stock expiry recap done");
-                    recap.recipients
+                    recap.entries
                 }
                 Ok(None) => {
                     tracing::debug!("stock expiry recap skipped: another process runs it");
@@ -111,15 +114,15 @@ pub async fn run(pool: PgPool, vapid: Option<std::sync::Arc<push::Vapid>>) {
                     continue;
                 }
             };
-        if recipients.is_empty() {
+        if entries.is_empty() {
             continue;
         }
         if let Some(vapid) = &vapid {
-            let send_push = |endpoint: String, ttl_secs: i64| {
+            let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
                 let (client, vapid) = (client.clone(), vapid.clone());
-                async move { push::send(&client, &vapid, &endpoint, ttl_secs).await }
+                async move { push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await }
             };
-            if let Err(e) = push_recap(&pool, &send_push, &recipients).await {
+            if let Err(e) = push_recap(&pool, &send_push, &entries).await {
                 tracing::error!(error = ?e, "failed to push the stock expiry recap");
             }
         }
@@ -131,8 +134,10 @@ pub async fn run(pool: PgPool, vapid: Option<std::sync::Arc<push::Vapid>>) {
 pub struct Recap {
     /// Notifications written.
     pub written: u64,
-    /// The members notified, each once, for [`push_recap`].
+    /// The members notified, each once.
     pub recipients: Vec<Uuid>,
+    /// The entries written, for [`push_recap`] (#862).
+    pub entries: Vec<center::Entry>,
 }
 
 /// One pass at the Paris `today` and `hour`: parameters so the flow tests
@@ -150,7 +155,7 @@ pub async fn recap(pool: &PgPool, today: NaiveDate, hour: u32) -> anyhow::Result
     // waits for this one and then finds them done.
     let candidates = sqlx::query!(
         r#"SELECT id, expiry_digest_hour, expiry_digest_sent_on FROM users
-           WHERE expiry_digest_hour <= $1
+           WHERE expiry_digest_enabled AND expiry_digest_hour <= $1
              AND expiry_digest_sent_on IS DISTINCT FROM $2
              AND deactivated_at IS NULL AND deleted_at IS NULL
            ORDER BY id
@@ -203,7 +208,7 @@ pub async fn recap(pool: &PgPool, today: NaiveDate, hour: u32) -> anyhow::Result
     }
 
     for ((user_id, group_id), (ids, dates, names)) in recaps {
-        done.written += center::insert_for(
+        let written = center::insert_entries(
             &mut tx,
             &[user_id],
             &NewNotification {
@@ -215,6 +220,8 @@ pub async fn recap(pool: &PgPool, today: NaiveDate, hour: u32) -> anyhow::Result
             },
         )
         .await?;
+        done.written += written.len() as u64;
+        done.entries.extend(written);
         sqlx::query!(
             r#"INSERT INTO stock_expiry_announcements (user_id, stock_item_id, expires_on)
                SELECT $1, item, date FROM unnest($2::uuid[], $3::date[]) AS t(item, date)
@@ -240,42 +247,29 @@ pub async fn recap(pool: &PgPool, today: NaiveDate, hour: u32) -> anyhow::Result
     Ok(done)
 }
 
-/// Pushes the devices of the `recipients` whose channel includes
+/// Pushes the devices of the members of `entries` whose channel includes
 /// notifications (`ReminderChannel::includes_push`), recording each
-/// device's answer as the reminders do (`push_devices`). `send_push` is the
+/// device's answer as the reminders do (`push_entries`): one push per
+/// member, naming their recaps. `send_push` is the
 /// push itself, a parameter so that a test can stand in for the push
 /// services.
 pub async fn push_recap<P, PFut>(
     pool: &PgPool,
     send_push: &P,
-    recipients: &[Uuid],
+    entries: &[center::Entry],
 ) -> anyhow::Result<()>
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let members = sqlx::query!(
-        r#"SELECT id, reminder_channel FROM users
-           WHERE id = ANY($1) AND deactivated_at IS NULL AND deleted_at IS NULL"#,
-        recipients,
+    push_entries(
+        pool,
+        send_push,
+        entries,
+        push::PushKind::StockExpiry,
+        RECAP_PUSH_TTL_SECS,
     )
-    .fetch_all(pool)
-    .await?;
-    for member in members {
-        let pushes = ReminderChannel::parse(&member.reminder_channel)
-            .is_some_and(ReminderChannel::includes_push);
-        if pushes {
-            push_devices(
-                pool,
-                send_push,
-                member.id,
-                push::PushKind::StockExpiry,
-                RECAP_PUSH_TTL_SECS,
-            )
-            .await?;
-        }
-    }
-    Ok(())
+    .await
 }
 
 #[cfg(test)]

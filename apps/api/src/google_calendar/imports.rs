@@ -7,15 +7,33 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::agenda::{attachments, recurrence};
+use crate::agenda::{attachments, change_notices, recurrence};
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::google_calendar::can_configure;
 use crate::google_calendar::parse::parse_ics;
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::AppState;
 
 const MAX_FEED_BYTES: usize = 5 * 1024 * 1024;
+
+/// `require_role`, then `can_configure` against the family's
+/// `google_calendar` threshold (#865): 403 for a non-member and for a
+/// member under the threshold, as before the threshold existed. `tx` is
+/// scoped to `group_id`.
+async fn require_configure(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    user_id: Uuid,
+) -> AppResult<()> {
+    let role = require_role(tx, group_id, user_id).await?;
+    let min_role = min_role_for(tx, group_id, Feature::GoogleCalendar).await?;
+    if !can_configure(&role, &min_role) {
+        return Err(AppError::Forbidden);
+    }
+    Ok(())
+}
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateCalendarImportRequest {
@@ -82,8 +100,9 @@ fn validate_feed_url(url: &str) -> AppResult<&str> {
     Ok(trimmed)
 }
 
-/// Admin/owner only — see `can_configure`'s doc comment for why this epic
-/// uses a stricter bar than the rest of the app.
+/// From the family's `google_calendar` threshold up, admin by default
+/// (#865) — see `can_configure`'s doc comment for why this epic uses a
+/// stricter bar than the rest of the app.
 #[utoipa::path(
     post,
     path = "/groups/{id}/calendar-imports",
@@ -112,10 +131,7 @@ pub async fn create_calendar_import(
     let feed_url = validate_feed_url(&body.feed_url)?;
 
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
-    if !can_configure(&actor_role) {
-        return Err(AppError::Forbidden);
-    }
+    require_configure(&mut tx, group_id, auth.user_id).await?;
 
     let row = sqlx::query_as!(
         CalendarImportRow,
@@ -201,7 +217,8 @@ pub struct DeleteCalendarImportResponse {
     pub deleted_events: usize,
 }
 
-/// Admin/owner only, same reasoning as `create_calendar_import` — and the
+/// The family's `google_calendar` threshold, same reasoning as
+/// `create_calendar_import` — and the
 /// same bar for the `delete_events` branch, which only widens the radius
 /// of a delete this role could already perform.
 #[utoipa::path(
@@ -227,10 +244,7 @@ pub async fn delete_calendar_import(
     Query(query): Query<DeleteCalendarImportQuery>,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
-    if !can_configure(&actor_role) {
-        return Err(AppError::Forbidden);
-    }
+    require_configure(&mut tx, group_id, auth.user_id).await?;
 
     let mut deleted_events = 0usize;
     if query.delete_events {
@@ -291,7 +305,7 @@ pub struct ImportRunResponse {
 /// Any member may trigger a manual on-demand import (it's a read of the
 /// feed + write to shared Agenda data, not a credential change) — same
 /// "any member" bar Stocks/Recipes/Grocery list use for their create/read
-/// actions (Budget is owner/admin only since #531). Fetches the feed fresh every call: v1 is
+/// actions (Budget has its own threshold, #531, #865). Fetches the feed fresh every call: v1 is
 /// pull-on-demand only, no background polling (see migration comment for
 /// the OAuth-vs-ICS tradeoff).
 #[utoipa::path(
@@ -356,6 +370,8 @@ pub async fn trigger_calendar_import(
     let mut imported = 0usize;
     let mut updated = 0usize;
     let mut skipped = 0usize;
+    // The events created or changed upstream, for the notification (#852).
+    let mut touched: Vec<Uuid> = Vec::new();
 
     for event in parsed {
         // The mapped row's current shape comes back with the mapping: the
@@ -478,6 +494,7 @@ pub async fn trigger_calendar_import(
                 )
                 .execute(&mut *tx)
                 .await?;
+                touched.push(existing.event_id);
                 updated += 1;
             }
             None => {
@@ -534,6 +551,7 @@ pub async fn trigger_calendar_import(
                 )
                 .execute(&mut *tx)
                 .await?;
+                touched.push(new_event_id);
                 imported += 1;
             }
         }
@@ -546,7 +564,22 @@ pub async fn trigger_calendar_import(
     )
     .execute(&mut *tx)
     .await?;
+    // One notification for the whole run (#852), in its transaction: the
+    // events created or changed upstream, never the ones only repaired in
+    // the `skipped` arm, which are no news from the feed. Each member is
+    // told of those they see: a changed one may be private (#620).
+    let told = change_notices::tell_imported(
+        &mut tx,
+        group_id,
+        change_notices::Author {
+            id: auth.user_id,
+            name: &auth.display_name,
+        },
+        &touched,
+    )
+    .await?;
     tx.commit().await?;
+    change_notices::push_in_background(&state, told);
 
     Ok(Json(ImportRunResponse {
         imported,

@@ -118,11 +118,8 @@ pub struct AppState {
     /// handlers gated behind `SuperAdminUser` (Epic #8, see
     /// `src/user_admin/mod.rs` for why this is a narrow, deliberate
     /// exception to the RLS boundary rather than a general bypass), and by
-    /// four background jobs that serve no request and read or write across
-    /// every family: attachment reconcile (`jobs::attachment_reconcile`,
-    /// #215), retention purge (`jobs::retention_purge`, #138), account
-    /// purge (`jobs::account_purge`, #139) and the reminder worker
-    /// (`jobs::scheduled_notifications`, #293). Request handlers outside
+    /// the background jobs that serve no request and read or write across
+    /// every family (the seven of `apps/api/README.md`). Request handlers outside
     /// `SuperAdminUser` never use it.
     pub admin_db: PgPool,
     /// How long a client may take to send a request body, on every route
@@ -155,6 +152,10 @@ pub struct AppState {
     /// The per-member limit on recipe imports (#405), counted in
     /// Postgres (`rate_limit_log`, #428).
     pub recipe_import_throttle: std::sync::Arc<recipes::import::ImportThrottle>,
+    /// The per-user limits on reading the shared recipe library and
+    /// publishing to it (#906), counted in Postgres (`rate_limit_log`), on
+    /// the pool of the recipe import.
+    pub library_throttle: std::sync::Arc<recipes::library::LibraryThrottle>,
     /// The per-address cap on the "account exists" notice `register` mails
     /// (#570), counted in Postgres (`rate_limit_log`), on a pool of its own.
     pub account_exists_throttle: std::sync::Arc<auth::account_exists_notice::NoticeThrottle>,
@@ -269,6 +270,9 @@ pub fn build_router(state: AppState) -> Router {
             "/me/dietary-constraints",
             delete(recipes::constraints::erase_constraints),
         )
+        // #819: the categories a member may name an allergy or a dislike
+        // by; the query, like a tag, travels in the body.
+        .route("/taxonomy/search", post(recipes::constraints::search_tags))
         .route(
             "/me/avatar",
             // The body limit on `PUT` only: `MethodRouter::layer` applies to
@@ -359,6 +363,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/groups/{id}/leave", post(groups::leave_group))
         .route(
+            "/groups/{id}/access-policies",
+            get(groups::access::get_access_policies).put(groups::access::put_access_policies),
+        )
+        .route(
             "/groups/{id}/ownership-notice/seen",
             post(groups::acknowledge_ownership_notice),
         )
@@ -418,6 +426,19 @@ pub fn build_router(state: AppState) -> Router {
             get(stocks::reception::get_reception).post(stocks::reception::receive),
         )
         .route(
+            "/groups/{id}/stock-items/{item_id}/ingredient",
+            get(stocks::ingredient_links::get_item_ingredient),
+        )
+        .route(
+            "/groups/{id}/ingredient-links",
+            get(stocks::ingredient_links::list_ingredient_links),
+        )
+        .route(
+            "/groups/{id}/ingredient-links/{name}",
+            put(stocks::ingredient_links::put_ingredient_link)
+                .delete(stocks::ingredient_links::delete_ingredient_link),
+        )
+        .route(
             "/groups/{id}/stocks/expiring_count",
             get(stocks::items::expiring_count),
         )
@@ -460,6 +481,35 @@ pub fn build_router(state: AppState) -> Router {
             get(recipes::crud::get_recipe)
                 .patch(recipes::crud::update_recipe)
                 .delete(recipes::crud::delete_recipe),
+        )
+        .route(
+            "/groups/{id}/recipes/{recipe_id}/publish",
+            get(recipes::library::get_my_publication_of_recipe)
+                .post(recipes::library::publish_recipe)
+                .delete(recipes::library::unpublish_recipe),
+        )
+        .route("/library/recipes", get(recipes::library::list_library))
+        // Static, so it wins over `{id}` below (#947).
+        .route(
+            "/library/recipes/mine",
+            get(recipes::library::list_my_publications),
+        )
+        .route(
+            "/library/recipes/{id}",
+            get(recipes::library::get_library_recipe)
+                .delete(recipes::library::withdraw_my_publication),
+        )
+        .route(
+            "/groups/{id}/library/recipes/{library_id}/copy",
+            post(recipes::library::copy_library_recipe),
+        )
+        .route(
+            "/groups/{id}/library/recipes/{library_id}",
+            delete(recipes::library::unpublish_library_recipe),
+        )
+        .route(
+            "/library/recipes/{id}/report",
+            post(recipes::library_moderation::report_library_recipe),
         )
         .route(
             "/groups/{id}/recipes/{recipe_id}/meal-history",
@@ -599,6 +649,22 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/admin/users/{id}/reactivation-request/refuse",
             post(user_admin::admin::refuse_reactivation),
+        )
+        .route(
+            "/admin/library/reports",
+            get(recipes::library_moderation::list_reports),
+        )
+        .route(
+            "/admin/library/reports/{id}/dismiss",
+            post(recipes::library_moderation::dismiss_report),
+        )
+        .route(
+            "/admin/library/recipes/{id}/withdraw",
+            post(recipes::library_moderation::withdraw_publication),
+        )
+        .route(
+            "/admin/library/recipes/{id}/withdrawal",
+            delete(recipes::library_moderation::lift_withdrawal),
         )
         .layer(CookieManagerLayer::new())
         .layer(axum::middleware::from_fn_with_state(

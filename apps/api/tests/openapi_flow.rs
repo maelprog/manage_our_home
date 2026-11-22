@@ -133,22 +133,35 @@ fn behind_secure_cookies_the_scheme_names_the_host_prefixed_cookie() {
     );
 }
 
-/// The agenda-change setting (#850) is in both shapes of
-/// `/account/notifications`: always in what `GET` answers, optional in
-/// what `PUT` takes.
+/// The three agenda switches (#853, one setting since #850) are in both
+/// shapes of `/account/notifications`: always in what `GET` answers,
+/// optional in what `PUT` takes; so is the recap's switch. `GET` always
+/// answers the recap's hour (#853: it is kept while the recap is off).
 #[test]
-fn the_notification_settings_document_the_agenda_change_setting() {
+fn the_notification_settings_document_the_agenda_switches() {
     let json = serde_json::to_value(openapi(false)).unwrap();
     let schemas = &json["components"]["schemas"];
     let required = |schema: &str| -> Vec<String> {
         serde_json::from_value(schemas[schema]["required"].clone()).unwrap_or_default()
     };
-    let read = &schemas["NotificationSettings"]["properties"]["notify_agenda_changes"];
-    assert_eq!(read["type"], "boolean", "{read}");
-    assert!(required("NotificationSettings").contains(&"notify_agenda_changes".to_string()));
-    let write = &schemas["UpdateNotificationSettings"]["properties"]["notify_agenda_changes"];
-    assert!(!write.is_null());
-    assert!(!required("UpdateNotificationSettings").contains(&"notify_agenda_changes".to_string()));
+    for field in [
+        "notify_agenda_added",
+        "notify_agenda_changed",
+        "notify_agenda_deleted",
+        "expiry_digest_enabled",
+    ] {
+        let read = &schemas["NotificationSettings"]["properties"][field];
+        assert_eq!(read["type"], "boolean", "{field}: {read}");
+        assert!(required("NotificationSettings").contains(&field.to_string()));
+        let write = &schemas["UpdateNotificationSettings"]["properties"][field];
+        assert!(!write.is_null(), "{field}");
+        assert!(!required("UpdateNotificationSettings").contains(&field.to_string()));
+    }
+    let hour = &schemas["NotificationSettings"]["properties"]["expiry_digest_hour"];
+    assert_eq!(hour["type"], "integer", "{hour}");
+    assert!(required("NotificationSettings").contains(&"expiry_digest_hour".to_string()));
+    let gone = &schemas["NotificationSettings"]["properties"]["notify_agenda_changes"];
+    assert!(gone.is_null(), "{gone}");
 }
 
 #[sqlx::test]

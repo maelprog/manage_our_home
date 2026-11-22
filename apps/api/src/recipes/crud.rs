@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::recipes::can_modify;
 use crate::recipes::dietary_filter::{warnings_for, AllergyWarning};
@@ -116,6 +117,10 @@ pub struct RecipeResponse {
     pub updated_at: DateTime<Utc>,
     /// What the recipe holds of the allergies the reader may see (#818).
     pub allergy_warning: AllergyWarning,
+    /// The publication of the library it was copied from (#907), while
+    /// that publication exists: `null` for a recipe of the family's own,
+    /// and once the publication is withdrawn.
+    pub library_recipe_id: Option<Uuid>,
 }
 
 /// The allergy warning of one recipe for the reader (#818).
@@ -143,6 +148,7 @@ struct RecipeRow {
     required_equipment: Vec<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    library_recipe_id: Option<Uuid>,
 }
 
 struct IngredientRow {
@@ -279,7 +285,7 @@ pub async fn create_recipe(
         r#"
         INSERT INTO recipes (group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
         "#,
         group_id,
         auth.user_id,
@@ -314,6 +320,7 @@ pub async fn create_recipe(
             created_at: recipe.created_at,
             updated_at: recipe.updated_at,
             allergy_warning,
+            library_recipe_id: recipe.library_recipe_id,
         }),
     ))
 }
@@ -340,23 +347,37 @@ pub async fn get_recipe(
 ) -> AppResult<impl IntoResponse> {
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
+    let recipe = read_recipe(&mut tx, group_id, auth.user_id, recipe_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(recipe))
+}
 
-    let recipe = sqlx::query_as!(
+/// A recipe of `group_id` as `reader` reads it — its ingredients and the
+/// allergy warning for them (#818) — in `tx`, scoped to the family.
+pub(crate) async fn read_recipe(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    reader: Uuid,
+    recipe_id: Uuid,
+) -> AppResult<Option<RecipeResponse>> {
+    let Some(recipe) = sqlx::query_as!(
         RecipeRow,
-        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        r#"SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
            FROM recipes WHERE id = $1 AND group_id = $2"#,
         recipe_id,
         group_id,
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?
-    .ok_or(AppError::NotFound)?;
+    else {
+        return Ok(None);
+    };
 
-    let ingredients = fetch_ingredients(&mut tx, recipe.id).await?;
-    let allergy_warning = warning_for(&mut tx, group_id, auth.user_id, recipe.id).await?;
-    tx.commit().await?;
-
-    Ok(Json(RecipeResponse {
+    let ingredients = fetch_ingredients(tx, recipe.id).await?;
+    let allergy_warning = warning_for(tx, group_id, reader, recipe.id).await?;
+    Ok(Some(RecipeResponse {
         id: recipe.id,
         group_id: recipe.group_id,
         created_by: recipe.created_by,
@@ -370,6 +391,7 @@ pub async fn get_recipe(
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
         allergy_warning,
+        library_recipe_id: recipe.library_recipe_id,
     }))
 }
 
@@ -397,7 +419,7 @@ pub async fn list_recipes(
     let recipe_rows = sqlx::query_as!(
         RecipeRow,
         r#"
-        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        SELECT id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
         FROM recipes
         WHERE group_id = $1
         ORDER BY name
@@ -439,6 +461,7 @@ pub async fn list_recipes(
             created_at: r.created_at,
             updated_at: r.updated_at,
             allergy_warning: warnings.remove(&r.id).unwrap_or_default(),
+            library_recipe_id: r.library_recipe_id,
         })
         .collect();
 
@@ -503,7 +526,8 @@ pub async fn update_recipe(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -536,7 +560,7 @@ pub async fn update_recipe(
             required_equipment = COALESCE($7, required_equipment),
             updated_at = now()
         WHERE id = $1 AND group_id = $2
-        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at
+        RETURNING id, group_id, created_by, name, instructions, source_url, servings, duration_minutes, required_equipment, created_at, updated_at, library_recipe_id
         "#,
         recipe_id,
         group_id,
@@ -577,6 +601,7 @@ pub async fn update_recipe(
         created_at: recipe.created_at,
         updated_at: recipe.updated_at,
         allergy_warning,
+        library_recipe_id: recipe.library_recipe_id,
     }))
 }
 
@@ -612,7 +637,8 @@ pub async fn delete_recipe(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::RecipesEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 

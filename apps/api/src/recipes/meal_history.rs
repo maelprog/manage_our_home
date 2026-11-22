@@ -25,9 +25,12 @@ pub struct MealHistoryEntryResponse {
     pub eaten_on: NaiveDate,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
-    /// The taste tags given when the recipe was marked done (#821,
-    /// `recipes::taste::TasteTag`), by their wire names; empty otherwise.
-    pub taste_tags: Vec<String>,
+    /// The opinion given when the recipe was marked done (#822,
+    /// `recipes::taste::Taste`) by its wire name: `aime`, `neutre` or
+    /// `pas_aime`; `neutre` otherwise.
+    pub taste: String,
+    /// The free note given with it, at most 200 characters; `null` without.
+    pub taste_note: Option<String>,
 }
 
 #[utoipa::path(
@@ -75,7 +78,7 @@ pub async fn log_meal(
         r#"
         INSERT INTO meal_history (group_id, recipe_id, eaten_on, created_by)
         VALUES ($1, $2, $3, $4)
-        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste_tags
+        RETURNING id, recipe_id, eaten_on, created_by, created_at, taste, taste_note
         "#,
         group_id,
         recipe_id,
@@ -126,7 +129,7 @@ pub async fn list_meal_history(
     let entries = sqlx::query_as!(
         MealHistoryEntryResponse,
         r#"
-        SELECT id, recipe_id, eaten_on, created_by, created_at, taste_tags
+        SELECT id, recipe_id, eaten_on, created_by, created_at, taste, taste_note
         FROM meal_history
         WHERE group_id = $1 AND eaten_on >= $3::date - $2::bigint * INTERVAL '1 day'
         ORDER BY eaten_on DESC

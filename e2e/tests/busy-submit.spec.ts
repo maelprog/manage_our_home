@@ -391,3 +391,71 @@ test("an icon button: it keeps its size and its name, the wheel alone in its box
     expect(seen.icon).toBe(icon);
   }
 });
+
+// #846: the number of people of a planned recipe is sent as soon as it
+// changes, and locked (`disabled`, `aria-busy`) until the next page comes —
+// a value typed meanwhile would be lost. Back from that page, the field the
+// cache restores is unlocked by `pageshow`.
+test("a planned recipe's people: locked while sent, unlocked by the back button", async ({ page }) => {
+  const email = await register(page);
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
+  await page.getByRole("button", { name: "Se connecter" }).click();
+  await expect(page).toHaveURL("/");
+  await page.goto("/groups/new");
+  await page.getByLabel("Nom du groupe").fill("Famille Attente");
+  await page.getByRole("button", { name: "Créer le groupe" }).click();
+  await expect(page).toHaveURL(/\/groups\?notice=group_created$/);
+  await page.goto("/recipes/new");
+  await page.getByLabel("Nom").fill("Gratin lent");
+  await page.getByRole("button", { name: "Créer la recette" }).click();
+  await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+  await page.getByLabel("Personnes").fill("4");
+  await page.getByRole("button", { name: "À réaliser" }).click();
+  await expect(page).toHaveURL(/\?notice=recipe_selected$/);
+  const detail = page.url();
+
+  // From the next page on: once the field changes, the page notes it 300 ms
+  // later, its post still held; and whether it came out of the cache.
+  await page.addInitScript((key) => {
+    addEventListener("change", (event) => {
+      const field = event.target as HTMLInputElement;
+      if (field.type !== "number" || sessionStorage.getItem(key)) return;
+      setTimeout(() => {
+        sessionStorage.setItem(
+          key,
+          JSON.stringify({ busy: field.getAttribute("aria-busy"), disabled: field.disabled }),
+        );
+      }, 300);
+    });
+    addEventListener("pageshow", (event) => {
+      (window as unknown as { restored: boolean }).restored = event.persisted;
+    });
+  }, SEEN);
+  await page.reload();
+
+  const people = page.getByRole("spinbutton", { name: "Personnes, Gratin lent" });
+  await people.fill("6");
+  const held = await holdPosts(page, /\/recipes\/[0-9a-f-]+\/select$/);
+  const sent = people.press("Tab");
+  await expect.poll(() => held.posts()).toBe(1);
+  await page.waitForTimeout(1000);
+  await held.release();
+  await sent;
+  await expect(page).toHaveURL(/\?notice=servings_updated&servings=6$/);
+  expect(await page.evaluate((key) => JSON.parse(sessionStorage.getItem(key) ?? "null"), SEEN)).toEqual({
+    busy: "true",
+    disabled: true,
+  });
+  expect(held.posts()).toBe(1);
+
+  // Back: the page left locked comes out of the cache, the field unlocked.
+  await page.goBack({ waitUntil: "commit" });
+  await expect(page).toHaveURL(detail);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { restored?: boolean }).restored))
+    .toBe(true);
+  await expect(people).toBeEnabled();
+  await expect(people).not.toHaveAttribute("aria-busy");
+});

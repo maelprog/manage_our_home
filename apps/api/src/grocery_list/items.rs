@@ -3,6 +3,7 @@ use axum::response::IntoResponse;
 use axum::{http::StatusCode, Json};
 use chrono::{DateTime, Utc};
 use manage_our_home_shared::validation::grocery_list::normalize_unit;
+use manage_our_home_shared::validation::stocks::PackRounding;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
@@ -11,13 +12,17 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::can_modify;
+use crate::grocery_list::packs::{packs_for, scanned_packs};
 use crate::grocery_list::planned::{
     count_against_list, count_missing_against_list, plan_lines, ListChange, ListedLine,
     PlannedIngredient,
 };
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::notifications::center;
 use crate::recipes::availability::planned_availability;
+use crate::recipes::suggestions::{tagged_stock, StockEntry};
+use crate::recipes::taxonomy::taxonomy;
 use crate::stocks::items::today;
 use crate::AppState;
 
@@ -69,6 +74,12 @@ pub struct GroceryItemResponse {
     pub source_recipe_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// The line counted in whole packs of a scanned article (#824,
+    /// `grocery_list::packs`): read on the list (`GET`) only, absent
+    /// elsewhere and when no scanned article matches. Shown, never stored:
+    /// `quantity` stays exact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pack: Option<PackRounding>,
 }
 
 struct GroceryItemRow {
@@ -99,6 +110,7 @@ impl From<GroceryItemRow> for GroceryItemResponse {
             source_recipe_id: r.source_recipe_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
+            pack: None,
         }
     }
 }
@@ -252,16 +264,34 @@ pub async fn list_grocery_items(
     )
     .fetch_all(&mut *tx)
     .await?;
+    let scanned = scanned_packs(&mut tx, group_id).await?;
     tx.commit().await?;
 
-    let items: Vec<GroceryItemResponse> = rows.into_iter().map(GroceryItemResponse::from).collect();
+    let taxonomy = taxonomy();
+    let items: Vec<GroceryItemResponse> = rows
+        .into_iter()
+        .map(|row| {
+            let pack = packs_for(
+                taxonomy,
+                &row.name,
+                row.quantity,
+                row.unit.as_deref(),
+                &scanned,
+            );
+            GroceryItemResponse {
+                pack,
+                ..GroceryItemResponse::from(row)
+            }
+        })
+        .collect();
 
     Ok(Json(json!({ "items": items })))
 }
 
 /// Any member may check/uncheck an item off the shared list — this is a
 /// lighter permission bar than `update_grocery_item`, which only the
-/// creator or a group admin/owner may use to edit name/quantity/unit.
+/// creator or a member whose role meets the family's `grocery_edit`
+/// threshold (#866) may use to edit name/quantity/unit.
 #[utoipa::path(
     post,
     path = "/groups/{id}/grocery-items/{item_id}/check",
@@ -343,7 +373,8 @@ pub async fn update_grocery_item(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::GroceryEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -421,7 +452,8 @@ pub async fn delete_grocery_item(
     .await?
     .ok_or(AppError::NotFound)?;
 
-    if !can_modify(&actor_role, existing.created_by == auth.user_id) {
+    let min_role = min_role_for(&mut tx, group_id, Feature::GroceryEdit).await?;
+    if !can_modify(&actor_role, &min_role, existing.created_by == auth.user_id) {
         return Err(AppError::Forbidden);
     }
 
@@ -443,15 +475,17 @@ struct LowStockRow {
 
 /// Generates new grocery items from the two automated sources named in
 /// docs/v1-scope.md epic #5: the required, not-in-stock ingredients of the
-/// recipes planned for the next shopping (#470), and stock items at/below
+/// recipes planned for the next shopping (#470) — in stock by name or by
+/// category (#900) —, and stock items at/below
 /// their reorder threshold. A recipe counts only while it has a `planned`
 /// selection (`recipe_selections`, #469); its quantities are scaled to the
 /// selection's number of people, and an ingredient several planned recipes
 /// share makes one line (`planned::plan_lines`). Each recipe line names the
-/// first recipe that calls for it in `source_recipe_id`. Matching against
-/// existing rows is name-based (case-insensitive, trimmed), same heuristic
-/// as recipes::suggestions and stocks' low_stock — an item already present
-/// and unchecked is not duplicated; a recipe line of the same unit that
+/// first recipe that calls for it in `source_recipe_id`. A recipe line is
+/// matched against existing rows by name (case-insensitive, trimmed) or by
+/// the tag the taxonomy maps its name to (#902); a low-stock line by name
+/// only — an item already present and unchecked is not duplicated; a
+/// recipe line of the same unit that
 /// counts less than the planned recipes now call for is raised to it, never
 /// lowered (`planned::count_against_list`, #842), so re-running this is
 /// idempotent. Only the items created are returned, not the raised ones.
@@ -477,15 +511,16 @@ pub async fn generate_grocery_items(
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     require_role(&mut tx, group_id, auth.user_id).await?;
 
-    let stock_names: HashSet<String> = sqlx::query_scalar!(
-        "SELECT name FROM stock_items WHERE group_id = $1 AND quantity > 0",
-        group_id,
-    )
-    .fetch_all(&mut *tx)
-    .await?
-    .into_iter()
-    .map(|n| n.trim().to_lowercase())
-    .collect();
+    // The stock lines holding something, with their categories: an
+    // ingredient is in stock by its name or by its category (#900), as in
+    // the suggestions and the planned recipes' missing ingredients.
+    let stock: Vec<StockEntry> = tagged_stock(&mut tx, group_id)
+        .await?
+        .into_iter()
+        .filter(|s| s.quantity > 0.0)
+        .map(|s| s.entry)
+        .collect();
+    let taxonomy = taxonomy();
 
     // Oldest selection first, so the "first recipe" a shared ingredient is
     // attributed to is the one planned first.
@@ -505,7 +540,13 @@ pub async fn generate_grocery_items(
     .fetch_all(&mut *tx)
     .await?
     .into_iter()
-    .filter(|i| !stock_names.contains(&i.name.trim().to_lowercase()));
+    .filter(|i| {
+        let name = i.name.trim().to_lowercase();
+        let tag = taxonomy.canonical_ingredient(&i.name);
+        !stock
+            .iter()
+            .any(|s| s.name == name || tag.is_some_and(|t| s.tags.contains(&t)))
+    });
     let missing_lines = plan_lines(planned_ingredients);
 
     let low_stock_items = sqlx::query_as!(

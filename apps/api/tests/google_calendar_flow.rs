@@ -1838,3 +1838,169 @@ async fn a_sync_leaves_alone_an_imported_event_hidden_from_its_runner(db: PgPool
     drop(scoped);
     drop_prescribed_role(&db, app_db, &role).await;
 }
+
+/// The owner joins `email`'s account to the group and gives it `role`.
+async fn join_with_role(
+    router: &axum::Router,
+    db: &PgPool,
+    owner_cookie: &str,
+    member_cookie: &str,
+    group_id: &str,
+    email: &str,
+    role: &str,
+) {
+    let invite = call(
+        router,
+        Method::POST,
+        &format!("/groups/{group_id}/invitations"),
+        Some(owner_cookie),
+        Some(serde_json::json!({})),
+    )
+    .await;
+    let token = json_body(invite).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let accept = call(
+        router,
+        Method::POST,
+        &format!("/groups/invitations/{token}/accept"),
+        Some(member_cookie),
+        None,
+    )
+    .await;
+    assert_status(&accept, StatusCode::OK);
+    if role != "standard" {
+        let member_id = user_id_of(db, email).await;
+        let res = call(
+            router,
+            Method::POST,
+            &format!("/groups/{group_id}/members/{member_id}/role"),
+            Some(owner_cookie),
+            Some(serde_json::json!({ "role": role })),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+    }
+}
+
+/// AC #865: connecting and removing a calendar follow the family's
+/// `google_calendar` threshold. For each threshold, the roles that meet it
+/// create and delete a connection, the others get the 403 a standard
+/// member got before the threshold existed — `admin` being that bar.
+#[sqlx::test]
+async fn connections_follow_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let owner = register_verify_login(
+        &router,
+        &db,
+        "cal-thr-owner@example.test",
+        "owner-password1",
+    )
+    .await;
+    let admin = register_verify_login(
+        &router,
+        &db,
+        "cal-thr-admin@example.test",
+        "admin-password1",
+    )
+    .await;
+    let standard = register_verify_login(
+        &router,
+        &db,
+        "cal-thr-standard@example.test",
+        "standard-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &owner, "Foyer").await;
+    join_with_role(
+        &router,
+        &db,
+        &owner,
+        &admin,
+        &group_id,
+        "cal-thr-admin@example.test",
+        "admin",
+    )
+    .await;
+    join_with_role(
+        &router,
+        &db,
+        &owner,
+        &standard,
+        &group_id,
+        "cal-thr-standard@example.test",
+        "standard",
+    )
+    .await;
+    let imports = format!("/groups/{group_id}/calendar-imports");
+    let body = serde_json::json!({
+        "label": "Agenda",
+        "feed_url": "https://calendar.google.com/calendar/ical/example/basic.ics"
+    });
+
+    for (min_role, reaching) in [
+        ("standard", ["owner", "admin", "standard"].as_slice()),
+        ("admin", ["owner", "admin"].as_slice()),
+        ("owner", ["owner"].as_slice()),
+    ] {
+        let res = call(
+            &router,
+            Method::PUT,
+            &format!("/groups/{group_id}/access-policies"),
+            Some(&owner),
+            Some(serde_json::json!({
+                "policies": [{"feature": "google_calendar", "min_role": min_role}]
+            })),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        for (who, cookie) in [
+            ("owner", &owner),
+            ("admin", &admin),
+            ("standard", &standard),
+        ] {
+            // The owner's connection, which `who` then tries to remove.
+            let theirs = call(
+                &router,
+                Method::POST,
+                &imports,
+                Some(&owner),
+                Some(body.clone()),
+            )
+            .await;
+            assert_status(&theirs, StatusCode::CREATED);
+            let theirs = json_body(theirs).await["id"].as_str().unwrap().to_string();
+
+            let reaches = reaching.contains(&who);
+            let create = call(
+                &router,
+                Method::POST,
+                &imports,
+                Some(cookie),
+                Some(body.clone()),
+            )
+            .await;
+            let expected = if reaches {
+                StatusCode::CREATED
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            assert_eq!(create.status(), expected, "{who}'s create under {min_role}");
+            let delete = call(
+                &router,
+                Method::DELETE,
+                &format!("{imports}/{theirs}"),
+                Some(cookie),
+                None,
+            )
+            .await;
+            let expected = if reaches {
+                StatusCode::OK
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            assert_eq!(delete.status(), expected, "{who}'s delete under {min_role}");
+        }
+    }
+}

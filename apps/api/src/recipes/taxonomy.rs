@@ -18,6 +18,10 @@
 //!   the product name ("… Lactel") gives no tag rather than a wrong one.
 //!   A name that two unrelated categories share is no tag; when one of the
 //!   candidates is an ancestor of all the others, it is the tag.
+//!   `apps/api/data/ingredient-aliases-fr.tsv` (#901) adds French names
+//!   the taxonomy lacks, under the same rules: an alias is one more name of
+//!   its tag, so a name shared by unrelated categories stays no tag, and an
+//!   alias to an ancestor of the name's category widens the name to it.
 //! - [`Taxonomy::satisfies`]: an article in stock satisfies a recipe's
 //!   ingredient when its tag is the recipe's, or descends from it
 //!   (`en:semi-skimmed-milks` satisfies `en:milks`), never the reverse.
@@ -38,6 +42,11 @@ pub struct Taxonomy {
     exact: HashMap<String, TagId>,
     /// Normalized name, accents folded → tag.
     folded: HashMap<String, TagId>,
+    /// Each tag's first French name, as written (#819).
+    labels: Vec<String>,
+    /// Each tag's names, normalized with their accents folded: what
+    /// [`Taxonomy::search`] reads (#819).
+    searchable: Vec<Vec<String>>,
 }
 
 /// The embedded data: Open Food Facts' categories with a French name, and
@@ -47,13 +56,54 @@ const EMBEDDED_GZ: &[u8] = include_bytes!(concat!(
     "/data/off-categories-fr.tsv.gz"
 ));
 
-static EMBEDDED: LazyLock<Taxonomy> = LazyLock::new(|| {
+const EMBEDDED_ALIASES: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/data/ingredient-aliases-fr.tsv"
+));
+
+/// An alias line that does not name its tag (see
+/// [`Taxonomy::parse_with_aliases`]); `line` counts from 1.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AliasError {
+    /// No tab, or an empty name or tag.
+    Malformed { line: usize },
+    /// The taxonomy has no such tag: the alias is dropped.
+    UnknownTag { line: usize, tag: String },
+    /// The taxonomy already gives the name that tag.
+    Redundant { line: usize },
+    /// With the alias, the name, with its accents or without them,
+    /// resolves to another tag, or to none (`resolved`: the first of the
+    /// two that does).
+    Ambiguous {
+        line: usize,
+        resolved: Option<String>,
+    },
+}
+
+impl AliasError {
+    fn line(&self) -> usize {
+        match self {
+            AliasError::Malformed { line }
+            | AliasError::UnknownTag { line, .. }
+            | AliasError::Redundant { line }
+            | AliasError::Ambiguous { line, .. } => *line,
+        }
+    }
+}
+
+/// The embedded data, with the aliases of `ingredient-aliases-fr.tsv`. An
+/// alias in error is not fatal here: a test checks the embedded file has
+/// none.
+static EMBEDDED: LazyLock<Taxonomy> =
+    LazyLock::new(|| Taxonomy::parse_with_aliases(&embedded_tsv(), EMBEDDED_ALIASES).0);
+
+fn embedded_tsv() -> String {
     let mut tsv = String::new();
     flate2::read::GzDecoder::new(EMBEDDED_GZ)
         .read_to_string(&mut tsv)
         .expect("embedded taxonomy is valid gzipped UTF-8");
-    Taxonomy::parse(&tsv)
-});
+    tsv
+}
 
 /// The taxonomy embedded in the binary, decompressed and indexed on first use.
 pub fn taxonomy() -> &'static Taxonomy {
@@ -109,6 +159,20 @@ impl Taxonomy {
     /// Reads the format `build_off_categories.py` writes. Lines starting
     /// with `#` are comments; a parent the file does not define is ignored.
     pub fn parse(tsv: &str) -> Taxonomy {
+        Self::parse_with_aliases(tsv, "").0
+    }
+
+    /// [`Taxonomy::parse`], plus the aliases of `ingredient-aliases-fr.tsv`
+    /// (#901): one `<name> TAB <tag id>` per line, `#` for comments. An
+    /// alias is one more French name of its tag, under the same rules: a
+    /// name shared by unrelated categories is still no tag. Every alias that
+    /// does not end up naming its tag is reported: a malformed line, a tag
+    /// the taxonomy lacks (the alias is then dropped), a name the taxonomy
+    /// already gives that tag, or a name that, once the alias joins it,
+    /// resolves to another tag, or to none, with its accents or without
+    /// them. An alias only joins those two keys, so an alias without error
+    /// changes no other name.
+    pub fn parse_with_aliases(tsv: &str, aliases: &str) -> (Taxonomy, Vec<AliasError>) {
         let rows: Vec<(&str, &str, &str)> = tsv
             .lines()
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -134,26 +198,81 @@ impl Taxonomy {
             })
             .collect();
 
+        let labels = rows
+            .iter()
+            .map(|(_, _, names)| names.split('|').next().unwrap_or_default().to_string())
+            .collect();
+        let searchable = rows
+            .iter()
+            .map(|(_, _, names)| {
+                names
+                    .split('|')
+                    .map(|name| normalize(name, true))
+                    .filter(|key| !key.is_empty())
+                    .collect()
+            })
+            .collect();
         let mut taxonomy = Taxonomy {
             ids,
             by_id,
             parents,
             exact: HashMap::new(),
             folded: HashMap::new(),
+            labels,
+            searchable,
         };
+        let mut errors = Vec::new();
+        // (line, name, tag) of each alias whose tag the taxonomy has.
+        let mut valid: Vec<(usize, &str, TagId)> = Vec::new();
+        for (i, line) in aliases.lines().enumerate() {
+            let line_no = i + 1;
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((name, id)) = line.split_once('\t') else {
+                errors.push(AliasError::Malformed { line: line_no });
+                continue;
+            };
+            let id = id.trim();
+            if normalize(name, false).is_empty() || id.is_empty() {
+                errors.push(AliasError::Malformed { line: line_no });
+                continue;
+            }
+            match taxonomy.tag(id) {
+                Some(tag) => valid.push((line_no, name, tag)),
+                None => errors.push(AliasError::UnknownTag {
+                    line: line_no,
+                    tag: id.to_string(),
+                }),
+            }
+        }
+
+        // What each alias's name resolves to without the aliases, accents
+        // kept then folded, as `canonical_ingredient` reads it.
+        let mut before: Vec<[Option<TagId>; 2]> = vec![[None; 2]; valid.len()];
         for fold in [false, true] {
             let mut candidates: HashMap<String, Vec<TagId>> = HashMap::new();
+            fn add(candidates: &mut HashMap<String, Vec<TagId>>, key: String, tag: TagId) {
+                let tags = candidates.entry(key).or_default();
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
+            }
             for (i, (_, _, names)) in rows.iter().enumerate() {
                 for name in names.split('|') {
                     let key = normalize(name, fold);
-                    if key.is_empty() {
-                        continue;
-                    }
-                    let tags = candidates.entry(key).or_default();
-                    if !tags.contains(&TagId(i as u32)) {
-                        tags.push(TagId(i as u32));
+                    if !key.is_empty() {
+                        add(&mut candidates, key, TagId(i as u32));
                     }
                 }
+            }
+            for (j, (_, name, _)) in valid.iter().enumerate() {
+                before[j][fold as usize] = candidates
+                    .get(&normalize(name, fold))
+                    .and_then(|tags| taxonomy.common_ancestor_among(tags));
+            }
+            for &(_, name, tag) in &valid {
+                add(&mut candidates, normalize(name, fold), tag);
             }
             let index: HashMap<String, TagId> = candidates
                 .into_iter()
@@ -165,7 +284,28 @@ impl Taxonomy {
                 taxonomy.exact = index;
             }
         }
-        taxonomy
+
+        for (j, &(line, name, tag)) in valid.iter().enumerate() {
+            let [exact, folded] = before[j];
+            if exact.or(folded) == Some(tag) {
+                errors.push(AliasError::Redundant { line });
+            } else {
+                // Both keys the alias joins, accents kept and folded, must
+                // now name its tag: otherwise a name that had a tag, or the
+                // alias itself, lost it to the shared-name rule.
+                let exact = taxonomy.exact.get(&normalize(name, false)).copied();
+                let folded = taxonomy.folded.get(&normalize(name, true)).copied();
+                let wrong = [exact, folded].into_iter().find(|&r| r != Some(tag));
+                if let Some(resolved) = wrong {
+                    errors.push(AliasError::Ambiguous {
+                        line,
+                        resolved: resolved.map(|t| taxonomy.id(t).to_string()),
+                    });
+                }
+            }
+        }
+        errors.sort_by_key(AliasError::line);
+        (taxonomy, errors)
     }
 
     /// The one candidate every other candidate descends from, if any: a
@@ -185,6 +325,56 @@ impl Taxonomy {
     /// The Open Food Facts id of a tag.
     pub fn id(&self, tag: TagId) -> &str {
         &self.ids[tag.0 as usize]
+    }
+
+    /// The tag's first French name, as the taxonomy writes it (#819).
+    pub fn label(&self, tag: TagId) -> &str {
+        &self.labels[tag.0 as usize]
+    }
+
+    /// At most `limit` tags whose French names match `query` (#819), the
+    /// query read as a name is ([`normalize`], accents folded): first the
+    /// tags one of whose names is the query, then those one of whose names
+    /// starts with it, then those one of whose names has a word starting
+    /// with it. A match inside a word is none. Within a rank, the shorter
+    /// label first, then the label, then the id: the same query always
+    /// answers the same list.
+    pub fn search(&self, query: &str, limit: usize) -> Vec<TagId> {
+        let query = normalize(query, true);
+        if query.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let word_start = format!(" {query}");
+        let mut found: Vec<(u8, TagId)> = self
+            .searchable
+            .iter()
+            .enumerate()
+            .filter_map(|(i, names)| {
+                let rank = names
+                    .iter()
+                    .filter_map(|name| {
+                        if *name == query {
+                            Some(0)
+                        } else if name.starts_with(&query) {
+                            Some(1)
+                        } else if name.contains(&word_start) {
+                            Some(2)
+                        } else {
+                            None
+                        }
+                    })
+                    .min()?;
+                Some((rank, TagId(i as u32)))
+            })
+            .collect();
+        found.sort_by(|(ra, a), (rb, b)| {
+            let (la, lb) = (self.label(*a), self.label(*b));
+            ra.cmp(rb)
+                .then(la.chars().count().cmp(&lb.chars().count()))
+                .then(la.cmp(lb))
+                .then(self.id(*a).cmp(self.id(*b)))
+        });
+        found.into_iter().take(limit).map(|(_, tag)| tag).collect()
     }
 
     pub fn canonical_ingredient(&self, name: &str) -> Option<TagId> {
@@ -361,6 +551,245 @@ en:potatoes\t\tPommes de terre
             .map(|id| tag(&t, id))
             .collect();
         assert_eq!(t.ancestors_or_self(semi), expected);
+    }
+
+    fn found<'t>(t: &'t Taxonomy, query: &str, limit: usize) -> Vec<&'t str> {
+        t.search(query, limit)
+            .into_iter()
+            .map(|tag| t.id(tag))
+            .collect()
+    }
+
+    #[test]
+    fn a_label_is_the_first_french_name() {
+        let t = fixture();
+        assert_eq!(t.label(tag(&t, "en:milks")), "Laits");
+        assert_eq!(t.label(tag(&t, "en:eggs")), "Œufs");
+        assert_eq!(t.label(tag(&t, "en:potatoes")), "Pommes de terre");
+    }
+
+    #[test]
+    fn search_ranks_a_whole_name_then_a_name_start_then_a_word_start() {
+        let t = fixture();
+        assert_eq!(
+            found(&t, "lait", 10),
+            vec!["en:milks", "en:semi-skimmed-milks", "en:dairies"]
+        );
+        assert_eq!(found(&t, "lait", 1), vec!["en:milks"]);
+    }
+
+    #[test]
+    fn search_reads_the_query_as_a_name_is_read() {
+        let t = fixture();
+        assert_eq!(found(&t, "ŒUFS", 10), vec!["en:eggs"]);
+        assert_eq!(found(&t, " oeuf ", 10), vec!["en:eggs"]);
+        assert_eq!(found(&t, "terre", 10), vec!["en:potatoes"]);
+        assert_eq!(found(&t, "creme fraiche", 10), vec!["en:creme-fraiche"]);
+    }
+
+    #[test]
+    fn search_finds_nothing_for_an_empty_query_or_the_inside_of_a_word() {
+        let t = fixture();
+        assert!(found(&t, "", 10).is_empty());
+        assert!(found(&t, "  de ", 10).is_empty());
+        assert!(found(&t, "aits", 10).is_empty());
+        assert!(found(&t, "licorne", 10).is_empty());
+        assert!(found(&t, "lait", 0).is_empty());
+    }
+
+    fn with_aliases(aliases: &str) -> (Taxonomy, Vec<AliasError>) {
+        Taxonomy::parse_with_aliases(FIXTURE, aliases)
+    }
+
+    #[test]
+    fn an_alias_names_a_tag_the_taxonomy_has_no_name_for() {
+        let (t, errors) = with_aliases(
+            "# comment line\n\
+             Lait de vache\ten:milks\n\
+             \n\
+             Œuf frais\ten:eggs\n\
+             pâte fraîche\ten:pastas\n",
+        );
+        assert_eq!(errors, vec![]);
+        assert_eq!(canon(&t, "lait de vache").as_deref(), Some("en:milks"));
+        // The alias is read as a name is: plurals, case, ligatures, accents.
+        assert_eq!(canon(&t, "Laits de vache").as_deref(), Some("en:milks"));
+        assert_eq!(canon(&t, "OEUFS FRAIS").as_deref(), Some("en:eggs"));
+        assert_eq!(canon(&t, "pâtes fraîches").as_deref(), Some("en:pastas"));
+        assert_eq!(canon(&t, "pates fraiches").as_deref(), Some("en:pastas"));
+        // Nothing else moves: the whole name still has to match.
+        assert_eq!(canon(&t, "lait").as_deref(), Some("en:milks"));
+        assert_eq!(canon(&t, "lait de vache Lactel"), None);
+        assert_eq!(canon(&t, "lait de coco"), None);
+        // `parse` alone knows no alias.
+        assert_eq!(canon(&fixture(), "lait de vache"), None);
+    }
+
+    #[test]
+    fn an_alias_may_widen_a_name_to_an_ancestor_of_its_category() {
+        // The taxonomy's "Laits demi-écrémés" is en:semi-skimmed-milks; an
+        // alias to en:milks, its ancestor, makes the name en:milks: a name
+        // shared by a category and its subcategory names the category.
+        let (t, errors) = with_aliases("lait demi-écrémé\ten:milks\n");
+        assert_eq!(errors, vec![]);
+        let milks = tag(&t, "en:milks");
+        assert_eq!(t.canonical_ingredient("Laits demi-écrémés"), Some(milks));
+        assert!(t.satisfies(tag(&t, "en:semi-skimmed-milks"), milks));
+    }
+
+    #[test]
+    fn an_alias_to_a_tag_the_taxonomy_lacks_is_an_error_and_ignored() {
+        let (t, errors) = with_aliases("licorne\ten:unicorns\n");
+        assert_eq!(
+            errors,
+            vec![AliasError::UnknownTag {
+                line: 1,
+                tag: "en:unicorns".into()
+            }]
+        );
+        assert_eq!(canon(&t, "licorne"), None);
+    }
+
+    #[test]
+    fn an_alias_does_not_bypass_the_shared_name_rule() {
+        // "Maquereau" already names two unrelated categories: an alias to
+        // one of them leaves the name without a tag, and says so.
+        let (t, errors) = with_aliases("maquereau\ten:mackerel\n");
+        assert_eq!(
+            errors,
+            vec![AliasError::Ambiguous {
+                line: 1,
+                resolved: None
+            }]
+        );
+        assert_eq!(canon(&t, "maquereau"), None);
+
+        // A name the taxonomy gives to another, unrelated category: both
+        // lose it, the alias does not win.
+        let (t, errors) = with_aliases("Pâtés\ten:pastas\n");
+        assert_eq!(
+            errors,
+            vec![AliasError::Ambiguous {
+                line: 1,
+                resolved: None
+            }]
+        );
+        assert_eq!(canon(&t, "pâtés"), None);
+
+        // Narrowing a name to a subcategory: the ancestor keeps it.
+        let (t, errors) = with_aliases("lait\ten:semi-skimmed-milks\n");
+        assert_eq!(
+            errors,
+            vec![AliasError::Ambiguous {
+                line: 1,
+                resolved: Some("en:milks".into())
+            }]
+        );
+        assert_eq!(canon(&t, "lait").as_deref(), Some("en:milks"));
+
+        // Two aliases giving one name to unrelated categories.
+        let (t, errors) = with_aliases("beurre\ten:eggs\nbeurres\ten:milks\n");
+        assert_eq!(
+            errors,
+            vec![
+                AliasError::Ambiguous {
+                    line: 1,
+                    resolved: None
+                },
+                AliasError::Ambiguous {
+                    line: 2,
+                    resolved: None
+                },
+            ]
+        );
+        assert_eq!(canon(&t, "beurre"), None);
+    }
+
+    #[test]
+    fn an_alias_that_takes_its_folded_spelling_from_another_tag_is_ambiguous() {
+        // The accented spelling is new, but without accents it is the
+        // taxonomy's "Crème fraiche": that name would lose its tag.
+        let (t, errors) = with_aliases("crème fraîche\ten:eggs\n");
+        assert_eq!(
+            errors,
+            vec![AliasError::Ambiguous {
+                line: 1,
+                resolved: None
+            }]
+        );
+        assert_eq!(canon(&t, "creme fraiche"), None);
+    }
+
+    #[test]
+    fn an_alias_the_taxonomy_already_answers_is_redundant() {
+        let (t, errors) = with_aliases("Laits\ten:milks\noeuf\ten:eggs\n");
+        assert_eq!(
+            errors,
+            vec![
+                AliasError::Redundant { line: 1 },
+                AliasError::Redundant { line: 2 }
+            ]
+        );
+        assert_eq!(canon(&t, "lait").as_deref(), Some("en:milks"));
+    }
+
+    #[test]
+    fn an_alias_the_taxonomy_answers_once_accents_are_folded_is_redundant() {
+        // "creme fraiche" is not the taxonomy's spelling ("Crème fraiche"),
+        // but the lookup without accents already finds en:creme-fraiche.
+        let (_, errors) = with_aliases("creme fraiche\ten:creme-fraiche\n");
+        assert_eq!(errors, vec![AliasError::Redundant { line: 1 }]);
+    }
+
+    #[test]
+    fn a_malformed_alias_line_is_an_error() {
+        let (_, errors) = with_aliases("sans tabulation\n\ten:milks\nde\ten:milks\nlait\t\n");
+        assert_eq!(
+            errors,
+            vec![
+                AliasError::Malformed { line: 1 },
+                AliasError::Malformed { line: 2 },
+                AliasError::Malformed { line: 3 },
+                AliasError::Malformed { line: 4 },
+            ]
+        );
+    }
+
+    #[test]
+    fn every_embedded_alias_names_an_existing_tag_and_takes_effect() {
+        let (_, errors) = Taxonomy::parse_with_aliases(&embedded_tsv(), EMBEDDED_ALIASES);
+        assert_eq!(errors, vec![]);
+        let aliases = EMBEDDED_ALIASES
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .count();
+        assert!(aliases >= 40, "{aliases} aliases");
+    }
+
+    #[test]
+    fn embedded_creme_fraiche_is_satisfied_by_every_thick_cream() {
+        let t = taxonomy();
+        let fermented = t.tag("en:fermented-creams").expect("embedded");
+        let tag = t
+            .canonical_ingredient("crème fraîche")
+            .expect("crème fraîche has a tag");
+        assert_eq!(t.canonical_ingredient("Crèmes fraîches"), Some(tag));
+        assert_eq!(t.canonical_ingredient("creme fraiche"), Some(tag));
+        assert_eq!(t.canonical_ingredient("crème fraîche entière"), Some(tag));
+        for id in [
+            "en:fermented-creams",
+            "en:cremes-fraiches",
+            "en:refrigerated-30-fat-thick-cream",
+        ] {
+            let stock = t.tag(id).expect("embedded");
+            assert!(t.satisfies(stock, tag), "{id} satisfies crème fraîche");
+        }
+        // Never the reverse: a cream that is not a thick one does not.
+        for id in ["en:creams", "en:unfermented-creams"] {
+            let stock = t.tag(id).expect("embedded");
+            assert!(!t.satisfies(stock, tag), "{id} does not satisfy");
+        }
+        assert!(t.satisfies(tag, fermented));
     }
 
     #[test]

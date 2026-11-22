@@ -24,6 +24,7 @@
 //! copy on both sides keeps them apart.
 
 pub mod age;
+pub mod allergies;
 pub mod appearance;
 pub mod avatar;
 pub mod deactivated;

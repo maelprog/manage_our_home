@@ -1,6 +1,7 @@
 mod common;
 
 use axum::http::{Method, StatusCode};
+use common::thresholds::{assert_edit_follows_the_threshold, Editable};
 use common::{assert_status, call, json_body, set_cookie, test_router, test_state};
 use futures::StreamExt;
 use sqlx::{Connection, PgPool};
@@ -249,8 +250,10 @@ async fn cursor_pagination_orders_newest_first_and_reports_has_more(db: PgPool) 
     assert_eq!(second_messages[1]["content"], "message 1");
 }
 
-/// AC #3, #4: the author can edit/delete their own message; an owner/admin
-/// can edit/delete another member's; a non-author standard member gets 403.
+/// AC #3, #4: the author can edit/delete their own message; a member meeting
+/// the family's `messagerie_moderate` threshold (`admin` by default, as
+/// here; #866) can edit/delete another member's; a non-author standard
+/// member gets 403.
 #[sqlx::test]
 async fn only_author_or_admin_can_modify(db: PgPool) {
     let router = test_router(db.clone());
@@ -2048,4 +2051,22 @@ async fn deleting_the_parent_keeps_the_reply_without_its_parent(db: PgPool) {
             .await
             .unwrap();
     assert!(link.is_none());
+}
+
+/// AC #866: the edit and the delete of a message follow the family's `messagerie_moderate` threshold, the creator
+/// keeping the hand on what they wrote (`common::thresholds`).
+#[sqlx::test]
+async fn editing_a_message_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    assert_edit_follows_the_threshold(
+        &router,
+        &db,
+        Editable {
+            feature: "messagerie_moderate",
+            collection: "messages",
+            create: serde_json::json!({"content": "Bonjour"}),
+            edit: serde_json::json!({"content": "Bonsoir"}),
+        },
+    )
+    .await;
 }

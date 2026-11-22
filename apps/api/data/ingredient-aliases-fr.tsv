@@ -1,0 +1,74 @@
+# French ingredient names Open Food Facts' taxonomy lacks (#901).
+#
+# Written for manage_our_home, not taken from Open Food Facts: see README.md.
+# One line per alias:
+#
+#     <name as a recipe writes it> TAB <Open Food Facts category id>
+#
+# The name is read as `Taxonomy::canonical_ingredient` reads one (case,
+# plurals, accents, `de`/`du`/`des`), and joins the category's French names:
+# a name two unrelated categories share is still no tag. A test checks that
+# every line names a category of `off-categories-fr.tsv.gz` and takes effect.
+
+# Dairy
+crème fraîche	en:fermented-creams
+crème fraîche entière	en:fermented-creams
+beurre fondu	en:butters
+beurre mou	en:butters
+beurre pommade	en:butters
+yaourt grec	en:greek-style-yogurts
+chèvre	en:goat-cheeses
+parmesan râpé	en:parmigiano-reggiano
+gruyère râpé	fr:gruyere
+comté râpé	en:comte
+
+# Eggs
+oeuf entier	en:eggs
+gros oeufs	en:eggs
+
+# Flours, sugars, raising agents
+farine T45	en:wheat-flour-t405
+farine type 45	en:wheat-flour-t405
+farine T55	en:wheat-flour-type-55-for-bread
+farine type 55	en:wheat-flour-type-55-for-bread
+sucre semoule	en:caster-sugars
+sucre cristallisé	en:granulated-sugars
+bicarbonate	en:bicarbonates-of-soda
+levure boulangère	en:baker-s-yeast
+levure de boulangerie	en:baker-s-yeast
+levure sèche	en:baker-s-yeast
+levure fraîche	en:baker-s-yeast-compressed
+feuilles de gélatine	en:gelatin
+
+# Pasta, grains, pulses
+feuilles de lasagne	en:lasagna-sheets
+plaques de lasagne	en:lasagna-sheets
+semoule de couscous	en:durum-wheat-semolinas-for-couscous
+polenta	en:corn-semolinas
+pois cassés	en:dried-split-peas
+
+# Vegetables, herbs, spices
+gousse d'ail	en:garlics
+ail haché	en:chopped-garlics
+ail en poudre	en:garlic-powders
+oignons nouveaux	en:scallions
+persil plat	en:parsley
+citron jaune	en:lemons
+gingembre frais	en:fresh-ginger-rhizomes
+muscade	en:nutmeg
+poivre du moulin	en:peppers
+
+# Meat, fish, stocks
+boeuf haché	en:ground-beef-meats
+thon en boîte	en:canned-tunas
+cube de bouillon	en:bouillon-cubes
+fond de volaille	en:dehydrated-poultry-stock
+
+# Groceries
+chocolat pâtissier	en:dark-chocolate-bars-for-cooking
+chocolat noir pâtissier	en:dark-chocolate-bars-for-cooking
+chocolat à pâtisser	en:dark-chocolate-bars-for-cooking
+coco râpée	en:grated-coconut
+câpres	en:pickled-capers
+pesto	en:pestos
+ketchup	en:ketchup

@@ -25,7 +25,9 @@ use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::new::{check, error_message, form_buttons, form_fields, read_form, Intent, RecipeForm};
+use super::new::{
+    check, error_message, for_family, form_buttons, form_fields, read_form, Intent, RecipeForm,
+};
 use super::{
     can_modify, family_context, forbidden_page, recipe_not_found_page, recipes_cookie,
     service_unavailable_page,
@@ -94,11 +96,16 @@ pub async fn get(
         Err(resp) => return *resp,
     };
 
-    if !can_modify(&fam.role, recipe.created_by == me.user_id) {
+    if !can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        recipe.created_by == me.user_id,
+    ) {
         return forbidden_page().into_response();
     }
 
-    let form = form_of(&recipe);
+    let mut form = form_of(&recipe);
+    for_family(&mut form, &state, fam.gid, &headers).await;
     Html(page(&fam.header, recipe_id, &recipe.name, &form, None)).into_response()
 }
 
@@ -117,6 +124,8 @@ fn form_of(recipe: &RecipeResponse) -> RecipeForm {
         source_url: String::new(),
         ingredients: ingredient_fields(&recipe.ingredients),
         steps: steps_of(recipe.instructions.as_deref().unwrap_or_default()),
+        equipment: recipe.required_equipment.clone(),
+        ..RecipeForm::default()
     }
 }
 
@@ -145,6 +154,8 @@ fn update_request(form: &mut RecipeForm) -> Result<UpdateRecipeRequest, String> 
         ingredients: Some(ingredients),
         servings: Some(checked.servings),
         duration_minutes: Some(checked.duration_minutes),
+        // The boxes ticked, all of them: none ticked clears it (#819).
+        required_equipment: Some(form.equipment.clone()),
     })
 }
 
@@ -162,6 +173,7 @@ pub async fn post(
     };
 
     let (mut form, intent) = read_form(&pairs);
+    for_family(&mut form, &state, fam.gid, &headers).await;
     if intent == Intent::MoreLines {
         return Html(page(&fam.header, recipe_id, &form.name, &form, None)).into_response();
     }
@@ -331,6 +343,36 @@ mod tests {
         );
         // A blank line added under it has no quantity as saved.
         assert!(!html.contains(r#"name="qty_was.2""#), "{html}");
+    }
+
+    #[test]
+    fn the_edit_form_ticks_the_equipment_saved_and_sends_the_boxes_ticked() {
+        let mut saved = recipe(Some(4));
+        saved.required_equipment = vec!["oven".into()];
+        let mut form = form_of(&saved);
+        form.household = Some(vec!["oven".into(), "hob".into()]);
+        let html = page("", Uuid::nil(), "Crêpes", &form, None);
+        assert!(
+            html.contains(r#"name="equipment" value="oven" checked/>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="equipment" value="hob"/>"#), "{html}");
+
+        let (mut form, _) = read_form(&pairs(&[
+            ("name", "Gratin"),
+            ("equipment", "oven"),
+            ("equipment", "hob"),
+        ]));
+        assert_eq!(
+            update_request(&mut form).unwrap().required_equipment,
+            Some(vec!["oven".to_string(), "hob".to_string()])
+        );
+        // No box ticked clears it.
+        let (mut form, _) = read_form(&pairs(&[("name", "Gratin")]));
+        assert_eq!(
+            update_request(&mut form).unwrap().required_equipment,
+            Some(Vec::new())
+        );
     }
 
     #[test]

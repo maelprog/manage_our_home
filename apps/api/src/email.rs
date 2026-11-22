@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use lettre::message::header::ContentType;
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -78,6 +79,30 @@ impl Outbox {
 fn greeted(display_name: &str) -> Option<String> {
     let name = sanitize_email_line(display_name);
     (!name.is_empty()).then_some(name)
+}
+
+/// The route that gave an account a new password, which the notice of
+/// [`EmailSender::password_changed_email`] names (#833): each closes a
+/// different set of sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasswordChange {
+    /// `reset_password`, by a forgotten-password link: every session closed.
+    Reset,
+    /// `change_password`, from the settings: every session but the caller's.
+    Changed,
+    /// `set_password`, on an account that had none: no session closed.
+    Added,
+}
+
+impl PasswordChange {
+    /// Names nobody and carries no date: the subject is the line a message
+    /// list shows first and a mail provider indexes.
+    pub fn subject(self) -> &'static str {
+        match self {
+            Self::Reset | Self::Changed => "Votre mot de passe a été modifié",
+            Self::Added => "Un mot de passe a été ajouté à votre compte",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -283,6 +308,76 @@ impl EmailSender {
             ],
             action: ("Mot de passe oublié", forgot_password_link),
             fine_print: &["Vous n'êtes pas à l'origine de cette demande ? Ignorez ce message."],
+            notice: None,
+            privacy_policy_url,
+        })
+    }
+
+    /// Mailed to the account's address once a password route has given it a
+    /// new password (#833), so that a password changed by somebody else
+    /// does not go unnoticed. Dated in Europe/Paris, the fixed v1 display
+    /// timezone; its button leads to the forgotten-password page, whose
+    /// reset closes every session. An empty `display_name` greets nobody.
+    pub fn password_changed_email(
+        display_name: &str,
+        change: PasswordChange,
+        at: DateTime<Utc>,
+        forgot_password_link: &str,
+        privacy_policy_url: &str,
+    ) -> EmailContent {
+        let what = match change {
+            PasswordChange::Reset | PasswordChange::Changed => "votre mot de passe a été modifié",
+            PasswordChange::Added => "un mot de passe a été ajouté à votre compte",
+        };
+        let title = match greeted(display_name) {
+            Some(name) => format!("Bonjour {name}, {what}"),
+            None => {
+                let mut chars = what.chars();
+                let first = chars.next().map(|c| c.to_uppercase().to_string());
+                format!("{}{}", first.unwrap_or_default(), chars.as_str())
+            }
+        };
+        let when = format!(
+            "{} (heure de Paris)",
+            at.with_timezone(&rrule::Tz::Europe__Paris)
+                .format("le %d/%m/%Y à %H:%M")
+        );
+        let (done, sessions) = match change {
+            PasswordChange::Reset => (
+                format!(
+                    "Le mot de passe de votre compte Manage Our Home a été réinitialisé {when}, \
+                     par un lien « mot de passe oublié »."
+                ),
+                "Toutes les sessions ouvertes sur votre compte ont été fermées : reconnectez-vous \
+                 avec le nouveau mot de passe sur chacun de vos appareils.",
+            ),
+            PasswordChange::Changed => (
+                format!(
+                    "Le mot de passe de votre compte Manage Our Home a été modifié {when}, \
+                     depuis les réglages du compte."
+                ),
+                "Vos autres sessions ont été fermées : seule celle qui a servi à ce changement \
+                 reste ouverte.",
+            ),
+            PasswordChange::Added => (
+                format!(
+                    "Un mot de passe a été ajouté à votre compte Manage Our Home {when}, depuis \
+                     les réglages du compte."
+                ),
+                "Il ne permet de se connecter qu'une fois votre adresse confirmée par le lien \
+                 envoyé dans un autre message. Vos sessions ouvertes n'ont pas été fermées.",
+            ),
+        };
+        template::render(&Template {
+            title: &title,
+            paragraphs: &[&done, sessions],
+            action: ("Réinitialiser mon mot de passe", forgot_password_link),
+            fine_print: &[
+                "Ce n'est pas vous ? Réinitialisez votre mot de passe sans attendre avec le lien \
+                 ci-dessus : la réinitialisation ferme toutes les sessions ouvertes sur votre \
+                 compte.",
+                "C'est bien vous ? Vous n'avez rien à faire.",
+            ],
             notice: None,
             privacy_policy_url,
         })
@@ -647,6 +742,13 @@ mod tests {
             EmailSender::password_added_email(typed, "https://m.example/v?token=a", PRIVACY),
             EmailSender::password_reset_email(typed, "https://m.example/r#token=a", PRIVACY),
             EmailSender::account_exists_email(typed, "https://m.example/f", PRIVACY),
+            EmailSender::password_changed_email(
+                typed,
+                PasswordChange::Changed,
+                november_afternoon(),
+                "https://m.example/f",
+                PRIVACY,
+            ),
         ] {
             let first = c.text.lines().next().unwrap();
             assert!(first.contains(flat), "{first}");
@@ -657,10 +759,168 @@ mod tests {
         }
     }
 
+    const FORGOT: &str = "https://maison.example/forgot-password";
+
+    /// 2026-11-16 14:30 UTC: 15:30 in Paris (winter time, UTC+1).
+    fn november_afternoon() -> chrono::DateTime<chrono::Utc> {
+        "2026-11-16T14:30:00Z".parse().unwrap()
+    }
+
+    /// #833: after a reset, the notice dates it, says every session was
+    /// closed, and links the forgotten-password page for "not you?".
+    #[test]
+    fn password_changed_email_after_a_reset_dates_it_and_says_every_session_was_closed() {
+        let c = EmailSender::password_changed_email(
+            "Alice",
+            PasswordChange::Reset,
+            november_afternoon(),
+            FORGOT,
+            PRIVACY,
+        );
+        assert!(
+            c.text
+                .starts_with("Bonjour Alice, votre mot de passe a été modifié\n"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text
+                .contains("réinitialisé le 16/11/2026 à 15:30 (heure de Paris)"),
+            "{}",
+            c.text
+        );
+        assert!(c.text.contains("Toutes les sessions"), "{}", c.text);
+        assert!(c.text.contains("Ce n'est pas vous ?"), "{}", c.text);
+        assert!(c.text.contains(&format!("\n{FORGOT}\n")), "{}", c.text);
+        assert!(c.text.contains(PRIVACY), "{}", c.text);
+        assert!(c.html.contains(&format!("href=\"{FORGOT}\"")), "{}", c.html);
+        assert!(c.html.contains("15:30 (heure de Paris)"), "{}", c.html);
+    }
+
+    /// #833: a change from the settings keeps the session it came from.
+    #[test]
+    fn password_changed_email_after_a_change_says_the_other_sessions_were_closed() {
+        let c = EmailSender::password_changed_email(
+            "Alice",
+            PasswordChange::Changed,
+            november_afternoon(),
+            FORGOT,
+            PRIVACY,
+        );
+        assert!(
+            c.text
+                .starts_with("Bonjour Alice, votre mot de passe a été modifié\n"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text
+                .contains("modifié le 16/11/2026 à 15:30 (heure de Paris)"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text.contains("Vos autres sessions ont été fermées"),
+            "{}",
+            c.text
+        );
+        assert!(!c
+            .text
+            .contains("Toutes les sessions ouvertes sur votre compte ont"));
+        assert!(c.text.contains("Ce n'est pas vous ?"), "{}", c.text);
+        assert!(c.text.contains(&format!("\n{FORGOT}\n")), "{}", c.text);
+    }
+
+    /// #833: adding a password closes no session; the notice says so
+    /// rather than claim otherwise.
+    #[test]
+    fn password_changed_email_after_an_addition_claims_no_session_was_closed() {
+        let c = EmailSender::password_changed_email(
+            "Alice",
+            PasswordChange::Added,
+            november_afternoon(),
+            FORGOT,
+            PRIVACY,
+        );
+        assert!(
+            c.text
+                .starts_with("Bonjour Alice, un mot de passe a été ajouté à votre compte\n"),
+            "{}",
+            c.text
+        );
+        assert!(
+            c.text.contains(
+                "ajouté à votre compte Manage Our Home le 16/11/2026 à 15:30 (heure de Paris)"
+            ),
+            "{}",
+            c.text
+        );
+        assert!(!c.text.contains("ont été fermées"), "{}", c.text);
+        assert!(c.text.contains("n'ont pas été fermées"), "{}", c.text);
+        assert!(c.text.contains("Ce n'est pas vous ?"), "{}", c.text);
+        assert!(c.text.contains(&format!("\n{FORGOT}\n")), "{}", c.text);
+    }
+
+    /// The hour is Paris's, summer time included.
+    #[test]
+    fn password_changed_email_reads_the_hour_in_paris_in_summer_too() {
+        let july: chrono::DateTime<chrono::Utc> = "2026-07-01T22:15:00Z".parse().unwrap();
+        let c =
+            EmailSender::password_changed_email("", PasswordChange::Changed, july, FORGOT, PRIVACY);
+        assert!(
+            c.text.contains("le 02/07/2026 à 00:15 (heure de Paris)"),
+            "{}",
+            c.text
+        );
+    }
+
+    /// The subject is what a message list shows first: it names nobody and
+    /// carries no date.
+    #[test]
+    fn password_changed_subjects_carry_no_data() {
+        assert_eq!(
+            PasswordChange::Reset.subject(),
+            "Votre mot de passe a été modifié"
+        );
+        assert_eq!(
+            PasswordChange::Changed.subject(),
+            "Votre mot de passe a été modifié"
+        );
+        assert_eq!(
+            PasswordChange::Added.subject(),
+            "Un mot de passe a été ajouté à votre compte"
+        );
+    }
+
     /// No name to greet (nothing left once flattened): the title reads
     /// without one.
     #[test]
     fn auth_emails_without_a_name_greet_nobody() {
+        let p = EmailSender::password_changed_email(
+            " \n\u{202E}",
+            PasswordChange::Reset,
+            november_afternoon(),
+            FORGOT,
+            PRIVACY,
+        );
+        assert!(
+            p.text.starts_with("Votre mot de passe a été modifié\n"),
+            "{}",
+            p.text
+        );
+        let a = EmailSender::password_changed_email(
+            "",
+            PasswordChange::Added,
+            november_afternoon(),
+            FORGOT,
+            PRIVACY,
+        );
+        assert!(
+            a.text
+                .starts_with("Un mot de passe a été ajouté à votre compte\n"),
+            "{}",
+            a.text
+        );
         let blank = " \n\u{202E}";
         let r = EmailSender::password_reset_email(blank, "https://m.example/r", PRIVACY);
         assert!(

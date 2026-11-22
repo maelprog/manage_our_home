@@ -1,14 +1,22 @@
 import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchVerificationToken, publishToLibrary, withdrawFromLibrary } from "../lib/db";
 import { fillIngredients, fillSteps, lineField } from "../lib/recipe-form";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Front epic F5 — Recipes (issue #20): every user journey the epic
 // introduces, happy paths plus the documented error states from
 // apps/api/src/recipes/'s error tables (see docs/front-epic-5-recipes.md).
 // Permission bar mirrors Stocks: any member may create/read a recipe or log a
 // meal, so every member sees the log-a-meal form; the edit link and delete
-// button stay behind can_modify (creator/admin/owner). The suggestion view
+// button stay behind can_modify (the creator, or a role meeting the family's
+// `recipes_edit` threshold, #866 — admin/owner by default). The suggestion view
 // renders the ranked order + derived signals (stock summary, missing
 // ingredients), never the raw internal score.
 
@@ -240,7 +248,7 @@ test.describe("Recipes — à réaliser (#470)", () => {
     await page.getByLabel("Personnes").fill("2");
     await page.getByRole("button", { name: "À réaliser" }).click();
     await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_selected$/);
-    await expect(page.getByText("À réaliser · 2 personnes")).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Personnes, Ratatouille" })).toHaveValue("2");
 
     // The list says so too.
     await page.goto("/recipes");
@@ -333,6 +341,93 @@ test.describe("Recipes — jour et repas d'une recette planifiée (#812)", () =>
     await expect(form).toBeHidden();
     await member.goto("/recipes?vue=prevues");
     await expect(member.locator(".badge.accent")).toHaveCount(0);
+    await context.close();
+  });
+});
+
+// #846: the number of people of a planned recipe, changed in its field —
+// on change with JavaScript, by « Appliquer » without — from its page and
+// from the list; the day and the meal stay.
+test.describe("Recipes — personnes d'une recette planifiée (#846)", () => {
+  test("the field applies on change, refuses out of bounds and removes the number once emptied", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "e2e-rcpeople", "People Planner");
+    await createGroup(page, "Famille Convives");
+    await createRecipe(page, { name: "Hachis du lundi", ingredients: "Pomme de terre | 4 | pièce" });
+    await page.getByLabel("Personnes").fill("4");
+    await page.getByRole("button", { name: "À réaliser" }).click();
+    await expect(page).toHaveURL(/\?notice=recipe_selected$/);
+
+    // A day and a meal, which none of what follows touches.
+    const day = parisDay(2);
+    const form = page.locator("form.when-form");
+    await page.getByText("Choisir un jour").click();
+    await form.getByLabel("Jour (facultatif)").fill(day);
+    await form.getByRole("radio", { name: "Soir" }).check();
+    await form.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(/\?notice=plan_saved$/);
+
+    // The badge says « À réaliser » alone: the number is in the field.
+    const people = page.getByRole("spinbutton", { name: "Personnes, Hachis du lundi" });
+    await expect(page.locator(".notice .badge")).toHaveText("À réaliser");
+    await expect(people).toHaveValue("4");
+    await expect(page.getByRole("button", { name: "Appliquer" })).toBeHidden();
+
+    await people.fill("6");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\?notice=servings_updated&servings=6$/);
+    await expect(page.getByRole("status").filter({ hasText: "Nombre de personnes mis à jour : 6." })).toBeVisible();
+    await expect(people).toHaveValue("6");
+    await expect(people).toBeFocused();
+    await expect(form.getByLabel("Jour (facultatif)")).toHaveValue(day);
+    await expect(form.getByRole("radio", { name: "Soir" })).toBeChecked();
+
+    // Out of bounds: the existing message, nothing changed.
+    await people.fill("0");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\?error=invalid_servings$/);
+    await expect(page.getByText("Le nombre de personnes doit être un nombre entier de 1 à 50.")).toBeVisible();
+    await expect(people).toHaveValue("6");
+
+    // Emptied: the number goes, the recipe stays planned on its day.
+    await people.fill("");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\?notice=servings_cleared$/);
+    await expect(people).toHaveValue("");
+    await expect(people).toHaveAttribute("placeholder", "Optionnel");
+    await expect(form.getByLabel("Jour (facultatif)")).toHaveValue(day);
+
+    // From the list, « Toutes » then « Prévues », back to each.
+    await page.goto("/recipes");
+    const row = page.getByRole("spinbutton", { name: "Personnes, Hachis du lundi" });
+    await row.fill("3");
+    await row.press("Tab");
+    await expect(page).toHaveURL(/\/recipes\?notice=servings_updated&servings=3$/);
+    await expect(row).toHaveValue("3");
+    await page.goto("/recipes?vue=prevues");
+    await row.fill("5");
+    await row.press("Tab");
+    await expect(page).toHaveURL(/\/recipes\?vue=prevues&notice=servings_updated&servings=5$/);
+    await expect(row).toHaveValue("5");
+    await expect(page.locator(".badge.accent")).toHaveCount(1);
+  });
+
+  test("without JavaScript, « Appliquer » sends the number", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-rcpeoplenojs", "People Without Script");
+    await createGroup(page, "Famille Sans Script");
+    await createRecipe(page, { name: "Potée", ingredients: "Chou | 1 | pièce" });
+    await page.getByRole("button", { name: "À réaliser" }).click();
+    await expect(page).toHaveURL(/\?notice=recipe_selected$/);
+
+    const people = page.getByRole("spinbutton", { name: "Personnes, Potée" });
+    await people.fill("8");
+    await page.getByRole("button", { name: "Appliquer" }).click();
+    await expect(page).toHaveURL(/\?notice=servings_updated&servings=8$/);
+    await expect(page.getByText("Nombre de personnes mis à jour : 8.")).toBeVisible();
+    await expect(people).toHaveValue("8");
     await context.close();
   });
 });
@@ -581,6 +676,7 @@ test.describe("Recipes — permission bar", () => {
     await createRecipe(page, { name: "Gratin du proprio", ingredients: "Pomme de terre | 4 | pièce" });
 
     const context = await browser.newContext();
+    await skipMealStart(context);
     const member = await context.newPage();
     await registerAndLogin(member, "e2e-rcmember", "Perm Member");
     await member.goto(href);
@@ -589,7 +685,7 @@ test.describe("Recipes — permission bar", () => {
     // The member sees the log form but no edit/delete controls.
     await openRecipeDetail(member, "Gratin du proprio");
     await expect(
-      member.getByText("Seul le créateur ou un administrateur peut modifier ou supprimer"),
+      member.getByText("Seuls le créateur, les administrateurs et le propriétaire peuvent modifier ou supprimer"),
     ).toBeVisible();
     await expect(member.getByRole("link", { name: "Modifier la recette" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Supprimer" })).toHaveCount(0);
@@ -662,5 +758,390 @@ test.describe("Recipes — import from a URL", () => {
     // A recipe typed by hand shows no source.
     await createRecipe(page, { name: "Crêpes maison" });
     await expect(page.getByText("Source :")).toHaveCount(0);
+  });
+});
+
+// #813: the planning of the meals, without JavaScript — a slot filled from
+// its « Ajouter », an undated recipe placed from « À placer », the window
+// moved by seven days.
+test.describe("Recipes — planning des repas (#813)", () => {
+  test("a meal added from an empty slot, another placed, the window moved", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-rcweek", "Week User");
+    await createGroup(page, "Famille Semainier");
+    await createRecipe(page, { name: "Velouté de potiron", ingredients: "Potiron | 1 | pièce" });
+    await createRecipe(page, { name: "Tarte fine" });
+
+    // Reached from the recipes' filters, lit there; nothing planned yet.
+    await page.goto("/recipes");
+    const filters = page.getByRole("navigation", { name: "Groupes de recettes" });
+    await filters.getByRole("link", { name: "Planning" }).click();
+    await expect(page).toHaveURL(/\/recipes\/week$/);
+    await expect(page.getByRole("heading", { name: "Planning des repas", level: 1 })).toBeVisible();
+    await expect(filters.getByRole("link", { name: "Planning" })).toHaveAttribute("aria-current", "true");
+    await expect(page.getByText("Aucun repas planifié cette semaine.")).toBeVisible();
+    const days = page.locator("ol.meals > li");
+    await expect(days).toHaveCount(9);
+    await expect(page.locator("ol.meals .empty a")).toHaveCount(18);
+    const today = page.locator("ol.meals > li.current");
+    await expect(today.getByText("Aujourd'hui")).toBeVisible();
+
+    // « Ajouter » on today's soir: the list names the slot, « À réaliser »
+    // plans the recipe on it and comes back to the planning.
+    await today.locator(`a[href="/recipes?date=${parisDay(0)}&repas=soir"]`).click();
+    await expect(page.getByText("« À réaliser » sur une recette la place dans le planning.")).toBeVisible();
+    await page
+      .locator("li", { hasText: "Velouté de potiron" })
+      .filter({ has: page.getByRole("button", { name: "À réaliser" }) })
+      .getByRole("button", { name: "À réaliser" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\/week\?notice=plan_saved$/);
+    const soir = today.locator("li", { hasText: "Soir" });
+    await expect(soir.getByRole("link", { name: "Velouté de potiron", exact: true })).toBeVisible();
+    await expect(soir.getByRole("link", { name: "Il manque 1 élément" })).toBeVisible();
+    await expect(page.locator(".summary")).toHaveText(/1 repas planifié\s*1 ingrédient à acheter/);
+    await expect(page.locator("ol.meals .empty a")).toHaveCount(17);
+
+    // Planned without a day: under « À placer », placed ten days ahead at
+    // midi, then seen on the window that shows that day.
+    await planFromList(page, "Tarte fine");
+    await page.goto("/recipes/week");
+    const toPlace = page.locator("section", { has: page.getByRole("heading", { name: "À placer" }) });
+    await toPlace.getByText("Choisir un jour").click();
+    await toPlace.getByLabel("Jour (facultatif)").fill(parisDay(10));
+    await toPlace.getByRole("radio", { name: "Midi" }).check();
+    await toPlace.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(page).toHaveURL(new RegExp(`/recipes/week\\?date=${parisDay(6)}&notice=plan_saved$`));
+    await expect(page.getByText("Jour et repas enregistrés.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "À placer" })).toHaveCount(0);
+    await expect(days).toHaveCount(7);
+    await expect(page.locator("ol.meals").getByRole("link", { name: "Tarte fine", exact: true })).toBeVisible();
+
+    // ‹ comes back to the current window, › goes seven days further.
+    await page.getByRole("link", { name: "7 jours précédents" }).click();
+    await expect(page).toHaveURL(/\/recipes\/week$/);
+    await expect(days).toHaveCount(9);
+    await page.getByRole("link", { name: "7 jours suivants" }).click();
+    await expect(page).toHaveURL(new RegExp(`/recipes/week\\?date=${parisDay(6)}$`));
+
+    // A date that does not read is the current window.
+    await page.goto("/recipes/week?date=demain");
+    await expect(days).toHaveCount(9);
+    await expect(page.locator("ol.meals > li.current")).toHaveCount(1);
+    await context.close();
+  });
+});
+
+// #816: « Changer ce plat », without JavaScript — from the planning, an
+// offer chosen, back on the planning with the new dish on the same slot;
+// then, from the recipe's page, no offer left, and nothing changed.
+test.describe("Recipes — changer ce plat (#816)", () => {
+  test("a dish replaced from the planning keeps its slot; none left is said", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await registerAndLogin(page, "e2e-rcswap", "Swap User");
+    await createGroup(page, "Famille Échange");
+    await createRecipe(page, { name: "Gratin du soir", ingredients: "Pommes de terre | 1 | kg" });
+    await createRecipe(page, { name: "Soupe du jour", ingredients: "Potiron | 1 | pièce" });
+
+    // Gratin planned on today's soir from its « Ajouter ».
+    await page.goto("/recipes/week");
+    const today = page.locator("ol.meals > li.current");
+    await today.locator(`a[href="/recipes?date=${parisDay(0)}&repas=soir"]`).click();
+    await page
+      .locator("li", { hasText: "Gratin du soir" })
+      .filter({ has: page.getByRole("button", { name: "À réaliser" }) })
+      .getByRole("button", { name: "À réaliser" })
+      .click();
+    await expect(page).toHaveURL(/\/recipes\/week\?notice=plan_saved$/);
+
+    // « Changer ce plat »: what is replaced, and the soup offered.
+    await today.getByRole("link", { name: /^Changer ce plat : Gratin du soir, .+, soir$/ }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\/replace\?back=week$/);
+    await expect(page.getByRole("heading", { name: "Changer ce plat", level: 1 })).toBeVisible();
+    const context816 = page.locator("section.ctx");
+    await expect(context816.getByText("Vous remplacez")).toBeVisible();
+    await expect(context816.getByText("Gratin du soir")).toBeVisible();
+    await expect(context816.getByText("Le jour, le repas et le nombre de personnes sont conservés.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Proposition", level: 2 })).toBeVisible();
+    const offer = page.locator("li.prop", { hasText: "Soupe du jour" });
+    await expect(offer.getByText("Il manque 1 élément")).toBeVisible();
+
+    // Chosen: back on the planning, the soup on the same slot.
+    await offer.getByRole("button", { name: "Choisir Soupe du jour" }).click();
+    await expect(page).toHaveURL(/\/recipes\/week\?notice=recipe_replaced&from=[0-9a-f-]+&to=[0-9a-f-]+$/);
+    await expect(page.getByText("Gratin du soir remplacé par Soupe du jour.")).toBeVisible();
+    const soir = today.locator("li", { hasText: "Soir" });
+    await expect(soir.getByRole("link", { name: "Soupe du jour", exact: true })).toBeVisible();
+    await expect(page.locator("ol.meals").getByRole("link", { name: "Gratin du soir", exact: true })).toHaveCount(0);
+
+    // The gratin planned again: from the soup's page, no offer is left.
+    await planFromList(page, "Gratin du soir");
+    await openRecipeDetail(page, "Soupe du jour");
+    await page.getByRole("link", { name: "Changer ce plat" }).click();
+    await expect(page.getByText("Aucune autre recette à proposer pour l'instant.")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Choisir/ })).toHaveCount(0);
+    await page.getByRole("link", { name: "Annuler" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+$/);
+    await expect(page.getByRole("heading", { name: "Soupe du jour", level: 1 })).toBeVisible();
+    await page.goto("/recipes/week");
+    await expect(soir.getByRole("link", { name: "Soupe du jour", exact: true })).toBeVisible();
+    await context.close();
+  });
+});
+
+// #910: the library shared by every family (API #906, #907). The
+// publication is written straight into the database (`publishToLibrary`):
+// the screen that publishes is #911's.
+test.describe("Recipes — bibliothèque (#910)", () => {
+  test("search, open, add, then find the copy in « Toutes les recettes »", async ({ page }) => {
+    const email = await registerAndLogin(page, "e2e-rclib", "Library User");
+    await createGroup(page, "Famille Partage");
+    const token = `Biblio${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const name = `Gratin ${token}`;
+    const id = await publishToLibrary(email, {
+      name,
+      instructions: "Préchauffer le four.\nCuire une heure.",
+      servings: 4,
+      ingredients: ["Pommes de terre", "Crème"],
+    });
+
+    // The way in: « Bibliothèque » in the header of the recipes.
+    await page.goto("/recipes");
+    await page.getByRole("link", { name: "Bibliothèque", exact: true }).click();
+    await expect(page).toHaveURL(/\/recipes\/library$/);
+    await expect(page.getByRole("heading", { name: "Bibliothèque", level: 1 })).toBeVisible();
+
+    // A search that finds nothing says so, and offers to start again.
+    await page.getByLabel("Rechercher une recette").fill(`${token}zz`);
+    await page.getByRole("button", { name: "Rechercher" }).click();
+    await expect(page.getByText(`0 résultat pour « ${token}zz ».`)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Aucune recette ne correspond" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Effacer la recherche" })).toHaveAttribute(
+      "href",
+      "/recipes/library",
+    );
+
+    // The search by name, case aside, finds it; its count is said.
+    await page.getByLabel("Rechercher une recette").fill(token.toLowerCase());
+    await page.getByRole("button", { name: "Rechercher" }).click();
+    await expect(page.getByText(`1 résultat pour « ${token.toLowerCase()} »`)).toBeVisible();
+    await expect(page.getByText("Page 1 sur 1")).toBeVisible();
+    const row = page.getByRole("link", { name: new RegExp(name) });
+    await expect(row).toContainText("4 personnes · 2 ingrédients");
+    await expect(row).not.toContainText("Issue de la bibliothèque");
+    await row.click();
+
+    // Its page: what it holds.
+    await expect(page).toHaveURL(new RegExp(`/recipes/library/${id}$`));
+    await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
+    await expect(page.getByText("Pour 4 personnes")).toBeVisible();
+    await expect(page.getByText("Pommes de terre")).toBeVisible();
+    await expect(page.getByText("Cuire une heure.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Ajouter à mes recettes" }).click();
+    await expect(page).toHaveURL(new RegExp(`/recipes/library/${id}\\?notice=added$`));
+    await expect(page.getByText("Recette ajoutée à vos recettes.")).toBeVisible();
+    // Once copied, no second « Ajouter »: the copy instead.
+    await expect(page.getByRole("button", { name: "Ajouter à mes recettes" })).toHaveCount(0);
+    await expect(page.getByText("Cette recette est déjà dans vos recettes.")).toBeVisible();
+    await page.getByRole("link", { name: "Voir ma copie" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]{36}$/);
+    await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
+    const copyUrl = page.url();
+
+    // The list marks the copy.
+    await page.goto(`/recipes/library?q=${token}`);
+    await expect(page.getByRole("link", { name: new RegExp(name) })).toContainText(
+      "Issue de la bibliothèque",
+    );
+
+    // The family has it among its own recipes.
+    await openRecipeDetail(page, name);
+
+    // Withdrawn: its page says so; the copy stays whole, without a word of it.
+    await withdrawFromLibrary(id);
+    const response = await page.goto(`/recipes/library/${id}`);
+    expect(response?.status()).toBe(404);
+    await expect(
+      page.getByText("Cette recette a été retirée de la bibliothèque et ne peut plus être ajoutée."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Ajouter à mes recettes" })).toHaveCount(0);
+    await openRecipeDetail(page, name);
+    expect(page.url()).toBe(copyUrl);
+    await expect(page.getByText("Pommes de terre")).toBeVisible();
+    await expect(page.getByText("Cuire une heure.")).toBeVisible();
+    await expect(page.getByText(/retirée/)).toHaveCount(0);
+  });
+});
+
+// #911: publishing from the recipe's page, the consent asked first (and
+// nothing published without it, without JavaScript too); another account
+// reads the publication and its source, then reports it; the publisher
+// updates it, withdraws it from the recipe, publishes it again and
+// withdraws it from « Mes publications ».
+test.describe("Recipes — publier et signaler (#911)", () => {
+  test("publish with consent, read and report from another account, withdraw", async ({
+    page,
+    browser,
+  }) => {
+    await registerAndLogin(page, "e2e-rcpub", "Publish Author");
+    await createGroup(page, "Famille Partageuse");
+    const token = `Pub${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const name = `Tarte ${token}`;
+    // An imported recipe: the page's address in the create form's hidden
+    // `source_url`, as the import leaves it.
+    const source = "https://www.marmiton.org/recettes/recette_tarte-aux-poireaux_1.aspx";
+    await page.goto("/recipes/new");
+    await page.locator('form[action="/recipes/new"]').evaluate((form, url) => {
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = "source_url";
+      field.value = url;
+      form.appendChild(field);
+    }, source);
+    await page.getByLabel("Nom").fill(name);
+    await fillSteps(page, "Étaler la pâte.\nCuire 40 minutes.");
+    await page.getByRole("button", { name: "Créer la recette" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+    const recipeUrl = page.url().replace(/\?.*$/, "");
+
+    // The card of the recipe offers to publish it.
+    const card = page.locator("#bibliotheque");
+    await expect(card.getByRole("heading", { name: "Bibliothèque" })).toBeVisible();
+    await card.getByRole("link", { name: "Publier dans la bibliothèque" }).click();
+    await expect(page).toHaveURL(`${recipeUrl}/publish`);
+    await expect(
+      page.getByRole("heading", { name: "Publier dans la bibliothèque", level: 1 }),
+    ).toBeVisible();
+    await expect(page.getByText("(ici : marmiton.org)")).toBeVisible();
+    await expect(page.getByText("Votre nom, votre foyer, votre photo")).toBeVisible();
+
+    // Without JavaScript, the box left unticked: nothing is published.
+    const bare = await browser.newContext({
+      javaScriptEnabled: false,
+      storageState: await page.context().storageState(),
+    });
+    const noJs = await bare.newPage();
+    await noJs.goto(`${recipeUrl}/publish`);
+    const [refused] = await Promise.all([
+      noJs.waitForResponse((r) => r.url().endsWith("/publish") && r.request().method() === "POST"),
+      noJs.getByRole("button", { name: "Publier", exact: true }).click(),
+    ]);
+    expect(refused.status()).toBe(422);
+    await expect(
+      noJs.getByText("Rien n'a été publié : cochez la case de consentement pour continuer."),
+    ).toBeVisible();
+    await expect(noJs.getByText("Cochez cette case pour publier.")).toBeVisible();
+    await noJs.goto("/recipes/library/mine");
+    await expect(noJs.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+    await bare.close();
+
+    // Ticked: published, back on the recipe.
+    await page.getByRole("checkbox", { name: /Je confirme que cette recette/ }).check();
+    await page.getByRole("button", { name: "Publier", exact: true }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=published`);
+    await expect(page.getByText("Recette publiée dans la bibliothèque.")).toBeVisible();
+    await expect(card.getByText("Publiée", { exact: true })).toBeVisible();
+    await expect(card.getByRole("button", { name: "Retirer de la bibliothèque" })).toBeVisible();
+
+    // Another account, in another family, reads it — its source, nothing of
+    // its author — and reports it.
+    const readerContext = await browser.newContext();
+    await skipMealStart(readerContext);
+    const reader = await readerContext.newPage();
+    await registerAndLogin(reader, "e2e-rcpubreader", "Library Reader");
+    await createGroup(reader, "Famille Lectrice");
+    await reader.goto(`/recipes/library?q=${token}`);
+    await reader.getByRole("link", { name: new RegExp(name) }).click();
+    await expect(reader).toHaveURL(/\/recipes\/library\/[0-9a-f-]{36}$/);
+    const publication = reader.url();
+    await expect(reader.getByRole("heading", { name, level: 1 })).toBeVisible();
+    await expect(reader.getByText("Cuire 40 minutes.")).toBeVisible();
+    await expect(reader.getByRole("link", { name: "marmiton.org" })).toHaveAttribute(
+      "href",
+      source,
+    );
+    await expect(reader.getByText("Publish Author")).toHaveCount(0);
+    await expect(reader.getByText("Famille Partageuse")).toHaveCount(0);
+
+    await reader.getByRole("link", { name: "Signaler cette recette" }).click();
+    await expect(reader).toHaveURL(`${publication}/report`);
+    await expect(reader.getByRole("radio")).toHaveCount(6);
+    // No reason, then « Autre » without a comment: said, nothing sent.
+    await reader.getByRole("button", { name: "Envoyer le signalement" }).click();
+    await expect(reader.getByText("Choisissez un motif.")).toBeVisible();
+    await reader.getByRole("radio", { name: "Autre (commentaire obligatoire)" }).check();
+    await reader.getByRole("button", { name: "Envoyer le signalement" }).click();
+    await expect(reader.getByText("Précisez le problème dans le commentaire.")).toBeVisible();
+    await expect(
+      reader.getByRole("radio", { name: "Autre (commentaire obligatoire)" }),
+    ).toBeChecked();
+    await reader.getByRole("textbox", { name: /Commentaire/ }).fill("Recette en double.");
+    await reader.getByRole("button", { name: "Envoyer le signalement" }).click();
+    await expect(reader).toHaveURL(`${publication}?notice=reported`);
+    await expect(reader.getByText("Merci, votre signalement a été transmis.")).toBeVisible();
+    await expect(reader.getByText(/Vous avez signalé cette recette le/)).toBeVisible();
+    await expect(reader.getByRole("link", { name: "Signaler cette recette" })).toHaveCount(0);
+
+    // The publisher updates the publication: the consent asked again.
+    await page.goto(recipeUrl);
+    await card.getByRole("link", { name: "Mettre à jour la publication" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Mettre à jour la publication", level: 1 }),
+    ).toBeVisible();
+    await page.getByRole("checkbox", { name: /Je confirme à nouveau/ }).check();
+    await page.getByRole("button", { name: "Mettre à jour", exact: true }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=publication_updated`);
+
+    // Withdrawn from the recipe, in one click.
+    await card.getByRole("button", { name: "Retirer de la bibliothèque" }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=unpublished`);
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
+    await expect(card.getByText("Cette recette n'est plus dans la bibliothèque.")).toBeVisible();
+    const gone = await reader.goto(publication);
+    expect(gone?.status()).toBe(404);
+
+    // Published again, then withdrawn from « Mes publications ».
+    await card.getByRole("link", { name: "Publier à nouveau" }).click();
+    await page.getByRole("checkbox", { name: /Je confirme que cette recette/ }).check();
+    await page.getByRole("button", { name: "Publier", exact: true }).click();
+    await expect(page).toHaveURL(`${recipeUrl}?notice=published`);
+    await card.getByRole("link", { name: "Mes publications" }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine$/);
+    await expect(page.getByRole("heading", { name: "Mes publications", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
+    await page.getByRole("button", { name: `Retirer ${name} de la bibliothèque` }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished$/);
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+    await reader.goto(`/recipes/library?q=${token}`);
+    await expect(
+      reader.getByRole("heading", { name: "Aucune recette ne correspond" }),
+    ).toBeVisible();
+    await readerContext.close();
+  });
+
+  // A publication outlives its family: its publisher, in no family any
+  // more, still reads « Mes publications » and withdraws it from there.
+  test("« Mes publications » without a family: listed and withdrawn", async ({ page }) => {
+    const email = await registerAndLogin(page, "e2e-rcpubalone", "Lone Publisher");
+    const name = `Gratin ${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    await publishToLibrary(email, { name, ingredients: ["pommes de terre"] });
+    const listed = await page.goto("/recipes/library/mine");
+    expect(listed?.status()).toBe(200);
+    await expect(page).toHaveURL(/\/recipes\/library\/mine$/);
+    await expect(page.getByRole("heading", { name: "Mes publications", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
+    await expect(page.getByText("Cette recette n'est plus dans vos recettes")).toBeVisible();
+    await page.getByRole("button", { name: `Retirer ${name} de la bibliothèque` }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished$/);
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+    // A forged URL names nothing: the name is never read from it.
+    await page.goto("/recipes/library/mine?notice=unpublished&nom=Arnaque");
+    await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
+    await expect(page.getByText("Arnaque")).toHaveCount(0);
   });
 });

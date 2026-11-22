@@ -89,6 +89,9 @@ pub struct GroupSummary {
     /// The caller became this group's owner without asking for it and has
     /// not acknowledged it yet (#323); `null` otherwise.
     pub ownership_notice: Option<OwnershipNotice>,
+    /// The group's seven restricted features with their effective
+    /// threshold (#865), as `GET /groups/{id}/access-policies` lists them.
+    pub access_policies: Vec<manage_our_home_shared::dto::groups::AccessPolicy>,
 }
 
 /// `GroupSummary::ownership_notice`.

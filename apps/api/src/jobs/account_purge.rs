@@ -18,8 +18,12 @@
 //!   `account_reactivation_requests` (#289), `push_subscriptions` (#306),
 //!   `notifications` (#534) — those it received, and those it caused,
 //!   whose text may carry its display name, `stock_expiry_announcements`
-//!   (#700), `user_allergies`, `allergy_sharing`, `user_dislikes` (#817);
-//!   and the
+//!   (#700), `user_allergies`, `allergy_sharing`, `user_dislikes` (#817),
+//!   `ingredient_links` (#903, with the memberships its key is onto), the
+//!   recipes it published to the shared library (#905: `library_recipes`,
+//!   with their `library_ingredients` and `library_recipe_publishers` rows;
+//!   the copies families made of them stay), the reports it made on
+//!   publications (#908: `library_reports`); and the
 //!   personal rows among the others: the account's own `audit_log`
 //!   entries, the `invitations` it sent (with the third-party addresses
 //!   they hold) and its `calendar_imports` (with their `feed_url`, a
@@ -61,7 +65,7 @@ pub const DEACTIVATION_NOTICE_SUBJECT: &str =
     "Votre compte Manage Our Home désactivé va être supprimé";
 
 /// Polling worker. `pool` must be the `BYPASSRLS` admin pool
-/// (`AppState.admin_db`): eleven of the tables it deletes from (`groups`
+/// (`AppState.admin_db`): thirteen of the tables it deletes from (`groups`
 /// among them) are under forced RLS policies, and on any other role the
 /// pass refuses rather than stamp an account purged with its memberships
 /// left in place. Each pass sends the due warnings first, then purges — deleting the profile photos
@@ -331,6 +335,24 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<S
     sqlx::query!("DELETE FROM user_dislikes WHERE user_id = $1", user_id)
         .execute(&mut *tx)
         .await?;
+    // The recipes it published to the shared library (#905): their
+    // publisher row and ingredients go with them; the copies families made
+    // stay, `recipes.library_recipe_id` dropping to NULL.
+    sqlx::query!(
+        r#"DELETE FROM library_recipes WHERE id IN (
+               SELECT library_recipe_id FROM library_recipe_publishers WHERE user_id = $1)"#,
+        user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    // The reports it made on publications (#908): its comments may say
+    // anything of it.
+    sqlx::query!(
+        "DELETE FROM library_reports WHERE reporter_id = $1",
+        user_id
+    )
+    .execute(&mut *tx)
+    .await?;
     sqlx::query!("DELETE FROM sessions WHERE user_id = $1", user_id)
         .execute(&mut *tx)
         .await?;

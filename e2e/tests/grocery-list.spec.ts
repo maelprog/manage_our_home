@@ -1,7 +1,14 @@
 import { expect, Page, test } from "@playwright/test";
 import { parisDay } from "../lib/dates";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchMealTastes, fetchVerificationToken } from "../lib/db";
 import { fillIngredients } from "../lib/recipe-form";
+import { skipMealStart } from "../lib/meal-start";
+
+// The first questions about meals (#820) would open from the recipe list
+// for every member registered here: tests/meal-start.spec.ts walks them.
+test.beforeEach(async ({ context }) => {
+  await skipMealStart(context);
+});
 
 // Front epic F6 — Grocery list (issue #21): every user journey the epic
 // introduces, happy paths plus the documented error states from
@@ -9,7 +16,8 @@ import { fillIngredients } from "../lib/recipe-form";
 // docs/front-epic-6-grocery-list.md). One shared list per family; any member
 // may add/read/check off, so every member sees the check control; the per-row
 // "Modifier" link and the edit/delete screen stay behind can_modify
-// (creator/admin/owner). Generate is idempotent — a re-run adds nothing.
+// (the creator, or a role meeting the family's `grocery_edit` threshold, #866 —
+// admin/owner by default). Generate is idempotent — a re-run adds nothing.
 // It takes the recipes « À réaliser » only (#470), scaled to their number of
 // people.
 
@@ -191,21 +199,25 @@ test.describe("Grocery list — recipes to cook (#470)", () => {
     await expect(page).toHaveURL(/\/recipes#a-realiser$/);
     await expect(page.getByText("Aucune recette à réaliser.")).toBeVisible();
 
-    // Written for 4, planned for 6: 200 g × 6 / 4 = 300 g.
+    // Written for 4, planned for 6, then changed to 8 in its field (#846):
+    // 200 g × 8 / 4 = 400 g.
     await createRecipe(page, "Crêpes", "Farine | 200 | g", "4");
     await createRecipe(page, "Soupe", "Poireau | 2 | pièce");
     await planRecipe(page, "Crêpes", "6");
     await expect(page.getByText("Recette à réaliser pour les prochaines courses.")).toBeVisible();
     await expect(page.getByText("1 recette prévue pour la liste de courses")).toBeVisible();
-    await expect(
-      page.locator("li", { hasText: "Crêpes" }).getByText("À réaliser · 6 personnes"),
-    ).toBeVisible();
+    const people = page.getByRole("spinbutton", { name: "Personnes, Crêpes" });
+    await expect(people).toHaveValue("6");
+    await people.fill("8");
+    await people.press("Tab");
+    await expect(page).toHaveURL(/\/recipes\?notice=servings_updated&servings=8$/);
+    await expect(people).toHaveValue("8");
 
     await page.goto("/grocery-list");
     await page.getByRole("button", { name: "Générer depuis 1 recette et les stocks" }).click();
     await expect(page).toHaveURL(/\/grocery-list\?notice=generated&added=1$/);
     const farine = page.locator("li", { hasText: "Farine" });
-    await expect(farine.getByText("300 g")).toBeVisible();
+    await expect(farine.getByText("400 g")).toBeVisible();
     await expect(farine.getByText("Recette")).toBeVisible();
     await expect(page.locator("li", { hasText: "Poireau" })).toHaveCount(0);
 
@@ -640,7 +652,7 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
   });
 
   test("marking done with an ingredient at 0 leaves its stock unchanged", async ({ page }) => {
-    await registerAndLogin(page, "e2e-gldone", "Grocery Cook");
+    const email = await registerAndLogin(page, "e2e-gldone", "Grocery Cook");
     await createGroup(page, "Famille Cuisine");
     await createStockItem(page, "Farine", "1000", "g");
     await createStockItem(page, "Lait", "2", "L");
@@ -662,6 +674,12 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await expect(page.getByRole("checkbox", { name: "Retirer Farine du stock" })).toBeChecked();
     await expect(page.getByRole("checkbox", { name: "Retirer Lait du stock" })).toBeChecked();
     await lait.fill("0");
+    // The opinion (#822): « Neutre » unless chosen, a note if wanted.
+    const opinion = page.getByRole("group", { name: "Avis sur le plat", exact: true });
+    await expect(opinion.getByRole("radio", { name: "Neutre" })).toBeChecked();
+    await opinion.getByRole("radio", { name: "Pas aimé" }).check();
+    await page.getByRole("textbox", { name: "Autre avis (facultatif)" }).fill("Trop sec.");
+    await expect(page.getByText("200 caractères au plus · 9 saisis")).toBeVisible();
     await page.getByRole("button", { name: "Marquer comme faite" }).click();
     // Its creator is asked whether the recipe changes (#558): not this time.
     const unused = page.getByRole("checkbox", {
@@ -674,6 +692,8 @@ test.describe("Recipes to cook — done or abandoned (#474)", () => {
     await expect(
       page.getByText("Recette faite : le stock est mis à jour et le repas enregistré."),
     ).toBeVisible();
+    // Carried through the update step, the opinion reached apps/api.
+    expect(await fetchMealTastes(email)).toEqual([{ taste: "pas_aime", taste_note: "Trop sec." }]);
 
     await page.goto("/stocks");
     await expect(page.locator("li", { hasText: "Lait" })).toContainText("2 L");

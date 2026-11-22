@@ -1,0 +1,95 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.reminder_channel, u.expiry_digest_hour, u.expiry_digest_enabled,\n                  u.notify_agenda_added,\n                  u.notify_agenda_changed, u.notify_agenda_deleted,\n                  (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS \"subscriptions!\"\n           FROM users u WHERE u.id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reminder_channel",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "reminder_channel"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "expiry_digest_hour",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "expiry_digest_hour"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "expiry_digest_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "expiry_digest_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "notify_agenda_added",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_added"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "notify_agenda_changed",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_changed"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "notify_agenda_deleted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "notify_agenda_deleted"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "subscriptions!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "ce10e746c2794458e61fba7a870ec1013cd8df9824cde7d9e417b6a07cea055c"
+}

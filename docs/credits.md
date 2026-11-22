@@ -3,6 +3,11 @@
 Œuvres de tiers que `apps/web` sert à ses visiteurs, et les licences sous
 lesquelles elles le sont.
 
+La licence du projet (PolyForm Noncommercial 1.0.0, fichier `LICENSE` à la
+racine) ne s'applique pas aux œuvres listées ici : chacune reste sous sa
+propre licence, celle que cette page indique, et seul son auteur peut en
+changer.
+
 ## Polices
 
 Fraunces et Source Sans 3, sous SIL Open Font License 1.1 : le texte de la
@@ -16,7 +21,7 @@ Les tracés des icônes d'`apps/web/src/icons.rs` sont ceux de
 le code sans les attributs de trait, que porte la feuille de style. Lucide
 est publié sous licence ISC ; les icônes qu'il reprend du projet Feather le
 sont aussi sous licence MIT. Parmi celles du jeu : `calendar`, `check`,
-`chevron-left`, `chevron-right`, `clock`, `link`, `lock`, `minus`, `plus`,
+`chevron-left`, `chevron-right`, `clock`, `link`, `list`, `lock`, `minus`, `plus`,
 `search`, `trash` et `x`. Les deux textes suivent, tels que Lucide les publie.
 
 ```

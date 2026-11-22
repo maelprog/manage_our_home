@@ -125,6 +125,10 @@ pub enum Event<'a> {
         starts_at: DateTime<Utc>,
         all_day: bool,
     },
+    /// A member imported a calendar feed that added or changed `count`
+    /// events (#852): one notification for the whole import, naming no
+    /// event.
+    AgendaImported { author: &'a str, count: usize },
 }
 
 /// Which visible fields of an agenda event a change moved (#849), as
@@ -160,7 +164,8 @@ impl Event<'_> {
             | Event::BudgetCategoryCapExceeded { .. } => Kind::BudgetAlert,
             Event::AgendaAdded { .. }
             | Event::AgendaChanged { .. }
-            | Event::AgendaDeleted { .. } => Kind::AgendaChange,
+            | Event::AgendaDeleted { .. }
+            | Event::AgendaImported { .. } => Kind::AgendaChange,
         }
     }
 }
@@ -246,6 +251,11 @@ pub fn body(event: &Event<'_>) -> String {
             typed(author),
             typed(title),
             paris_when(starts_at, all_day)
+        ),
+        Event::AgendaImported { author, count } => format!(
+            "{} a importé {count} événement{}.",
+            typed(author),
+            if count == 1 { "" } else { "s" }
         ),
     }
 }
@@ -341,6 +351,68 @@ pub struct NewNotification<'a> {
     /// pass): a recipient who already holds a notification with this key
     /// gets no second one. `None` writes unconditionally.
     pub dedup_key: Option<String>,
+}
+
+/// One row written: its recipient and its id — what the push to that
+/// recipient names, so that its click marks it read (#862).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Entry {
+    pub member: Uuid,
+    pub id: Uuid,
+}
+
+/// The entries each member's push names: one push per member, whatever
+/// the number of their entries (two alerts of one expense, a recap in each
+/// of their families), naming every one of them. Members in order, each
+/// once; each entry once.
+pub fn by_member(entries: &[Entry]) -> Vec<(Uuid, Vec<Uuid>)> {
+    let mut grouped: std::collections::BTreeMap<Uuid, std::collections::BTreeSet<Uuid>> =
+        Default::default();
+    for entry in entries {
+        grouped.entry(entry.member).or_default().insert(entry.id);
+    }
+    grouped
+        .into_iter()
+        .map(|(member, ids)| (member, ids.into_iter().collect()))
+        .collect()
+}
+
+/// [`insert_for`] for a notification without `dedup_key`, each row under
+/// an id drawn here: returns them, so that the push can name each
+/// recipient's (#862). Not read back with `RETURNING`: on a runtime
+/// connection, the rows are other members', and the SELECT policy of 0036
+/// would refuse them to the author. Without a `dedup_key` every row is
+/// written, so the entries returned are the rows written.
+pub async fn insert_entries(
+    conn: &mut PgConnection,
+    recipients: &[Uuid],
+    notification: &NewNotification<'_>,
+) -> Result<Vec<Entry>, sqlx::Error> {
+    debug_assert!(notification.dedup_key.is_none());
+    let entries: Vec<Entry> = recipients
+        .iter()
+        .map(|&member| Entry {
+            member,
+            id: Uuid::new_v4(),
+        })
+        .collect();
+    let members: Vec<Uuid> = entries.iter().map(|e| e.member).collect();
+    let ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
+    sqlx::query!(
+        r#"INSERT INTO notifications (id, user_id, group_id, kind, object_id, actor_id, body)
+           SELECT t.id, t.r, $3, $4, $5, $6, $7
+           FROM unnest($1::uuid[], $2::uuid[]) AS t(r, id)"#,
+        &members,
+        &ids,
+        notification.group_id,
+        notification.event.kind().as_str(),
+        notification.object_id,
+        notification.actor_id,
+        body(&notification.event),
+    )
+    .execute(conn)
+    .await?;
+    Ok(entries)
 }
 
 /// Writes `notification` for each of `recipients`. Returns how many rows
@@ -594,6 +666,48 @@ pub async fn mark_all_read(State(state): State<AppState>, auth: AuthUser) -> App
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    // -- the entries a push names (#862) -------------------------------------
+
+    fn entry(member: u128, id: u128) -> Entry {
+        Entry {
+            member: Uuid::from_u128(member),
+            id: Uuid::from_u128(id),
+        }
+    }
+
+    fn ids(ids: &[u128]) -> Vec<Uuid> {
+        ids.iter().map(|&id| Uuid::from_u128(id)).collect()
+    }
+
+    #[test]
+    fn each_member_s_push_names_their_entry() {
+        assert_eq!(
+            by_member(&[entry(2, 20), entry(1, 10)]),
+            vec![
+                (Uuid::from_u128(1), ids(&[10])),
+                (Uuid::from_u128(2), ids(&[20]))
+            ]
+        );
+    }
+
+    /// Two alerts of one expense, or a recap in each family: one push,
+    /// naming both, never another member's.
+    #[test]
+    fn a_member_with_several_entries_gets_one_push_naming_them_all() {
+        assert_eq!(
+            by_member(&[entry(1, 11), entry(2, 20), entry(1, 10), entry(1, 11)]),
+            vec![
+                (Uuid::from_u128(1), ids(&[10, 11])),
+                (Uuid::from_u128(2), ids(&[20]))
+            ]
+        );
+    }
+
+    #[test]
+    fn no_entry_no_push() {
+        assert_eq!(by_member(&[]), vec![]);
+    }
 
     #[test]
     fn the_seven_kinds_round_trip() {
@@ -1110,5 +1224,61 @@ mod tests {
             assert!((1..=300).contains(&n), "{n} characters for {event:?}");
             assert!(!text.contains(['\n', '\r']), "{text:?}");
         }
+    }
+
+    // -- agenda imports (#852) ----------------------------------------------
+
+    #[test]
+    fn an_import_is_an_agenda_change() {
+        assert_eq!(
+            Event::AgendaImported {
+                author: "a",
+                count: 3
+            }
+            .kind(),
+            Kind::AgendaChange
+        );
+    }
+
+    #[test]
+    fn an_import_of_one_event_is_singular() {
+        assert_eq!(
+            body(&Event::AgendaImported {
+                author: "Alice",
+                count: 1
+            }),
+            "Alice a importé 1 événement."
+        );
+    }
+
+    #[test]
+    fn an_import_of_several_events_is_plural_with_its_exact_count() {
+        for (count, text) in [
+            (2, "Alice a importé 2 événements."),
+            (30, "Alice a importé 30 événements."),
+            (1234, "Alice a importé 1234 événements."),
+        ] {
+            assert_eq!(
+                body(&Event::AgendaImported {
+                    author: "Alice",
+                    count
+                }),
+                text
+            );
+        }
+    }
+
+    /// The author's name is typed: flattened and cut like any other, so the
+    /// text stays one line within the column.
+    #[test]
+    fn an_import_fits_the_column_whatever_its_author() {
+        let author = format!("{}\n{}", "a".repeat(300), "b".repeat(300));
+        let text = body(&Event::AgendaImported {
+            author: &author,
+            count: usize::MAX,
+        });
+        let n = text.chars().count();
+        assert!((1..=300).contains(&n), "{n} characters: {text:?}");
+        assert!(!text.contains(['\n', '\r']), "{text:?}");
     }
 }

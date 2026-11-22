@@ -36,7 +36,9 @@ pub async fn get_settings(
     auth: AuthUser,
 ) -> AppResult<Json<NotificationSettings>> {
     let row = sqlx::query!(
-        r#"SELECT u.reminder_channel, u.expiry_digest_hour, u.notify_agenda_changes,
+        r#"SELECT u.reminder_channel, u.expiry_digest_hour, u.expiry_digest_enabled,
+                  u.notify_agenda_added,
+                  u.notify_agenda_changed, u.notify_agenda_deleted,
                   (SELECT count(*) FROM push_subscriptions p WHERE p.user_id = u.id) AS "subscriptions!"
            FROM users u WHERE u.id = $1"#,
         auth.user_id
@@ -48,14 +50,18 @@ pub async fn get_settings(
         push_subscriptions: row.subscriptions,
         vapid_public_key: state.push.as_ref().map(|v| v.public_key().to_string()),
         expiry_digest_hour: row.expiry_digest_hour,
-        notify_agenda_changes: row.notify_agenda_changes,
+        expiry_digest_enabled: row.expiry_digest_enabled,
+        notify_agenda_added: row.notify_agenda_added,
+        notify_agenda_changed: row.notify_agenda_changed,
+        notify_agenda_deleted: row.notify_agenda_deleted,
     }))
 }
 
 /// `PUT /account/notifications` — 204, or 400 `invalid_reminder_channel`,
 /// or 400 `invalid_expiry_digest_hour` for a recap hour outside 0..23
-/// (`parse_expiry_digest_hour`, #700). Without `expiry_digest_hour`, the
-/// recap's hour stays as it is.
+/// (`parse_expiry_digest_hour`, #700). A field left out — the recap's
+/// hour or switch, any of the three agenda switches (#853) — stays as it
+/// is; the recap off, its hour is kept, and may still be changed.
 #[utoipa::path(
     put,
     path = "/account/notifications",
@@ -85,12 +91,18 @@ pub async fn update_settings(
     sqlx::query!(
         r#"UPDATE users SET reminder_channel = $2,
                   expiry_digest_hour = COALESCE($3, expiry_digest_hour),
-                  notify_agenda_changes = COALESCE($4, notify_agenda_changes)
+                  expiry_digest_enabled = COALESCE($4, expiry_digest_enabled),
+                  notify_agenda_added = COALESCE($5, notify_agenda_added),
+                  notify_agenda_changed = COALESCE($6, notify_agenda_changed),
+                  notify_agenda_deleted = COALESCE($7, notify_agenda_deleted)
            WHERE id = $1"#,
         auth.user_id,
         channel.as_str(),
         digest_hour,
-        body.notify_agenda_changes,
+        body.expiry_digest_enabled,
+        body.notify_agenda_added,
+        body.notify_agenda_changed,
+        body.notify_agenda_deleted,
     )
     .execute(&state.db)
     .await?;
@@ -98,10 +110,15 @@ pub async fn update_settings(
 }
 
 /// `POST /account/push-subscriptions` — registers this device's endpoint
-/// for the caller: 201. 400 `invalid_push_endpoint` for anything but a
-/// browser push service's URL (`push::validate_endpoint`: the reminder
-/// worker will POST to it), 409 `push_not_configured` on a server without
-/// a VAPID key, where no browser could have subscribed anyway.
+/// for the caller, and its subscription's keys (#862): 201. 400
+/// `invalid_push_endpoint` for anything but a browser push service's URL
+/// (`push::validate_endpoint`: the reminder worker will POST to it), 400
+/// `invalid_push_keys` for keys that are not a subscription's
+/// (`push::parse_keys`), 409 `push_not_configured` on a server without a
+/// VAPID key, where no browser could have subscribed anyway.
+///
+/// Without keys (a page of before #862), the device keeps those it was
+/// registered with, if any; with none, it is pushed without payload.
 ///
 /// An endpoint already registered — this device, subscribed under another
 /// account that signed in on it before — moves to the caller: a device
@@ -125,7 +142,7 @@ pub async fn update_settings(
     request_body = PushSubscriptionRequest,
     responses(
         (status = 201, description = "Push subscription stored"),
-        (status = 400, description = "`invalid_push_endpoint`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`invalid_push_endpoint` or `invalid_push_keys`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 409, description = "`push_not_configured`: the server has no VAPID key", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
     ),
@@ -141,6 +158,14 @@ pub async fn subscribe(
     }
     let endpoint = validate_endpoint(&body.endpoint)
         .map_err(|_| AppError::BadRequest("invalid_push_endpoint".into()))?;
+    if let Some(keys) = &body.keys {
+        push::parse_keys(&keys.p256dh, &keys.auth)
+            .map_err(|_| AppError::BadRequest("invalid_push_keys".into()))?;
+    }
+    let (p256dh, auth_secret) = match &body.keys {
+        Some(keys) => (Some(keys.p256dh.as_str()), Some(keys.auth.as_str())),
+        None => (None, None),
+    };
     let mut tx = crate::db::begin(&state.db).await?;
     sqlx::query!(
         "SELECT id FROM users WHERE id = $1 FOR UPDATE",
@@ -149,10 +174,13 @@ pub async fn subscribe(
     .fetch_one(&mut *tx)
     .await?;
     sqlx::query!(
-        r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at)
-           VALUES ($1, $2, clock_timestamp(), clock_timestamp())
+        r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at, p256dh, auth)
+           VALUES ($1, $2, clock_timestamp(), clock_timestamp(), $3, $4)
            ON CONFLICT (endpoint) DO UPDATE SET
                last_seen_at = EXCLUDED.last_seen_at,
+               p256dh = COALESCE(EXCLUDED.p256dh, push_subscriptions.p256dh),
+               auth = CASE WHEN EXCLUDED.p256dh IS NULL
+                   THEN push_subscriptions.auth ELSE EXCLUDED.auth END,
                user_id = EXCLUDED.user_id,
                created_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
                    THEN push_subscriptions.created_at ELSE EXCLUDED.created_at END,
@@ -169,7 +197,9 @@ pub async fn subscribe(
                pending_until = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
                    THEN push_subscriptions.pending_until END"#,
         auth.user_id,
-        endpoint.as_str()
+        endpoint.as_str(),
+        p256dh,
+        auth_secret,
     )
     .execute(&mut *tx)
     .await?;
@@ -193,7 +223,7 @@ pub async fn subscribe(
 pub const MAX_DEVICES_PER_ACCOUNT: i64 = 50;
 
 /// `POST /account/push-subscriptions/received`, `{"endpoint": …}` — what
-/// the service worker asks on each push, which carries nothing: 200
+/// the service worker asks on each push, which carries no text: 200
 /// `{"kind": …}`, the kind of notification this device got
 /// (`push::pending_on_receipt`), `null` for the neutral text — pushes of
 /// two kinds on their way, none pending, or an endpoint that is not one of
@@ -284,4 +314,63 @@ pub async fn unsubscribe_all(
     .execute(&state.db)
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(json: &str) -> UpdateNotificationSettings {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// #853: the recap's switch and its hour are each set or left as they
+    /// are; the hour is never cleared, and is kept while the recap is off.
+    #[test]
+    fn the_recap_switch_and_hour_are_each_set_or_left() {
+        let base = r#""reminder_channel":"push""#;
+        let off = read(&format!(
+            r#"{{{base},"expiry_digest_enabled":false,"expiry_digest_hour":7}}"#
+        ));
+        assert_eq!(
+            (off.expiry_digest_enabled, off.expiry_digest_hour),
+            (Some(false), Some(7))
+        );
+        let left = read(&format!("{{{base}}}"));
+        assert_eq!(
+            (left.expiry_digest_enabled, left.expiry_digest_hour),
+            (None, None)
+        );
+        assert!(serde_json::from_str::<UpdateNotificationSettings>(&format!(
+            r#"{{{base},"expiry_digest_enabled":"no"}}"#
+        ))
+        .is_err());
+    }
+
+    /// What the web sends is what the API reads: a field left as it is goes
+    /// out as nothing at all.
+    #[test]
+    fn the_update_round_trips() {
+        for (on, hour) in [(Some(false), Some(21)), (Some(true), None), (None, None)] {
+            let sent = UpdateNotificationSettings {
+                reminder_channel: "none".into(),
+                expiry_digest_enabled: on,
+                expiry_digest_hour: hour,
+                notify_agenda_added: Some(true),
+                notify_agenda_changed: None,
+                notify_agenda_deleted: Some(false),
+            };
+            let json = serde_json::to_string(&sent).unwrap();
+            let back = read(&json);
+            assert_eq!(
+                (back.expiry_digest_enabled, back.expiry_digest_hour),
+                (on, hour),
+                "{json}"
+            );
+            assert_eq!(back.notify_agenda_added, Some(true));
+            assert_eq!(back.notify_agenda_changed, None);
+            assert_eq!(back.notify_agenda_deleted, Some(false));
+            assert!(!json.contains("null"), "{json}");
+        }
+    }
 }

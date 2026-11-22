@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT s.id, s.name, s.unit, s.quantity, s.expires_on,\n               o.categories_tags AS \"categories_tags?\"\n        FROM stock_items s\n        LEFT JOIN off_products o ON o.code = s.barcode\n        WHERE s.group_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "unit",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "unit"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "quantity",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "quantity"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_on",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "stock_items",
+            "name": "expires_on"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "categories_tags?",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "off_products",
+            "name": "categories_tags"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "16c24c0495fd99990f116dd3313c8c6af603ac1ea8a6f676e2495304f90de2de"
+}

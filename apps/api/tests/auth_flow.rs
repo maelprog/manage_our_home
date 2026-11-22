@@ -3708,11 +3708,36 @@ async fn a_reset_email_to_an_unverified_account_names_nobody(db: PgPool) {
         assert!(!part.contains("Support urgent"), "{part}");
         assert!(!part.contains("XXXX"), "{part}");
     }
-    common::mailed_token(
+    let token = common::mailed_token(
         &outbox,
         email,
         "http://localhost:5173/reset-password#token=",
     );
+
+    // #833: the notice of the reset that follows names nobody either.
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": token, "new_password": "brand-new-password"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::OK);
+    let emails = outbox.emails();
+    let notice = emails.last().unwrap();
+    assert_password_notice(
+        notice,
+        email,
+        "Votre mot de passe a été modifié",
+        "Votre mot de passe a été modifié\n",
+        "Toutes les sessions ouvertes sur votre compte ont été fermées",
+    );
+    let html = notice.html.as_deref().expect("an HTML part");
+    for part in [notice.body.as_str(), html] {
+        assert!(!part.contains("Support urgent"), "{part}");
+        assert!(!part.contains("XXXX"), "{part}");
+    }
 }
 
 /// #831: the three emails of the auth routes — verification, password reset
@@ -3848,6 +3873,27 @@ async fn the_set_password_email_carries_a_link_that_verifies_the_account(db: PgP
         assert!(!mail.body.contains(welcome), "{welcome}: {}", mail.body);
         assert!(!html.contains(welcome), "{welcome}: {html}");
     }
+    // #833: the notice goes first, so that the link is the latest email.
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), 2, "the notice, then the link");
+    assert_password_notice(
+        &emails[0],
+        "no-password@example.test",
+        "Un mot de passe a été ajouté à votre compte",
+        "Bonjour Google Only, un mot de passe a été ajouté à votre compte\n",
+        "n'ont pas été fermées",
+    );
+    // A second addition is refused, and mails nothing.
+    let again = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&cookie),
+        Some(serde_json::json!({"new_password": "other-password1"})),
+    )
+    .await;
+    assert_status(&again, StatusCode::CONFLICT);
+    assert_eq!(outbox.emails().len(), 2);
     let verify = call(
         &router,
         Method::GET,
@@ -4025,6 +4071,52 @@ async fn a_google_profile_in_other_capitals_signs_in_to_the_existing_account(db:
     assert!(res.status().is_redirection(), "{}", res.status());
     assert_eq!(stored_emails(&db).await, ["dave@example.test"]);
     assert_eq!(google_identity_rows(&db, user_id).await, 1);
+}
+
+/// #956, on `callback` as on the ID-token route: a Google profile that
+/// finds an account nobody verified takes it over — the password whoever
+/// registered the address set is erased, the address verified, and the
+/// sessions opened before are closed.
+#[sqlx::test]
+async fn google_callback_takes_over_an_unverified_account(db: PgPool) {
+    let email = "victim-956@example.test";
+    let router = router_with_google_stub(db.clone(), "google-sub-956", email).await;
+    let res = register_with(&router, email, "attacker-password-956", "Attaquant").await;
+    assert_status(&res, StatusCode::CREATED);
+    let user_id = user_id_by_email(&db, email).await;
+    let earlier = common::insert_session(&db, user_id).await;
+
+    let res = google_callback(&router).await;
+    assert!(res.status().is_redirection(), "{}", res.status());
+    assert!(opens_a_session(&res));
+    assert_eq!(google_identity_rows(&db, user_id).await, 1);
+    let (has_password, verified): (bool, bool) =
+        sqlx::query_as("SELECT password_hash IS NOT NULL, email_verified FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!((has_password, verified), (false, true));
+    let me = call(&router, Method::GET, "/auth/me", Some(&earlier), None).await;
+    assert_status(&me, StatusCode::UNAUTHORIZED);
+    let me = call(
+        &router,
+        Method::GET,
+        "/auth/me",
+        Some(&session_cookie_of(&res)),
+        None,
+    )
+    .await;
+    assert_status(&me, StatusCode::OK);
+    let login = call(
+        &router,
+        Method::POST,
+        "/auth/login",
+        None,
+        Some(serde_json::json!({"email": email, "password": "attacker-password-956"})),
+    )
+    .await;
+    assert_status(&login, StatusCode::UNAUTHORIZED);
 }
 
 /// #459: a Google sign-up stores the address in the same form as a
@@ -4680,4 +4772,377 @@ async fn a_bound_google_identity_whose_address_turns_non_ascii_is_refused(db: Pg
     assert!(!opens_a_session(&res));
     assert_eq!(session_rows(&db, user_id).await, sessions);
     assert_eq!(stored_emails(&db).await, ["zoe@example.test"]);
+}
+
+// -- "your password was changed" notice (#833) ------------------------------
+
+/// The notice `mail` checked as #833 has it: to the account's address,
+/// under a subject naming nobody, greeting as `title`, dated in Paris,
+/// saying what became of the sessions (`sessions`), and linking the
+/// forgotten-password page in both parts.
+fn assert_password_notice(
+    mail: &manage_our_home::email::SentEmail,
+    to: &str,
+    subject: &str,
+    title: &str,
+    sessions: &str,
+) {
+    assert_eq!(mail.to, to);
+    assert_eq!(mail.subject, subject);
+    assert!(mail.body.starts_with(title), "{}", mail.body);
+    assert!(mail.body.contains("(heure de Paris)"), "{}", mail.body);
+    assert!(mail.body.contains(sessions), "{}", mail.body);
+    assert!(mail.body.contains("Ce n'est pas vous ?"), "{}", mail.body);
+    let link = "http://localhost:5173/forgot-password";
+    assert!(mail.body.contains(&format!("\n{link}\n")), "{}", mail.body);
+    let html = mail.html.as_deref().expect("an HTML part");
+    assert!(html.contains(&format!("href=\"{link}\"")), "{html}");
+}
+
+/// #833: a reset by link mails the notice once it has succeeded, and only
+/// then: an unknown token or a refused password mails nothing.
+#[sqlx::test]
+async fn a_password_reset_mails_the_notice_only_once_it_succeeds(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "reset-notice@example.test";
+    register_verify_login(&router, &db, email, "initial-password").await;
+    let forgot = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({"email": email})),
+    )
+    .await;
+    assert_status(&forgot, StatusCode::OK);
+    let token = common::mailed_token(
+        &outbox,
+        email,
+        "http://localhost:5173/reset-password#token=",
+    );
+    assert_eq!(outbox.emails().len(), 2, "verification, reset link");
+
+    for (body, expected) in [
+        (
+            serde_json::json!({"token": "not-a-token", "new_password": "brand-new-password"}),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            serde_json::json!({"token": token, "new_password": "short"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let refused = call(
+            &router,
+            Method::POST,
+            "/auth/password/reset",
+            None,
+            Some(body),
+        )
+        .await;
+        assert_status(&refused, expected);
+    }
+    assert_eq!(outbox.emails().len(), 2, "no notice for a refused reset");
+
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": token, "new_password": "brand-new-password"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::OK);
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), 3);
+    assert_password_notice(
+        emails.last().unwrap(),
+        email,
+        "Votre mot de passe a été modifié",
+        "Bonjour Test User, votre mot de passe a été modifié\n",
+        "Toutes les sessions ouvertes sur votre compte ont été fermées",
+    );
+}
+
+/// #833: once `set_password` has made the address unverified again, the
+/// notice of a change made from that session names nobody, as #831 has
+/// every email to an unverified address.
+#[sqlx::test]
+async fn a_password_change_on_an_unverified_address_names_nobody(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "google-change@example.test";
+    // Google-only: the oauth identity goes in the same transaction, since
+    // `users` refuses a row with no auth method (deferred trigger).
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, email_verified, age_declared_at,
+                            terms_accepted_version, terms_accepted_at)
+         VALUES ($1, 'Google Only', true, now(), $2, now())
+         RETURNING id",
+    )
+    .bind(email)
+    .bind(terms_in_force_now())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'google-subject-833')",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let cookie = common::insert_session(&db, user_id).await;
+
+    let set = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&cookie),
+        Some(serde_json::json!({"new_password": "first-password1"})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+    let change = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&cookie),
+        Some(serde_json::json!({"current_password": "first-password1", "new_password": "second-password1"})),
+    )
+    .await;
+    assert_status(&change, StatusCode::OK);
+
+    let emails = outbox.emails();
+    assert_eq!(
+        emails.len(),
+        3,
+        "added notice, verification link, change notice"
+    );
+    let notice = emails.last().unwrap();
+    assert_password_notice(
+        notice,
+        email,
+        "Votre mot de passe a été modifié",
+        "Votre mot de passe a été modifié\n",
+        "Vos autres sessions ont été fermées",
+    );
+    let html = notice.html.as_deref().expect("an HTML part");
+    assert!(!notice.body.contains("Google Only"), "{}", notice.body);
+    assert!(!html.contains("Google Only"), "{html}");
+}
+
+/// #833: a change from the settings mails the notice once it has
+/// succeeded; a wrong current password or a refused new one mails nothing.
+#[sqlx::test]
+async fn a_password_change_mails_the_notice_only_once_it_succeeds(db: PgPool) {
+    let (router, outbox) = common::test_router_with_outbox(db.clone());
+    let email = "change-notice@example.test";
+    let cookie = register_verify_login(&router, &db, email, "initial-password").await;
+    assert_eq!(outbox.emails().len(), 1, "verification");
+
+    for (body, expected) in [
+        (
+            serde_json::json!({"current_password": "wrong-password1", "new_password": "brand-new-password"}),
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            serde_json::json!({"current_password": "initial-password", "new_password": "short"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let refused = call(
+            &router,
+            Method::POST,
+            "/settings/password/change",
+            Some(&cookie),
+            Some(body),
+        )
+        .await;
+        assert_status(&refused, expected);
+    }
+    assert_eq!(outbox.emails().len(), 1, "no notice for a refused change");
+
+    let change = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&cookie),
+        Some(serde_json::json!({"current_password": "initial-password", "new_password": "brand-new-password"})),
+    )
+    .await;
+    assert_status(&change, StatusCode::OK);
+    let emails = outbox.emails();
+    assert_eq!(emails.len(), 2);
+    assert_password_notice(
+        emails.last().unwrap(),
+        email,
+        "Votre mot de passe a été modifié",
+        "Bonjour Test User, votre mot de passe a été modifié\n",
+        "Vos autres sessions ont été fermées",
+    );
+}
+
+/// #916 constat 2, #957 : deux demandes de réinitialisation laissent deux
+/// liens valides. Utiliser le second supprime aussi le premier, qui ne
+/// change plus le mot de passe après que le titulaire a repris la main.
+#[sqlx::test]
+async fn pentest_916_a_reset_invalidates_the_other_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "reset-916@example.test";
+    register_verify_login(&router, &db, email, "initial-password-916").await;
+
+    let forgot = serde_json::json!({ "email": email });
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(forgot.clone()),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let first = common::reset_token(&db, email).await;
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(forgot),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let second = common::reset_token(&db, email).await;
+    assert_ne!(first, second);
+
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": second, "new_password": "holder-password-916"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": first, "new_password": "attacker-password-916"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
+}
+
+/// #916 constat 2, #957, côté réglages : un changement de mot de passe
+/// depuis une session supprime les liens de réinitialisation émis avant lui.
+#[sqlx::test]
+async fn pentest_916_a_password_change_invalidates_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "change-916@example.test";
+    let cookie = register_verify_login(&router, &db, email, "initial-password-916").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({ "email": email })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let pending = common::reset_token(&db, email).await;
+
+    let change = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&cookie),
+        Some(serde_json::json!({
+            "current_password": "initial-password-916",
+            "new_password": "holder-password-916",
+        })),
+    )
+    .await;
+    assert_status(&change, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": pending, "new_password": "attacker-password-916"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
+}
+
+/// #957 : un compte Google seul peut demander un lien de réinitialisation ;
+/// poser ensuite un mot de passe depuis les réglages supprime ce lien, qui
+/// remplacerait sinon le mot de passe choisi par le titulaire.
+#[sqlx::test]
+async fn adding_a_password_invalidates_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "set-957@example.test";
+    // Google-only: the oauth identity goes in the same transaction, since
+    // `users` refuses a row with no auth method (deferred trigger).
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, email_verified, age_declared_at,
+                            terms_accepted_version, terms_accepted_at)
+         VALUES ($1, 'Google Only', true, now(), $2, now())
+         RETURNING id",
+    )
+    .bind(email)
+    .bind(terms_in_force_now())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'google-subject-957')",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let cookie = common::insert_session(&db, user_id).await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({ "email": email })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let pending = common::reset_token(&db, email).await;
+
+    let set = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&cookie),
+        Some(serde_json::json!({"new_password": "holder-password-957"})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": pending, "new_password": "attacker-password-957"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
 }

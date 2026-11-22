@@ -97,3 +97,16 @@ db10a0a2713f65d7  2026-11-13  Une vue jour, heure par heure, sur téléphone com
 cf99d53049a6b090  2026-11-15  Un bouton ▾ déplie les unités et les catégories d'un article
 0289d527f1e2cd2e  2026-11-15  Le jour et le repas d'une recette planifiée, sur sa fiche et
 99e7f6123938df55  2026-11-15  Scanner le code-barres d'un article dans l'aperçu de la camé
+3ba07424e0f34b3e  2026-11-16  Le planning des repas, une page des recettes (#813)
+3c2a6bbc06b91e74  2026-11-16  Une carte « Ce soir » en tête de l'accueil (#814)
+9766bf6e733e7146  2026-11-16  Une ligne de courses comptée en paquets entiers (#824)
+fdb987d303ca9823  2026-11-16  Le partage des allergies à l'arrivée dans une famille, en co
+30a6b64ff04285b0  2026-11-17  Les premières questions des repas, au premier accès aux rece
+bb6a5b905a42d7b4  2026-11-17  L'avertissement d'allergie d'une recette, sans identifier le
+70312769170110fb  2026-11-17  Le mode cuisine, une étape à la fois avec ses minuteurs (#82
+de52774746f239f4  2026-11-17  Le thème, la couleur de la famille et le calendrier appliqué
+77ad23264d30aaaa  2026-11-18  Le repli sans script des réglages appliqués au clic, pleine 
+ac47d5f0c12d00c1  2026-11-18  Le nombre de personnes d'une recette planifiée, changé dans 
+3fedb5fcb3c4b7f3  2026-11-18  Les réglages de notification en interrupteurs enregistrés au
+cc4694f48edd6c85  2026-11-19  Rattacher un article de stock à un ingrédient depuis sa fich
+ec50d1293ee9916a  2026-11-20  Publier une recette avec consentement, la signaler, « Mes pu

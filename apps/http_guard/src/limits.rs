@@ -53,6 +53,13 @@ impl BodyReadLimits {
 /// would have taken it. One constant for both, so they cannot drift apart.
 pub const MAX_UPLOAD_BODY_BYTES: usize = 20 * 1024 * 1024 + 64 * 1024;
 
+/// Request body limit of apps/api's `PUT /me/avatar`: the 32 MiB photo cap
+/// (`avatar::MAX_AVATAR_BYTES` in apps/api) plus the same 64 KiB of
+/// multipart framing, 33 619 968 bytes. apps/web's `POST /account/avatar`
+/// streams the form to that route and refuses a body declared past this
+/// before relaying a byte of it (#976): apps/api would only cut it there.
+pub const MAX_AVATAR_BODY_BYTES: usize = 32 * 1024 * 1024 + 64 * 1024;
+
 /// Which bound a body broke. All three answer 408; the reason is for logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Breach {

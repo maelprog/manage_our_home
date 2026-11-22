@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO recipes (group_id, created_by, name, instructions, servings,\n                                duration_minutes, library_recipe_id)\n           SELECT $1, $2, name, instructions, servings, duration_minutes, id\n           FROM library_recipes WHERE id = $3\n           RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "recipes",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "46afa454540b1dabad258f367c8e0860a118d35c4372f0df43af9f4ef23da0ac"
+}

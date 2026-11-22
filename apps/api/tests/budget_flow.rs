@@ -2790,11 +2790,14 @@ async fn push_alerts_follows_each_member_s_channel(db: PgPool) {
     }
 
     let pushed = std::sync::Mutex::new(Vec::new());
-    let send_push = |endpoint: String, ttl: i64| {
-        pushed.lock().unwrap().push((endpoint, ttl));
-        async { manage_our_home::notifications::push::PushOutcome::Delivered }
-    };
-    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &ids)
+    let send_push =
+        |endpoint: String,
+         ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            pushed.lock().unwrap().push((endpoint, ttl));
+            async { manage_our_home::notifications::push::PushOutcome::Delivered }
+        };
+    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &entries_of(&ids))
         .await
         .unwrap();
     let mut pushed = pushed.into_inner().unwrap();
@@ -3317,4 +3320,359 @@ async fn an_amount_above_the_bound_is_refused_and_nothing_is_written(db: PgPool)
     assert_eq!(cats[0]["monthly_cap"], AMOUNT_MAX_EUROS);
     let cap = call(&router, Method::GET, &settings, Some(&owner), None).await;
     assert_eq!(json_body(cap).await["monthly_cap"], AMOUNT_MAX_EUROS);
+}
+
+// -- The family's threshold (#865) ---------------------------------------------
+
+/// The owner sets the family's `budget` threshold to `min_role`.
+async fn set_budget_threshold(router: &axum::Router, owner: &str, group_id: &str, min_role: &str) {
+    let res = call(
+        router,
+        Method::PUT,
+        &format!("/groups/{group_id}/access-policies"),
+        Some(owner),
+        Some(serde_json::json!({"policies": [{"feature": "budget", "min_role": min_role}]})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+}
+
+/// An owner, an admin and a standard member of a fresh group, logged in:
+/// (owner, admin, standard, group).
+async fn owner_admin_and_standard(
+    router: &axum::Router,
+    db: &PgPool,
+    prefix: &str,
+) -> (String, String, String, String) {
+    let (owner, admin, group_id) = owner_and_admin(router, db, prefix).await;
+    let standard = register_verify_login(
+        router,
+        db,
+        &format!("{prefix}-standard@example.test"),
+        "standard-password1",
+    )
+    .await;
+    join_as_standard(router, &owner, &standard, &group_id).await;
+    (owner, admin, standard, group_id)
+}
+
+/// AC #865: for each threshold the owner sets, the roles that meet it read
+/// and write the budget and the others get the 404 of #531 — `standard`
+/// opens it to everyone, `admin` is today's bar, `owner` closes it to the
+/// admins. `GET /groups` hands each member the threshold apps/web reads.
+#[sqlx::test]
+async fn the_budget_follows_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, admin, standard, group_id) =
+        owner_admin_and_standard(&router, &db, "threshold").await;
+    let entries = format!("/groups/{group_id}/budget-entries");
+
+    for (min_role, reaching) in [
+        ("standard", ["owner", "admin", "standard"].as_slice()),
+        ("admin", ["owner", "admin"].as_slice()),
+        ("owner", ["owner"].as_slice()),
+    ] {
+        set_budget_threshold(&router, &owner, &group_id, min_role).await;
+        for (who, cookie) in [
+            ("owner", &owner),
+            ("admin", &admin),
+            ("standard", &standard),
+        ] {
+            let groups =
+                json_body(call(&router, Method::GET, "/groups", Some(cookie), None).await).await;
+            let policies = &groups[0]["access_policies"];
+            assert_eq!(policies.as_array().unwrap().len(), 7, "{policies}");
+            assert_eq!(
+                policies[0],
+                serde_json::json!({"feature": "budget", "min_role": min_role}),
+                "{who}'s GET /groups"
+            );
+
+            let (read, write) = if reaching.contains(&who) {
+                (StatusCode::OK, StatusCode::CREATED)
+            } else {
+                (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND)
+            };
+            let list = call(&router, Method::GET, &entries, Some(cookie), None).await;
+            assert_eq!(list.status(), read, "{who}'s list under {min_role}");
+            let create = call(
+                &router,
+                Method::POST,
+                &entries,
+                Some(cookie),
+                Some(serde_json::json!({"name": "Pain", "amount": 1.0})),
+            )
+            .await;
+            assert_eq!(create.status(), write, "{who}'s create under {min_role}");
+        }
+    }
+}
+
+/// AC #865: under a threshold lowered to `standard`, a standard member
+/// reads the whole budget, writes expenses down — a grocery item's price
+/// included — and edits or deletes their own, not another member's: the
+/// creator-or-admin rule still holds past the threshold.
+#[sqlx::test]
+async fn under_a_lowered_threshold_a_standard_member_edits_their_own_entries_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, standard, group_id) =
+        owner_admin_and_standard(&router, &db, "lowered").await;
+    set_budget_threshold(&router, &owner, &group_id, "standard").await;
+    let entries = format!("/groups/{group_id}/budget-entries");
+
+    let owners = create_entry(
+        &router,
+        &owner,
+        &group_id,
+        serde_json::json!({"name": "Loyer", "amount": 500.0}),
+    )
+    .await;
+    let owners = format!("{entries}/{}", owners["id"].as_str().unwrap());
+    let mine = create_entry(
+        &router,
+        &standard,
+        &group_id,
+        serde_json::json!({"name": "Cantine", "amount": 30.0}),
+    )
+    .await;
+    let mine = format!("{entries}/{}", mine["id"].as_str().unwrap());
+    let item_id = checked_grocery_item(&router, &standard, &group_id, "Lait").await;
+
+    let requests = [
+        (
+            "get another's",
+            Method::GET,
+            owners.clone(),
+            None,
+            StatusCode::OK,
+        ),
+        (
+            "summary",
+            Method::GET,
+            format!("{entries}/summary"),
+            None,
+            StatusCode::OK,
+        ),
+        (
+            "price",
+            Method::POST,
+            format!("/groups/{group_id}/grocery-items/{item_id}/price"),
+            Some(serde_json::json!({"amount": 1.5})),
+            StatusCode::CREATED,
+        ),
+        (
+            "update their own",
+            Method::PATCH,
+            mine.clone(),
+            Some(serde_json::json!({"amount": 32.0})),
+            StatusCode::OK,
+        ),
+        (
+            "update another's",
+            Method::PATCH,
+            owners.clone(),
+            Some(serde_json::json!({"amount": 1.0})),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "delete another's",
+            Method::DELETE,
+            owners.clone(),
+            None,
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            "delete their own",
+            Method::DELETE,
+            mine.clone(),
+            None,
+            StatusCode::NO_CONTENT,
+        ),
+    ];
+    for (what, method, uri, body, expected) in requests {
+        let res = call(&router, method, &uri, Some(&standard), body).await;
+        assert_eq!(res.status(), expected, "the standard member's {what}");
+    }
+
+    // The owner's expense is as they wrote it down.
+    let get = call(&router, Method::GET, &owners, Some(&owner), None).await;
+    assert_eq!(json_body(get).await["amount"], 500.0);
+}
+
+/// #865: setting a price again rewrites the expense the item is linked to,
+/// so it is an edit of that expense — under a threshold lowered to
+/// `standard`, a standard member re-prices an item they priced, not one
+/// another member priced (403, the expense untouched).
+#[sqlx::test]
+async fn under_a_lowered_threshold_a_standard_member_re_prices_their_own_items_only(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, standard, group_id) =
+        owner_admin_and_standard(&router, &db, "reprice").await;
+    set_budget_threshold(&router, &owner, &group_id, "standard").await;
+    let price = |item_id: &str| format!("/groups/{group_id}/grocery-items/{item_id}/price");
+
+    let owners_item = checked_grocery_item(&router, &owner, &group_id, "Lait").await;
+    let res = call(
+        &router,
+        Method::POST,
+        &price(&owners_item),
+        Some(&owner),
+        Some(serde_json::json!({"amount": 2.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    let owners_entry = json_body(res).await["id"].as_str().unwrap().to_string();
+
+    let res = call(
+        &router,
+        Method::POST,
+        &price(&owners_item),
+        Some(&standard),
+        Some(serde_json::json!({"amount": 99.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::FORBIDDEN);
+    let get = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries/{owners_entry}"),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(json_body(get).await["amount"], 2.0);
+
+    let own_item = checked_grocery_item(&router, &standard, &group_id, "Pain").await;
+    for amount in [1.0, 1.2] {
+        let res = call(
+            &router,
+            Method::POST,
+            &price(&own_item),
+            Some(&standard),
+            Some(serde_json::json!({"amount": amount})),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+        assert_eq!(json_body(res).await["amount"], amount);
+    }
+}
+
+/// AC #865: the RGPD export of a standard member hands back the expenses
+/// they wrote down while the budget was open to them, once the owner has
+/// closed it again; the family's settings follow the threshold, as the
+/// routes do.
+#[sqlx::test]
+async fn a_standard_member_s_export_keeps_their_expenses_whatever_the_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    let (owner, _admin, standard, group_id) =
+        owner_admin_and_standard(&router, &db, "export-threshold").await;
+    let res = call(
+        &router,
+        Method::PUT,
+        &format!("/groups/{group_id}/budget-settings"),
+        Some(&owner),
+        Some(serde_json::json!({"monthly_cap": 750.0})),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    set_budget_threshold(&router, &owner, &group_id, "standard").await;
+    create_entry(
+        &router,
+        &standard,
+        &group_id,
+        serde_json::json!({"name": "Cantine", "amount": 30.0}),
+    )
+    .await;
+
+    let export = |cookie: String| {
+        let router = router.clone();
+        async move {
+            let res = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+            assert_status(&res, StatusCode::OK);
+            json_body(res).await
+        }
+    };
+    let doc = export(standard.clone()).await;
+    assert_eq!(doc["budget_entries"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["budget_settings"][0]["monthly_cap"], 750.0);
+
+    set_budget_threshold(&router, &owner, &group_id, "admin").await;
+    let list = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/budget-entries"),
+        Some(&standard),
+        None,
+    )
+    .await;
+    assert_status(&list, StatusCode::NOT_FOUND);
+    let doc = export(standard).await;
+    let exported = doc["budget_entries"].as_array().unwrap();
+    assert_eq!(exported.len(), 1, "{exported:?}");
+    assert_eq!(exported[0]["name"], "Cantine");
+    assert_eq!(exported[0]["amount"], 30.0);
+    assert_eq!(doc["budget_settings"], serde_json::json!([]));
+}
+
+/// #865: the cap alerts go to the members who reach the budget — a standard
+/// member once the owner lowers the threshold, no admin once they raise it
+/// to `owner`.
+#[sqlx::test]
+async fn cap_alerts_follow_the_family_s_threshold(db: PgPool) {
+    let router = test_router(db.clone());
+    for (prefix, min_role, alerted) in [
+        ("alert-low", "standard", [true, true, true]),
+        ("alert-high", "owner", [true, false, false]),
+    ] {
+        let (owner, admin, standard, group_id) =
+            owner_admin_and_standard(&router, &db, prefix).await;
+        let res = call(
+            &router,
+            Method::PUT,
+            &format!("/groups/{group_id}/budget-settings"),
+            Some(&owner),
+            Some(serde_json::json!({"monthly_cap": 100.0})),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        set_budget_threshold(&router, &owner, &group_id, min_role).await;
+        create_entry(
+            &router,
+            &owner,
+            &group_id,
+            serde_json::json!({"name": "Courses", "amount": 100.0}),
+        )
+        .await;
+        for ((who, cookie), alerted) in [
+            ("owner", &owner),
+            ("admin", &admin),
+            ("standard", &standard),
+        ]
+        .into_iter()
+        .zip(alerted)
+        {
+            let expected: Vec<String> = if alerted {
+                vec![FULL.to_string(), NEAR.to_string()]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(
+                budget_alerts(&router, cookie).await,
+                expected,
+                "{who} under {min_role}"
+            );
+        }
+    }
+}
+
+/// An entry of the notification centre for each of `members` (#862): what
+/// a push names.
+fn entries_of(members: &[uuid::Uuid]) -> Vec<manage_our_home::notifications::center::Entry> {
+    members
+        .iter()
+        .map(|&member| manage_our_home::notifications::center::Entry {
+            member,
+            id: uuid::Uuid::new_v4(),
+        })
+        .collect()
 }

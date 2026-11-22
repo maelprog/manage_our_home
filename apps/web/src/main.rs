@@ -11,6 +11,7 @@ mod csp;
 // and its lock file, neither of which belongs in the shipped binary.
 #[cfg(test)]
 mod design_journal;
+mod edit_rule;
 mod family;
 // The guard against a GET route that writes (#414). Test-only: it reads
 // this crate's own source.
@@ -162,6 +163,36 @@ fn build_router(state: AppState) -> Router {
         .route(
             routes::account::appearance::PATH,
             get(routes::account::appearance::get).post(routes::account::appearance::post),
+        )
+        // #819: the member's allergies and dislikes. Every change posts,
+        // the food in the body.
+        .route(
+            routes::account::allergies::PATH,
+            get(routes::account::allergies::get),
+        )
+        .route(
+            "/account/allergies/consent",
+            post(routes::account::allergies::consent),
+        )
+        .route(
+            "/account/allergies/add",
+            post(routes::account::allergies::add),
+        )
+        .route(
+            "/account/allergies/remove",
+            post(routes::account::allergies::remove),
+        )
+        .route(
+            "/account/allergies/sharing",
+            post(routes::account::allergies::sharing),
+        )
+        .route(
+            "/account/allergies/search",
+            post(routes::account::allergies::search),
+        )
+        .route(
+            "/account/allergies/clear",
+            get(routes::account::allergies::clear_page).post(routes::account::allergies::clear),
         )
         .route("/account/export", get(routes::account::export::get))
         .route(
@@ -338,7 +369,20 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/stocks/{id}/adjust", post(routes::stocks::detail::adjust))
         .route("/stocks/{id}/delete", post(routes::stocks::detail::delete))
+        .route(
+            "/stocks/{id}/ingredient",
+            post(routes::stocks::detail::link),
+        )
+        .route(
+            "/stocks/{id}/ingredient/delete",
+            post(routes::stocks::detail::unlink),
+        )
         .route("/recipes", get(routes::recipes::list::get))
+        .route("/recipes/week", get(routes::recipes::week::get))
+        .route(
+            "/recipes/depart",
+            get(routes::recipes::start::get).post(routes::recipes::start::post),
+        )
         .route(
             "/recipes/new",
             get(routes::recipes::new::get).post(routes::recipes::new::post),
@@ -347,7 +391,35 @@ fn build_router(state: AppState) -> Router {
             "/recipes/import",
             get(routes::recipes::import::get).post(routes::recipes::import::post),
         )
+        .route("/recipes/library", get(routes::recipes::library::list))
+        // Static, so it wins over `{id}` below (#911).
+        .route("/recipes/library/mine", get(routes::recipes::mine::get))
+        .route(
+            "/recipes/library/{id}",
+            get(routes::recipes::library::detail),
+        )
+        .route(
+            "/recipes/library/{id}/add",
+            post(routes::recipes::library::add),
+        )
+        .route(
+            "/recipes/library/{id}/report",
+            get(routes::recipes::report::get).post(routes::recipes::report::post),
+        )
+        .route(
+            "/recipes/library/{id}/withdraw",
+            post(routes::recipes::mine::withdraw),
+        )
         .route("/recipes/{id}", get(routes::recipes::detail::get))
+        .route("/recipes/{id}/cook", get(routes::recipes::cook::get))
+        .route(
+            "/recipes/{id}/publish",
+            get(routes::recipes::publish::get).post(routes::recipes::publish::post),
+        )
+        .route(
+            "/recipes/{id}/unpublish",
+            post(routes::recipes::publish::unpublish),
+        )
         .route(
             "/recipes/{id}/edit",
             get(routes::recipes::edit::get).post(routes::recipes::edit::post),
@@ -356,6 +428,10 @@ fn build_router(state: AppState) -> Router {
         .route("/recipes/{id}/select", post(routes::recipes::select))
         .route("/recipes/{id}/deselect", post(routes::recipes::deselect))
         .route("/recipes/{id}/planning", post(routes::recipes::plan))
+        .route(
+            "/recipes/{id}/replace",
+            get(routes::recipes::replace::get).post(routes::recipes::replace::post),
+        )
         .route(
             "/recipes/{id}/planning/clear",
             post(routes::recipes::clear_plan),
@@ -454,6 +530,11 @@ fn build_router(state: AppState) -> Router {
             "/notifications/{id}/open",
             post(routes::notifications::open),
         )
+        // A click on a push (#862), from the service worker.
+        .route(
+            "/notifications/pushed/read",
+            post(routes::notifications::mark_pushed_read),
+        )
         .route("/admin/groups", get(routes::admin::groups::get))
         .route("/admin/groups/{id}", get(routes::admin::groups::detail))
         .route(
@@ -489,6 +570,10 @@ fn build_router(state: AppState) -> Router {
             "/groups/invitations/{token}/accept",
             get(routes::groups::invitations::get).post(routes::groups::invitations::post),
         )
+        .route(
+            "/groups/{id}/allergies",
+            get(routes::groups::allergies::get).post(routes::groups::allergies::post),
+        )
         .route("/groups/{id}/members", get(routes::groups::members::get))
         .route(
             "/groups/{id}/members/invite",
@@ -523,6 +608,14 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/groups/{id}/settings/calendar",
             post(routes::groups::settings::calendar),
+        )
+        .route(
+            "/groups/{id}/settings/equipment",
+            post(routes::groups::settings::equipment),
+        )
+        .route(
+            "/groups/{id}/settings/access",
+            post(routes::groups::settings::access),
         )
         .route(
             "/groups/{id}/settings/transfer",

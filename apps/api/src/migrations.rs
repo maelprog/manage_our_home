@@ -18,10 +18,9 @@
 //! again. `0013_backfill_event_assignees.sql` is the first migration to
 //! hit that, and the one that made it visible.
 //!
-//! And why not `ADMIN_DATABASE_URL`: that role exists for the seven
-//! `/admin/*` endpoints (Epic #8) and the background jobs that read or
-//! write across families: attachment reconcile (#215), account purge
-//! (#139), retention purge (#138) and the event reminder worker (#293).
+//! And why not `ADMIN_DATABASE_URL`: that role exists for the eleven
+//! `/admin/*` endpoints (Epic #8, #908) and the background jobs that read or
+//! write across families (the seven of `apps/api/README.md`).
 //! Nothing describes it as the owner of the tables, and folding DDL into
 //! the role that serves request traffic would widen a deliberately narrow
 //! exception.

@@ -79,8 +79,9 @@ failed, so that the error banner above the list is seen. Any member may check/un
 ### Edit/delete on a per-item screen, behind `can_modify`
 
 `/grocery-list/:item_id` is the item's edit screen (name / quantity / unit)
-with a delete action, both reserved for the item's **creator or a group
-admin/owner** (`can_modify`, mirrored from
+with a delete action, both reserved for the item's **creator or a member
+meeting the family's `grocery_edit` threshold** (#866, admin/owner by
+default; `can_modify`, mirrored from
 `apps/api/src/grocery_list/mod.rs`). A non-permitted member GETting it sees
 the forbidden page; on the list, the per-row "Modifier" link renders only
 for items they may modify. The backend stays the authority — a forged
@@ -117,9 +118,9 @@ any barcode/scan capture (post-v1, not in the backend).
 | POST | `/grocery-list/:id/check` | `grocery_list::list::check` | Check/uncheck an item (any member) | `POST /groups/:id/grocery-items/:item_id/check` |
 | GET | `/grocery-list/reception` | `grocery_list::reception::get` | Reception form (#472): one line per checked item, pre-filled with the proposal | `GET /groups/:id/stock-items/reception` |
 | POST | `/grocery-list/reception` | `grocery_list::reception::post` | Receive the lot into the stock, then PRG → `/grocery-list?notice=received&received=N`; a line in error re-renders the form as typed (422) | `GET /groups/:id/stock-items`, `POST /groups/:id/stock-items/reception` |
-| GET | `/grocery-list/:id` | `grocery_list::edit::get` | Item edit screen (creator/admin/owner only) | `GET /groups/:id/grocery-items/:item_id` |
+| GET | `/grocery-list/:id` | `grocery_list::edit::get` | Item edit screen (creator, or a role meeting `grocery_edit`) | `GET /groups/:id/grocery-items/:item_id` |
 | POST | `/grocery-list/:id/edit` | `grocery_list::edit::post` | Update name/quantity/unit | `PATCH /groups/:id/grocery-items/:item_id` |
-| POST | `/grocery-list/:id/delete` | `grocery_list::edit::delete` | Delete an item (creator/admin/owner only) | `DELETE /groups/:id/grocery-items/:item_id` |
+| POST | `/grocery-list/:id/delete` | `grocery_list::edit::delete` | Delete an item (creator, or a role meeting `grocery_edit`) | `DELETE /groups/:id/grocery-items/:item_id` |
 
 No active family → every route redirects to `/groups/new` (same as
 Stocks/Recipes).
@@ -194,8 +195,8 @@ edit round trip.
 | 404 | `not_found` | "Article introuvable" page |
 | — | transport / other | inline "Service momentanément indisponible…" |
 
-GET renders the form only for `can_modify` (creator/admin/owner); a
-non-permitted user GETting it gets the forbidden page. Name + quantity are
+GET renders the form only for `can_modify` (the creator, or a role meeting
+the `grocery_edit` threshold); a non-permitted user GETting it gets the forbidden page. Name + quantity are
 pre-validated by the shared `validate_item_form`.
 
 ### `POST /grocery-list/:id/delete` — `delete_grocery_item`
@@ -210,15 +211,19 @@ pre-validated by the shared `validate_item_form`.
 ## Permission bar (front mirror of `grocery_list::can_modify`)
 
 Backend bar (`apps/api/src/grocery_list/mod.rs::can_modify`): the item's
-creator, or a group **owner/admin**, may edit (name/quantity/unit) or delete
+creator, or a member whose role meets the family's `grocery_edit`
+threshold (#866; **admin/owner** by default, which the owner may lower to
+`standard` or raise to `owner`), may edit (name/quantity/unit) or delete
 it; **any** member may create, read, or **check off** an item. The front
 mirrors it (`manage_our_home_shared::validation::grocery_list::can_modify`,
-unit-tested, re-exported by `routes/grocery_list`):
+unit-tested, re-exported by `routes/grocery_list`, with the threshold
+`GET /groups` hands apps/web):
 
 - The inline add form, the generate button, and every row's check control
   render for **every** member.
 - The per-row **Modifier** link and the edit screen's edit/delete controls
-  render only when `can_modify(role, is_creator)`; a standard member sees
+  render only when `can_modify(role, min_role, is_creator)`; a member below
+  the threshold sees
   no "Modifier" link on another member's item, and GETting its edit screen
   gets the forbidden page.
 
@@ -236,7 +241,8 @@ mapped defensively per the tables above.
    banner says so.
 3. Checking an item off marks it done (strikethrough, sunk to the bottom);
    unchecking restores it. Any member can check any item.
-4. The item's creator (or an admin/owner) can edit its name/quantity/unit
+4. The item's creator (or a member meeting the `grocery_edit` threshold)
+   can edit its name/quantity/unit
    (round-trips through the edit form) and delete it, returning to the list
    with a banner.
 5. A standard member gets no "Modifier" link on another member's item and

@@ -1,3 +1,4 @@
+pub mod access;
 pub mod succession;
 
 use axum::extract::{Path, State};
@@ -116,7 +117,8 @@ pub async fn create_group(
 }
 
 /// Lists every group the caller belongs to, with the caller's role in each,
-/// in one statement.
+/// in one statement — then each group's access policy (#865), which RLS
+/// lets through one family at a time.
 ///
 /// The membership filter is written in the query, not left to RLS. Under the
 /// role apps/api/README.md prescribes, the policies of 0014 apply the same
@@ -157,17 +159,28 @@ pub async fn list_groups(
     )
     .fetch_all(&mut *tx)
     .await?;
+    // Each family's thresholds (#865), which apps/web reads to leave out
+    // what the caller does not reach. The table's RLS shows one family at a
+    // time, so this is two round trips per family the caller belongs to.
+    // Nothing bounds that number: `MAX_GROUPS_PER_USER` is checked only by
+    // `create_group`, and an accepted invitation adds a family past it.
+    let mut policies = Vec::with_capacity(groups.len());
+    for group in &groups {
+        policies.push(access::policies_of_member_group(&mut tx, group.id).await?);
+    }
     tx.commit().await?;
 
     let out: Vec<_> = groups
         .iter()
-        .map(|group| {
+        .zip(policies)
+        .map(|(group, policies)| {
             json!({
                 "group_id": group.id,
                 "name": group.name,
                 "role": group.role,
                 "accent": group.accent,
                 "created_at": group.created_at,
+                "access_policies": policies,
                 // #323: the caller became this group's owner without asking
                 // for it and has not acknowledged it yet.
                 "ownership_notice": match (
@@ -1028,6 +1041,7 @@ pub async fn remove_member(
     )
     .execute(&mut *tx)
     .await?;
+    unpublish_departed(&mut tx, group_id).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1096,9 +1110,28 @@ pub async fn leave_group(
     )
     .execute(&mut *tx)
     .await?;
+    unpublish_departed(&mut tx, group_id).await?;
 
     tx.commit().await?;
     Ok(StatusCode::OK)
+}
+
+/// Withdraws from the shared library what the member who just left the
+/// family, or was removed from it, published from its recipes, those
+/// deleted since included (user's decision of 2026-11-20, #908): the
+/// families' copies stay, the quota is freed. Called once the membership is deleted, in the same transaction;
+/// the function of 0068 takes whatever no current member stands behind.
+async fn unpublish_departed(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+) -> AppResult<()> {
+    sqlx::query_scalar!(
+        r#"SELECT group_library_unpublish_departed($1) AS "n!""#,
+        group_id
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]

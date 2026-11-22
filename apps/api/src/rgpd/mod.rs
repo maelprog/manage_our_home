@@ -14,6 +14,7 @@ use crate::audit;
 use crate::auth::session::{scoped_tx, user_scoped_tx, AuthUser};
 use crate::budget::can_access_budget;
 use crate::error::AppResult;
+use crate::groups::access::{min_role_for, Feature};
 use crate::AppState;
 
 /// GET /account/export — Art. 15 (accès) and Art. 20 (portabilité).
@@ -32,7 +33,8 @@ use crate::AppState;
 /// caller, so this is never a "dump my whole family's data" endpoint. One
 /// exception, by request (#532): the family's budget settings — its monthly
 /// cap and its categories, which name no one — go to the members who reach
-/// the budget (`can_access_budget`), under `budget_settings`. Secrets
+/// the budget (`can_access_budget`, the family's threshold since #865),
+/// under `budget_settings`. Secrets
 /// are left out: session ids (they are the session cookie), invitation and
 /// email tokens, OAuth refresh tokens, attachment and profile photo storage
 /// keys and ICS feed URLs. Attachments and the profile photo come as
@@ -54,7 +56,8 @@ pub async fn export_account(
     let profile = sqlx::query!(
         r#"SELECT id, email, email_verified, display_name, created_at, age_declared_at,
                   terms_accepted_version, terms_accepted_at, deletion_requested_at, is_superadmin, reminder_channel,
-                  expiry_digest_hour, notify_agenda_changes, avatar_key,
+                  expiry_digest_hour, expiry_digest_enabled, notify_agenda_added, notify_agenda_changed,
+                  notify_agenda_deleted, avatar_key,
                   (password_hash IS NOT NULL) AS "has_password!"
            FROM users WHERE id = $1"#,
         auth.user_id
@@ -80,13 +83,18 @@ pub async fn export_account(
         "has_password": profile.has_password,
         "deletion_requested_at": profile.deletion_requested_at,
         "is_superadmin": profile.is_superadmin,
-        // #306: how their reminders reach them — `push`, `email` or `both`.
+        // #306: how their reminders reach them — `push`, `email`, `both`
+        // or `none` (#853).
         "reminder_channel": profile.reminder_channel,
-        // #700: the Paris hour of their daily expiry recap, 0 to 23.
+        // #700: the Paris hour of their daily expiry recap, 0 to 23, kept
+        // with the recap off; #853: whether it is sent.
         "expiry_digest_hour": profile.expiry_digest_hour,
-        // #848: whether they are told when another member changes the
-        // agenda.
-        "notify_agenda_changes": profile.notify_agenda_changes,
+        "expiry_digest_enabled": profile.expiry_digest_enabled,
+        // #853: whether they are told when another member adds, changes
+        // or deletes an event (one setting for the three since #848).
+        "notify_agenda_added": profile.notify_agenda_added,
+        "notify_agenda_changed": profile.notify_agenda_changed,
+        "notify_agenda_deleted": profile.notify_agenda_deleted,
     });
     // #467: the profile photo, as the attachments below: its type and a
     // presigned GET. No `avatar_key` field, though the key is in the
@@ -398,7 +406,7 @@ pub async fn export_account(
             .extend(export::nest_ingredients(recipes_json, ingredients));
 
         let meals = sqlx::query!(
-            r#"SELECT id, group_id, recipe_id, eaten_on, created_at, taste_tags
+            r#"SELECT id, group_id, recipe_id, eaten_on, created_at, taste, taste_note
                FROM meal_history WHERE group_id = $1 AND created_by = $2 ORDER BY created_at"#,
             group_id,
             auth.user_id
@@ -409,7 +417,7 @@ pub async fn export_account(
             json!({
                 "id": m.id, "group_id": m.group_id, "recipe_id": m.recipe_id,
                 "eaten_on": m.eaten_on, "created_at": m.created_at,
-                "taste_tags": m.taste_tags,
+                "taste": m.taste, "taste_note": m.taste_note,
             })
         }));
 
@@ -470,11 +478,20 @@ pub async fn export_account(
         }));
 
         // The family's budget settings (#532), to a current member who
-        // reaches the budget only: a standard member — or someone who has
-        // left — is not told the family has a budget, as on the routes.
-        let reaches_budget = memberships
+        // reaches the budget only (the family's threshold, #865): a member
+        // under it — or someone who has left — is not told the family has a
+        // budget, as on the routes.
+        let role = memberships
             .iter()
-            .any(|m| m.id == group_id && can_access_budget(&m.role));
+            .find(|m| m.id == group_id)
+            .map(|m| m.role.as_str());
+        let reaches_budget = match role {
+            Some(role) => {
+                let min_role = min_role_for(&mut tx, group_id, Feature::Budget).await?;
+                can_access_budget(role, &min_role)
+            }
+            None => false,
+        };
         if group.is_member && reaches_budget {
             let cap = sqlx::query_scalar!(
                 "SELECT monthly_cap_cents FROM budget_settings WHERE group_id = $1",
@@ -690,7 +707,10 @@ pub async fn export_account(
     // included: it is the push service's address for that device, held
     // about the person like the rest. Unlike a session id it is no key —
     // a push service refuses any message to it not signed with this
-    // server's VAPID key.
+    // server's VAPID key. Its two keys (`p256dh`, `auth`, #862) are left
+    // out, like the ICS feed URL above: they only encrypt the payload for
+    // the browser that made them and keeps them, and `auth` is a secret.
+    // The privacy policy declares the exception (#961).
     let devices = sqlx::query!(
         r#"SELECT platform, endpoint, created_at, last_seen_at, last_success_at,
                   consecutive_failures, failing_since, pending_push_kind, pending_pushes,
@@ -769,6 +789,79 @@ pub async fn export_account(
         .into_iter()
         .map(|d| json!({"tag": d.tag, "created_at": d.created_at}))
         .collect();
+
+    // The recipes the caller published to the shared library (#905). Who
+    // published what is readable by its publisher alone (0066), hence
+    // `app.user_id`, and filtered on the caller a second time.
+    let mut library_tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    let publications = sqlx::query!(
+        r#"SELECT l.id, l.name, l.instructions, l.source_url, l.servings, l.duration_minutes,
+                  l.published_at, l.updated_at, p.source_recipe_id
+           FROM library_recipes l
+           JOIN library_recipe_publishers p ON p.library_recipe_id = l.id
+           WHERE p.user_id = $1
+           ORDER BY l.published_at, l.id"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *library_tx)
+    .await?;
+    // The reports the caller made on publications (#908), readable by
+    // their reporter alone (0068).
+    let reports = sqlx::query!(
+        r#"SELECT id, library_recipe_id, reason, comment, created_at, resolution, closed_at
+           FROM library_reports WHERE reporter_id = $1
+           ORDER BY created_at, id"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *library_tx)
+    .await?;
+    let library_ingredients = sqlx::query!(
+        r#"SELECT i.library_recipe_id, i.name, i.quantity, i.unit, i.is_optional,
+                  i.seasonal_months
+           FROM library_ingredients i
+           JOIN library_recipe_publishers p ON p.library_recipe_id = i.library_recipe_id
+           WHERE p.user_id = $1
+           ORDER BY i.library_recipe_id, i.position"#,
+        auth.user_id
+    )
+    .fetch_all(&mut *library_tx)
+    .await?;
+    library_tx.commit().await?;
+    c.library_reports = reports
+        .into_iter()
+        .map(|r| {
+            json!({
+                "id": r.id, "library_recipe_id": r.library_recipe_id, "reason": r.reason,
+                "comment": r.comment, "created_at": r.created_at,
+                "resolution": r.resolution, "closed_at": r.closed_at,
+            })
+        })
+        .collect();
+    c.library_recipes = export::nest_ingredients(
+        publications
+            .into_iter()
+            .map(|l| {
+                json!({
+                    "id": l.id, "name": l.name, "instructions": l.instructions,
+                    "source_url": l.source_url, "servings": l.servings, "duration_minutes": l.duration_minutes,
+                    "source_recipe_id": l.source_recipe_id,
+                    "published_at": l.published_at, "updated_at": l.updated_at,
+                })
+            })
+            .collect(),
+        library_ingredients
+            .into_iter()
+            .map(|i| {
+                (
+                    i.library_recipe_id,
+                    json!({
+                        "name": i.name, "quantity": i.quantity, "unit": i.unit,
+                        "is_optional": i.is_optional, "seasonal_months": i.seasonal_months,
+                    }),
+                )
+            })
+            .collect(),
+    );
 
     let doc = export::build_export(profile_json, c);
 

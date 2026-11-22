@@ -216,6 +216,28 @@ export async function countVerificationTokens(
   }
 }
 
+/**
+ * The opinion and the note kept with each meal `email` logged, oldest first
+ * (#822). apps/web shows them nowhere yet, so the suite reads them here.
+ */
+export async function fetchMealTastes(
+  email: string,
+): Promise<{ taste: string; taste_note: string | null }[]> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT m.taste, m.taste_note FROM meal_history m
+       JOIN users u ON u.id = m.created_by
+       WHERE u.email = $1 ORDER BY m.created_at`,
+      [email],
+    );
+    return rows;
+  } finally {
+    await client.end();
+  }
+}
+
 /** How many accounts hold `email`: 0 or 1. */
 export async function countUsers(email: string): Promise<number> {
   const client = new Client({ connectionString: requireDatabaseUrl() });
@@ -330,28 +352,154 @@ export async function seedSchoolHoliday(period: {
  * Writes an unread `message` notification for `email` in `groupName`
  * (#534's `notifications` table), as apps/api does when someone else posts
  * a message: the suite would otherwise need a second account and its
- * message, or the reminders' worker, which passes once a minute.
+ * message, or the reminders' worker, which passes once a minute. Returns
+ * its id, what a push names (#862).
  */
 export async function seedMessageNotification(
   email: string,
   groupName: string,
   body: string,
-): Promise<void> {
+): Promise<string> {
   const client = new Client({ connectionString: requireDatabaseUrl() });
   await client.connect();
   try {
-    const { rowCount } = await client.query(
+    const { rowCount, rows } = await client.query(
       `INSERT INTO notifications (user_id, group_id, kind, body)
        SELECT u.id, g.id, 'message', $3
          FROM users u
          JOIN group_members m ON m.user_id = u.id
          JOIN groups g ON g.id = m.group_id
-        WHERE u.email = $1 AND g.name = $2`,
+        WHERE u.email = $1 AND g.name = $2
+       RETURNING id`,
       [email, groupName, body],
     );
     if (rowCount !== 1) {
       throw new Error(`could not notify ${email} in ${groupName}`);
     }
+    return rows[0].id;
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Writes an unread `agenda_change` notification for `email` in
+ * `groupName` (#849's rows), as apps/api does when another member adds,
+ * changes or deletes an event: about the family's event titled
+ * `eventTitle`, or, with `null`, about an event that no longer exists (a
+ * deletion). The suite would otherwise need a second account in the family.
+ */
+export async function seedAgendaChangeNotification(
+  email: string,
+  groupName: string,
+  body: string,
+  eventTitle: string | null,
+): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `INSERT INTO notifications (user_id, group_id, kind, object_id, body)
+       SELECT u.id, g.id, 'agenda_change',
+              CASE WHEN $4::text IS NULL THEN gen_random_uuid()
+                   ELSE (SELECT e.id FROM events e WHERE e.group_id = g.id AND e.title = $4) END,
+              $3
+         FROM users u
+         JOIN group_members m ON m.user_id = u.id
+         JOIN groups g ON g.id = m.group_id
+        WHERE u.email = $1 AND g.name = $2`,
+      [email, groupName, body, eventTitle],
+    );
+    if (rowCount !== 1) {
+      throw new Error(`could not notify ${email} in ${groupName}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Sets the threshold of `feature` in the family named `groupName` (#865),
+ * the row `PUT /groups/:id/access-policies` writes for its owner, without
+ * going through « Accès » of the family's settings, which
+ * `access-settings.spec.ts` drives (#867).
+ */
+export async function setAccessPolicy(
+  groupName: string,
+  feature: string,
+  minRole: string,
+): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(
+      `INSERT INTO group_access_policies (group_id, feature, min_role)
+       SELECT id, $2, $3::group_role FROM groups WHERE name = $1
+       ON CONFLICT (group_id, feature) DO UPDATE SET min_role = EXCLUDED.min_role`,
+      [groupName, feature, minRole],
+    );
+    if (rowCount !== 1) {
+      throw new Error(`could not set ${feature} to ${minRole} in ${groupName}`);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Publishes a recipe in the shared library (#905) in the name of `email`,
+ * and returns its id. The suite writes the publication itself rather than go
+ * through the publishing screen (#911) — the snapshot, its ingredients in
+ * order, and the publisher's row its deferred key asks for at commit.
+ */
+export async function publishToLibrary(
+  email: string,
+  recipe: { name: string; instructions?: string; servings?: number; ingredients: string[] },
+): Promise<string> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO library_recipes (name, instructions, servings)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [recipe.name, recipe.instructions ?? null, recipe.servings ?? null],
+    );
+    const id: string = rows[0].id;
+    const { rowCount } = await client.query(
+      `INSERT INTO library_recipe_publishers (library_recipe_id, user_id)
+       SELECT $1, id FROM users WHERE email = $2`,
+      [id, email],
+    );
+    if (rowCount !== 1) throw new Error(`no user to publish as for ${email}`);
+    for (const [position, name] of recipe.ingredients.entries()) {
+      await client.query(
+        `INSERT INTO library_ingredients (library_recipe_id, position, name)
+         VALUES ($1, $2, $3)`,
+        [id, position, name],
+      );
+    }
+    await client.query("COMMIT");
+    return id;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Withdraws a publication from the library as moderation does (#908): the
+ * row goes, its ingredients and its publisher's row with it, and the copies
+ * of it lose their link.
+ */
+export async function withdrawFromLibrary(id: string): Promise<void> {
+  const client = new Client({ connectionString: requireDatabaseUrl() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query(`DELETE FROM library_recipes WHERE id = $1`, [id]);
+    if (rowCount !== 1) throw new Error(`no publication ${id} to withdraw`);
   } finally {
     await client.end();
   }

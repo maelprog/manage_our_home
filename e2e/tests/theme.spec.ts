@@ -1,6 +1,6 @@
 import { expect, Page, test } from "@playwright/test";
 import { fetchVerificationToken } from "../lib/db";
-import { chooseTheme, resolvedTheme } from "../lib/theme";
+import { appearancePosted, chooseTheme, resolvedTheme } from "../lib/theme";
 
 // Issue #585 — the theme is chosen: Automatique, Clair or Sombre. The Rust
 // tests check the cookie, the attribute and that the sheet states every dark
@@ -94,6 +94,68 @@ test.describe("Choosing the theme (#585)", () => {
     await chooseTheme(page, "Automatique");
     await page.goto("/");
     expect(await resolvedTheme(page)).toEqual({ dataTheme: null, bg: DARK_BG, colorScheme: "dark" });
+  });
+});
+
+// Issue #844 — a theme applies on the click: no « Enregistrer » to press
+// with JavaScript, which hides it and shows the sentence saying so; the page
+// comes back with the banner, announced, and the focus on the radio picked.
+// Without JavaScript, the button is there and sends the choice.
+test.describe("The theme applies on the click (#844)", () => {
+  test("a click and an arrow each apply a theme, the focus kept", async ({ page }) => {
+    await registerWithAFamily(page);
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.goto("/account/appearance");
+    await expect(page.getByRole("button", { name: "Enregistrer", exact: true })).toBeHidden();
+    await expect(page.getByText("Le choix s'applique dès que vous le touchez.")).toBeVisible();
+    await expect(page.getByText("Sans JavaScript, le choix s'envoie avec le bouton.")).toBeHidden();
+
+    const dark = page.getByRole("radio", { name: "Sombre" });
+    let posted = appearancePosted(page);
+    await dark.check();
+    await posted;
+    await expect(page).toHaveURL(/\/account\/appearance\?notice=saved$/);
+    await expect(page.getByRole("status").filter({ hasText: "Apparence enregistrée." })).toBeVisible();
+    await expect(dark).toBeChecked();
+    await expect(dark).toBeFocused();
+    expect((await resolvedTheme(page)).dataTheme).toBe("dark");
+
+    // From the keyboard: the arrow applies the theme it lands on.
+    const light = page.getByRole("radio", { name: "Clair" });
+    posted = appearancePosted(page);
+    await page.keyboard.press("ArrowUp");
+    await posted;
+    await expect(light).toBeChecked();
+    await expect(light).toBeFocused();
+    expect((await resolvedTheme(page)).dataTheme).toBe("light");
+  });
+
+  test("without JavaScript, « Enregistrer » sends the theme picked", async ({ page, browser }) => {
+    await registerWithAFamily(page);
+    const context = await browser.newContext({
+      javaScriptEnabled: false,
+      storageState: await page.context().storageState(),
+    });
+    const noJs = await context.newPage();
+    await noJs.goto("/account/appearance");
+    await expect(noJs.getByText("Le choix s'applique dès que vous le touchez.")).toBeHidden();
+    await expect(noJs.getByText("Sans JavaScript, le choix s'envoie avec le bouton.")).toBeVisible();
+    // The button spans the form's width, as every form's button does: no
+    // wrapper takes it out of the form's column.
+    for (const width of [390, 1280]) {
+      await noJs.setViewportSize({ width, height: 800 });
+      const button = await noJs.getByRole("button", { name: "Enregistrer", exact: true }).boundingBox();
+      const choices = await noJs.getByRole("radiogroup").boundingBox();
+      expect(Math.abs(button!.width - choices!.width), `${width}px`).toBeLessThan(1);
+    }
+    await noJs.getByRole("radio", { name: "Sombre" }).check();
+    await expect(noJs).toHaveURL(/\/account\/appearance$/);
+    await noJs.getByRole("button", { name: "Enregistrer", exact: true }).click();
+    await expect(noJs).toHaveURL(/\/account\/appearance\?notice=saved$/);
+    await expect(noJs.getByRole("status").filter({ hasText: "Apparence enregistrée." })).toBeVisible();
+    await expect(noJs.getByRole("radio", { name: "Sombre" })).toBeChecked();
+    expect(await noJs.locator("html").getAttribute("data-theme")).toBe("dark");
+    await context.close();
   });
 });
 

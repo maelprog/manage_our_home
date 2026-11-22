@@ -75,6 +75,24 @@
     });
   }
 
+  // `data-count="<id>"` on a field (`recipes::outcome::taste_fieldset`,
+  // #822): the hint of that id says how many characters are typed, as the
+  // page writes it — « 200 caractères au plus · 40 saisis » —, counted once
+  // trimmed and by code point. `value` holds each line break as one `\n`,
+  // as `maxlength` counts it; the form posts it as `\r\n`, which apps/web
+  // and apps/api count as one too, so the three agree. Not a live region:
+  // the hint is the field's description, read with it. Without JavaScript
+  // the count is the one the page was shown with.
+  document.addEventListener("input", function (event) {
+    var field = event.target;
+    if (!field.hasAttribute || !field.hasAttribute("data-count")) return;
+    var hint = document.getElementById(field.getAttribute("data-count"));
+    if (!hint) return;
+    var typed = Array.from(field.value.trim()).length;
+    var bound = hint.textContent.split(" · ")[0];
+    hint.textContent = typed ? bound + " · " + typed + " saisis" : bound;
+  });
+
   // `data-dialog="<id>"` on a link (`recipes::missing::missing_badge`,
   // #560): opens the `<dialog>` of that id as a modal instead of following
   // the link. The browser moves the focus into the dialog, keeps it there
@@ -429,6 +447,7 @@
   // WCAG 2.5.3. It keeps its content and its name; the sheet lays the
   // wheel over it.
   var BUSY_LABEL = "Envoi en cours";
+  var SAVING = "Enregistrement…";
 
   function busy(form, submitter) {
     var button =
@@ -462,6 +481,25 @@
       form.removeAttribute("data-busy");
     });
     Array.prototype.forEach.call(document.querySelectorAll('[aria-busy="true"]'), function (button) {
+      // A form of switches locked while it was sent (#853): unlocked.
+      if (button.hasAttribute("data-lock-on-change")) {
+        button.removeAttribute("aria-busy");
+        Array.prototype.forEach.call(button.querySelectorAll("[data-submit-on-change]"), function (field) {
+          field.disabled = false;
+        });
+        // And its fieldset's line, emptied (#867).
+        Array.prototype.forEach.call(button.querySelectorAll("[data-busy-status]"), function (said) {
+          said.textContent = "";
+          said.parentNode.removeAttribute("aria-busy");
+        });
+        return;
+      }
+      // A number locked while it was sent (#846): unlocked as it was.
+      if (button.type === "number") {
+        button.removeAttribute("aria-busy");
+        button.disabled = false;
+        return;
+      }
       if (button.idleLabel === undefined) return;
       if (button.tagName === "INPUT") button.value = button.idleLabel;
       else button.innerHTML = button.idleLabel;
@@ -504,12 +542,38 @@
     var input = event.target;
     if (!input.hasAttribute) return;
     // `data-submit-on-change` (the stocks' barcode photo, #402; the grocery
-    // list's check boxes until #526; the profile's families, #751).
+    // list's check boxes until #526; the profile's families, #751; the
+    // theme, the family's colour and calendar, #844).
     // `form.submit()` fires no `submit` event, hence
     // the explicit `keepScroll`.
     if (input.hasAttribute("data-submit-on-change")) {
       keepScroll(input.form, input);
       input.form.submit();
+      // A number (a planned recipe's people, #846) is locked until the
+      // page comes back: Chrome sends one `change` per click of its
+      // arrows, and a value typed meanwhile would be lost. Disabled after
+      // `submit()`, which has already read the form's data.
+      if (input.type === "number") {
+        input.setAttribute("aria-busy", "true");
+        input.disabled = true;
+      }
+      // `data-lock-on-change` (the notification settings' switches,
+      // #853): the whole form waits, each field sent on change disabled,
+      // so that a second switch is not flipped while the first is saved.
+      if (input.form.hasAttribute("data-lock-on-change")) {
+        input.form.setAttribute("aria-busy", "true");
+        Array.prototype.forEach.call(input.form.querySelectorAll("[data-submit-on-change]"), function (field) {
+          field.disabled = true;
+        });
+        // The family's thresholds (#867): the fieldset of the radio says
+        // the choice is on its way, in its live `data-busy-status` line.
+        var group = input.closest("fieldset");
+        var said = group && group.querySelector("[data-busy-status]");
+        if (said) {
+          group.setAttribute("aria-busy", "true");
+          said.textContent = SAVING;
+        }
+      }
     }
     // `data-all-day` (`agenda::new::schedule_fields`, #117).
     else if (input.hasAttribute("data-all-day")) allDay(input);
@@ -731,17 +795,167 @@
     comboOn(combo, next);
   });
 
+  // `data-ing-search` (`stocks::detail::ingredient_html`, #904): which
+  // ingredient an article is, suggested as one types. Without JavaScript
+  // the form posts the term and the page comes back with the results as
+  // radios (`data-ing-picks`); here that same page is fetched as one
+  // types, its radios read and offered in a `.combo-list` under the field,
+  // a combobox whose focus stays in the field: ↓ ↑ move, Entrée links the
+  // one shown, a click too, Échap closes. The count, or that nothing
+  // matched, is said in the card's `role="status"` line, its wheel turning
+  // while the page is on its way.
+  function ingSearch(form) {
+    var input = form.elements.q;
+    var hidden = form.elements.ingredient;
+    var status = form.parentNode.querySelector(".status");
+    if (!input || !hidden || !status) return;
+    var list = document.createElement("ul");
+    list.className = "combo-list";
+    list.id = "ing-l";
+    list.setAttribute("role", "listbox");
+    list.setAttribute("aria-label", "Ingrédients");
+    list.hidden = true;
+    input.parentNode.parentNode.appendChild(list);
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-controls", list.id);
+    input.setAttribute("aria-expanded", "false");
+    var timer = 0;
+    var asked = 0;
+
+    function close() {
+      list.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+    }
+    function on(item) {
+      Array.prototype.forEach.call(list.children, function (other) {
+        other.setAttribute("aria-selected", other === item ? "true" : "false");
+      });
+      input.setAttribute("aria-activedescendant", item.id);
+      if (item.scrollIntoView) item.scrollIntoView({ block: "nearest" });
+    }
+    function open() {
+      list.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      on(list.firstElementChild);
+    }
+    function pick(item) {
+      input.value = item.textContent;
+      hidden.value = item.getAttribute("data-value");
+      close();
+      if (form.requestSubmit) form.requestSubmit();
+      else form.submit();
+    }
+    function say(text, busy) {
+      if (busy) status.setAttribute("data-busy-status", "");
+      else status.removeAttribute("data-busy-status");
+      status.textContent = text;
+    }
+    function search() {
+      var term = input.value.trim();
+      var mine = ++asked;
+      if (term.length < 2) {
+        close();
+        list.replaceChildren();
+        say("", false);
+        return;
+      }
+      say("Recherche en cours…", true);
+      fetch(form.action, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "q=" + encodeURIComponent(term)
+      })
+        .then(function (answer) {
+          if (!answer.ok) throw new Error(answer.status);
+          return answer.text();
+        })
+        .then(function (html) {
+          if (mine !== asked) return;
+          var page = new DOMParser().parseFromString(html, "text/html");
+          var radios = page.querySelectorAll("[data-ing-picks] input");
+          list.replaceChildren();
+          Array.prototype.forEach.call(radios, function (radio, i) {
+            var item = document.createElement("li");
+            item.id = "ing-o" + i;
+            item.setAttribute("role", "option");
+            item.setAttribute("data-value", radio.value);
+            item.textContent = radio.parentNode.textContent.trim();
+            list.appendChild(item);
+          });
+          var n = radios.length;
+          if (n) {
+            open();
+            say((n > 1 ? n + " ingrédients trouvés." : "1 ingrédient trouvé.") + " Flèches haut et bas pour choisir.", false);
+          } else {
+            close();
+            var none = page.querySelector(".ing .status");
+            say((none && none.textContent) || "Aucun ingrédient ne correspond.", false);
+          }
+        })
+        .catch(function () {
+          if (mine !== asked) return;
+          close();
+          say("Suggestions indisponibles pour le moment.", false);
+        });
+    }
+
+    input.addEventListener("input", function () {
+      hidden.value = "";
+      clearTimeout(timer);
+      timer = setTimeout(search, 250);
+    });
+    input.addEventListener("keydown", function (event) {
+      var items = list.children;
+      if (list.hidden) {
+        if (event.key === "ArrowDown" && items.length) {
+          event.preventDefault();
+          open();
+        }
+        return;
+      }
+      var at = Array.prototype.indexOf.call(items, list.querySelector('[aria-selected="true"]'));
+      if (event.key === "ArrowDown") on(items[(at + 1) % items.length]);
+      else if (event.key === "ArrowUp") on(items[(at - 1 + items.length) % items.length]);
+      else if (event.key === "Enter" && at >= 0) pick(items[at]);
+      else if (event.key === "Escape") close();
+      else return;
+      event.preventDefault();
+    });
+    input.addEventListener("blur", close);
+    // A press on an option keeps the focus in the field: the blur would
+    // close the list before the click.
+    list.addEventListener("mousedown", function (event) {
+      event.preventDefault();
+    });
+    list.addEventListener("click", function (event) {
+      var item = closest(event.target, "[role=option]");
+      if (item) pick(item);
+    });
+  }
+
+  function ingSearches() {
+    Array.prototype.forEach.call(document.querySelectorAll("form[data-ing-search]"), ingSearch);
+  }
+
   // `data-hidden-with-js`: the fallback of a form that sends itself
   // without it (a button: the profile's families, #751), or of what a
   // script offers otherwise (the attachments' list and its « Supprimer »,
   // which the viewers carry, #776). Rendered, then hidden here, so that a
-  // page whose script failed to load keeps it.
+  // page whose script failed to load keeps it. `data-shown-with-js`, the
+  // reverse: rendered `hidden`, shown here — the sentence that says a
+  // setting applies on the click (`app::APPLIES_ON_CHANGE`, #844).
   function familySelectors() {
     var buttons = document.querySelectorAll(
       'form[data-families] button[type="submit"], [data-hidden-with-js]'
     );
     Array.prototype.forEach.call(buttons, function (button) {
       button.hidden = true;
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-shown-with-js]"), function (shown) {
+      shown.hidden = false;
     });
   }
 
@@ -919,15 +1133,19 @@
   // banner at the top (`?error=…`), which the reader must see, and a
   // redirect elsewhere opens at the top as usual. Kept in sessionStorage,
   // which can be missing or refuse writes: the page then simply opens at
-  // the top. `field`, a radio sent by `data-submit-on-change` (the
-  // profile's families, #751): the field of the same name and value gets
-  // the focus back, so the arrow keys go on from it after the reload.
+  // the top. `field`, a radio or a box sent by `data-submit-on-change`
+  // (the profile's families, #751; the theme, the family's colour and
+  // calendar, #844): the field of the same name and value gets the focus
+  // back, so the arrow keys go on from it after the reload. A number (a
+  // planned recipe's people, #846) is found again by its form's action, a
+  // list holding one such field per row, whose value has changed.
   var KEEP_SCROLL = "keep-scroll";
 
   function keepScroll(form, field) {
     if (!form || !form.hasAttribute("data-keep-scroll")) return;
     var kept = { path: location.pathname, y: window.scrollY };
-    if (field && field.type === "radio") kept.focus = [field.name, field.value];
+    if (field && (field.type === "radio" || field.type === "checkbox")) kept.focus = [field.name, field.value];
+    else if (field && field.type === "number") kept.focusIn = [form.getAttribute("action"), field.name];
     try {
       sessionStorage.setItem(KEEP_SCROLL, JSON.stringify(kept));
     } catch (e) {}
@@ -948,6 +1166,14 @@
         var fields = document.getElementsByName(kept.focus[0]);
         for (var i = 0; i < fields.length; i++) {
           if (fields[i].value === kept.focus[1]) fields[i].focus({ preventScroll: true });
+        }
+      }
+      if (kept.focusIn) {
+        var forms = document.querySelectorAll("form[action]");
+        for (var j = 0; j < forms.length; j++) {
+          if (forms[j].getAttribute("action") !== kept.focusIn[0]) continue;
+          var named = forms[j].elements.namedItem(kept.focusIn[1]);
+          if (named && named.focus) named.focus({ preventScroll: true });
         }
       }
     }
@@ -971,6 +1197,43 @@
     bar.scrollTo({ left: bar.scrollLeft + offset, top: 0, behavior: "instant" });
   }
 
+  // The first questions about meals (#820, `routes::recipes::start`), once
+  // per member: the recipe list (`data-depart`, the member's id) opens them
+  // until the member has finished them (`data-depart-done` on the end's
+  // card, read when it loads) or put them off (the same attribute on
+  // « Plus tard », read when it is followed). Seen is kept in localStorage;
+  // where it is missing or refuses writes, in a cookie for the session.
+  // Without JavaScript nothing opens them: they are never forced.
+  var MEAL_START = "mhome.depart-repas.";
+  var MEAL_START_COOKIE = "depart_repas";
+
+  function mealStartSeen(user) {
+    try {
+      if (localStorage.getItem(MEAL_START + user)) return true;
+    } catch (e) {}
+    return document.cookie.split("; ").indexOf(MEAL_START_COOKIE + "=" + user) !== -1;
+  }
+
+  function mealStartDone(user) {
+    try {
+      localStorage.setItem(MEAL_START + user, "1");
+      return;
+    } catch (e) {}
+    document.cookie = MEAL_START_COOKIE + "=" + user + "; Path=/; SameSite=Lax";
+  }
+
+  document.addEventListener("click", function (event) {
+    var link = closest(event.target, "a[data-depart-done]");
+    if (link) mealStartDone(link.getAttribute("data-depart-done"));
+  });
+
+  function mealStart() {
+    var done = document.querySelector("[data-depart-done]:not(a)");
+    if (done) mealStartDone(done.getAttribute("data-depart-done"));
+    var list = document.querySelector("[data-depart]");
+    if (list && !mealStartSeen(list.getAttribute("data-depart"))) location.replace("/recipes/depart");
+  }
+
   // The day view's hours (#793) open on 08:00: the sheet's
   // `scroll-initial-target` does it without a script where the browser
   // knows it, and this where it does not. Not over a position the reader
@@ -983,18 +1246,366 @@
     hours.scrollTop = eight.getBoundingClientRect().top - hours.getBoundingClientRect().top;
   }
 
+  // `data-cook="<recipe id>"` (`recipes::cook`, #823): cooking a recipe one
+  // step at a time. The readable list the page shows without JavaScript
+  // (`data-cook-plain`) gives way to the stepper the server wrote hidden
+  // (`data-cook-ui`): Précédent and Suivant, ← and →, a swipe on the step;
+  // « Minuteur 8 min » starts a timer (`data-cook-start`, its seconds),
+  // several may run at once. A timer that ends rings — a beep made by Web
+  // Audio, no file, and a vibration where there is one — until « Arrêter »;
+  // never a notification. The step shown and the timers, by the time they
+  // end, are kept per recipe in localStorage (`mhome.cuisine.<id>`) so that
+  // leaving the page and coming back finds them; « Terminer » forgets them.
+  // So does half a day counted from the later of the last change (`at`,
+  // written on a step moved or a timer started, paused, stopped or ended —
+  // not on a visit) and the end of the last timer; a timer still running or
+  // paused is never forgotten. Storage that throws is left
+  // alone: the page works the same, it only forgets. The screen is kept on
+  // (Screen Wake Lock) while the page is shown, and released when it is
+  // left; without the API, nothing is said and nothing breaks.
+  var COOK = "mhome.cuisine.";
+  var COOK_KEPT = 12 * 3600 * 1000;
+  var cooking = null;
+  var audio = null;
+  var ringing = null;
+  var wakeLock = null;
+
+  function cookSave() {
+    if (cooking.over) return;
+    try {
+      localStorage.setItem(COOK + cooking.id, JSON.stringify({ at: Date.now(), step: cooking.step, timers: cooking.timers }));
+    } catch (e) {}
+  }
+
+  // When the half day starts for what was kept: its last change or its
+  // last timer's end, whichever is later — never, while a timer runs or
+  // waits in pause.
+  function cookSince(kept) {
+    var since = Number(kept.at) || 0;
+    (Array.isArray(kept.timers) ? kept.timers : []).forEach(function (timer) {
+      if (!timer) return;
+      if (!timer.done && !(timer.end > 0) && timer.left > 0) since = Infinity;
+      else if (timer.end > since) since = timer.end;
+    });
+    return since;
+  }
+
+  function cookKept(id) {
+    try {
+      var kept = JSON.parse(localStorage.getItem(COOK + id));
+      if (kept && Date.now() - cookSince(kept) < COOK_KEPT) return kept;
+      if (kept) localStorage.removeItem(COOK + id);
+    } catch (e) {}
+    return {};
+  }
+
+  // What a timer still has to run, in milliseconds: from its end while it
+  // runs, as it was left while it is paused.
+  function remaining(timer) {
+    return timer.end ? timer.end - Date.now() : timer.left;
+  }
+
+  // « 07:52 », « 1:29:05 ».
+  function clockOf(ms) {
+    var s = Math.max(0, Math.ceil(ms / 1000));
+    var h = Math.floor(s / 3600);
+    var two = function (n) {
+      return (n < 10 ? "0" : "") + n;
+    };
+    var rest = two(Math.floor((s % 3600) / 60)) + ":" + two(s % 60);
+    return h ? h + ":" + rest : rest;
+  }
+
+  // `quiet` when the page opens: showing the step kept is no change.
+  function cookShow(index, quiet) {
+    var n = cooking.steps.length;
+    cooking.step = Math.max(0, Math.min(n - 1, index));
+    cooking.steps.forEach(function (step, i) {
+      step.hidden = i !== cooking.step;
+    });
+    cooking.at.textContent = "Étape " + (cooking.step + 1) + " sur " + n;
+    cooking.gauge.value = cooking.step + 1;
+    var last = cooking.step === n - 1;
+    // The focus leaves a button about to vanish or be disabled for the one
+    // that takes its place.
+    var focused = document.activeElement;
+    cooking.prev.disabled = cooking.step === 0;
+    cooking.next.hidden = last;
+    cooking.end.hidden = !last;
+    if (focused === cooking.next && last) cooking.end.focus();
+    if (focused === cooking.prev && cooking.prev.disabled) cooking.next.focus();
+    if (!quiet) cookSave();
+  }
+
+  // The rows of the timers, written again from `cooking.timers`; the focus
+  // stays on the control it was on, in the same row.
+  function cookRows() {
+    var focused = document.activeElement;
+    var keep = closest(focused, "[data-timer]") && focused.getAttribute("data-cook-key");
+    var keepRow = keep && closest(focused, "[data-timer]").getAttribute("data-timer");
+    var rows = cooking.timers.map(function (timer) {
+      var row = cooking.row.content.firstElementChild.cloneNode(true);
+      var what = row.querySelector(".what");
+      var left = row.querySelector(".left");
+      var pause = row.querySelector("[data-cook-pause]");
+      var stop = row.querySelector("[data-cook-stop]");
+      var ring = row.querySelector("[data-cook-ring]");
+      pause.setAttribute("data-cook-key", "pause");
+      stop.setAttribute("data-cook-key", "stop");
+      ring.setAttribute("data-cook-key", "ring");
+      row.setAttribute("data-timer", timer.id);
+      if (timer.done) {
+        row.classList.add("ended");
+        row.setAttribute("role", "alert");
+        what.textContent = timer.what;
+        left.removeAttribute("role");
+        left.textContent = "Terminé !";
+        pause.hidden = true;
+        stop.hidden = true;
+      } else {
+        var paused = !timer.end;
+        row.classList.toggle("paused", paused);
+        what.textContent = timer.what + (paused ? " · en pause" : "");
+        left.setAttribute("aria-label", timer.what);
+        left.textContent = clockOf(remaining(timer));
+        pause.textContent = paused ? "Reprendre" : "Pause";
+        stop.setAttribute("aria-label", "Arrêter le minuteur : " + timer.what);
+        ring.hidden = true;
+      }
+      return row;
+    });
+    cooking.list.replaceChildren.apply(cooking.list, rows);
+    cooking.box.hidden = !rows.length;
+    var again = keepRow && cooking.list.querySelector('[data-timer="' + keepRow + '"] [data-cook-key="' + keep + '"]');
+    if (again && !again.hidden) again.focus();
+    else if (keepRow) (cooking.next.hidden ? cooking.end : cooking.next).focus();
+  }
+
+  function beep() {
+    try {
+      if (!audio) {
+        var Context = window.AudioContext || window.webkitAudioContext;
+        if (!Context) return;
+        audio = new Context();
+      }
+      if (audio.state === "suspended") audio.resume();
+      [0, 0.3, 0.6].forEach(function (offset) {
+        var at = audio.currentTime + offset;
+        var tone = audio.createOscillator();
+        var gain = audio.createGain();
+        tone.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.exponentialRampToValueAtTime(0.4, at + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.2);
+        tone.connect(gain);
+        gain.connect(audio.destination);
+        tone.start(at);
+        tone.stop(at + 0.22);
+      });
+    } catch (e) {}
+    try {
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    } catch (e) {}
+  }
+
+  // Rings every two seconds while a timer is over and not yet stopped.
+  function cookRing() {
+    var over = cooking.timers.some(function (timer) {
+      return timer.done;
+    });
+    if (over && !ringing) {
+      beep();
+      ringing = setInterval(beep, 2000);
+    } else if (!over && ringing) {
+      clearInterval(ringing);
+      ringing = null;
+    }
+  }
+
+  function cookTick() {
+    var ended = false;
+    cooking.timers.forEach(function (timer) {
+      if (!timer.done && timer.end && remaining(timer) <= 0) {
+        timer.done = true;
+        ended = true;
+      }
+    });
+    if (ended) {
+      cookRows();
+      cookSave();
+    } else {
+      Array.prototype.forEach.call(cooking.list.querySelectorAll("[data-timer]"), function (row, i) {
+        var timer = cooking.timers[i];
+        if (timer && !timer.done) row.querySelector(".left").textContent = clockOf(remaining(timer));
+      });
+    }
+    cookRing();
+  }
+
+  // `wakeLock` is the lock held, `true` while one is asked for.
+  function cookWake() {
+    if (!cooking || wakeLock || document.visibilityState !== "visible" || !navigator.wakeLock) return;
+    wakeLock = true;
+    try {
+      navigator.wakeLock.request("screen").then(
+        function (lock) {
+          wakeLock = lock;
+          cooking.wake.hidden = false;
+          lock.addEventListener("release", function () {
+            if (wakeLock === lock) wakeLock = null;
+            cooking.wake.hidden = true;
+          });
+        },
+        function () {
+          wakeLock = null;
+        }
+      );
+    } catch (e) {
+      wakeLock = null;
+    }
+  }
+
+  document.addEventListener("visibilitychange", cookWake);
+  window.addEventListener("pageshow", cookWake);
+  window.addEventListener("pagehide", function () {
+    try {
+      if (wakeLock && wakeLock !== true) wakeLock.release();
+    } catch (e) {}
+    wakeLock = null;
+  });
+
+  document.addEventListener("click", function (event) {
+    if (!cooking) return;
+    var target = event.target;
+    var button;
+    if (closest(target, "[data-cook-prev]")) cookShow(cooking.step - 1);
+    else if (closest(target, "[data-cook-next]")) cookShow(cooking.step + 1);
+    else if ((button = closest(target, "[data-cook-start]"))) {
+      // A press is what lets a page make a sound: the context is made here,
+      // so that it can ring later.
+      if (!audio) {
+        try {
+          var Context = window.AudioContext || window.webkitAudioContext;
+          if (Context) audio = new Context();
+        } catch (e) {}
+      }
+      cooking.timers.push({
+        id: String(Date.now()) + cooking.timers.length,
+        what: button.getAttribute("data-cook-what"),
+        end: Date.now() + 1000 * Number(button.getAttribute("data-cook-start")),
+        left: 0,
+        done: false
+      });
+      cookRows();
+      cookSave();
+    } else if ((button = closest(target, "[data-cook-pause], [data-cook-stop], [data-cook-ring]"))) {
+      var id = closest(button, "[data-timer]").getAttribute("data-timer");
+      var timer = cooking.timers.filter(function (t) {
+        return t.id === id;
+      })[0];
+      if (!timer) return;
+      if (button.hasAttribute("data-cook-pause")) {
+        if (timer.end) {
+          timer.left = remaining(timer);
+          timer.end = 0;
+        } else {
+          timer.end = Date.now() + timer.left;
+        }
+      } else {
+        cooking.timers.splice(cooking.timers.indexOf(timer), 1);
+      }
+      cookRows();
+      cookSave();
+      cookRing();
+    } else if (closest(target, "[data-cook-end]")) {
+      cooking.over = true;
+      try {
+        localStorage.removeItem(COOK + cooking.id);
+      } catch (e) {}
+    }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (!cooking || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (document.querySelector("dialog[open]") || closest(event.target, "input, select, textarea")) return;
+    if (event.key === "ArrowRight") cookShow(cooking.step + 1);
+    else if (event.key === "ArrowLeft") cookShow(cooking.step - 1);
+    else return;
+    event.preventDefault();
+  });
+
+  // A swipe across the step: to the left the next one, to the right the
+  // one before, as a page is turned.
+  var swipe = null;
+  document.addEventListener(
+    "touchstart",
+    function (event) {
+      var touch = event.touches[0];
+      swipe = cooking && event.touches.length === 1 && closest(event.target, "[data-step]") ? [touch.clientX, touch.clientY] : null;
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    "touchend",
+    function (event) {
+      if (!swipe) return;
+      var touch = event.changedTouches[0];
+      var dx = touch.clientX - swipe[0];
+      var dy = touch.clientY - swipe[1];
+      swipe = null;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) cookShow(cooking.step + (dx < 0 ? 1 : -1));
+    },
+    { passive: true }
+  );
+
+  function cook() {
+    var root = document.querySelector("[data-cook]");
+    if (!root) return;
+    var ui = root.querySelector("[data-cook-ui]");
+    var id = root.getAttribute("data-cook");
+    var kept = cookKept(id);
+    cooking = {
+      id: id,
+      steps: Array.prototype.slice.call(ui.querySelectorAll("[data-step]")),
+      at: ui.querySelector("[data-cook-at]"),
+      gauge: ui.querySelector("progress"),
+      wake: ui.querySelector(".wake"),
+      box: ui.querySelector(".timers"),
+      list: ui.querySelector("[data-cook-timers]"),
+      row: ui.querySelector("[data-cook-row]"),
+      prev: ui.querySelector("[data-cook-prev]"),
+      next: ui.querySelector("[data-cook-next]"),
+      end: ui.querySelector("[data-cook-end]"),
+      step: 0,
+      timers: (Array.isArray(kept.timers) ? kept.timers : []).filter(function (timer) {
+        return timer && typeof timer.id === "string" && typeof timer.what === "string" && (timer.end > 0 || timer.left > 0 || timer.done);
+      })
+    };
+    root.querySelector("[data-cook-plain]").hidden = true;
+    ui.hidden = false;
+    cookShow(Number(kept.step) || 0, true);
+    cookRows();
+    cookTick();
+    setInterval(cookTick, 500);
+    cookWake();
+  }
+
   // Loaded from the <head>: the fields are there once the document is. The
   // script comes after the sheet's <link>, so the layout the scroll
   // positions are read from is the styled one. The two scroll fixes run
   // apart: one throwing (a browser refusing `behavior: "instant"`) must not
   // cost the other.
   function ready() {
+    try {
+      mealStart();
+    } catch (e) {}
     expiryShortcuts();
     resendCooldowns();
     strengthMeters();
     bounds();
     recurringBoxes();
     combos();
+    ingSearches();
     familySelectors();
     viewers();
     try {
@@ -1004,6 +1615,9 @@
       restoreScroll();
     } catch (e) {}
     morningHours();
+    try {
+      cook();
+    } catch (e) {}
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", ready);

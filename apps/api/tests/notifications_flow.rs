@@ -1,7 +1,8 @@
 //! The notification centre (#534), against a real database: the events
 //! that write a notification (a reminder coming due, a stock item nearing
 //! its expiry and the daily recap of those items, a message, an invitation,
-//! a grocery item, an agenda event added, changed or deleted), the member's API
+//! a grocery item, an agenda event added, changed or deleted, a calendar
+//! import), the member's API
 //! (`/notifications`), its isolation per recipient, the 30-day purge and
 //! the export.
 //!
@@ -222,7 +223,12 @@ async fn pass(db: &PgPool, email_ok: bool) {
             Err(anyhow::anyhow!("smtp down"))
         }
     };
-    let send_push = |_endpoint: String, _ttl: i64| async { PushOutcome::Delivered };
+    let send_push =
+        |_endpoint: String,
+         _ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| async {
+            PushOutcome::Delivered
+        };
     send_due_notifications(db, "https://maison.example", send, send_push)
         .await
         .unwrap();
@@ -810,6 +816,30 @@ async fn the_recap_skips_a_deactivated_or_purged_member(db: PgPool) {
     assert_eq!(notified, [owner]);
 }
 
+/// A member who turned the recap off (#853) gets none, at any hour of the
+/// day, though their hour is kept; the other gets theirs.
+#[sqlx::test]
+async fn the_recap_skips_a_member_who_turned_it_off(db: PgPool) {
+    let f = family(&db).await;
+    let owner = user_id(&db, "owner@example.test").await;
+    sqlx::query(
+        "UPDATE users SET expiry_digest_enabled = false WHERE email = 'member@example.test'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+
+    let done = recap(&db, today, 23).await.unwrap();
+    assert_eq!((done.written, done.recipients), (1, vec![owner]));
+    let notified: Vec<Uuid> = sqlx::query_scalar("SELECT user_id FROM notifications")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(notified, [owner]);
+}
+
 /// The recap is pushed on the member's reminder channel, as the budget
 /// alerts are: a member on email only gets it in the centre, devices or
 /// not; `push` and `both` get it pushed.
@@ -844,11 +874,14 @@ async fn the_recap_push_follows_each_member_s_channel(db: PgPool) {
     let done = recap(&db, today, 9).await.unwrap();
     assert_eq!(done.recipients.len(), 3);
     let pushed = std::sync::Mutex::new(Vec::new());
-    let send_push = |endpoint: String, _ttl: i64| {
-        pushed.lock().unwrap().push(endpoint);
-        async { PushOutcome::Delivered }
-    };
-    push_recap(&db, &send_push, &done.recipients).await.unwrap();
+    let send_push =
+        |endpoint: String,
+         _ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            pushed.lock().unwrap().push(endpoint);
+            async { PushOutcome::Delivered }
+        };
+    push_recap(&db, &send_push, &done.entries).await.unwrap();
     let mut pushed = pushed.into_inner().unwrap();
     pushed.sort();
     assert_eq!(
@@ -879,11 +912,14 @@ async fn the_recap_is_pushed_to_the_members_who_have_a_device(db: PgPool) {
 
     let done = recap(&db, today, 9).await.unwrap();
     let pushed = std::sync::Mutex::new(Vec::new());
-    let send_push = |endpoint: String, ttl: i64| {
-        pushed.lock().unwrap().push((endpoint, ttl));
-        async { PushOutcome::Delivered }
-    };
-    push_recap(&db, &send_push, &done.recipients).await.unwrap();
+    let send_push =
+        |endpoint: String,
+         ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            pushed.lock().unwrap().push((endpoint, ttl));
+            async { PushOutcome::Delivered }
+        };
+    push_recap(&db, &send_push, &done.entries).await.unwrap();
     assert_eq!(
         pushed.into_inner().unwrap(),
         [(endpoint.to_string(), RECAP_PUSH_TTL_SECS)]
@@ -898,6 +934,110 @@ async fn the_recap_is_pushed_to_the_members_who_have_a_device(db: PgPool) {
         recap_bodies(&list(&f.router, &f.member, "").await),
         ["1 produit périme bientôt : Lait."]
     );
+}
+
+// RFC 8291, Appendix A: a browser's keys, so that a push carries a payload.
+const UA_PUBLIC: &str =
+    "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+const UA_AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
+
+/// The rows of the centre, as `(member, id)`, in order.
+async fn written_entries(db: &PgPool) -> Vec<(Uuid, Uuid)> {
+    sqlx::query_as("SELECT user_id, id FROM notifications ORDER BY user_id, id")
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// What `insert_entries` returns — what the push of an alert, an agenda
+/// change or a recap names (#862) — is the rows it wrote, under their ids:
+/// a click marks read the very entry the push stood for.
+#[sqlx::test]
+async fn the_entries_returned_are_the_rows_written(db: PgPool) {
+    use manage_our_home::notifications::center::{insert_entries, Event, NewNotification};
+    let f = family(&db).await;
+    let members = [
+        user_id(&db, "owner@example.test").await,
+        user_id(&db, "member@example.test").await,
+    ];
+    let mut conn = db.acquire().await.unwrap();
+    let returned = insert_entries(
+        &mut conn,
+        &members,
+        &NewNotification {
+            group_id: f.group.parse().unwrap(),
+            event: Event::BudgetCapNear,
+            object_id: None,
+            actor_id: None,
+            dedup_key: None,
+        },
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let mut returned: Vec<(Uuid, Uuid)> = returned.iter().map(|e| (e.member, e.id)).collect();
+    returned.sort_unstable();
+    assert_eq!(returned.len(), 2);
+    assert_eq!(returned, written_entries(&db).await);
+}
+
+/// The acceptance of #862 for the recap: each member's push names the ids
+/// of their recaps in the centre — one per family — and nothing else.
+#[sqlx::test]
+async fn the_recap_s_push_names_the_rows_of_the_centre(db: PgPool) {
+    let f = family(&db).await;
+    let second = create_group(&f.router, &f.owner, "Chalet").await;
+    let today = NaiveDate::from_ymd_opt(2030, 10, 30).unwrap();
+    stock_item(&db, &f.group, "Lait", 1.0, today).await;
+    stock_item(&db, &second, "Riz", 1.0, today).await;
+    let mut devices = Vec::new();
+    for email in ["owner@example.test", "member@example.test"] {
+        let member = user_id(&db, email).await;
+        let endpoint = format!("https://fcm.googleapis.com/fcm/send/{member}");
+        sqlx::query(
+            "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(member)
+        .bind(&endpoint)
+        .bind(UA_PUBLIC)
+        .bind(UA_AUTH)
+        .execute(&db)
+        .await
+        .unwrap();
+        devices.push((member, endpoint));
+    }
+
+    let done = recap(&db, today, 9).await.unwrap();
+    let pushed = std::sync::Mutex::new(Vec::new());
+    let send_push =
+        |endpoint: String,
+         _ttl: i64,
+         payload: Option<manage_our_home::notifications::push::Payload>| {
+            let named: Value = serde_json::from_slice(&payload.unwrap().plaintext).unwrap();
+            pushed.lock().unwrap().push((endpoint, named));
+            async { PushOutcome::Delivered }
+        };
+    push_recap(&db, &send_push, &done.entries).await.unwrap();
+    let mut pushed = pushed.into_inner().unwrap();
+    pushed.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let written = written_entries(&db).await;
+    // The owner has a recap in each family, the member in the first.
+    assert_eq!(written.len(), 3);
+    devices.sort_by(|a, b| a.1.cmp(&b.1));
+    let expected: Vec<(String, Value)> = devices
+        .into_iter()
+        .map(|(member, endpoint)| {
+            let ids: Vec<String> = written
+                .iter()
+                .filter(|(m, _)| *m == member)
+                .map(|(_, id)| id.to_string())
+                .collect();
+            (endpoint, json!({ "entries": ids }))
+        })
+        .collect();
+    assert_eq!(pushed, expected);
 }
 
 /// The hourly pass does not announce again a row the recap announced for
@@ -1153,39 +1293,82 @@ async fn an_agenda_change_is_a_kind_the_schema_takes(db: PgPool) {
 }
 
 /// Every account is told of the agenda changes unless it says otherwise:
-/// the setting is on for an account just made, and can be turned off.
+/// the three switches (#853) are on for an account just made, each can be
+/// turned off, none can be NULL. So is the expiry recap's (#853).
 #[sqlx::test]
 async fn an_account_is_told_of_the_agenda_changes_by_default(db: PgPool) {
     family(&db).await;
-    let on: Vec<bool> = sqlx::query_scalar("SELECT notify_agenda_changes FROM users")
-        .fetch_all(&db)
-        .await
-        .unwrap();
-    assert_eq!(on, [true, true]);
-    sqlx::query("UPDATE users SET notify_agenda_changes = false WHERE email = $1")
+    for column in [
+        "notify_agenda_added",
+        "notify_agenda_changed",
+        "notify_agenda_deleted",
+        "expiry_digest_enabled",
+    ] {
+        let on: Vec<bool> =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT {column} FROM users")))
+                .fetch_all(&db)
+                .await
+                .unwrap();
+        assert_eq!(on, [true, true], "{column}");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET {column} = false WHERE email = $1"
+        )))
         .bind("member@example.test")
         .execute(&db)
         .await
         .unwrap();
-    let off: bool = sqlx::query_scalar("SELECT notify_agenda_changes FROM users WHERE email = $1")
+        let off: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "SELECT {column} FROM users WHERE email = $1"
+        )))
         .bind("member@example.test")
         .fetch_one(&db)
         .await
         .unwrap();
-    assert!(!off);
-    let refused = sqlx::query("UPDATE users SET notify_agenda_changes = NULL")
+        assert!(!off, "{column}");
+        let refused = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET {column} = NULL"
+        )))
         .execute(&db)
         .await;
-    assert!(refused.is_err());
+        assert!(refused.is_err(), "{column}");
+    }
 }
 
-/// The agenda-change setting is read and written by
-/// `/account/notifications` (#850): on by default, turned off and on
-/// again without touching the channel nor the recap's hour, left as it is
-/// by a request without it, anything but a boolean refused — and only the
-/// caller's own account is changed.
+/// Both reminder switches off is `none` (#853); the recap may be off, its
+/// hour kept: never NULL, never outside the day.
 #[sqlx::test]
-async fn the_agenda_change_setting_is_the_caller_s_own(db: PgPool) {
+async fn the_reminders_may_reach_the_centre_alone_and_the_recap_be_off(db: PgPool) {
+    family(&db).await;
+    sqlx::query("UPDATE users SET reminder_channel = 'none', expiry_digest_enabled = false")
+        .execute(&db)
+        .await
+        .unwrap();
+    let refused = sqlx::query("UPDATE users SET reminder_channel = 'sms'")
+        .execute(&db)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        refused.as_database_error().unwrap().constraint(),
+        Some("users_reminder_channel_check")
+    );
+    for hour in ["24", "NULL"] {
+        let refused = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET expiry_digest_hour = {hour}"
+        )))
+        .execute(&db)
+        .await;
+        assert!(refused.is_err(), "{hour}");
+    }
+}
+
+/// The settings are read and written by `/account/notifications`: the
+/// three agenda switches (#853) on by default, each turned off and on
+/// again alone, left as they are by a request without them, anything but
+/// a boolean refused; the whole form in one request, both reminder
+/// switches off (`none`) and the recap off included — its hour kept, and
+/// changed while it is off; and only the caller's own account is changed.
+#[sqlx::test]
+async fn the_notification_switches_are_the_caller_s_own(db: PgPool) {
     let f = family(&db).await;
     let settings = |cookie: String| {
         let router = f.router.clone();
@@ -1218,71 +1401,127 @@ async fn the_agenda_change_setting_is_the_caller_s_own(db: PgPool) {
     let state = |s: Value| {
         (
             s["reminder_channel"].clone(),
-            s["expiry_digest_hour"].clone(),
-            s["notify_agenda_changes"].clone(),
+            (
+                s["expiry_digest_enabled"].clone(),
+                s["expiry_digest_hour"].clone(),
+            ),
+            [
+                s["notify_agenda_added"].clone(),
+                s["notify_agenda_changed"].clone(),
+                s["notify_agenda_deleted"].clone(),
+            ],
         )
     };
+    let recap = |on: bool, hour: i64| (json!(on), json!(hour));
+    let switches = |a: bool, c: bool, d: bool| [json!(a), json!(c), json!(d)];
     assert_eq!(
-        settings(f.owner.clone()).await["notify_agenda_changes"],
-        true
+        state(settings(f.owner.clone()).await),
+        (json!("push"), recap(true, 9), switches(true, true, true))
     );
     set_digest_hour(&db, "owner@example.test", 18).await;
 
-    let res = put(json!({"reminder_channel": "both", "notify_agenda_changes": false})).await;
+    // One switch alone: the others, the channel's switches aside, stay.
+    let res = put(json!({"reminder_channel": "both", "notify_agenda_changed": false})).await;
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("both"), json!(18), json!(false))
+        (json!("both"), recap(true, 18), switches(true, false, true))
     );
 
-    // Without the field, the setting stays as it is.
+    // Without them, the switches stay as they are.
     let res = put(json!({"reminder_channel": "email", "expiry_digest_hour": 7})).await;
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("email"), json!(7), json!(false))
+        (json!("email"), recap(true, 7), switches(true, false, true))
     );
 
-    for wrong in [json!("no"), json!(0)] {
-        let res = put(json!({"reminder_channel": "email", "notify_agenda_changes": wrong})).await;
-        assert!(res.status().is_client_error(), "{wrong}: {}", res.status());
+    for field in [
+        "notify_agenda_added",
+        "notify_agenda_changed",
+        "notify_agenda_deleted",
+        "expiry_digest_enabled",
+    ] {
+        for wrong in [json!("no"), json!(0), json!(null)] {
+            let res = put(json!({"reminder_channel": "email", field: wrong})).await;
+            // `null` reads as absent: nothing changes either way.
+            if wrong.is_null() {
+                assert_status(&res, StatusCode::NO_CONTENT);
+            } else {
+                assert!(res.status().is_client_error(), "{field} {wrong}");
+            }
+        }
     }
     assert_eq!(
-        settings(f.owner.clone()).await["notify_agenda_changes"],
-        false
+        state(settings(f.owner.clone()).await),
+        (json!("email"), recap(true, 7), switches(true, false, true))
     );
 
-    let res = put(json!({"reminder_channel": "email", "notify_agenda_changes": true})).await;
+    // The whole form, as the page sends it on each change: everything off,
+    // the recap's hour kept.
+    let res = put(json!({
+        "reminder_channel": "none",
+        "expiry_digest_enabled": false,
+        "expiry_digest_hour": 7,
+        "notify_agenda_added": false,
+        "notify_agenda_changed": false,
+        "notify_agenda_deleted": false,
+    }))
+    .await;
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("email"), json!(7), json!(true))
+        (
+            json!("none"),
+            recap(false, 7),
+            switches(false, false, false)
+        )
     );
-    // Without the field, an enabled setting stays enabled too.
-    let res = put(json!({"reminder_channel": "both"})).await;
+    // The recap off, its hour is changed and kept; switched on again, the
+    // recap comes at that hour.
+    let res = put(json!({
+        "reminder_channel": "none",
+        "expiry_digest_enabled": false,
+        "expiry_digest_hour": 21,
+    }))
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(state(settings(f.owner.clone()).await).1, recap(false, 21));
+    let res = put(json!({
+        "reminder_channel": "both",
+        "expiry_digest_enabled": true,
+        "notify_agenda_added": true,
+        "notify_agenda_changed": true,
+        "notify_agenda_deleted": false,
+    }))
+    .await;
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
         state(settings(f.owner.clone()).await),
-        (json!("both"), json!(7), json!(true))
+        (json!("both"), recap(true, 21), switches(true, true, false))
     );
 
-    // The member turns theirs off: the owner's stays on.
+    // The member turns theirs off: the owner's stay as they are.
     let res = call(
         &f.router,
         Method::PUT,
         "/account/notifications",
         Some(&f.member),
-        Some(json!({"reminder_channel": "push", "notify_agenda_changes": false})),
+        Some(json!({
+            "reminder_channel": "none",
+            "expiry_digest_enabled": false,
+            "notify_agenda_added": false,
+        })),
     )
     .await;
     assert_status(&res, StatusCode::NO_CONTENT);
     assert_eq!(
-        settings(f.member.clone()).await["notify_agenda_changes"],
-        false
+        state(settings(f.member.clone()).await),
+        (json!("none"), recap(false, 9), switches(false, true, true))
     );
     assert_eq!(
-        settings(f.owner.clone()).await["notify_agenda_changes"],
-        true
+        state(settings(f.owner.clone()).await),
+        (json!("both"), recap(true, 21), switches(true, true, false))
     );
 }
 
@@ -1578,7 +1817,89 @@ async fn a_private_event_tells_its_participants_alone(db: PgPool) {
     assert!(!page.to_string().contains("Surprise"));
 }
 
-/// The setting off, an account deactivated or purged: told nothing.
+/// Each switch (#853) lets its own news through, and that alone: a member
+/// with the additions only is told of the addition, one with the changes
+/// only of the change, one with the deletions only of the deletion.
+#[sqlx::test]
+async fn each_agenda_switch_lets_its_own_news_through(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let fourth = register_verify_login(&f.router, &db, "fourth@example.test").await;
+    invite_and_join(&f.router, &f.group, &f.owner, &fourth).await;
+    for (columns, email) in [
+        (
+            "notify_agenda_changed = false, notify_agenda_deleted = false",
+            "member@example.test",
+        ),
+        (
+            "notify_agenda_added = false, notify_agenda_deleted = false",
+            "third@example.test",
+        ),
+        (
+            "notify_agenda_added = false, notify_agenda_changed = false",
+            "fourth@example.test",
+        ),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE users SET {columns} WHERE email = $1"
+        )))
+        .bind(email)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+    let event = create_event(&f, &f.owner, json!({})).await;
+    patch_event(&f, &f.owner, &event, json!({"title": "Déjeuner"})).await;
+    delete_event(&f, &f.owner, &event, "").await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "fourth@example.test",
+                "owner@example.test a supprimé « Déjeuner » du 10/12/2026 à 15:00."
+            ),
+            (
+                "member@example.test",
+                "owner@example.test a ajouté « Dîner » le 10/12/2026 à 15:00."
+            ),
+            (
+                "third@example.test",
+                "owner@example.test a modifié « Déjeuner » : titre."
+            ),
+        ])
+    );
+}
+
+/// An event that a member sees only after a change is news of an addition
+/// to them, so the additions switch decides it, not the changes one: a
+/// member with the additions off and the changes on is not told, one with
+/// the additions on is told « a ajouté ».
+#[sqlx::test]
+async fn an_event_seen_only_after_a_change_follows_the_additions_switch(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    sqlx::query("UPDATE users SET notify_agenda_added = false WHERE email = $1")
+        .bind("third@example.test")
+        .execute(&db)
+        .await
+        .unwrap();
+    let owner = user_id(&db, "owner@example.test").await;
+    let event = create_event(
+        &f,
+        &f.owner,
+        json!({"is_private": true, "assignee_ids": [owner]}),
+    )
+    .await;
+    assert_eq!(agenda_rows(&db).await, rows(&[]));
+    patch_event(&f, &f.owner, &event, json!({"is_private": false})).await;
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a ajouté « Dîner » le 10/12/2026 à 15:00."
+        )])
+    );
+}
+
+/// The switches off, an account deactivated or purged: told nothing.
 #[sqlx::test]
 async fn a_member_who_opted_out_or_whose_account_is_gone_is_not_told(db: PgPool) {
     let (f, _third) = family_of_three(&db).await;
@@ -1586,7 +1907,9 @@ async fn a_member_who_opted_out_or_whose_account_is_gone_is_not_told(db: PgPool)
     invite_and_join(&f.router, &f.group, &f.owner, &fourth).await;
     for (update, email) in [
         (
-            "UPDATE users SET notify_agenda_changes = false WHERE email = $1",
+            "UPDATE users SET notify_agenda_added = false, notify_agenda_changed = false,
+                              notify_agenda_deleted = false
+             WHERE email = $1",
             "member@example.test",
         ),
         (
@@ -1912,6 +2235,261 @@ async fn an_imported_event_tells_no_one(db: PgPool) {
     patch_event(&f, &f.owner, &event, json!({"title": "Déjeuner"})).await;
     delete_event(&f, &f.owner, &event, "").await;
     assert_eq!(agenda_rows(&db).await, rows(&[]));
+}
+
+// -- calendar imports (#852) ------------------------------------------------------
+
+/// An ICS feed of the events `uids`, each an hour on its own day of
+/// December 2026. Each was last modified on 1 January, but the ones of
+/// `moved`, at the stamp given with them: the stamp a re-import compares to
+/// tell a changed event.
+fn feed(uids: std::ops::Range<u32>, moved: &[(u32, &str)]) -> String {
+    let mut ics = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+    for uid in uids {
+        let day = uid % 28 + 1;
+        let modified = moved
+            .iter()
+            .find(|(m, _)| *m == uid)
+            .map_or("20260101T090000Z", |(_, stamp)| stamp);
+        ics.push_str(&format!(
+            "BEGIN:VEVENT\r\nUID:import-852-{uid}@google.com\r\nDTSTAMP:20260101T090000Z\r\n\
+             DTSTART:202612{day:02}T090000Z\r\nDTEND:202612{day:02}T100000Z\r\n\
+             SUMMARY:Cours {uid}\r\nLAST-MODIFIED:{modified}\r\nEND:VEVENT\r\n"
+        ));
+    }
+    ics.push_str("END:VCALENDAR\r\n");
+    ics
+}
+
+/// Serves `bodies` over plain HTTP on 127.0.0.1, one per connection and in
+/// order: a calendar feed that changes between two syncs.
+async fn serve_feeds(bodies: Vec<String>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for body in bodies {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        }
+    });
+    format!("http://{addr}/feed.ics")
+}
+
+/// The family's calendar import of a feed serving `bodies` in order,
+/// registered by its owner.
+async fn calendar_import(f: &Family, bodies: Vec<String>) -> String {
+    let feed_url = serve_feeds(bodies).await;
+    let res = call(
+        &f.router,
+        Method::POST,
+        &format!("/groups/{}/calendar-imports", f.group),
+        Some(&f.owner),
+        Some(json!({"label": "École", "feed_url": feed_url})),
+    )
+    .await;
+    assert_status(&res, StatusCode::CREATED);
+    json_body(res).await["id"].as_str().unwrap().to_string()
+}
+
+/// Runs the import `import` as `cookie`; returns its counters.
+async fn run_import(f: &Family, cookie: &str, import: &str) -> Value {
+    let res = call(
+        &f.router,
+        Method::POST,
+        &format!("/groups/{}/calendar-imports/{import}/import", f.group),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await
+}
+
+/// #852: an import that added or changed events writes one row per other
+/// member, with their exact count and no title; a re-import that changed
+/// nothing writes none; its author is never told, nor a member who opted
+/// out.
+#[sqlx::test]
+async fn an_import_tells_each_other_member_once_with_its_count(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let member = user_id(&db, "member@example.test").await;
+    let import = calendar_import(
+        &f,
+        vec![
+            feed(0..30, &[]),
+            feed(0..30, &[]),
+            // The first event moved upstream, a 31st is new.
+            feed(0..31, &[(0, "20260201T090000Z")]),
+        ],
+    )
+    .await;
+
+    // 30 new events, imported by a member: one row for each other member.
+    let run = run_import(&f, &f.member, &import).await;
+    assert_eq!(
+        (run["imported"].as_u64(), run["updated"].as_u64()),
+        (Some(30), Some(0))
+    );
+    let told = "member@example.test a importé 30 événements.";
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[("owner@example.test", told), ("third@example.test", told)])
+    );
+    // About no single event, by the member who ran it.
+    let about: Vec<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT object_id, actor_id FROM notifications WHERE kind = 'agenda_change'",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(about, vec![(None, Some(member)); 2]);
+
+    // The same feed again: nothing changed, nobody told.
+    clear_notifications(&db).await;
+    let run = run_import(&f, &f.member, &import).await;
+    assert_eq!(run["skipped"].as_u64(), Some(30));
+    assert_eq!(agenda_rows(&db).await, rows(&[]));
+
+    // One event changed and one added, imported by the owner; the third
+    // member turned the additions and the changes off — the deletions'
+    // switch alone does not let an import through (#853).
+    sqlx::query(
+        "UPDATE users SET notify_agenda_added = false, notify_agenda_changed = false
+         WHERE email = 'third@example.test'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let run = run_import(&f, &f.owner, &import).await;
+    assert_eq!(
+        (run["imported"].as_u64(), run["updated"].as_u64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a importé 2 événements."
+        )])
+    );
+}
+
+/// #852: once the import committed, the members it told whose channel
+/// includes notifications get a push — not its author, nor a member on
+/// email.
+#[sqlx::test]
+async fn an_import_pushes_the_members_it_told_on_notifications(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    sqlx::query("UPDATE users SET reminder_channel = 'email' WHERE email = 'third@example.test'")
+        .execute(&db)
+        .await
+        .unwrap();
+    let import = calendar_import(&f, vec![feed(0..1, &[])]).await;
+    let owner_device = unreachable_device(&db, "owner@example.test").await;
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
+
+    run_import(&f, &f.member, &import).await;
+    pushed_within_10_s(&db, owner_device, "import").await;
+    assert!(device_kept(&db, member_device).await, "the author");
+    assert!(device_kept(&db, third_device).await, "a member on email");
+}
+
+/// #852 over #620: an imported event its participant made private stays
+/// hidden from the other members when the feed changes it. Each member is
+/// told the count of the events they see, and one who sees none of them
+/// is told nothing — no row, no push.
+#[sqlx::test]
+async fn an_import_counts_for_each_member_the_events_they_see(db: PgPool) {
+    let (f, _third) = family_of_three(&db).await;
+    let (owner, member) = (
+        user_id(&db, "owner@example.test").await,
+        user_id(&db, "member@example.test").await,
+    );
+    let import = calendar_import(
+        &f,
+        vec![
+            feed(0..2, &[]),
+            // Both events moved upstream.
+            feed(0..2, &[(0, "20260201T090000Z"), (1, "20260201T090000Z")]),
+            // The private one alone moved again.
+            feed(0..2, &[(0, "20260301T090000Z"), (1, "20260201T090000Z")]),
+        ],
+    )
+    .await;
+    // Each import pushes the members it told on a task of its own, which
+    // reads their devices when it runs: a device registered for a later
+    // import could be pushed by an earlier one still running. So each
+    // import below waits until it pushed both members (#963).
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
+    run_import(&f, &f.owner, &import).await;
+    pushed_within_10_s(&db, member_device, "the participant").await;
+    pushed_within_10_s(&db, third_device, "the third member").await;
+    let private: String = sqlx::query_scalar(
+        "SELECT event_id::text FROM calendar_import_events
+         WHERE external_uid = 'import-852-0@google.com'",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    patch_event(
+        &f,
+        &f.owner,
+        &private,
+        json!({"is_private": true, "assignee_ids": [owner, member]}),
+    )
+    .await;
+    clear_notifications(&db).await;
+
+    // Both changed: the participant sees two, the third member one.
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
+    let run = run_import(&f, &f.owner, &import).await;
+    assert_eq!(run["updated"].as_u64(), Some(2));
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[
+            (
+                "member@example.test",
+                "owner@example.test a importé 2 événements."
+            ),
+            (
+                "third@example.test",
+                "owner@example.test a importé 1 événement."
+            ),
+        ])
+    );
+    pushed_within_10_s(&db, member_device, "the participant").await;
+    pushed_within_10_s(&db, third_device, "the third member").await;
+
+    // The private one alone: the third member is told nothing, nor pushed.
+    clear_notifications(&db).await;
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
+    let run = run_import(&f, &f.owner, &import).await;
+    assert_eq!(run["updated"].as_u64(), Some(1));
+    assert_eq!(
+        agenda_rows(&db).await,
+        rows(&[(
+            "member@example.test",
+            "owner@example.test a importé 1 événement."
+        )])
+    );
+    pushed_within_10_s(&db, member_device, "the participant").await;
+    assert!(
+        device_kept(&db, third_device).await,
+        "a member who sees none"
+    );
 }
 
 /// A 500-character title broken by new lines is stored, and its

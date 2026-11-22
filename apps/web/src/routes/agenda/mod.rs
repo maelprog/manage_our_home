@@ -39,6 +39,7 @@ use manage_our_home_shared::dto::agenda::{OccurrenceList, OccurrenceResponse};
 use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::dto::groups::GroupSummary;
 use manage_our_home_shared::validation::agenda::{normalize_all_day, paris_start_of_day};
+use manage_our_home_shared::validation::groups::{role_meets, Feature};
 use uuid::Uuid;
 
 use crate::app::{shell, Width};
@@ -56,6 +57,12 @@ pub(crate) struct FamilyContext {
     /// The caller's role in the active family (`owner`/`admin`/`standard`),
     /// used to gate edit/delete controls (`can_modify`).
     pub role: String,
+    /// The family's `agenda_edit` threshold (#866): from which role a member
+    /// edits or deletes what another member created (`can_modify`).
+    pub edit_min_role: String,
+    /// The family's `google_calendar` threshold (#865), from which role a
+    /// member connects or removes a calendar (`can_configure`).
+    pub calendar_min_role: String,
     /// The family's name, which the event sheet is headed with (#525).
     pub name: String,
     pub header: String,
@@ -114,6 +121,8 @@ pub(crate) async fn family_context_choosing(
         resolve_event_family(&groups, preferred, requested).map(|(g, carried)| FamilyContext {
             gid: g.group_id,
             role: g.role.clone(),
+            edit_min_role: g.min_role(Feature::AgendaEdit).to_string(),
+            calendar_min_role: g.min_role(Feature::GoogleCalendar).to_string(),
             name: g.name.clone(),
             header,
             carried,
@@ -201,10 +210,11 @@ pub(crate) fn resolve_event_family(
 }
 
 /// Mirror of `apps/api/src/agenda/mod.rs::can_modify`: the event's creator,
-/// or a group owner/admin, may edit or delete it. Used to decide whether to
+/// or a member whose role meets `min_role`, the family's `agenda_edit`
+/// threshold (#866, `admin` by default), may edit or delete it. Used to decide whether to
 /// render those controls (the backend still 403s a forged request).
-pub(crate) fn can_modify(role: &str, is_creator: bool) -> bool {
-    is_creator || role == "owner" || role == "admin"
+pub(crate) fn can_modify(role: &str, min_role: &str, is_creator: bool) -> bool {
+    is_creator || role_meets(role, min_role)
 }
 
 // -- the mark of a private event (#621) ----------------------------------------
@@ -465,6 +475,41 @@ mod tests {
     use super::*;
     use manage_our_home_shared::validation::agenda::{validate_event_form, EventFormError};
 
+    /// Every role × threshold × authorship (#866), written out rather than
+    /// derived: the creator always may; anyone else when their role meets
+    /// the family's threshold, the owner whatever it says.
+    const CAN_MODIFY_CASES: [(&str, &str, bool, bool); 18] = [
+        ("standard", "standard", false, true),
+        ("standard", "admin", false, false),
+        ("standard", "owner", false, false),
+        ("admin", "standard", false, true),
+        ("admin", "admin", false, true),
+        ("admin", "owner", false, false),
+        ("owner", "standard", false, true),
+        ("owner", "admin", false, true),
+        ("owner", "owner", false, true),
+        ("standard", "standard", true, true),
+        ("standard", "admin", true, true),
+        ("standard", "owner", true, true),
+        ("admin", "standard", true, true),
+        ("admin", "admin", true, true),
+        ("admin", "owner", true, true),
+        ("owner", "standard", true, true),
+        ("owner", "admin", true, true),
+        ("owner", "owner", true, true),
+    ];
+
+    #[test]
+    fn can_modify_follows_the_threshold_and_spares_the_creator() {
+        for (role, min_role, creator, expected) in CAN_MODIFY_CASES {
+            assert_eq!(
+                can_modify(role, min_role, creator),
+                expected,
+                "{role} under {min_role}, creator: {creator}"
+            );
+        }
+    }
+
     // -- an event of another family (#622) ----------------------------------
 
     fn uid(n: u128) -> Uuid {
@@ -478,6 +523,7 @@ mod tests {
             role: if n == 1 { "owner" } else { "standard" }.to_string(),
             accent: "sarcelle".to_string(),
             ownership_notice: None,
+            access_policies: Vec::new(),
         }
     }
 

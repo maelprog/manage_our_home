@@ -70,8 +70,10 @@ recettes, et le service n'est pas à grande échelle (section 1).
   transactionnels (adresse, objet, corps), traités dans l'UE.
 - Google, pour la connexion avec Google et, le cas échéant, l'hébergement
   d'un flux iCal importé.
-- Les services de notification des navigateurs, qui reçoivent un message
-  vide à chaque rappel par notification.
+- Les services de notification des navigateurs, qui reçoivent à chaque
+  rappel par notification un message dont la seule charge utile,
+  l'identifiant opaque de l'entrée du centre de notifications, est
+  chiffrée pour le navigateur (#862).
 - Le navigateur de chaque membre.
 
 ## 3. Principes fondamentaux
@@ -246,8 +248,10 @@ elle reste une donnée personnelle. Le minimum d'un an du décret
 n° 2021-1362 a été **écarté** : il vise les hébergeurs et les services de
 communication au public, pas une application familiale portée par une
 personne physique — arbitrage du responsable de traitement du 2026-09-19
-(#138), à revoir si le service change de nature. Il n'appelle donc aucune
-mesure ici.
+(#138), à revoir si le service change de nature. La bibliothèque de
+recettes, lisible par tous les utilisateurs connectés quelle que soit leur
+famille, ne change pas cette nature — arbitrage du 2026-11-21 (#961). Il
+n'appelle donc aucune mesure ici.
 
 ## 7. Conclusion
 

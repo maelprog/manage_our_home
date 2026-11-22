@@ -9,6 +9,10 @@
 //! comes from `GET /groups/{id}/allergies`, read at each request through the
 //! `SECURITY DEFINER` functions of 0057, the only path across members.
 //!
+//! The first allergy is recorded only with the member's consent in the
+//! request (#958, registre line 4a): no column keeps it, the oldest
+//! allergy dates it, and with none left it is asked again.
+//!
 //! Nothing here leaves a trace of an allergy: no `audit_log` row, no log
 //! line, no notification. A database error is logged with its detail
 //! (`error::AppError::Sqlx`), which would carry the tag, so every value is
@@ -20,6 +24,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
+use manage_our_home_shared::dto::recipes::AddAllergyRequest;
 use manage_our_home_shared::validation::dietary::{
     validate_equipment, validate_tag, DietaryError, ShareLevel,
 };
@@ -49,6 +54,47 @@ pub(crate) fn checked_tag(taxonomy: &Taxonomy, tag: &str) -> Result<String, &'st
     }
 }
 
+/// What a tag is called (#819): its first French name in the taxonomy, or
+/// the tag itself when the taxonomy no longer knows it.
+pub(crate) fn tag_label(taxonomy: &Taxonomy, tag: &str) -> String {
+    taxonomy
+        .tag(tag)
+        .map_or_else(|| tag.to_string(), |id| taxonomy.label(id).to_string())
+}
+
+/// Whether an allergy may be recorded (#958): the first one needs the
+/// member's consent in the request — with no allergy recorded, no consent
+/// is in force (registre, line 4a). Once one is, consent stands, dated by
+/// the oldest. A dislike is not health data and never asks. `Err` is the
+/// error code.
+pub(crate) fn allergy_consent(has_allergies: bool, consent: bool) -> Result<(), &'static str> {
+    if has_allergies || consent {
+        Ok(())
+    } else {
+        Err("consent_required")
+    }
+}
+
+/// Advisory lock class of a member's allergies (`pg_advisory_xact_lock`'s
+/// first key, the member's id hashed the second). Adding, removing and
+/// erasing take it first, so that the consent read before a first allergy
+/// cannot be withdrawn — the last allergy removed, everything erased —
+/// between that read and the insert: the check and the write see the same
+/// list (#958).
+pub const ALLERGIES_LOCK: i32 = i32::from_be_bytes(*b"mal4");
+
+/// Takes [`ALLERGIES_LOCK`] for the member, until the transaction ends.
+async fn lock_allergies(tx: &mut sqlx::PgConnection, user_id: Uuid) -> AppResult<()> {
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock($1, hashtext($2::text))",
+        ALLERGIES_LOCK,
+        user_id.to_string(),
+    )
+    .execute(tx)
+    .await?;
+    Ok(())
+}
+
 /// One family the member belongs to.
 pub(crate) struct Membership {
     pub group_id: Uuid,
@@ -75,6 +121,9 @@ pub struct AllergySharing {
 #[derive(Debug, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct AllergyEntry {
     pub tag: String,
+    /// The tag's French name (#819), the tag itself if the taxonomy does
+    /// not know it.
+    pub label: String,
     pub created_at: DateTime<Utc>,
     /// One entry per family the caller belongs to, in the order given.
     pub sharing: Vec<AllergySharing>,
@@ -105,6 +154,7 @@ pub(crate) fn allergy_entries(
                 })
                 .collect();
             AllergyEntry {
+                label: tag_label(taxonomy(), &tag),
                 tag,
                 created_at,
                 sharing,
@@ -134,7 +184,19 @@ pub struct AllergyList {
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct DislikeEntry {
     pub tag: String,
+    /// The tag's French name (#819), as for an allergy.
+    pub label: String,
     pub created_at: DateTime<Utc>,
+}
+
+impl DislikeEntry {
+    fn new(tag: String, created_at: DateTime<Utc>) -> Self {
+        DislikeEntry {
+            label: tag_label(taxonomy(), &tag),
+            tag,
+            created_at,
+        }
+    }
 }
 
 /// `GET /me/dislikes`.
@@ -237,16 +299,17 @@ pub async fn list_allergies(
 }
 
 /// Records an allergy, `private` in every family until the caller says
-/// otherwise.
+/// otherwise. The first one needs `consent: true` ([`allergy_consent`]).
 #[utoipa::path(
     post,
     path = "/me/allergies",
     tag = "account",
-    request_body = TagRequest,
+    request_body = AddAllergyRequest,
     responses(
         (status = 201, description = "Allergy recorded", body = AllergyEntry),
         (status = 400, description = "`tag_required`, `tag_too_long`, `invalid_tag` or `unknown_tag`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 409, description = "`already_listed`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 422, description = "`consent_required`: the caller has no allergy recorded and the body does not carry `consent: true`; nothing is written", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
     ),
     security(("session_cookie" = [])),
@@ -254,10 +317,19 @@ pub async fn list_allergies(
 pub async fn add_allergy(
     State(state): State<AppState>,
     auth: AuthUser,
-    Json(body): Json<TagRequest>,
+    Json(body): Json<AddAllergyRequest>,
 ) -> AppResult<impl IntoResponse> {
     let tag = known_tag(&body.tag)?;
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    lock_allergies(&mut tx, auth.user_id).await?;
+    let has_allergies = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM user_allergies WHERE user_id = $1) AS "exists!""#,
+        auth.user_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    allergy_consent(has_allergies, body.consent)
+        .map_err(|code| AppError::Unprocessable(code.into()))?;
     let created_at = sqlx::query_scalar!(
         r#"INSERT INTO user_allergies (user_id, tag) VALUES ($1, $2)
            ON CONFLICT (user_id, tag) DO NOTHING
@@ -308,6 +380,7 @@ pub async fn remove_allergy(
 ) -> AppResult<impl IntoResponse> {
     let tag = validate_tag(&body.tag)?;
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    lock_allergies(&mut tx, auth.user_id).await?;
     let removed = sqlx::query!(
         "DELETE FROM user_allergies WHERE user_id = $1 AND tag = $2",
         auth.user_id,
@@ -403,14 +476,17 @@ pub async fn list_dislikes(
     auth: AuthUser,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
-    let dislikes = sqlx::query_as!(
-        DislikeEntry,
+    let dislikes = sqlx::query!(
         "SELECT tag, created_at FROM user_dislikes WHERE user_id = $1 ORDER BY created_at, tag",
         auth.user_id
     )
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
+    let dislikes = dislikes
+        .into_iter()
+        .map(|d| DislikeEntry::new(d.tag, d.created_at))
+        .collect();
     Ok(Json(DislikeList { dislikes }))
 }
 
@@ -435,8 +511,7 @@ pub async fn add_dislike(
 ) -> AppResult<impl IntoResponse> {
     let tag = known_tag(&body.tag)?;
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
-    let entry = sqlx::query_as!(
-        DislikeEntry,
+    let entry = sqlx::query!(
         r#"INSERT INTO user_dislikes (user_id, tag) VALUES ($1, $2)
            ON CONFLICT (user_id, tag) DO NOTHING
            RETURNING tag, created_at"#,
@@ -447,7 +522,10 @@ pub async fn add_dislike(
     .await?
     .ok_or_else(|| AppError::Conflict("already_listed".into()))?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(entry)))
+    Ok((
+        StatusCode::CREATED,
+        Json(DislikeEntry::new(entry.tag, entry.created_at)),
+    ))
 }
 
 /// Removes a dislike. The tag is in the body, like the allergies'.
@@ -503,6 +581,7 @@ pub async fn erase_constraints(
     auth: AuthUser,
 ) -> AppResult<impl IntoResponse> {
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
+    lock_allergies(&mut tx, auth.user_id).await?;
     // The levels go with their allergy (ON DELETE CASCADE); named anyway,
     // so that this does not rest on the key alone.
     sqlx::query!(
@@ -596,7 +675,74 @@ pub async fn get_equipment(
     Ok(Json(Equipment { codes }))
 }
 
-/// Replaces the household's equipment with the list given. Any member.
+/// The most categories `POST /taxonomy/search` answers.
+pub const SEARCH_LIMIT: usize = 20;
+
+/// `POST /taxonomy/search` body.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct TagSearchRequest {
+    /// A food's name, in French: « kiwi », « coriandre ».
+    pub query: String,
+}
+
+/// A category of the taxonomy and its French name.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct TagMatch {
+    pub tag: String,
+    pub label: String,
+}
+
+/// `POST /taxonomy/search` answer.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct TagSearchResults {
+    /// At most `SEARCH_LIMIT`, best match first (`Taxonomy::search`).
+    pub results: Vec<TagMatch>,
+}
+
+/// The categories of the taxonomy whose French names match a query: how
+/// the account page offers an allergy or a dislike beyond the fourteen
+/// INCO allergens (#819). A `POST` with the query in the body, like the
+/// tags of `/me/allergies`: the name of a food a member looks up to say
+/// they are allergic to it stays out of the access logs. Reads nothing
+/// stored, writes nothing.
+#[utoipa::path(
+    post,
+    path = "/taxonomy/search",
+    tag = "recipes",
+    request_body = TagSearchRequest,
+    responses(
+        (status = 200, description = "The matching categories, best first", body = TagSearchResults),
+        (status = 400, description = "`query_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn search_tags(
+    _auth: AuthUser,
+    Json(body): Json<TagSearchRequest>,
+) -> AppResult<impl IntoResponse> {
+    // In characters, as the account page's `maxlength` counts them
+    // (`SEARCH_QUERY_MAX_LEN`): an accented name the field lets through is
+    // not refused as too long.
+    if !manage_our_home_shared::validation::dietary::search_query_fits(&body.query) {
+        return Err(AppError::BadRequest("query_too_long".into()));
+    }
+    let taxonomy = taxonomy();
+    let results = taxonomy
+        .search(&body.query, SEARCH_LIMIT)
+        .into_iter()
+        .map(|tag| TagMatch {
+            tag: taxonomy.id(tag).to_string(),
+            label: taxonomy.label(tag).to_string(),
+        })
+        .collect();
+    Ok(Json(TagSearchResults { results }))
+}
+
+/// Replaces the household's equipment with the list given. Owner and
+/// admins only, like the family's colour and calendar (arbitrated
+/// 2026-11-16, #819): until the per-family access policy lets the owner
+/// set the bar, a standard member reads the list and does not change it.
 #[utoipa::path(
     put,
     path = "/groups/{id}/equipment",
@@ -620,7 +766,10 @@ pub async fn put_equipment(
 ) -> AppResult<impl IntoResponse> {
     let codes = validate_equipment(&body.codes)?;
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
-    require_role(&mut tx, group_id, auth.user_id).await?;
+    let role = require_role(&mut tx, group_id, auth.user_id).await?;
+    if role != "owner" && role != "admin" {
+        return Err(AppError::Forbidden);
+    }
     sqlx::query!("DELETE FROM group_equipment WHERE group_id = $1", group_id)
         .execute(&mut *tx)
         .await?;
@@ -639,6 +788,7 @@ pub async fn put_equipment(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use manage_our_home_shared::validation::dietary::INCO_ALLERGENS;
 
     fn small_taxonomy() -> Taxonomy {
         Taxonomy::parse("en:nuts\t\tFruits à coque\nen:peanuts\ten:nuts\tCacahuètes\n")
@@ -663,6 +813,31 @@ mod tests {
         assert_eq!(checked_tag(&t, ""), Err("tag_required"));
         assert_eq!(checked_tag(&t, "peanuts"), Err("invalid_tag"));
         assert_eq!(checked_tag(&t, "EN:peanuts"), Err("invalid_tag"));
+    }
+
+    #[test]
+    fn every_inco_allergen_the_account_page_offers_is_a_known_category() {
+        for (tag, label) in INCO_ALLERGENS {
+            assert_eq!(checked_tag(taxonomy(), tag), Ok(tag.to_string()), "{label}");
+        }
+    }
+
+    #[test]
+    fn the_first_allergy_needs_consent() {
+        assert_eq!(allergy_consent(false, false), Err("consent_required"));
+        assert_eq!(allergy_consent(false, true), Ok(()));
+    }
+
+    #[test]
+    fn with_an_allergy_recorded_consent_is_in_force() {
+        assert_eq!(allergy_consent(true, false), Ok(()));
+        assert_eq!(allergy_consent(true, true), Ok(()));
+    }
+
+    #[test]
+    fn a_tag_is_labelled_by_its_first_french_name_or_by_itself() {
+        assert_eq!(tag_label(taxonomy(), "en:peanuts"), "Cacahuètes");
+        assert_eq!(tag_label(taxonomy(), "en:unicorns"), "en:unicorns");
     }
 
     #[test]

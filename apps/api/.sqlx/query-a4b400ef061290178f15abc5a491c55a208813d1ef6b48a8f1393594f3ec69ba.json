@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE library_reports SET resolution = 'dismissed', closed_at = now()\n           WHERE id = $1 AND resolution IS NULL\n           RETURNING library_recipe_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "library_recipe_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "library_reports",
+            "name": "library_recipe_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a4b400ef061290178f15abc5a491c55a208813d1ef6b48a8f1393594f3ec69ba"
+}

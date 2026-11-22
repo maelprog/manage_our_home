@@ -49,6 +49,10 @@ pub struct CreateRecipeRequest {
     /// `validation::recipes::DURATION_MAX`; omitted when not said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<i32>,
+    /// The equipment it needs (#817, #819): codes of
+    /// `validation::dietary::EQUIPMENT`, none by default.
+    #[serde(default)]
+    pub required_equipment: Vec<String>,
 }
 
 /// The longest `source_url` a recipe may carry, in characters.
@@ -102,6 +106,10 @@ pub struct UpdateRecipeRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub duration_minutes: Option<Option<i32>>,
+    /// The equipment it needs (#819): omitted leaves it as it is, a list
+    /// replaces it, `[]` clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_equipment: Option<Vec<String>>,
 }
 
 /// One ingredient on a recipe response. Mirrors `IngredientResponse`.
@@ -136,8 +144,63 @@ pub struct RecipeResponse {
     /// How long it takes, in minutes (#539), if it says.
     #[serde(default)]
     pub duration_minutes: Option<i32>,
+    /// The equipment it needs (#817, #819), sorted codes.
+    #[serde(default)]
+    pub required_equipment: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// What it holds of the allergies the reader may see (#818).
+    #[serde(default)]
+    pub allergy_warning: AllergyWarning,
+    /// The publication of the library it was copied from (#907, #910),
+    /// while that publication exists.
+    #[serde(default)]
+    pub library_recipe_id: Option<Uuid>,
+}
+
+/// One of the reader's own allergies a recipe holds (#818). Mirrors
+/// `apps/api/src/recipes/dietary_filter.rs::AllergenMatch`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AllergenMatch {
+    /// The allergy, an Open Food Facts category.
+    pub tag: String,
+    /// Its first French name in the taxonomy (#825).
+    #[serde(default)]
+    pub label: String,
+}
+
+/// A public allergy of another member a recipe holds (#818). Mirrors
+/// `apps/api/src/recipes/dietary_filter.rs::PublicAllergyMatch`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PublicAllergyMatch {
+    /// The member's display name.
+    pub member: String,
+    /// The allergy, an Open Food Facts category.
+    pub tag: String,
+    /// Its first French name in the taxonomy (#825).
+    #[serde(default)]
+    pub label: String,
+}
+
+/// What a recipe holds of the allergies the reader may see (#818). Mirrors
+/// `apps/api/src/recipes/dietary_filter.rs::AllergyWarning`: the reader's
+/// own, the public ones of other members with their name, whether an
+/// anonymous one matches — never which nor whose —, and the ingredients
+/// that could not be checked (#825). All empty: nothing to say, which is
+/// no guarantee either.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AllergyWarning {
+    #[serde(default)]
+    pub mine: Vec<AllergenMatch>,
+    #[serde(default)]
+    pub public: Vec<PublicAllergyMatch>,
+    #[serde(default)]
+    pub anonymous: bool,
+    #[serde(default)]
+    pub unverifiable: Vec<String>,
 }
 
 /// `POST /groups/:id/recipes/import` request body (#405).
@@ -167,6 +230,115 @@ pub struct RecipeDraft {
     pub ingredients: Vec<DraftIngredient>,
     pub steps: Vec<String>,
     pub source_url: String,
+}
+
+/// A publication of the recipe library in a list (#906, #910). Mirrors
+/// `apps/api/src/recipes/library.rs::LibraryRecipeSummary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryRecipeSummary {
+    pub id: Uuid,
+    pub name: String,
+    pub servings: Option<i32>,
+    pub duration_minutes: Option<i32>,
+    /// How many ingredients it lists (#910).
+    #[serde(default)]
+    pub ingredient_count: i64,
+}
+
+/// `GET /library/recipes` response body: one page, newest first. Mirrors
+/// `LibraryPage`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryPage {
+    pub recipes: Vec<LibraryRecipeSummary>,
+    /// The `cursor` of the next page; absent on the last one.
+    pub next_cursor: Option<String>,
+    /// How many publications the search finds, over every page (#910).
+    #[serde(default)]
+    pub total: i64,
+}
+
+/// One ingredient of a publication. Mirrors `LibraryIngredientResponse`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryIngredient {
+    pub name: String,
+    pub quantity: Option<f64>,
+    pub unit: Option<String>,
+    pub is_optional: bool,
+    pub seasonal_months: Option<Vec<i32>>,
+}
+
+/// `GET /library/recipes/:id` response body. Mirrors
+/// `LibraryRecipeResponse`: nothing of who published it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryRecipe {
+    pub id: Uuid,
+    pub name: String,
+    pub instructions: Option<String>,
+    pub servings: Option<i32>,
+    pub duration_minutes: Option<i32>,
+    pub ingredients: Vec<LibraryIngredient>,
+    /// The page the recipe was imported from (#911).
+    #[serde(default)]
+    pub source_url: Option<String>,
+    /// When the reader reported it, if they did (#911).
+    #[serde(default)]
+    pub reported_at: Option<DateTime<Utc>>,
+}
+
+/// One of the caller's own publications (`GET /library/recipes/mine`,
+/// #911). Mirrors `MyPublication`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyPublication {
+    pub id: Uuid,
+    pub name: String,
+    pub published_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Whether the recipe it was taken from still exists.
+    pub source_recipe_kept: bool,
+}
+
+/// `GET /library/recipes/mine` response body, newest first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MyPublications {
+    pub recipes: Vec<MyPublication>,
+}
+
+/// `GET /groups/:id/recipes/:recipe_id/publish` (#911): the caller's own
+/// publication of the recipe. Mirrors `PublicationOfRecipe`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicationOfRecipe {
+    pub library_recipe_id: Uuid,
+    pub published_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// `POST /groups/:id/recipes/:recipe_id/publish` request body (#906).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishRequest {
+    pub consent: bool,
+}
+
+/// `POST /me/allergies` request body (#958), the one type the API reads
+/// and `apps/web` sends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AddAllergyRequest {
+    /// An Open Food Facts category, e.g. `en:peanuts`.
+    pub tag: String,
+    /// The member's explicit consent to the recording of their allergies,
+    /// health data (registre, line 4a). Required for the first one only:
+    /// while an allergy is recorded, consent is in force, dated by the
+    /// oldest. Absent reads as `false`.
+    #[serde(default)]
+    pub consent: bool,
+}
+
+/// `POST /library/recipes/:id/report` request body (#908).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportRequest {
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 /// `GET /groups/:id/recipes` response envelope (`{ "recipes": [...] }`).
@@ -202,6 +374,20 @@ pub struct RecipeSuggestion {
     pub missing_ingredients: Vec<MissingIngredient>,
     pub recently_eaten: bool,
     pub last_eaten_on: Option<NaiveDate>,
+    /// How long the recipe takes, when it says (#816).
+    #[serde(default)]
+    pub duration_minutes: Option<i32>,
+    /// What it holds of the allergies the reader may see (#818).
+    #[serde(default)]
+    pub allergy_warning: AllergyWarning,
+}
+
+/// `GET /groups/:id/recipes/:recipe_id/selection/replacements` response
+/// envelope (#815): up to three recipes to plan instead, the best first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ReplacementList {
+    pub replacements: Vec<RecipeSuggestion>,
 }
 
 /// `GET /groups/:id/recipes/suggestions` response envelope.
@@ -229,6 +415,28 @@ pub struct MealHistoryEntryResponse {
     pub eaten_on: NaiveDate,
     pub created_by: Uuid,
     pub created_at: DateTime<Utc>,
+    /// The opinion given when the recipe was marked done (#822).
+    pub taste: Taste,
+    /// Its free note, at most 200 characters.
+    #[serde(default)]
+    pub taste_note: Option<String>,
+}
+
+/// The longest note of a meal (#822), in characters once trimmed, a line
+/// break counted as one whether sent as `\n` or `\r\n`: apps/api
+/// refuses a longer one, apps/web says so before sending it.
+pub const TASTE_NOTE_MAX_CHARS: usize = 200;
+
+/// The opinion on a meal (#822). Mirrors `recipes::taste::Taste`: on the
+/// wire `aime`, `neutre` (the default) or `pas_aime`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Taste {
+    Aime,
+    #[default]
+    Neutre,
+    PasAime,
 }
 
 /// `GET /groups/:id/recipes/meal-history` response envelope.
@@ -250,13 +458,13 @@ pub struct SelectRecipeRequest {
 
 /// `PATCH /groups/:id/recipes/:recipe_id/selection` request body (#469).
 /// Mirrors `UpdateSelectionRequest`. Each field is left as it is when
-/// omitted (`None`); `planned_on` and `meal_slot` (#811) are removed by
-/// `Some(None)`, sent as `null`.
+/// omitted (`None`); `servings` (#846), `planned_on` and `meal_slot`
+/// (#811) are removed by `Some(None)`, sent as `null`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateSelectionRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub servings: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub servings: Option<Option<i32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_on: Option<Option<NaiveDate>>,
     /// `lunch` or `dinner`, only with a `planned_on`.
@@ -312,6 +520,9 @@ pub struct PlannedSelection {
     pub use_by: Option<NaiveDate>,
     #[serde(default)]
     pub days_left: Option<i64>,
+    /// What its recipe holds of the allergies the reader may see (#818).
+    #[serde(default)]
+    pub allergy_warning: AllergyWarning,
 }
 
 /// The same response as [`RecipeSelectionList`], read with what the stock
@@ -416,6 +627,12 @@ pub struct DoneRequest {
     /// Changes to the recipe's ingredients (#558).
     #[serde(default)]
     pub recipe_updates: Vec<RecipeUpdate>,
+    /// The opinion on the meal (#822), `neutre` by default.
+    #[serde(default)]
+    pub taste: Taste,
+    /// A free note, at most 200 characters once trimmed (#822).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taste_note: Option<String>,
 }
 
 /// What a `done` request changes in one of the recipe's ingredients

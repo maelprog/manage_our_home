@@ -11,6 +11,9 @@ mod dietary;
 use axum::http::{Method, StatusCode};
 use common::{call, test_router};
 use dietary::{family, send, Family, TAG};
+
+/// The French name the warning gives `TAG` (#825).
+const LABEL: &str = "Cacahuètes";
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -34,7 +37,7 @@ async fn allergy(router: &axum::Router, f: &Family, tag: &str, share: &str) {
         Method::POST,
         "/me/allergies",
         &f.holder,
-        Some(json!({ "tag": tag })),
+        Some(json!({"tag": tag, "consent": true})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -86,7 +89,7 @@ fn named<'a>(list: &'a [Value], name: &str) -> &'a Value {
 }
 
 fn no_warning() -> Value {
-    json!({"mine": [], "public": [], "anonymous": false, "unverifiable": false})
+    json!({"mine": [], "public": [], "anonymous": false, "unverifiable": []})
 }
 
 #[sqlx::test]
@@ -155,14 +158,14 @@ async fn suggestions_leave_out_what_the_reader_may_not_be_proposed(db: PgPool) {
     assert_eq!(names(&holder), ["Gâteau", "Riz garni"]);
     assert_eq!(
         named(&holder, "Riz garni")["allergy_warning"],
-        json!({"mine": [TAG], "public": [], "anonymous": false, "unverifiable": false})
+        json!({"mine": [{"tag": TAG, "label": LABEL}], "public": [], "anonymous": false, "unverifiable": []})
     );
     // Unticked: the allergy is lifted, the dislike is not.
     let holder = suggested(&router, &f, &f.holder, "?avoid_allergens=false").await;
     assert_eq!(names(&holder), ["Gâteau", "Riz garni", "Satay"]);
     assert_eq!(
         named(&holder, "Satay")["allergy_warning"],
-        json!({"mine": [TAG], "public": [], "anonymous": false, "unverifiable": false})
+        json!({"mine": [{"tag": TAG, "label": LABEL}], "public": [], "anonymous": false, "unverifiable": []})
     );
 
     // The owner: the holder's public allergy excludes the satay, the
@@ -171,9 +174,9 @@ async fn suggestions_leave_out_what_the_reader_may_not_be_proposed(db: PgPool) {
     assert_eq!(names(&owner), ["Gâteau", "Poêlée", "Riz garni"]);
     let public = json!({
         "mine": [],
-        "public": [{"member": "filter-holder@example.test", "tag": TAG}],
+        "public": [{"member": "filter-holder@example.test", "tag": TAG, "label": LABEL}],
         "anonymous": false,
-        "unverifiable": false,
+        "unverifiable": [],
     });
     assert_eq!(named(&owner, "Riz garni")["allergy_warning"], public);
     let owner = suggested(&router, &f, &f.owner, "?avoid_allergens=true").await;
@@ -213,7 +216,7 @@ async fn suggestions_leave_out_what_the_reader_may_not_be_proposed(db: PgPool) {
     let owner = suggested(&router, &f, &f.owner, "?avoid_allergens=false").await;
     assert_eq!(
         named(&owner, "Satay")["allergy_warning"],
-        json!({"mine": [], "public": [], "anonymous": true, "unverifiable": false})
+        json!({"mine": [], "public": [], "anonymous": true, "unverifiable": []})
     );
     assert_eq!(
         names(&suggested(&router, &f, &f.owner, "").await),
@@ -223,7 +226,7 @@ async fn suggestions_leave_out_what_the_reader_may_not_be_proposed(db: PgPool) {
     let holder = suggested(&router, &f, &f.holder, "?avoid_allergens=false").await;
     assert_eq!(
         named(&holder, "Satay")["allergy_warning"],
-        json!({"mine": [TAG], "public": [], "anonymous": false, "unverifiable": false})
+        json!({"mine": [{"tag": TAG, "label": LABEL}], "public": [], "anonymous": false, "unverifiable": []})
     );
 
     // An ingredient the taxonomy does not know: unverifiable, for a reader
@@ -237,7 +240,7 @@ async fn suggestions_leave_out_what_the_reader_may_not_be_proposed(db: PgPool) {
     let owner = suggested(&router, &f, &f.owner, "").await;
     assert_eq!(
         named(&owner, "Sauce")["allergy_warning"],
-        json!({"mine": [], "public": [], "anonymous": false, "unverifiable": true})
+        json!({"mine": [], "public": [], "anonymous": false, "unverifiable": ["Sauce maison du chef"]})
     );
 }
 
@@ -333,7 +336,7 @@ async fn every_recipe_a_member_reads_carries_its_warning(db: PgPool) {
         json!({"name": "Riz", "ingredients": [{"name": "Riz"}]}),
     )
     .await;
-    let warned = json!({"mine": [TAG], "public": [], "anonymous": false, "unverifiable": false});
+    let warned = json!({"mine": [{"tag": TAG, "label": LABEL}], "public": [], "anonymous": false, "unverifiable": []});
     let g = &f.group;
 
     let (_, card) = send(
@@ -410,9 +413,9 @@ async fn every_recipe_a_member_reads_carries_its_warning(db: PgPool) {
         card["allergy_warning"],
         json!({
             "mine": [],
-            "public": [{"member": "card-holder@example.test", "tag": TAG}],
+            "public": [{"member": "card-holder@example.test", "tag": TAG, "label": LABEL}],
             "anonymous": false,
-            "unverifiable": false,
+            "unverifiable": [],
         })
     );
 }

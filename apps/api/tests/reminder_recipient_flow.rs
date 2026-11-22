@@ -99,7 +99,11 @@ async fn notification(db: &PgPool, id: Uuid) -> (String, i32) {
 
 /// The push sender of these passes: every account here is on email, so it
 /// must never be called.
-async fn no_push(_endpoint: String, _ttl_secs: i64) -> PushOutcome {
+async fn no_push(
+    _endpoint: String,
+    _ttl_secs: i64,
+    _payload: Option<manage_our_home::notifications::push::Payload>,
+) -> PushOutcome {
     panic!("no account of this file receives notifications")
 }
 

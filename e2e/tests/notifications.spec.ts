@@ -1,5 +1,5 @@
 import { expect, Page, test } from "@playwright/test";
-import { fetchVerificationToken } from "../lib/db";
+import { fetchVerificationToken, seedMessageNotification } from "../lib/db";
 
 // Reminders by notification (#306). A new account's reminders go out as
 // notifications; with no device subscribed it would receive none, and no
@@ -26,7 +26,7 @@ const PASSWORD = "e2e-notif-password-1";
  */
 const FAMILY = "Foyer Cloche";
 
-async function registerAndLogin(page: Page, prefix: string): Promise<void> {
+async function registerAndLogin(page: Page, prefix: string): Promise<string> {
   const email = uniqueEmail(prefix);
   await page.goto("/register");
   await page.getByLabel("Email").fill(email);
@@ -44,6 +44,7 @@ async function registerAndLogin(page: Page, prefix: string): Promise<void> {
   await page.getByRole("textbox", { name: "Mot de passe" }).fill(PASSWORD);
   await page.getByRole("button", { name: "Se connecter" }).click();
   await expect(page).toHaveURL("/");
+  return email;
 }
 
 async function createGroup(page: Page): Promise<void> {
@@ -68,14 +69,19 @@ test.describe("Reminder notifications", () => {
     // The warning's way out lands on the email choice itself.
     await warning.getByRole("link", { name: "passer aux rappels par email" }).click();
     await expect(page).toHaveURL(/\/account\/notifications#rappels-email$/);
-    await expect(page.getByRole("radio", { name: "Par notification sur mes appareils" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Par notification sur mes appareils" })).toBeChecked();
     await expect(page.locator("#push-warning")).toBeVisible();
 
-    await page.getByRole("radio", { name: "Par email" }).check();
-    await page.getByRole("button", { name: "Enregistrer" }).click();
+    // Two switches since #853, each saved as it changes: email on, then
+    // notifications off.
+    await page.getByRole("switch", { name: "Par email" }).click();
     await expect(page).toHaveURL(/\/account\/notifications\?notice=channel_saved$/);
+    await expect(page.getByRole("switch", { name: "Par email" })).toBeChecked();
+    await page.getByRole("switch", { name: "Par notification sur mes appareils" }).click();
+    await expect(page).toHaveURL(/\/account\/notifications\?notice=channel_saved$/);
+    await expect(page.getByRole("switch", { name: "Par notification sur mes appareils" })).not.toBeChecked();
     await expect(page.getByText("Préférence enregistrée.")).toBeVisible();
-    await expect(page.getByRole("radio", { name: "Par email" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Par email" })).toBeChecked();
     await expect(page.locator("#push-warning")).toHaveCount(0);
 
     // On email, the reminder form no longer warns.
@@ -96,7 +102,7 @@ test.describe("Reminder notifications", () => {
 
   // The hour of the daily recap of the products nearing their expiry date
   // (#700): 9 h for a new account, any hour of the day, saved with the
-  // channel by the same button.
+  // switches as soon as it changes (#853).
   test("the expiry recap's hour is 9 h by default and can be changed", async ({ page }) => {
     await registerAndLogin(page, "notif-digest-hour");
     await page.goto("/account/notifications");
@@ -105,12 +111,12 @@ test.describe("Reminder notifications", () => {
     await expect(hour.locator("option")).toHaveCount(24);
 
     await hour.selectOption({ label: "7 h" });
-    await page.getByRole("button", { name: "Enregistrer" }).click();
     await expect(page).toHaveURL(/\/account\/notifications\?notice=channel_saved$/);
     await expect(page.getByText("Préférence enregistrée.")).toBeVisible();
     await expect(page.getByLabel("Heure du récapitulatif")).toHaveValue("7");
-    // The channel was left as it was.
-    await expect(page.getByRole("radio", { name: "Par notification sur mes appareils" })).toBeChecked();
+    // The switches were left as they were.
+    await expect(page.getByRole("switch", { name: "Par notification sur mes appareils" })).toBeChecked();
+    await expect(page.getByRole("switch", { name: "Récapitulatif quotidien" })).toBeChecked();
   });
 
   test("the service worker is served from the root and shows a fixed text per kind", async ({
@@ -124,7 +130,54 @@ test.describe("Reminder notifications", () => {
     expect(body).toContain(`title: "Rappel d'un événement à venir"`);
     expect(body).toContain(`title: "Alerte de budget"`);
     expect(body).toContain(`fetch("/account/notifications/last-push"`);
-    expect(body).not.toContain("event.data");
+    // Of the push's data, the ids of its entries alone (#862), marked read
+    // on the click: never a text to show.
+    expect(body).toContain("pushedEntries(event.data)");
+    expect(body.split("event.data").length - 1).toBe(1);
+    expect(body).toContain(`fetch("/notifications/pushed/read"`);
+  });
+
+  // The click on a push (#862): JSON only, for the member's session; a
+  // body naming no entry of theirs marks nothing and still answers 204.
+  test("the service worker's click marks entries read for the member's session", async ({
+    page,
+  }) => {
+    await registerAndLogin(page, "notif-pushed-read");
+    const res = await page.request.post("/notifications/pushed/read", {
+      data: { entries: ["00000000-0000-0000-0000-000000000001"] },
+    });
+    expect(res.status()).toBe(204);
+    expect(res.headers()["cache-control"]).toBe("no-store");
+    const read = await page.request.get("/notifications/pushed/read");
+    expect(read.status()).toBe(405);
+  });
+
+  // The acceptance of #862 through apps/web: an entry the push named is
+  // marked read through the API, the other one stays unread, and the count
+  // goes down.
+  test("a click on a push marks read the entry it names, and the count goes down", async ({
+    page,
+  }) => {
+    const email = await registerAndLogin(page, "notif-pushed-entry");
+    await createGroup(page);
+    const sam = await seedMessageNotification(email, FAMILY, "Sam a écrit dans la messagerie.");
+    await seedMessageNotification(email, FAMILY, "Lou a écrit dans la messagerie.");
+    const counter = (name: string) =>
+      page
+        .getByRole("navigation", { name: "Navigation principale" })
+        .getByRole("link", { name, exact: true });
+    await page.goto("/notifications");
+    await expect(counter("Notifications (2 non lues)")).toBeVisible();
+
+    const res = await page.request.post("/notifications/pushed/read", {
+      data: { entries: [sam] },
+    });
+    expect(res.status()).toBe(204);
+
+    await page.goto("/notifications");
+    await expect(counter("Notifications (1 non lue)")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Sam a écrit/ })).not.toContainText("Non lue");
+    await expect(page.getByRole("button", { name: /Lou a écrit/ })).toContainText("Non lue");
   });
 
   // What the worker asks on each push (#536), naming its device by its

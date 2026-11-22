@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-11-15.
+Dernière mise à jour : 2026-11-21.
 
 ## Qui est responsable de vos données ?
 
@@ -44,14 +44,16 @@ données sont-elles conservées ? ».
 | Connexion avec Google | identifiant de votre compte Google, email et nom de votre profil Google ; sur le web, le jeton de rafraîchissement que Google délivre parfois (chiffré) ; depuis l'application Android, le jeton d'identité signé par Google que l'application transmet au serveur, vérifié puis oublié, et le nonce à usage unique émis pour cette connexion, valable 5 minutes, dont le serveur ne garde que l'empreinte | Exécution du contrat (vous choisissez ce mode de connexion) |
 | Vérification d'email et réinitialisation du mot de passe | jetons à usage unique envoyés par email, valables 24 h (vérification) ou 1 h (réinitialisation) | Exécution du contrat |
 | Protection de la connexion | adresse IP (en IPv6, réduite à son préfixe /64) et email saisi à chaque tentative de connexion par mot de passe, conservés en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec une clé secrète du serveur, jamais l'adresse ni l'email en clair), avec le nombre de tentatives et leurs horaires | Intérêt légitime (limiter les essais de mot de passe) |
-| Limites d'usage | votre identifiant de membre quand vous importez une recette depuis l'adresse d'une page ; votre adresse email quand une tentative d'inscription avec elle vous fait envoyer l'avis « Vous avez déjà un compte » ; l'adresse IP (en IPv6, réduite à son préfixe /64) de votre navigateur quand il signale de lui-même au serveur un contenu bloqué par la politique de sécurité des pages (rapport CSP), ou de votre téléphone quand vous vous connectez avec Google depuis l'application Android — chacune conservée en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec la clé secrète de la protection de la connexion, jamais en clair), avec les horaires ou le nombre des demandes récentes | Intérêt légitime (sécurité du service, maîtrise des téléchargements que le serveur fait pour vous, éviter qu'un tiers vous fasse envoyer cet avis à répétition, limiter les tentatives de connexion avec Google) |
+| Limites d'usage | votre identifiant de membre quand vous importez une recette depuis l'adresse d'une page ; votre adresse email quand une tentative d'inscription avec elle vous fait envoyer l'avis « Vous avez déjà un compte » ; l'adresse IP (en IPv6, réduite à son préfixe /64) de votre navigateur quand il signale de lui-même au serveur un contenu bloqué par la politique de sécurité des pages (rapport CSP), ou de votre téléphone quand vous vous connectez avec Google depuis l'application Android ; votre identifiant de membre quand vous consultez la bibliothèque de recettes, y publiez ou y signalez une recette — chacune conservée en base sous forme pseudonymisée seulement (empreinte HMAC calculée avec la clé secrète de la protection de la connexion, jamais en clair), avec les horaires ou le nombre des demandes récentes | Intérêt légitime (sécurité du service, maîtrise des téléchargements que le serveur fait pour vous, éviter qu'un tiers vous fasse envoyer cet avis à répétition, limiter les tentatives de connexion avec Google, borner l'usage de la bibliothèque de recettes) |
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
-| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue ; dans l'application Android, la notification est programmée sur le téléphone et affiche le titre de l'événement et son heure (voir « Application Android ») | Exécution du contrat |
+| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue, les deux clés de cet abonnement avec lesquelles le message qui lui est envoyé est chiffré pour votre navigateur, et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue ; dans l'application Android, la notification est programmée sur le téléphone et affiche le titre de l'événement et son heure (voir « Application Android ») | Exécution du contrat |
 | Notifications dans l'application | pour chaque notification qui vous est adressée : son type (rappel d'événement, article bientôt périmé, récapitulatif quotidien des articles bientôt périmés ou périmés, message, invitation, ajout à la liste de courses, alerte de plafond du budget pour les propriétaires et administrateurs d'une famille), la famille concernée, l'élément visé, un texte court (titre de l'événement et sa date, nom de l'article, nom affiché du membre à l'origine de l'action, nom du groupe, nom de la catégorie de dépense — jamais le contenu d'un message), la date de création, la date à laquelle vous l'avez lue et le membre à l'origine de l'action ; l'heure à laquelle vous recevez le récapitulatif des articles bientôt périmés (9 h par défaut), le jour du dernier, et les articles qu'il vous a déjà annoncés, pour ne pas vous les annoncer deux fois | Exécution du contrat |
-| Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
-| Allergies alimentaires | si vous en déclarez : la catégorie d'aliment concernée (par exemple les arachides) et sa date d'ajout ; pour chaque famille dont vous êtes membre, ce que vous choisissez d'en dire — **rien** (le choix par défaut), **anonymement** (la famille sait seulement qu'un de ses membres est allergique), ou **publiquement** (la famille voit votre nom et l'allergie). Une allergie est une **donnée de santé** : vous seul la voyez et la modifiez, ni le propriétaire ni les administrateurs d'une famille n'y ont accès, et elle n'apparaît ni dans le journal d'audit, ni dans les journaux techniques, ni dans une notification. Elle ne sert qu'à écarter ou signaler les recettes qui ne vous conviennent pas, à vous ou à votre famille | **Consentement explicite** (art. 9(2)(a)) : vous la saisissez vous-même, et vous le retirez aussi simplement — retirer une allergie, la repasser à « rien » dans une famille, ou tout effacer d'un coup |
+| Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; l'historique des repas : pour chaque recette marquée faite, le jour, le membre qui l'a marquée et son avis — aimé, neutre ou pas aimé, neutre par défaut, et, s'il en écrit un, un avis libre de 200 caractères au plus, que tous les membres de la famille peuvent lire (un texte libre : aucune information de santé n'y est demandée, mais il garde ce que vous y écrivez) ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
+| Bibliothèque de recettes | si vous publiez une recette : ce qui en est publié, lisible par tous les utilisateurs (nom, instructions, nombre de personnes, durée, ingrédients et leurs saisons, adresse de la page d'où la recette a été importée s'il y en a une, dates de publication et de dernière mise à jour), et, visibles de vous seul, le lien entre vous et cette publication et la recette de votre famille d'où elle vient ; si vous copiez une recette de la bibliothèque dans votre famille, la publication d'où vient la copie | **Consentement explicite** pour la publication : rien n'est publié sans que vous le confirmiez, recette par recette, et vous le retirez en retirant la recette (voir « La bibliothèque de recettes ») ; exécution du contrat pour la copie |
+| Signalements de la bibliothèque | si vous signalez une recette publiée : la recette visée, le motif choisi, votre commentaire facultatif (500 caractères au plus), la date, puis la décision prise et sa date | Intérêt légitime (modérer un contenu visible de tous les utilisateurs) |
+| Allergies alimentaires | si vous en déclarez : la catégorie d'aliment concernée (par exemple les arachides) et sa date d'ajout ; pour chaque famille dont vous êtes membre, ce que vous choisissez d'en dire — **rien** (le choix par défaut), **anonymement** (la famille sait seulement qu'un de ses membres est allergique), ou **publiquement** (la famille voit votre nom et l'allergie). Une allergie est une **donnée de santé** : vous seul la voyez et la modifiez, ni le propriétaire ni les administrateurs d'une famille n'y ont accès, et elle n'apparaît ni dans le journal d'audit, ni dans les journaux techniques, ni dans une notification. Elle ne sert qu'à écarter ou signaler les recettes qui ne vous conviennent pas, à vous ou à votre famille | **Consentement explicite** (art. 9(2)(a)) : vous la saisissez vous-même, après avoir coché, pour la première, une case de consentement distincte des conditions d'utilisation, et vous le retirez aussi simplement — retirer une allergie, la repasser à « rien » dans une famille, ou tout effacer d'un coup |
 | Aversions alimentaires et équipement de cuisine | les aliments que vous n'aimez pas, jamais montrés à personne, qui n'agissent que sur ce qui vous est proposé ; l'équipement de cuisine du foyer (four, robot…) et celui qu'une recette demande | Exécution du contrat |
 | Budget | dépenses saisies manuellement, leur catégorie et le membre qui les a payées ; catégories de dépense de la famille (nom, couleur, plafond mensuel facultatif) et plafond mensuel de la famille | Exécution du contrat |
 | Messagerie | messages du fil familial (chiffrés au repos), date de votre dernière lecture du fil | Exécution du contrat |
@@ -64,6 +66,21 @@ navigateur garde ce choix dans un cookie pendant un an ; revenir à
 « Automatique » le supprime. Ce cookie ne contient que ce choix et ne sert
 qu'à afficher les pages dans ce thème : préférence d'interface, il ne
 demande pas votre accord.
+
+Les premières questions sur les repas, posées à votre première visite des
+recettes, laissent deux traces dans votre navigateur : le nombre habituel de
+personnes à table, si vous y répondez, gardé un an dans un cookie avec
+l'identifiant de la famille concernée, pour préremplir le nombre de
+personnes d'une recette à réaliser ; et le fait que vous avez terminé ou
+remis ces questions à plus tard, gardé dans le stockage local du navigateur
+avec l'identifiant de votre compte — à défaut, dans un cookie qui disparaît
+à la fermeture du navigateur —, pour ne pas vous les reposer. Préférences
+d'interface, ces deux traces ne demandent pas votre accord. Vos réponses aux
+deux autres questions, elles, sont enregistrées sur nos serveurs, comme si
+vous les donniez dans votre compte ou dans les paramètres de la famille : ce
+que vous dites de vos allergies à chaque famille (voir « Allergies
+alimentaires ») et l'équipement de la cuisine du foyer (voir « Aversions
+alimentaires et équipement de cuisine »).
 
 ## Le service et les mineurs
 
@@ -120,20 +137,30 @@ possibles sont :
   transactionnels achemine les emails du site : vérification d'adresse, réinitialisation de mot de passe,
   invitation à un groupe, rappel d'événement, avertissement avant la
   suppression d'un compte désactivé, avis de la propriété d'un groupe
-  qui vous revient sans que vous l'ayez demandée et avis « Vous avez déjà
-  un compte » — les sept seuls emails que
+  qui vous revient sans que vous l'ayez demandée, avis « Vous avez déjà
+  un compte » et avis de modification de votre mot de passe — les huit
+  seuls emails que
   ce service envoie. Scaleway reçoit l'adresse du destinataire, l'objet et le
   corps de chacun : le corps d'un rappel reprend le titre et la date de
   l'événement, le corps d'une invitation nomme le groupe et le membre qui
   invite, le corps d'un avis de propriété nomme le groupe et dit pourquoi
   il vous revient, et le corps de l'avertissement avant suppression, celui
   d'un avis de propriété et celui de l'avis de compte existant vous nomment
-  par votre nom affiché. L'avis de compte existant part quand quelqu'un —
+  par votre nom affiché ; celui d'une réinitialisation de mot de passe
+  aussi, si votre adresse est vérifiée, de même que celui de l'email qui
+  vous demande de confirmer votre adresse quand vous ajoutez un mot de
+  passe à votre compte. L'avis de compte existant part quand quelqu'un —
   vous ou n'importe qui d'autre — tente de créer un compte avec votre adresse alors qu'elle est
   déjà vérifiée, sauf si votre compte est désactivé ; il vous le signale,
   avec un lien vers la page « mot de passe oublié », sans que la personne
   qui a tenté l'inscription apprenne que le compte existe. Il part au plus
-  3 fois par adresse sur 24 heures glissantes. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
+  3 fois par adresse sur 24 heures glissantes. L'avis de modification du
+  mot de passe part à l'adresse de votre compte chaque fois que votre mot
+  de passe est réinitialisé, changé ou ajouté : son corps donne la date et
+  l'heure du changement, vous nomme par votre nom affiché si votre adresse
+  est vérifiée, dit ce qu'il est advenu de vos sessions ouvertes et porte
+  un lien vers la page « mot de passe oublié » ; son objet ne nomme
+  personne. L'objet d'un rappel, lui, ne nomme aucun événement : c'est toujours
   « Rappel d'un événement à venir ». Un titre peut être sensible (un examen
   médical, un rendez-vous chez un professionnel) : il ne figure donc pas
   dans l'objet, la ligne que la liste des messages affiche en premier. Il
@@ -155,12 +182,16 @@ possibles sont :
   navigateurs qui en dérivent, de Mozilla pour Firefox, d'Apple pour
   Safari, de Microsoft pour Edge. Ce n'est pas le service qui le choisit,
   c'est votre navigateur. À chaque rappel, le serveur lui envoie un message
-  **vide** à l'adresse d'abonnement de votre appareil : ni le titre de
-  l'événement, ni sa date, ni aucun identifiant de l'événement ou de votre
-  compte. Ce service de notification apprend donc que ce serveur a envoyé
-  un message à cet appareil, à cette heure. Une alerte de budget, le
-  récapitulatif ou un changement de l'agenda arrivent de la même façon,
-  message vide compris. Pour choisir le texte à afficher,
+  à l'adresse d'abonnement de votre appareil, qui ne porte que le numéro
+  opaque, tiré au hasard, de la notification correspondante dans votre
+  centre de notifications, **chiffré pour votre navigateur seul** : ni le
+  titre de l'événement, ni sa date, ni aucun identifiant de l'événement ou
+  de votre compte, et le service de notification ne peut pas lire ce
+  numéro. Il apprend donc que ce serveur a envoyé un message à cet
+  appareil, à cette heure, et sa taille. Quand vous touchez la notification, votre
+  appareil demande au site, avec votre session, de marquer ce numéro lu
+  dans votre centre de notifications. Une alerte de budget, le
+  récapitulatif ou un changement de l'agenda arrivent de la même façon. Pour choisir le texte à afficher,
   votre appareil demande au site, avec votre session et son adresse
   d'abonnement, le type du message qu'il vient de recevoir ; le serveur
   tient pour cela, par appareil, le compte des messages envoyés et pas
@@ -230,8 +261,77 @@ possibles sont :
 Aucune autre donnée ne quitte le serveur applicatif. Les suggestions de
 recettes sont calculées sur le serveur par des règles fixes (ingrédients en
 stock, repas récents, saison, avis « aimé » ou « pas aimé » donnés par le
-foyer quand une recette est faite) : aucun modèle d'intelligence artificielle
+foyer quand une recette est faite — l'avis libre n'y entre pas, il n'est
+gardé que pour le foyer) : aucun modèle d'intelligence artificielle
 n'est appelé, ni sur le serveur ni chez un tiers.
+
+Au sein du service, ce que vous déposez dans un groupe n'est visible que de
+ses membres, à une exception près, que décide le membre qui publie : une
+recette publiée dans la bibliothèque est lisible par tous les utilisateurs
+du service, sans le nom de qui l'a publiée (voir ci-dessous).
+
+## La bibliothèque de recettes
+
+La bibliothèque rassemble les recettes que des membres ont choisi de
+partager avec tous les utilisateurs du service, quelle que soit leur
+famille. C'est la seule partie du service où ce qu'un membre dépose est lu
+au-delà de ses groupes, et seulement si un membre qui peut modifier la
+recette la publie.
+
+- **Publier** : un membre qui peut modifier une recette de sa famille peut
+  la publier, qu'il l'ait écrite ou non, après avoir confirmé son accord
+  pour cette recette-là. Rien n'est publié sans cet accord. Une famille
+  publie 50 recettes au plus.
+- **Ce qui est visible** : une copie de la recette prise au moment de la
+  publication — nom, instructions, nombre de personnes, durée, ingrédients
+  avec leurs quantités et leurs saisons, et, pour une recette importée,
+  l'adresse de la page d'où elle vient, montrée comme sa source —,
+  lisible par tout utilisateur connecté, avec ses dates de publication et
+  de dernière mise à jour. Ni photo, ni pièce jointe. Si vous modifiez
+  ensuite la recette, la publication ne change pas, sauf si vous la
+  publiez de nouveau (« Mettre à jour la publication ») : la nouvelle
+  version remplace alors l'ancienne, après que vous avez confirmé de
+  nouveau votre accord.
+- **Ce qui ne l'est pas : qui l'a publiée.** Ni votre nom, ni votre
+  famille, ni la recette d'origine ne sont montrés à qui lit la
+  bibliothèque. Le service ne montre le lien entre vous et votre
+  publication qu'à vous, dans la liste de vos publications et dans
+  l'export de vos données : ni aux autres
+  utilisateurs, ni à l'administrateur du service, ni au propriétaire de
+  votre famille. Un
+  autre membre de votre famille qui tenterait de publier la même recette
+  apprendrait seulement qu'un membre l'a déjà publiée, sans savoir lequel.
+- **Ce que vous y écrivez** : une recette publiée est lue par des personnes
+  que vous ne connaissez pas, et son nom ou ses instructions peuvent vous
+  désigner, vous ou un proche, s'ils portent un nom, une anecdote ou un
+  détail de votre vie. N'y mettez aucune donnée personnelle, ni la vôtre ni
+  celle de quelqu'un d'autre : les [conditions générales
+  d'utilisation](/terms-of-service) l'interdisent, et l'administrateur du
+  service peut retirer une recette publiée qui ne les respecte pas.
+- **Les copies** : tout utilisateur peut copier une recette publiée dans sa
+  famille. La copie devient une recette de cette famille, qui la garde :
+  elle ne suit pas la publication et ne vous désigne pas.
+- **Retirer une recette** : vous pouvez retirer votre publication à tout
+  moment, depuis la recette ou depuis « Mes publications », la liste de
+  vos publications dans la bibliothèque ; elle quitte aussitôt la
+  bibliothèque. C'est aussi le retrait de
+  votre consentement. Il ne reprend pas les copies déjà faites, qui restent
+  dans les familles qui les ont faites. Votre publication est aussi
+  retirée si vous quittez la famille d'où elle vient ou en êtes retiré, si
+  le propriétaire de cette famille la retire, si l'administrateur du
+  service la retire, et à la suppression de votre compte. Supprimer la
+  recette d'origine ne la retire pas, ni la suppression de la famille
+  d'où elle vient : la publication reste, et vous pouvez toujours la
+  retirer vous-même, comme vos autres publications.
+- **Signaler une recette** : tout utilisateur peut signaler une recette
+  publiée, une fois, avec un motif (inapproprié ou choquant ; illégal,
+  dont les données personnelles d'un tiers ; erreur ou danger ; droits
+  d'auteur ; spam ; autre) et un commentaire, facultatif sauf pour le
+  motif « autre ». L'administrateur du service lit le signalement
+  et décide de le classer ou de retirer la recette de la bibliothèque ; les
+  copies restent alors, et la recette d'origine ne peut plus être publiée
+  tant qu'il ne l'a pas permis. Le service ne lui montre pas qui a
+  signalé, et celui qui a publié la recette ne l'apprend jamais.
 
 ## Vos données quittent-elles l'Union européenne ?
 
@@ -263,11 +363,11 @@ plus que ce qui est établi. Voici où en est chacun des cinq cas.
   de votre navigateur (Google, Mozilla, Apple ou Microsoft), dont
   l'infrastructure est pour partie hors de l'Union européenne. Ce qu'il
   reçoit se limite à l'adresse d'abonnement de votre appareil et à l'heure
-  d'un message vide (voir plus haut). Le mécanisme qui encadre ce transfert
+  d'un message chiffré qu'il ne peut pas lire (voir plus haut). Le mécanisme qui encadre ce transfert
   sera indiqué ici avant l'ouverture du service : [transferts hors UE des
   services de notification — à renseigner avant la mise en ligne]. Les
   alertes de budget et le récapitulatif quotidien des articles bientôt
-  périmés passent par le même chemin, message vide aussi. Si vos
+  périmés passent par le même chemin, de la même façon. Si vos
   rappels vous parviennent par email seulement, rien ne part vers eux.
 - **Tailscale**, pour les seuls appareils inscrits au serveur de test :
   Tailscale déclare héberger ses données au Canada, en Allemagne, aux
@@ -313,6 +413,17 @@ de la purge dépasserait.
   purgé : l'email et le nom sont remplacés, le mot de passe haché est
   effacé, et l'appartenance aux groupes et le rôle sont supprimés (voir
   ci-dessous).
+- **Compte dont l'adresse n'a jamais été confirmée** : un compte ouvert
+  avec un email et un mot de passe ne permet pas de se connecter tant que
+  le lien de vérification envoyé à l'adresse n'a pas été suivi. S'il ne
+  l'a toujours pas été 7 jours après l'inscription, le compte (email, mot
+  de passe haché, nom affiché, déclaration d'âge, acceptation des
+  conditions) est supprimé, avec ses jetons, au premier passage de purge
+  qui suit. Demander un nouveau lien ne repousse pas ce délai, compté
+  depuis l'inscription. L'adresse est alors libre : s'inscrire à nouveau
+  avec elle crée un nouveau compte. Un compte relié à Google, membre d'un
+  groupe ou désactivé par l'administrateur du service n'est jamais
+  supprimé ainsi.
 - **Photo de profil** : jusqu'à ce que vous la remplaciez ou la
   supprimiez, et au plus tard jusqu'à la purge du compte, qui la supprime.
   Le fichier d'une photo remplacée ou supprimée est effacé aussitôt ; si
@@ -374,10 +485,14 @@ de la purge dépasserait.
 - **Vérification d'email et réinitialisation du mot de passe** : un jeton
   de vérification est valable 24 heures, un jeton de réinitialisation
   1 heure, et chacun ne sert qu'une fois. Un jeton de réinitialisation est
-  supprimé dès qu'il sert. Sinon, un jeton est supprimé au premier passage
+  supprimé dès qu'il sert, et avec lui tous les autres jetons de
+  réinitialisation du compte ; ils le sont aussi dès que le mot de passe
+  est changé depuis les paramètres ou ajouté à un compte qui n'en avait
+  pas. Sinon, un jeton est supprimé au premier passage
   de purge qui suit sa durée de conservation : 48 heures après sa création
   pour la vérification, 1 heure pour la réinitialisation — ou à la purge du
-  compte, si elle vient avant.
+  compte, ou à la suppression d'un compte jamais confirmé (voir
+  ci-dessus), si elle vient avant.
 - **Invitations** : un lien d'invitation est valable 7 jours et ne sert
   qu'une fois. L'invitation, adresse email de la personne invitée comprise,
   est supprimée dès qu'elle est acceptée ; sinon, au premier passage de
@@ -399,8 +514,8 @@ de la purge dépasserait.
   après ces 30 minutes, ou quand le serveur suit déjà 10 000 couples.
 - **Limites d'usage** (import d'une recette, avis « Vous avez déjà un
   compte », rapports CSP, connexion avec Google depuis l'application
-  Android) : conservées en base, sous forme pseudonymisée
-  seulement, avec la même clé secrète que la protection de la connexion ;
+  Android, bibliothèque de recettes) : conservées en base, sous forme
+  pseudonymisée seulement, avec la même clé secrète que la protection de la connexion ;
   ni votre identifiant, ni votre adresse email, ni votre adresse IP n'y
   figurent en clair, mais une donnée pseudonymisée reste une donnée
   personnelle. Ces compteurs survivent au redémarrage du serveur ; un arrêt
@@ -421,7 +536,11 @@ de la purge dépasserait.
   jeton confondus : les horaires d'une adresse sont supprimés au plus tard
   au premier passage de purge qui suit les 10 minutes de sa dernière
   demande, plus tôt par la première demande du même genre arrivée après ce
-  délai.
+  délai. La bibliothèque de recettes est limitée, par membre, à 60 lectures
+  par minute, 10 publications par minute et 10 signalements par heure : les
+  horaires d'un compteur sont supprimés au plus tard au premier passage de
+  purge qui suit la minute ou l'heure de votre dernière demande, plus tôt
+  par la première demande du même genre arrivée après ce délai.
 - **Photo d'un code-barres** (scan d'un article de stock) : pas conservée
   du tout. Elle peut montrer l'intérieur de votre logement ; le serveur la
   lit en mémoire le temps de trouver le code, puis l'oublie avec la
@@ -436,11 +555,24 @@ de la purge dépasserait.
   que le contenu n'est pas supprimé, et au plus tant que le groupe existe —
   la suppression d'un groupe supprime son contenu. Quand le compte de son
   auteur est anonymisé, le contenu reste dans le groupe sans être rattaché
-  à son identité. Le fichier d'une pièce jointe que le serveur a reçu sans
+  à son identité. Un repas de l'historique, avec son avis et son avis
+  libre, ne se supprime pas seul : il reste tant que la recette existe, et
+  disparaît avec elle ou avec le groupe. Le fichier d'une pièce jointe que le serveur a reçu sans
   pouvoir l'enregistrer est supprimé par un balayage quotidien moins de
   48 heures après son dépôt, tant que le serveur tourne et que sa
   configuration permet ce balayage, aux mêmes conditions que le passage de
   purge.
+- **Bibliothèque de recettes** : une recette publiée reste jusqu'à son
+  retrait, qui la supprime avec le lien qui vous y rattache (voir « La
+  bibliothèque de recettes » pour qui peut la retirer et quand). Les copies
+  faites par d'autres familles sont leurs recettes, conservées comme
+  celles-ci.
+- **Signalements de la bibliothèque** : un signalement reste tant qu'il
+  n'est pas clos. Il est clos quand l'administrateur du service le classe
+  ou retire la recette, ou, si la recette quitte la bibliothèque autrement,
+  au premier passage de purge qui suit. Il est supprimé au premier passage
+  de purge qui suit les 6 mois de sa clôture, ou plus tôt à la purge de
+  votre compte.
 - **Rappels d'événements** : jusqu'à la suppression du rappel ou de
   l'événement ; l'historique des envois (heure, statut, tentatives) part
   avec eux.
@@ -507,12 +639,13 @@ de la purge dépasserait.
   votre rôle, votre date de dernière lecture de la messagerie, vos
   assignations d'événements, les entrées des logs d'audit dont vous êtes
   l'auteur, les invitations que vous avez envoyées (adresses des personnes
-  invitées comprises) et les imports calendrier que vous avez configurés
-  (URL du flux comprise). Aucun moyen de connexion ne subsiste : ni mot de
-  passe, ni connexion avec Google, ni session, et un jeton de vérification
-  ou de réinitialisation qui viserait encore le compte est refusé. Se
-  connecter ensuite avec le même compte Google crée un nouveau compte, sans
-  lien avec l'ancien. Votre email et votre nom sont remplacés, votre
+  invitées comprises), les imports calendrier que vous avez configurés
+  (URL du flux comprise), les recettes que vous avez publiées dans la
+  bibliothèque et les signalements que vous y avez faits. Aucun moyen de
+  connexion ne subsiste : ni mot de passe, ni connexion avec Google, ni
+  session, et un jeton de vérification ou de réinitialisation qui viserait
+  encore le compte est refusé. Se connecter ensuite avec le même compte
+  Google crée un nouveau compte, sans lien avec l'ancien. Votre email et votre nom sont remplacés, votre
   déclaration d'âge et votre acceptation des conditions d'utilisation sont
   effacées : il ne reste de votre compte qu'un
   identifiant technique rattaché à aucune identité.
@@ -526,7 +659,9 @@ de la purge dépasserait.
   description : il figure aussi dans les [conditions générales
   d'utilisation](/terms-of-service). Seule exception : un groupe dont
   vous étiez le dernier membre est supprimé avec tout son contenu, plus
-  personne ne pouvant le voir.
+  personne ne pouvant le voir. Les copies qu'une autre famille a faites
+  d'une recette que vous aviez publiée restent aussi : ce sont les
+  recettes de cette famille, et elles ne vous désignent pas.
 - **Ce qui subsiste un temps** : les entrées des logs d'audit qui
   concernent votre compte sans être de votre fait — celle qui date la
   purge, celles des transferts de propriété de vos groupes qu'elle opère,
@@ -580,12 +715,13 @@ de la purge dépasserait.
   retourne, au format JSON, l'intégralité des données qui vous concernent :
   votre profil, déclaration d'âge et version acceptée des conditions
   d'utilisation comprises, avec leurs dates ; le contenu que vous avez créé dans chaque groupe (les
-  recettes avec leurs ingrédients), y compris un groupe que vous avez
-  quitté ou dont vous avez été retiré, tant que ce contenu y est conservé ;
+  recettes avec leurs ingrédients, les repas que vous avez marqués faits
+  avec l'avis et l'avis libre que vous avez donnés), y compris un groupe
+  que vous avez quitté ou dont vous avez été retiré, tant que ce contenu y est conservé ;
   les événements qui vous sont assignés, y compris par un autre membre ;
   les rappels de vos événements et les envois qu'ils ont programmés, la
   façon dont ils vous parviennent et vos appareils abonnés aux
-  notifications ; les notifications qui vous sont adressées dans
+  notifications, sans leurs clés de chiffrement (voir plus bas) ; les notifications qui vous sont adressées dans
   l'application, tant qu'elles sont conservées ; vos
   pièces jointes ; les occurrences de tâches que vous avez cochées ; votre
   marqueur de lecture de la messagerie ; les invitations que vous avez
@@ -595,13 +731,22 @@ de la purge dépasserait.
   les autres le sont 30 jours après leur envoi) ; vos sessions ; votre
   identité Google liée ; vos vérifications d'adresse et réinitialisations
   de mot de passe ; les entrées du journal d'audit de vos propres actions
-  et de celles qui visent votre compte, sans l'identité de leur auteur. Les
+  et de celles qui visent votre compte, sans l'identité de leur auteur ;
+  les recettes que vous avez publiées dans la bibliothèque, avec la recette
+  de votre famille d'où chacune vient, et les signalements que vous y avez
+  faits, avec la décision prise. Les
   pièces jointes y figurent par leurs métadonnées (nom, type, taille, date)
   et un lien de téléchargement valable 5 minutes, votre photo de profil
   par son type et un lien de même durée : relancez l'export pour en
   obtenir un nouveau. N'y figurent ni le contenu créé par les autres
   membres, ni les secrets d'accès (identifiant de session, jeton
-  d'invitation ou de vérification, jeton Google, URL de flux calendrier).
+  d'invitation ou de vérification, jeton Google, URL de flux calendrier),
+  ni les deux clés de chiffrement de l'abonnement d'un appareil aux
+  notifications. Ces clés, créées par le navigateur de l'appareil, qui les
+  garde, ne servent qu'à chiffrer pour lui le contenu d'une notification ;
+  l'une est secrète. Les recopier dans un fichier ne vous apprendrait rien
+  sur vous et ferait circuler ce secret : l'export donne chaque appareil
+  sans elles.
 - **Droit à l'effacement (Art. 17)** : voir « Suppression de votre
   compte » ci-dessus.
 - **Droit de rectification** : modifiable directement depuis les paramètres
@@ -614,14 +759,18 @@ de la purge dépasserait.
 - **Droit d'opposition (Art. 21)** : vous pouvez vous opposer, pour des
   raisons tenant à votre situation particulière, aux traitements fondés sur
   l'intérêt légitime (invitations, protection de la connexion,
-  désactivation d'un compte, logs d'audit). Le traitement cesse, sauf
+  désactivation d'un compte, signalements de la bibliothèque, logs
+  d'audit). Le traitement cesse, sauf
   motifs légitimes et impérieux qui prévalent sur vos intérêts, ou
   nécessité pour la constatation, l'exercice ou la défense de droits en
   justice. Adressez la demande au responsable de traitement.
 - **Retrait du consentement (Art. 7)** : l'import calendrier repose sur le
   consentement de la personne qui fournit l'URL du flux. Un administrateur
   ou le propriétaire du groupe peut supprimer l'import à tout moment ; le
-  retrait ne remet pas en cause les imports déjà faits.
+  retrait ne remet pas en cause les imports déjà faits. Une recette publiée
+  dans la bibliothèque repose sur votre consentement : vous le retirez en
+  la retirant de la bibliothèque, à tout moment ; le retrait ne reprend pas
+  les copies que d'autres familles en ont déjà faites.
 - **Directives après le décès** (art. 85 de la loi Informatique et
   Libertés) : vous pouvez définir des directives sur la conservation,
   l'effacement et la communication de vos données après votre décès, et

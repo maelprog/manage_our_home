@@ -98,7 +98,11 @@ fn sorted(emails: &Mutex<Vec<String>>) -> Vec<String> {
 }
 
 /// Nobody here is on the push channel.
-async fn no_push(_endpoint: String, _ttl: i64) -> PushOutcome {
+async fn no_push(
+    _endpoint: String,
+    _ttl: i64,
+    _payload: Option<manage_our_home::notifications::push::Payload>,
+) -> PushOutcome {
     PushOutcome::Failed("no push expected".into())
 }
 

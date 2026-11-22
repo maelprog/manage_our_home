@@ -16,6 +16,7 @@ use crate::agenda::{
 };
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
+use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::AppState;
 
@@ -755,8 +756,10 @@ pub async fn update_event(
         .unwrap_or_default();
     let actor_is_participant =
         is_participant(auth.user_id, existing.created_by, &current_assignees);
+    let min_role = min_role_for(&mut tx, group_id, Feature::AgendaEdit).await?;
     if !can_modify(
         &actor_role,
+        &min_role,
         existing.created_by == auth.user_id,
         existing.is_private && actor_is_participant,
     ) {
@@ -876,6 +879,26 @@ pub async fn update_event(
         rrule.as_deref(),
     )?;
     let (starts_at, ends_at) = normalized_bounds(all_day, starts_at, ends_at);
+    // A series moved whole takes its exclusions along (#959): left where
+    // they were, the occurrences deleted from it came back on the dates it
+    // moved them to, reminders included. Its task completions follow below,
+    // once the row is written.
+    let series_moved = existing.rrule.is_some() && starts_at != existing.starts_at;
+    let exdates = if series_moved {
+        recurrence::moved_with_series(
+            &existing.exdates,
+            existing.all_day,
+            existing.starts_at,
+            recurrence::MovedSeries {
+                rrule: rrule.as_deref(),
+                all_day,
+                starts_at,
+                ends_at,
+            },
+        )
+    } else {
+        existing.exdates.clone()
+    };
 
     if body.completed.is_some() && !existing.is_task {
         return Err(AppError::BadRequest(
@@ -927,6 +950,7 @@ pub async fn update_event(
             rrule = $9,
             completed_at = $10,
             is_private = $11,
+            exdates = $12,
             updated_at = now()
         WHERE id = $1 AND group_id = $2
         RETURNING id, group_id, created_by, title, description, location, starts_at, ends_at, all_day, is_task, completed_at, rrule, is_private, exdates
@@ -942,9 +966,13 @@ pub async fn update_event(
         rrule,
         completed_at,
         will_be_private,
+        &exdates,
     )
     .fetch_one(&mut *tx)
     .await?;
+    if series_moved && existing.is_task {
+        move_series_completions(&mut tx, &existing, &event).await?;
+    }
 
     if moves_occurrences(&existing, &event) {
         reminders::reschedule_pending(
@@ -1283,6 +1311,54 @@ async fn split_series(
     Ok(created)
 }
 
+/// Moves the task completions of a series moved whole from `before` to
+/// `after` (#959) onto the instants their occurrences have now, as its
+/// exclusions are (`recurrence::moved_with_series`): an occurrence ticked
+/// off stays ticked off. Each keeps its author and time.
+async fn move_series_completions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    before: &EventRow,
+    after: &EventRow,
+) -> AppResult<()> {
+    let rows = sqlx::query!(
+        "DELETE FROM event_occurrence_completions WHERE event_id = $1 RETURNING occurrence_at, completed_at, completed_by",
+        before.id,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    for row in rows {
+        // One instant at a time, so each keeps its own completion.
+        let Some(occurrence_at) = recurrence::moved_with_series(
+            &[row.occurrence_at],
+            before.all_day,
+            before.starts_at,
+            recurrence::MovedSeries {
+                rrule: after.rrule.as_deref(),
+                all_day: after.all_day,
+                starts_at: after.starts_at,
+                ends_at: after.ends_at,
+            },
+        )
+        .pop() else {
+            continue;
+        };
+        sqlx::query!(
+            r#"
+            INSERT INTO event_occurrence_completions (event_id, occurrence_at, completed_at, completed_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (event_id, occurrence_at) DO NOTHING
+            "#,
+            after.id,
+            occurrence_at,
+            row.completed_at,
+            row.completed_by,
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Moves the task completions of `series` from `occurrence` on to the new
 /// series `to` (#708): each completion keeps its author and time, on the
 /// instant its occurrence has in the new series. A new event without a rule
@@ -1442,15 +1518,15 @@ fn deletion(scope: EditScope, produced_before: u32) -> Deletion {
 
 /// Tells the members who saw `event` that the caller deleted it, from its
 /// occurrence at `from` on (#849). Its `object_id` stays the event's id,
-/// whether the row is gone or not. Returns the members told, to push once
-/// committed (#851).
+/// whether the row is gone or not. Returns the entries written, to push
+/// once committed (#851).
 async fn tell_deleted_from(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     auth: &AuthUser,
     event: &EventRow,
     assignees: &[Uuid],
     from: DateTime<Utc>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<crate::notifications::center::Entry>> {
     let seen = shown(event, assignees);
     let gone = Shown {
         visible: Visible {
@@ -1527,8 +1603,10 @@ pub async fn delete_event(
         .await?
         .remove(&event_id)
         .unwrap_or_default();
+    let min_role = min_role_for(&mut tx, group_id, Feature::AgendaEdit).await?;
     if !can_modify(
         &actor_role,
+        &min_role,
         existing.created_by == auth.user_id,
         existing.is_private && is_participant(auth.user_id, existing.created_by, &assignees),
     ) {

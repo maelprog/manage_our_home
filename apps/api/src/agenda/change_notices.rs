@@ -6,30 +6,35 @@
 //! looks like to each member before and after the write — a private event
 //! (#620) is seen by its participants alone, and nobody is told of one they
 //! do not see, nor named its title. Who may be told at all, a database
-//! read: the family's members whose account is active and who keep
-//! `notify_agenda_changes` on (#848).
+//! read: the family's members whose account is active and who keep the
+//! switch of that news on — `notify_agenda_added`, `_changed` or
+//! `_deleted` (#853, one setting for all three until then); an import is
+//! told to those who keep the additions' or the changes' on.
 //!
-//! Not told: an event mirrored from an imported calendar — what an import
-//! tells is its own question (#5), and its rows are rewritten from the
-//! feed — nor the generated days (bank holidays, school holidays), which are
-//! no rows of `events`. The handlers of `events.rs` are the only callers.
+//! Not told, event by event: an event mirrored from an imported calendar —
+//! its rows are rewritten from the feed — nor the generated days (bank
+//! holidays, school holidays), which are no rows of `events`. An import
+//! tells once for all it added or changed ([`tell_imported`], #852, called
+//! by `google_calendar::imports`); the other writers are the handlers of
+//! `events.rs`.
 //!
 //! Once the write committed, the members told whose channel includes
 //! notifications (`users.reminder_channel`, #306) get a push on each of
-//! their devices ([`push_in_background`], #851): no payload, as for the
-//! reminders; the service worker asks which kind of push its device got
+//! their devices ([`push_in_background`], #851), as for the reminders: the
+//! service worker asks which kind of push its device got
 //! (`notifications::push::Pending`) and shows « Agenda de la famille
-//! modifié » — neither the event's title nor its author. No email: a
-//! member on email alone reads the change in the centre.
+//! modifié » — neither the event's title nor its author. The push names
+//! the member's entry of the centre, and its click marks it read (#862).
+//! No email: a member on email alone reads the change in the centre.
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::agenda::is_participant;
 use crate::error::AppResult;
-use crate::jobs::scheduled_notifications::push_devices;
+use crate::jobs::scheduled_notifications::push_entries;
 use crate::notifications::center::{self, AgendaChanges};
-use crate::notifications::{push, ReminderChannel};
+use crate::notifications::push;
 use crate::AppState;
 
 /// Who sees an event: everyone in the family when it is shared, its
@@ -56,6 +61,28 @@ pub(crate) fn recipients(candidates: &[Uuid], author: Uuid, audience: &Audience<
         .iter()
         .copied()
         .filter(|&member| member != author && audience.sees(member))
+        .collect()
+}
+
+/// The members to tell of an import that added or changed the events
+/// `touched` (#852), each with how many of them they see: an event the
+/// import creates is shared, but one it changes may have been made private
+/// by a participant (#620), and is then counted for its participants alone.
+/// Never its `author`; nobody who sees none of them. In the order of
+/// `candidates`.
+pub(crate) fn import_counts(
+    candidates: &[Uuid],
+    author: Uuid,
+    touched: &[Audience<'_>],
+) -> Vec<(Uuid, usize)> {
+    candidates
+        .iter()
+        .filter(|&&member| member != author)
+        .map(|&member| {
+            let seen = touched.iter().filter(|event| event.sees(member)).count();
+            (member, seen)
+        })
+        .filter(|&(_, seen)| seen > 0)
         .collect()
 }
 
@@ -130,30 +157,92 @@ pub(crate) fn visible_changes(before: &Visible<'_>, after: &Visible<'_>) -> Agen
     }
 }
 
+/// What a change tells: an event added, changed, deleted, or an import
+/// that added or changed several (#852).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum News {
+    Added,
+    Changed,
+    Deleted,
+    Imported,
+}
+
+/// A member's three switches of `/account/notifications` (#853):
+/// `users.notify_agenda_added`, `_changed` and `_deleted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AgendaSwitches {
+    pub added: bool,
+    pub changed: bool,
+    pub deleted: bool,
+}
+
+impl AgendaSwitches {
+    /// Whether the member is told of `news`. An import adds or changes
+    /// events: either switch lets it through.
+    pub fn wants(self, news: News) -> bool {
+        match news {
+            News::Added => self.added,
+            News::Changed => self.changed,
+            News::Deleted => self.deleted,
+            News::Imported => self.added || self.changed,
+        }
+    }
+}
+
+/// A member of the family who may be told of a change, with their
+/// switches.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Candidate {
+    pub id: Uuid,
+    pub switches: AgendaSwitches,
+}
+
+/// The `candidates` who want `news`, in their order.
+pub(crate) fn wanting(candidates: &[Candidate], news: News) -> Vec<Uuid> {
+    candidates
+        .iter()
+        .filter(|c| c.switches.wants(news))
+        .map(|c| c.id)
+        .collect()
+}
+
 /// The members of `group_id` who may be told of an agenda change: active
-/// accounts that keep `notify_agenda_changes` on. The author is among them;
-/// the functions above leave them out.
+/// accounts, with their switches ([`wanting`] keeps those who want a
+/// news). The author is among them; the functions above leave them out.
 pub(crate) async fn candidates(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     group_id: Uuid,
-) -> AppResult<Vec<Uuid>> {
-    Ok(sqlx::query_scalar!(
-        r#"SELECT gm.user_id
+) -> AppResult<Vec<Candidate>> {
+    let rows = sqlx::query!(
+        r#"SELECT gm.user_id, u.notify_agenda_added, u.notify_agenda_changed,
+                  u.notify_agenda_deleted
            FROM group_members gm
            JOIN users u ON u.id = gm.user_id
            WHERE gm.group_id = $1
              AND u.deactivated_at IS NULL AND u.deleted_at IS NULL
-             AND u.notify_agenda_changes
+             AND (u.notify_agenda_added OR u.notify_agenda_changed
+                  OR u.notify_agenda_deleted)
            ORDER BY gm.user_id"#,
         group_id,
     )
     .fetch_all(&mut **tx)
-    .await?)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| Candidate {
+            id: row.user_id,
+            switches: AgendaSwitches {
+                added: row.notify_agenda_added,
+                changed: row.notify_agenda_changed,
+                deleted: row.notify_agenda_deleted,
+            },
+        })
+        .collect())
 }
 
 /// Writes `event` for `recipients`, about the event `event_id`. Returns the
-/// recipients written, for the push to tell their devices without deciding
-/// again (#4). The transaction must be `scoped_tx` on `group_id`: the
+/// entries written, for the push to tell their devices without deciding
+/// again (#4), and to name each one (#862). The transaction must be `scoped_tx` on `group_id`: the
 /// INSERT policy of 0036 checks the family, not the recipient.
 pub(crate) async fn write(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -162,15 +251,13 @@ pub(crate) async fn write(
     event_id: Uuid,
     recipients: &[Uuid],
     event: center::Event<'_>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<center::Entry>> {
     if recipients.is_empty() {
         return Ok(Vec::new());
     }
     // No `dedup_key`: every recipient gets their row (the unique index of
-    // 0036 holds on the key alone), so the ones written are `recipients`.
-    // Not read back with `RETURNING`: the rows are other members', and the
-    // SELECT policy of 0036 would refuse them to the author.
-    center::insert_for(
+    // 0036 holds on the key alone), under an id drawn by `insert_entries`.
+    Ok(center::insert_entries(
         tx,
         recipients,
         &center::NewNotification {
@@ -181,8 +268,7 @@ pub(crate) async fn write(
             dedup_key: None,
         },
     )
-    .await?;
-    Ok(recipients.to_vec())
+    .await?)
 }
 
 /// The member whose write is reported: never told of it.
@@ -207,8 +293,8 @@ pub(crate) async fn tell_added(
     author: Author<'_>,
     event_id: Uuid,
     shown: &Shown<'_>,
-) -> AppResult<Vec<Uuid>> {
-    let candidates = candidates(tx, group_id).await?;
+) -> AppResult<Vec<center::Entry>> {
+    let candidates = wanting(&candidates(tx, group_id).await?, News::Added);
     let told = recipients(&candidates, author.id, &shown.audience);
     write(
         tx,
@@ -230,8 +316,8 @@ pub(crate) async fn tell_deleted(
     author: Author<'_>,
     event_id: Uuid,
     shown: &Shown<'_>,
-) -> AppResult<Vec<Uuid>> {
-    let candidates = candidates(tx, group_id).await?;
+) -> AppResult<Vec<center::Entry>> {
+    let candidates = wanting(&candidates(tx, group_id).await?, News::Deleted);
     let told = recipients(&candidates, author.id, &shown.audience);
     let event = center::Event::AgendaDeleted {
         author: author.name,
@@ -253,16 +339,24 @@ pub(crate) async fn tell_changed(
     event_id: Uuid,
     before: &Shown<'_>,
     after: &Shown<'_>,
-) -> AppResult<Vec<Uuid>> {
+) -> AppResult<Vec<center::Entry>> {
     let changes = visible_changes(&before.visible, &after.visible);
     let candidates = candidates(tx, group_id).await?;
-    let told = change_recipients(
-        &candidates,
+    let everyone: Vec<Uuid> = candidates.iter().map(|c| c.id).collect();
+    let mut told = change_recipients(
+        &everyone,
         author.id,
         &before.audience,
         &after.audience,
         changes,
     );
+    // Each told by the switch of what they are told (#853).
+    let (adds, changes_on) = (
+        wanting(&candidates, News::Added),
+        wanting(&candidates, News::Changed),
+    );
+    told.added.retain(|member| adds.contains(member));
+    told.changed.retain(|member| changes_on.contains(member));
     let mut written = write(
         tx,
         group_id,
@@ -281,52 +375,103 @@ pub(crate) async fn tell_changed(
     Ok(written)
 }
 
+/// Tells the family that `author` ran an import which added or changed the
+/// events `touched` (#852): one row per member for the whole import, with
+/// the count of those events they see ([`import_counts`]), naming none —
+/// its `object_id` is empty, there is no single event to open. Nothing to
+/// a member who sees none of them. Returns the entries written, to push
+/// once committed. Same transaction rule as [`write`]; the author sees
+/// every event they just wrote, so all of `touched` is read back.
+pub(crate) async fn tell_imported(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    group_id: Uuid,
+    author: Author<'_>,
+    touched: &[Uuid],
+) -> AppResult<Vec<center::Entry>> {
+    if touched.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query!(
+        r#"SELECT e.is_private, e.created_by,
+                  ARRAY(SELECT ea.user_id FROM event_assignees ea
+                        WHERE ea.event_id = e.id) AS "assignees!"
+           FROM events e
+           WHERE e.id = ANY($1)"#,
+        touched,
+    )
+    .fetch_all(&mut **tx)
+    .await?;
+    let audiences: Vec<Audience<'_>> = rows
+        .iter()
+        .map(|row| Audience {
+            is_private: row.is_private,
+            created_by: row.created_by,
+            assignees: &row.assignees,
+        })
+        .collect();
+    let candidates = wanting(&candidates(tx, group_id).await?, News::Imported);
+    let counts = import_counts(&candidates, author.id, &audiences);
+    // One INSERT per distinct count: the text differs by count alone.
+    let mut by_count: std::collections::BTreeMap<usize, Vec<Uuid>> = Default::default();
+    for &(member, count) in &counts {
+        by_count.entry(count).or_default().push(member);
+    }
+    let mut told = Vec::with_capacity(counts.len());
+    for (count, members) in &by_count {
+        // No `dedup_key`: as in `write`.
+        told.extend(
+            center::insert_entries(
+                tx,
+                members,
+                &center::NewNotification {
+                    group_id,
+                    event: center::Event::AgendaImported {
+                        author: author.name,
+                        count: *count,
+                    },
+                    object_id: None,
+                    actor_id: Some(author.id),
+                    dedup_key: None,
+                },
+            )
+            .await?,
+        );
+    }
+    Ok(told)
+}
+
 /// How long a push service keeps a change for a device that is offline: a
 /// day. A change read later is in the notification centre anyway.
 pub const CHANGE_PUSH_TTL_SECS: i64 = 24 * 3600;
 
-/// Pushes the devices of the `told` members whose channel includes
+/// Pushes the devices of the members `told` whose channel includes
 /// notifications (`ReminderChannel::includes_push`), recording each
-/// device's answer as the reminders do (`push_devices`). Called by
+/// device's answer as the reminders do (`push_entries`). Called by
 /// [`push_in_background`]; `send_push` is the push itself, a parameter so
 /// that a test can stand in for the push services.
 pub async fn push_changes<P, PFut>(
     pool: &sqlx::PgPool,
     send_push: &P,
-    told: &[Uuid],
+    told: &[center::Entry],
 ) -> anyhow::Result<()>
 where
-    P: Fn(String, i64) -> PFut,
+    P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let members = sqlx::query!(
-        r#"SELECT id, reminder_channel FROM users
-           WHERE id = ANY($1) AND deactivated_at IS NULL AND deleted_at IS NULL"#,
+    push_entries(
+        pool,
+        send_push,
         told,
+        push::PushKind::AgendaChange,
+        CHANGE_PUSH_TTL_SECS,
     )
-    .fetch_all(pool)
-    .await?;
-    for member in members {
-        let pushes = ReminderChannel::parse(&member.reminder_channel)
-            .is_some_and(ReminderChannel::includes_push);
-        if pushes {
-            push_devices(
-                pool,
-                send_push,
-                member.id,
-                push::PushKind::AgendaChange,
-                CHANGE_PUSH_TTL_SECS,
-            )
-            .await?;
-        }
-    }
-    Ok(())
+    .await
 }
 
 /// [`push_changes`] on a task of its own, once the write's transaction
 /// committed: the request does not wait for the push services. Nothing
 /// without members told, nor on a server without a VAPID key.
-pub(crate) fn push_in_background(state: &AppState, told: Vec<Uuid>) {
+pub(crate) fn push_in_background(state: &AppState, told: Vec<center::Entry>) {
     let Some(vapid) = state.push.clone() else {
         return;
     };
@@ -336,9 +481,9 @@ pub(crate) fn push_in_background(state: &AppState, told: Vec<Uuid>) {
     let pool = state.db.clone();
     tokio::spawn(async move {
         let client = push::client();
-        let send_push = |endpoint: String, ttl_secs: i64| {
+        let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
             let (client, vapid) = (client.clone(), vapid.clone());
-            async move { push::send(&client, &vapid, &endpoint, ttl_secs).await }
+            async move { push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await }
         };
         if let Err(e) = push_changes(&pool, &send_push, &told).await {
             tracing::error!(error = ?e, "failed to push an agenda change");
@@ -370,6 +515,73 @@ mod tests {
             created_by,
             assignees: &[],
         }
+    }
+
+    // -- AgendaSwitches::wants, wanting (#853) ----------------------------
+
+    fn switches(added: bool, changed: bool, deleted: bool) -> AgendaSwitches {
+        AgendaSwitches {
+            added,
+            changed,
+            deleted,
+        }
+    }
+
+    #[test]
+    fn each_switch_lets_its_own_news_through() {
+        let only = |news| {
+            [
+                (switches(true, false, false), News::Added),
+                (switches(false, true, false), News::Changed),
+                (switches(false, false, true), News::Deleted),
+            ]
+            .into_iter()
+            .filter(|(s, _)| s.wants(news))
+            .map(|(_, n)| n)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(only(News::Added), [News::Added]);
+        assert_eq!(only(News::Changed), [News::Changed]);
+        assert_eq!(only(News::Deleted), [News::Deleted]);
+        for news in [News::Added, News::Changed, News::Deleted, News::Imported] {
+            assert!(switches(true, true, true).wants(news), "{news:?}");
+            assert!(!switches(false, false, false).wants(news), "{news:?}");
+        }
+    }
+
+    /// An import adds or changes events (#852): told to a member who keeps
+    /// either switch on, never on the deletions' alone.
+    #[test]
+    fn an_import_is_news_for_the_additions_or_the_changes() {
+        assert!(switches(true, false, false).wants(News::Imported));
+        assert!(switches(false, true, false).wants(News::Imported));
+        assert!(!switches(false, false, true).wants(News::Imported));
+    }
+
+    #[test]
+    fn wanting_keeps_the_candidates_order_and_drops_the_others() {
+        let candidates = [
+            Candidate {
+                id: uid(3),
+                switches: switches(true, false, true),
+            },
+            Candidate {
+                id: uid(1),
+                switches: switches(false, true, false),
+            },
+            Candidate {
+                id: uid(2),
+                switches: switches(true, true, false),
+            },
+        ];
+        assert_eq!(wanting(&candidates, News::Added), [uid(3), uid(2)]);
+        assert_eq!(wanting(&candidates, News::Changed), [uid(1), uid(2)]);
+        assert_eq!(wanting(&candidates, News::Deleted), [uid(3)]);
+        assert_eq!(
+            wanting(&candidates, News::Imported),
+            [uid(3), uid(1), uid(2)]
+        );
+        assert_eq!(wanting(&[], News::Added), Vec::<Uuid>::new());
     }
 
     // -- Audience::sees ---------------------------------------------------
@@ -429,6 +641,45 @@ mod tests {
         };
         assert_eq!(recipients(&[uid(1), uid(3)], uid(1), &private), [uid(3)]);
         assert_eq!(recipients(&[], uid(1), &shared(uid(1))), Vec::<Uuid>::new());
+    }
+
+    // -- import_counts (#852) ---------------------------------------------
+
+    #[test]
+    fn an_import_of_shared_events_tells_every_candidate_but_its_author_the_count() {
+        let candidates = [uid(1), uid(2), uid(3)];
+        let touched = vec![shared(uid(2)); 30];
+        assert_eq!(
+            import_counts(&candidates, uid(2), &touched),
+            [(uid(1), 30), (uid(3), 30)]
+        );
+    }
+
+    #[test]
+    fn an_import_that_changed_nothing_tells_no_one() {
+        let candidates = [uid(1), uid(2), uid(3)];
+        assert_eq!(import_counts(&candidates, uid(2), &[]), []);
+    }
+
+    /// An imported event made private (#620) counts for its participants
+    /// alone; a member who sees none of the events is not told.
+    #[test]
+    fn a_private_imported_event_counts_for_its_participants_alone() {
+        let candidates = [uid(1), uid(2), uid(3)];
+        let assignees = [uid(1), uid(2)];
+        let private = Audience {
+            is_private: true,
+            created_by: uid(1),
+            assignees: &assignees,
+        };
+        assert_eq!(
+            import_counts(&candidates, uid(1), &[private, shared(uid(1))]),
+            [(uid(2), 2), (uid(3), 1)]
+        );
+        assert_eq!(
+            import_counts(&candidates, uid(1), &[private, private]),
+            [(uid(2), 2)]
+        );
     }
 
     // -- change_recipients -------------------------------------------------

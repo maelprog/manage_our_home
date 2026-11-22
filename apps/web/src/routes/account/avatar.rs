@@ -14,10 +14,13 @@ use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
+use manage_our_home_http_guard::MAX_AVATAR_BODY_BYTES;
 use manage_our_home_shared::dto::auth::MeResponse;
 
 use super::{account_cookie, service_unavailable_page};
-use crate::app::member_avatar;
+use crate::app::{html_escape, member_avatar};
+use crate::assets::Script;
+use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
@@ -48,6 +51,40 @@ pub(crate) fn upload_outcome(status: u16, code: Option<&str>) -> Outcome {
         (408, _) => Outcome::TooSlow,
         _ => Outcome::Error("upload_failed"),
     }
+}
+
+/// What the declared length of the browser's form says, before a byte of
+/// it is relayed (#976).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Declared {
+    /// Within apps/api's limit, or not declared: relayed, and apps/api
+    /// judges it.
+    Relay,
+    /// Past apps/api's limit: refused here as `file_too_large`. `drain`:
+    /// the body is read to its end first, so that the refusal reaches the
+    /// browser.
+    TooLarge { drain: bool },
+}
+
+/// The most a refused form is read for nothing before its refusal is
+/// answered: twice apps/api's limit, a file up to about 64 MiB.
+pub(crate) const MAX_DRAINED_BYTES: u64 = 2 * MAX_AVATAR_BODY_BYTES as u64;
+
+pub(crate) fn judge_declared_length(length: Option<u64>) -> Declared {
+    match length {
+        Some(length) if length > MAX_AVATAR_BODY_BYTES as u64 => Declared::TooLarge {
+            drain: length <= MAX_DRAINED_BYTES,
+        },
+        _ => Declared::Relay,
+    }
+}
+
+/// Reads the rest of a refused body and drops it, a frame at a time. The
+/// body guard of every route (#219) still bounds how long this may take;
+/// its trip, or a browser gone, ends it.
+async fn discard(mut body: Body) {
+    use http_body::Body as _;
+    while let Some(Ok(_)) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {}
 }
 
 /// What apps/api's answer to `DELETE /me/avatar` means for the page.
@@ -88,11 +125,21 @@ pub(crate) fn notice_message(code: &str) -> Option<&'static str> {
     })
 }
 
+/// Framing the photo on the device before it is sent (#860), loaded right
+/// after the section (`assets::Script::AvatarCrop`).
+pub(crate) const CROP_SCRIPT: &str = include_str!("../../avatar-crop.js");
+
 /// The page that serves the caller's own photo.
 pub(crate) const OWN_PHOTO_URL: &str = "/account/avatar";
 
 /// The photo section of `/account`: the icon as the other members see it,
 /// the form to upload or replace the photo, and the one to remove it.
+///
+/// Inside the upload form, `crop_block` (#860, mock-up validated on
+/// 2026-11-18): `hidden`, and revealed by `CROP_SCRIPT` in place of the
+/// field and its button where the browser can frame the photo. Its copy
+/// is written here, for the script to show state by state: an element is
+/// shown in the states its `data-in` lists.
 pub(crate) fn section(me: &MeResponse, has_photo: bool) -> String {
     let icon = member_avatar(
         me.user_id,
@@ -118,13 +165,46 @@ pub(crate) fn section(me: &MeResponse, has_photo: bool) -> String {
     format!(
         r#"<section class="card">
 <h2>Photo de profil</h2>
-<p>{icon} <span class="muted">{state}</span></p>
+<p data-in="empty reading unreadable">{icon} <span class="muted">{state}</span></p>
 <form method="post" action="/account/avatar" enctype="multipart/form-data">
 <label class="field">Photo (JPEG ou PNG, 32 Mo au plus ; recadrée en carré, au centre)
 <input type="file" name="file" accept="image/jpeg,image/png" required></label>
 <button type="submit">{submit}</button>
+{crop}
 </form>{remove}
-</section>"#
+</section>
+{script}"#,
+        crop = crop_block(),
+        script = Script::AvatarCrop.tag(),
+    )
+}
+
+/// The framing of #860, for `CROP_SCRIPT`. Its states: `empty` (a photo to
+/// choose), `reading` (the file being decoded on the device), `unreadable`
+/// (it could not be), `framing` (the square on the photo) and `sending`.
+/// apps/api's refusal brings `framing` back, under the page's own error
+/// banner; one it did not name is told with `data-failed`.
+fn crop_block() -> String {
+    format!(
+        r#"<div class="crop" data-crop data-failed="{failed}" hidden>
+<div class="crop-error" role="alert" data-in="unreadable">{warning}<p><strong>Ce fichier n'est pas une image lisible.</strong></p><p>Choisissez une photo JPEG ou PNG, 32 Mo au plus.</p></div>
+<button type="button" class="secondary" data-crop-choose data-in="empty unreadable">Choisir une photo</button>
+<p class="muted" data-in="empty unreadable">JPEG ou PNG, 32 Mo au plus. Vous cadrerez l'image avant l'envoi.</p>
+<div class="crop-stage" data-crop-stage data-in="reading framing sending">
+<canvas width="300" height="200"></canvas>
+<p class="overlay" data-in="reading"><span class="spin" aria-hidden="true"></span> Lecture de l'image…</p>
+<div class="crop-box" tabindex="0" role="group" aria-roledescription="carré de découpage" aria-label="Carré de découpage de la photo. Flèches pour le déplacer, plus et moins pour le redimensionner." aria-describedby="crop-hint" data-crop-box data-in="framing sending"><span data-corner="nw"></span><span data-corner="ne"></span><span data-corner="sw"></span><span data-corner="se"></span></div>
+</div>
+<p class="muted" data-in="reading">Les grandes photos peuvent prendre quelques secondes.</p>
+<p class="muted" id="crop-hint" data-in="framing sending">Glissez le carré, ou tirez un coin pour l'agrandir. La partie assombrie est écartée.</p>
+<p class="crop-preview" data-in="framing sending"><span aria-hidden="true"><canvas width="128" height="128" data-crop-preview></canvas></span> Aperçu de votre icône, telle que les membres la verront.</p>
+<details class="keys" data-in="framing sending"><summary>Raccourcis clavier</summary>
+<dl><dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Déplacer le carré (Maj : agrandir ou réduire)</dd><dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Agrandir, réduire le carré</dd><dt><kbd>Début</kbd></dt><dd>Recentrer le carré</dd></dl></details>
+<div class="actions stacked" data-in="reading framing sending"><button type="button" data-crop-save>Enregistrer la photo</button><button type="button" class="secondary" data-crop-other>Choisir une autre photo</button></div>
+<p class="sr-only" role="status" aria-live="polite" data-crop-live></p>
+</div>"#,
+        failed = html_escape(error_message("upload_failed").unwrap_or_default()),
+        warning = icon(Icon::Warning),
     )
 }
 
@@ -178,8 +258,10 @@ pub(crate) async fn relay_photo(state: &AppState, path: &str, cookie: Option<&st
 /// budgets for this process (`http_guard::gate::GLOBAL_UPLOADS`). So this
 /// route takes no permit of that gate and needs no body limit of its own:
 /// apps/api holds the photo, under its own gate, its own limit and its one
-/// decode at a time (#588), and refuses past them. The body guard of every
-/// route (#219) still bounds how slowly it may come.
+/// decode at a time (#588), and refuses past them — except a form whose
+/// declared length is already past apps/api's limit, refused here
+/// (`judge_declared_length`, #976). The body guard of every route (#219)
+/// still bounds how slowly it may come.
 pub async fn upload(
     CurrentUser(_me): CurrentUser,
     State(state): State<AppState>,
@@ -195,6 +277,23 @@ pub async fn upload(
     else {
         return redirect(Outcome::Error("upload_failed"));
     };
+    // A form declared past apps/api's limit is refused here (#976):
+    // relayed, apps/api would cut it at its limit and answer with the rest
+    // unread. Unread, it is lost on both hops: hyper closes a connection
+    // whose request body was left unread, and the reset that follows can
+    // reach the client before it has read the answer — `upload_failed`
+    // here, an error page in the browser. So it is read to its end before
+    // the refusal goes out, up to `MAX_DRAINED_BYTES`.
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if let Declared::TooLarge { drain } = judge_declared_length(declared) {
+        if drain {
+            discard(body).await;
+        }
+        return redirect(Outcome::Error("file_too_large"));
+    }
     let mut req = state
         .http
         .put(format!("{}/me/avatar", state.api_internal_base_url))
@@ -338,6 +437,30 @@ mod tests {
         }
     }
 
+    /// A form declared past apps/api's limit is refused before it is
+    /// relayed, and read to its end up to the bound of what is read for
+    /// nothing; one within the limit, or of no declared length, is
+    /// relayed.
+    #[test]
+    fn a_form_declared_past_the_api_limit_is_refused_before_it_is_relayed() {
+        let limit = MAX_AVATAR_BODY_BYTES as u64;
+        assert_eq!(judge_declared_length(None), Declared::Relay);
+        assert_eq!(judge_declared_length(Some(0)), Declared::Relay);
+        assert_eq!(judge_declared_length(Some(limit)), Declared::Relay);
+        assert_eq!(
+            judge_declared_length(Some(limit + 1)),
+            Declared::TooLarge { drain: true }
+        );
+        assert_eq!(
+            judge_declared_length(Some(MAX_DRAINED_BYTES)),
+            Declared::TooLarge { drain: true }
+        );
+        assert_eq!(
+            judge_declared_length(Some(MAX_DRAINED_BYTES + 1)),
+            Declared::TooLarge { drain: false }
+        );
+    }
+
     /// A body past apps/api's route limit is cut there with a 413: that is
     /// a file too large too.
     #[test]
@@ -466,6 +589,110 @@ mod tests {
         );
         assert!(html.contains("Retirer la photo"), "{html}");
     }
+
+    /// #860: the framing block sits inside the upload form, `hidden` — the
+    /// form works without it — and the script that reveals it follows the
+    /// section. The native field and its button stay as they were.
+    #[test]
+    fn the_framing_block_is_hidden_in_the_form_and_its_script_follows() {
+        for has_photo in [false, true] {
+            let html = section(&me(), has_photo);
+            let form = html
+                .split(r#"<form method="post" action="/account/avatar" enctype="multipart/form-data">"#)
+                .nth(1)
+                .and_then(|rest| rest.split("</form>").next())
+                .unwrap_or_else(|| panic!("no upload form: {html}"));
+            assert!(
+                form.contains(r#"<div class="crop" data-crop data-failed=""#),
+                "{form}"
+            );
+            let opening = &form[form.find(r#"<div class="crop""#).unwrap()..];
+            let opening = &opening[..opening.find('>').unwrap()];
+            assert!(opening.ends_with(" hidden"), "{opening}");
+            assert!(form.contains(r#"<input type="file" name="file""#), "{form}");
+            assert!(form.contains(r#"<button type="submit">"#), "{form}");
+            assert!(
+                html.trim_end().ends_with(&Script::AvatarCrop.tag()),
+                "{html}"
+            );
+            assert_eq!(html.matches(&Script::AvatarCrop.tag()).count(), 1);
+        }
+    }
+
+    /// A failure that apps/api did not name (a full gate, a lost
+    /// connection) is told with the copy of a failed upload.
+    #[test]
+    fn the_framing_block_carries_the_copy_of_a_failed_upload() {
+        let html = section(&me(), false);
+        let failed = error_message("upload_failed").unwrap();
+        assert!(
+            html.contains(&format!(r#"data-failed="{}""#, html_escape(failed))),
+            "{html}"
+        );
+    }
+
+    /// Every hook the script reads is in the markup, and every state an
+    /// element is shown in is one the script sets.
+    #[test]
+    fn the_script_and_the_markup_name_the_same_hooks_and_states() {
+        let html = section(&me(), true);
+        for hook in [
+            "data-crop-choose",
+            "data-crop-stage",
+            "data-crop-box",
+            "data-crop-preview",
+            "data-crop-save",
+            "data-crop-other",
+            "data-crop-live",
+        ] {
+            assert!(html.contains(hook), "{hook} missing from the markup");
+            assert!(
+                CROP_SCRIPT.contains(&format!("[{hook}]")),
+                "{hook} not read by the script"
+            );
+        }
+        for corner in ["nw", "ne", "sw", "se"] {
+            assert!(
+                html.contains(&format!(r#"data-corner="{corner}""#)),
+                "{corner}"
+            );
+        }
+        let mut states = 0;
+        for piece in html.split(r#"data-in=""#).skip(1) {
+            for state in piece[..piece.find('"').unwrap()].split(' ') {
+                assert!(
+                    CROP_SCRIPT.contains(&format!(r#"setState("{state}")"#)),
+                    "the script never sets {state:?}"
+                );
+                states += 1;
+            }
+        }
+        assert!(states > 0, "{html}");
+    }
+
+    /// WCAG 2.5.7: the square moves and resizes from the keyboard. It takes
+    /// the focus, is named, points at the hint that says how, and the keys
+    /// are listed on the page.
+    #[test]
+    fn the_square_takes_the_focus_and_says_how_to_move_it() {
+        let html = section(&me(), false);
+        let at = html.find("data-crop-box").expect("the square");
+        let start = html[..at].rfind('<').unwrap();
+        let tag = &html[start..start + html[start..].find('>').unwrap()];
+        assert!(tag.contains(r#"tabindex="0""#), "{tag}");
+        assert!(tag.contains(r#"role="group""#), "{tag}");
+        assert!(tag.contains("aria-label=\"Carré de découpage"), "{tag}");
+        assert!(tag.contains(r#"aria-describedby="crop-hint""#), "{tag}");
+        assert!(html.contains(r#"id="crop-hint""#), "{html}");
+        assert!(
+            html.contains("<summary>Raccourcis clavier</summary>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"role="status" aria-live="polite" data-crop-live"#),
+            "{html}"
+        );
+    }
 }
 
 /// The upload and the photo pages through the real router, against a
@@ -487,6 +714,7 @@ mod relay_tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
+    use super::MAX_DRAINED_BYTES;
     use crate::state::AppState;
 
     const BOUNDARY: &str = "----manageourhomeavatarboundary";
@@ -686,6 +914,50 @@ mod relay_tests {
         body.extend(multipart_tail());
         let resp = send(&router, upload(Body::from(body), None)).await;
         assert_eq!(location(&resp), "/account?error=image_too_large");
+    }
+
+    /// A form declared past apps/api's limit (#976) — the 33 MiB of the
+    /// no-JS journey of e2e/tests/profile-photo.spec.ts — is refused here,
+    /// apps/api never sees it, and it is read to its end before the
+    /// answer: hyper closes a connection whose body was left unread, and
+    /// the browser, still sending, then loses the answer to the reset.
+    #[tokio::test]
+    async fn a_form_past_the_api_limit_is_refused_here_after_it_is_read_whole() {
+        let (router, seen) = web(204, "", None).await;
+        let mut body = multipart_head();
+        body.resize(body.len() + 33 * 1024 * 1024, 0);
+        body.extend(multipart_tail());
+        let length = body.len();
+        let sent = Arc::new(AtomicUsize::new(0));
+        let (mut tx, rx) = Channel::<Bytes>::new(4);
+        tokio::spawn({
+            let sent = sent.clone();
+            async move {
+                for chunk in Bytes::from(body).chunks(64 * 1024) {
+                    tx.send_data(Bytes::copy_from_slice(chunk)).await.unwrap();
+                    sent.fetch_add(chunk.len(), Ordering::SeqCst);
+                }
+            }
+        });
+
+        let resp = send(&router, upload(Body::new(rx), Some(length))).await;
+        assert_eq!(location(&resp), "/account?error=file_too_large");
+        assert_eq!(seen.uploads.load(Ordering::SeqCst), 0);
+        assert_eq!(sent.load(Ordering::SeqCst), length);
+    }
+
+    /// Past the bound of what is read for nothing, the refusal does not
+    /// wait for the body.
+    #[tokio::test]
+    async fn past_the_drain_bound_the_refusal_does_not_wait_for_the_body() {
+        let (router, seen) = web(204, "", None).await;
+        let (mut tx, rx) = Channel::<Bytes>::new(4);
+        tx.send_data(Bytes::from(multipart_head())).await.unwrap();
+        let length = usize::try_from(MAX_DRAINED_BYTES + 1).unwrap();
+        let resp = send(&router, upload(Body::new(rx), Some(length))).await;
+        assert_eq!(location(&resp), "/account?error=file_too_large");
+        assert_eq!(seen.uploads.load(Ordering::SeqCst), 0);
+        drop(tx);
     }
 
     /// A body that is no form is not sent on.

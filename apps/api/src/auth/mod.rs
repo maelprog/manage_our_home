@@ -36,6 +36,7 @@ use manage_our_home_shared::validation::auth::{
 
 use crate::client_ip::ClientIp;
 use crate::crypto::{hash_password, verify_password};
+use crate::email::PasswordChange;
 use crate::error::{AppError, AppResult};
 use crate::AppState;
 
@@ -265,10 +266,11 @@ fn privacy_policy_url(state: &AppState) -> String {
     format!("{}/privacy-policy", state.frontend_base_url)
 }
 
-/// Sends one email of the routes under the response floor (#571), within
-/// `response_floor::SMTP_TIMEOUT` in all. Best-effort: a refused email, or
-/// one given up at the deadline, is logged under `what`, and the request
-/// answers as if it had left.
+/// Sends one email of an auth route within `response_floor::SMTP_TIMEOUT`
+/// in all: the routes under the response floor (#571), and the notice of a
+/// password reset, change or addition (#833, `notify_password_change`).
+/// Best-effort: a refused email, or one given up at the deadline, is logged
+/// under `what`, and the request answers as if it had left.
 async fn send_within_deadline(
     state: &AppState,
     to: &str,
@@ -879,6 +881,43 @@ async fn issue_verification(state: &AppState, user_id: Uuid, email: &str) -> App
     Ok(())
 }
 
+/// #833: tells the account's address that a password route has just given
+/// it a new password, once that route has succeeded. Best-effort, like
+/// every email of these routes: a refused or late email is logged, and the
+/// route answers as if it had left.
+async fn notify_password_change(
+    state: &AppState,
+    email: &str,
+    display_name: &str,
+    change: PasswordChange,
+) {
+    let forgot_password_link = format!("{}/forgot-password", state.frontend_base_url);
+    send_within_deadline(
+        state,
+        email,
+        change.subject(),
+        crate::email::EmailSender::password_changed_email(
+            display_name,
+            change,
+            Utc::now(),
+            &forgot_password_link,
+            &privacy_policy_url(state),
+        ),
+        "password changed",
+    )
+    .await;
+}
+
+/// The name to greet the signed-in holder by: none while the address is
+/// unverified, as in `mail_password_reset` (#831).
+fn greeted_holder(auth: &AuthUser) -> &str {
+    if auth.email_verified {
+        &auth.display_name
+    } else {
+        ""
+    }
+}
+
 /// AC #4: consuming a valid reset token revokes every active session.
 #[utoipa::path(
     post,
@@ -927,25 +966,47 @@ pub async fn reset_password(
 
     // Deleted at use rather than marked consumed (#138): a used token is
     // worth nothing, so nothing of it is kept. A second use finds no row
-    // and answers 404, like a token that never existed.
-    sqlx::query!(
-        "DELETE FROM password_reset_tokens WHERE token_hash = $1",
-        &token_hash[..]
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query!(
-        "UPDATE users SET password_hash = $1 WHERE id = $2",
+    // and answers 404, like a token that never existed. The account's other
+    // links go with it (#957): an older one would otherwise take the
+    // account back from the holder for the rest of its hour.
+    delete_password_reset_tokens(&mut *tx, row.user_id).await?;
+    let user = sqlx::query!(
+        "UPDATE users SET password_hash = $1 WHERE id = $2
+         RETURNING email, display_name, email_verified",
         password_hash,
         row.user_id
     )
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
 
     revoke_all_sessions(&state.db, row.user_id, None).await?;
 
+    // As in `mail_password_reset` (#831): no name while the address is
+    // unverified.
+    let greeted = if user.email_verified {
+        user.display_name.as_str()
+    } else {
+        ""
+    };
+    notify_password_change(&state, &user.email, greeted, PasswordChange::Reset).await;
+
     Ok(StatusCode::OK)
+}
+
+/// Deletes every password reset link of `user_id` (#957). Called in the
+/// transaction that writes the password, so that no link outlives it.
+async fn delete_password_reset_tokens<'e>(
+    db: impl sqlx::PgExecutor<'e>,
+    user_id: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "DELETE FROM password_reset_tokens WHERE user_id = $1",
+        user_id
+    )
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// AC #5: requires the current password; keeps the calling session alive
@@ -984,15 +1045,28 @@ pub async fn change_password(
 
     validate_password(&body.new_password).map_err(unprocessable)?;
     let new_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
+    let mut tx = crate::db::begin(&state.db).await?;
     sqlx::query!(
         "UPDATE users SET password_hash = $1 WHERE id = $2",
         new_hash,
         auth.user_id
     )
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    // #957: a reset link mailed before the change would replace the new
+    // password.
+    delete_password_reset_tokens(&mut *tx, auth.user_id).await?;
+    tx.commit().await?;
 
     revoke_all_sessions(&state.db, auth.user_id, Some(auth.session_id)).await?;
+
+    notify_password_change(
+        &state,
+        &auth.email,
+        greeted_holder(&auth),
+        PasswordChange::Changed,
+    )
+    .await;
 
     Ok(StatusCode::OK)
 }
@@ -1040,6 +1114,8 @@ pub async fn set_password(
     )
     .execute(&mut *tx)
     .await?;
+    // #957: as in `change_password`.
+    delete_password_reset_tokens(&mut *tx, auth.user_id).await?;
     let expires_at = Utc::now() + Duration::hours(EMAIL_VERIFICATION_TTL_HOURS);
     let token = new_token();
     sqlx::query!(
@@ -1054,6 +1130,16 @@ pub async fn set_password(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+
+    // Before the verification link, so that the link is the latest email
+    // of the mailbox.
+    notify_password_change(
+        &state,
+        &auth.email,
+        greeted_holder(&auth),
+        PasswordChange::Added,
+    )
+    .await;
 
     // Lands on apps/web's /verify-email page (which consumes the token via
     // this API's GET /auth/verify-email), not on the API endpoint itself.

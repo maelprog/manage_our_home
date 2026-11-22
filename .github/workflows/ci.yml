@@ -63,6 +63,114 @@ jobs:
       # workspace has no doctest today, so none needs Postgres or MinIO.
       - run: cargo test --doc --workspace
 
+  # Every tracked `*.sh` plus the hand-written .githooks/pre-commit, at warning level and above: the repo's
+  # scripts are clean there today (the info/style notes are not enforced).
+  # ubuntu-latest ships shellcheck. Added for infra/attack-bench/bench.sh
+  # (#915), whose host guard is the only thing keeping the bench local.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          { git ls-files -z '*.sh'; printf '%s\0' .githooks/pre-commit; } \
+            | xargs -0 -r shellcheck --severity=warning
+      # The test of the script the `security-headers-drift` job runs (#955).
+      # Here, on every run: that job only runs when infra/Caddyfile changes.
+      - run: infra/security-headers-drift.test.sh
+
+  # Warns, without failing, when a pull request changes infra/Caddyfile and
+  # its six security headers (CSP, Reporting-Endpoints, HSTS,
+  # X-Content-Type-Options, X-Frame-Options, Referrer-Policy) are no longer
+  # those of the ingress Middleware on `deploy`
+  # (apps/manage-our-home/base/ingress/middlewares.yaml), which carries
+  # them in Traefik's form. The only other guard, ci/ingress-test.sh on
+  # `deploy`, runs on pull requests to `deploy`: #830 added
+  # 'wasm-unsafe-eval' to the Caddyfile's CSP, nothing said so on its pull
+  # request, and the promotion #789 stayed red for 8 days (58 failed runs
+  # of promote/staging) until #954 aligned `deploy` by hand.
+  #
+  # A warning, not a failing check (decision of 2026-11-21): ingress-test.sh
+  # compares `deploy` to main's HEAD, so whichever side is fixed first, one
+  # of the two twin pull requests always goes through with a transient gap.
+  # The job annotates the run with the diff and keeps one comment on the
+  # pull request up to date: the diff, the line to change on `deploy`, and
+  # what to do. With no gap it says nothing, or turns its old comment into
+  # an "aligned" one.
+  #
+  # `deploy` is fetched and read as text (`git show`), never checked out
+  # nor run. The filter on infra/Caddyfile is in the job, not a `paths:` on
+  # the workflow, which would turn every other gate off with it. Every
+  # failure here — `deploy` unreadable, a fork's read-only token — ends in
+  # a warning, never in a red job.
+  security-headers-drift:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # The merge commit of the pull request and its first parent, the base.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Compare with the ingress on deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # No -e (the runner sets it): nothing in this step fails the job.
+          set +e -uo pipefail
+          git diff --quiet HEAD^1 HEAD -- infra/Caddyfile
+          case $? in
+            0) echo "infra/Caddyfile unchanged by this pull request: nothing to compare"; exit 0 ;;
+            1) ;;
+            *) echo "::warning title=Security headers::cannot tell whether infra/Caddyfile changed; comparing anyway" ;;
+          esac
+
+          ingress=apps/manage-our-home/base/ingress/middlewares.yaml
+          deploy="$RUNNER_TEMP/deploy-middlewares.yaml"
+          if ! git fetch --no-tags --depth=1 origin +refs/heads/deploy:refs/remotes/origin/deploy \
+            || ! git show "origin/deploy:$ingress" > "$deploy"; then
+            echo "::warning title=Security headers not compared::$ingress could not be read on origin/deploy: the Caddyfile's security headers were not compared with the ingress's."
+            exit 0
+          fi
+
+          infra/security-headers-drift.sh diff infra/Caddyfile "$deploy" > "$RUNNER_TEMP/drift.diff"
+          status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::warning title=Security headers not compared::infra/security-headers-drift.sh exited $status: the Caddyfile's security headers were not compared with the ingress's."
+            exit 0
+          fi
+
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- security-headers-drift -->"))) | .id' \
+            | head -n1)
+          body="$RUNNER_TEMP/comment.md"
+          if [ "$status" = 0 ]; then
+            echo "The six security headers are those of the ingress on deploy."
+            [ -n "$existing" ] || exit 0
+            printf '%s\n%s\n' '<!-- security-headers-drift -->' \
+              "En-têtes de sécurité : alignés avec l'ingress de \`deploy\` (dernière vérification sur ${HEAD_SHA::7})." > "$body"
+          else
+            cat "$RUNNER_TEMP/drift.diff"
+            message=$(cat "$RUNNER_TEMP/drift.diff")
+            message=${message//'%'/'%25'}
+            message=${message//$'\r'/'%0D'}
+            message=${message//$'\n'/'%0A'}
+            echo "::warning title=Security headers differ from the ingress on deploy (open the twin pull request to deploy)::$message"
+            infra/security-headers-drift.sh comment "$deploy" "$ingress" < "$RUNNER_TEMP/drift.diff" > "$body"
+          fi
+
+          if ! jq -n --rawfile body "$body" '{body: $body}' > "$RUNNER_TEMP/comment.json"; then
+            echo "::warning title=Security headers::the pull request comment could not be built; the annotation carries the diff."
+          elif [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" --input "$RUNNER_TEMP/comment.json" > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --input "$RUNNER_TEMP/comment.json" > /dev/null
+          fi || echo "::warning title=Security headers::the pull request comment could not be posted or updated; the annotation carries the diff."
+          exit 0
+
   audit:
     runs-on: ubuntu-latest
     steps:
@@ -622,3 +730,16 @@ jobs:
         env:
           WEB_BASE_URL: https://localhost
           API_LOG_PATH: ${{ runner.temp }}/api-https.log
+      # A failed test leaves its trace and its video in e2e/test-results/
+      # (`retain-on-failure`, e2e/playwright.config.ts): kept with the run, so
+      # a failure that does not come back on a rerun can still be read (#963).
+      # A failure of the first suite stops the job before the HTTPS run,
+      # which would start test-results/ afresh.
+      - name: Keep the traces of the failed tests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

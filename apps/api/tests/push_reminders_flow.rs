@@ -96,7 +96,13 @@ async fn a_new_account_starts_on_notifications_without_a_device(db: PgPool) {
     let s = settings(&router, &cookie).await;
     assert_eq!(s["reminder_channel"], "push");
     assert_eq!(s["push_subscriptions"], 0);
-    assert_eq!(s["notify_agenda_changes"], true);
+    for switch in [
+        "notify_agenda_added",
+        "notify_agenda_changed",
+        "notify_agenda_deleted",
+    ] {
+        assert_eq!(s[switch], true, "{switch}");
+    }
     let key = s["vapid_public_key"].as_str().unwrap();
     // An uncompressed P-256 point: 65 bytes, 87 characters of base64url.
     assert_eq!(key.len(), 87, "{key}");
@@ -602,11 +608,14 @@ async fn pass(
         emails.lock().unwrap().push((to, subject));
         async { Ok::<(), anyhow::Error>(()) }
     };
-    let send_push = |endpoint: String, ttl: i64| {
-        let outcome = answer(&endpoint);
-        pushes.lock().unwrap().push((endpoint, ttl));
-        async move { outcome }
-    };
+    let send_push =
+        |endpoint: String,
+         ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            let outcome = answer(&endpoint);
+            pushes.lock().unwrap().push((endpoint, ttl));
+            async move { outcome }
+        };
     send_due_notifications(db, "https://maison.example", send, send_push)
         .await
         .unwrap();
@@ -659,6 +668,28 @@ async fn a_member_on_notifications_without_a_device_gets_nothing_and_no_email(db
         notification(&db, due).await,
         ("failed".into(), 0, Some(NO_PUSH_SUBSCRIPTION.into()))
     );
+}
+
+/// Both switches off (`none`, #853): no push to the devices the member
+/// still has, no email; the reminder is in their centre, and sent.
+#[sqlx::test]
+async fn a_member_with_both_switches_off_gets_the_reminder_in_the_centre_alone(db: PgPool) {
+    let member = insert_user(&db, "none@example.test", "none").await;
+    add_device(&db, member, FCM).await;
+    let due = due_reminder(&db, member).await;
+
+    let (emails, pushes) = pass(&db, |_| PushOutcome::Delivered).await;
+
+    assert!(emails.is_empty(), "{emails:?}");
+    assert!(pushes.is_empty(), "{pushes:?}");
+    assert_eq!(notification(&db, due).await, ("sent".into(), 0, None));
+    let centre: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM notifications WHERE user_id = $1")
+            .bind(member)
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(centre, ["agenda_reminder"]);
 }
 
 /// Every device expired: forgotten, and the reminder retired like for a
@@ -818,7 +849,10 @@ where
     let send = |_to: String, _subject: String, _body: manage_our_home::email::EmailContent| async {
         Ok::<(), anyhow::Error>(())
     };
-    let send_push = |endpoint: String, _ttl: i64| answer(endpoint);
+    let send_push =
+        |endpoint: String,
+         _ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| answer(endpoint);
     tokio::time::timeout(
         within,
         send_due_notifications(db, "https://maison.example", send, send_push),
@@ -1034,7 +1068,12 @@ async fn a_database_error_on_one_reminder_stops_none_of_the_others(
     let send = |_to: String, _subject: String, _body: manage_our_home::email::EmailContent| async {
         Ok::<(), anyhow::Error>(())
     };
-    let send_push = |_endpoint: String, _ttl: i64| async { PushOutcome::Delivered };
+    let send_push =
+        |_endpoint: String,
+         _ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| async {
+            PushOutcome::Delivered
+        };
     let error = send_due_notifications(&db, "https://maison.example", send, send_push)
         .await
         .expect_err("the pass reports the reminders it could not see through");
@@ -1083,25 +1122,32 @@ async fn pass_answering(db: &PgPool, outcome: PushOutcome) {
     let send = |_: String, _: String, _: manage_our_home::email::EmailContent| async {
         Ok::<(), anyhow::Error>(())
     };
-    let send_push = |_: String, _: i64| {
-        let outcome = outcome.clone();
-        async move { outcome }
-    };
+    let send_push =
+        |_: String, _: i64, _: Option<manage_our_home::notifications::push::Payload>| {
+            let outcome = outcome.clone();
+            async move { outcome }
+        };
     send_due_notifications(db, "https://maison.example", send, send_push)
         .await
         .unwrap();
 }
 
 async fn push_an_alert(db: &PgPool, member: Uuid) {
-    let delivered = |_: String, _: i64| async { PushOutcome::Delivered };
-    manage_our_home::budget::alerts::push_alerts(db, &delivered, &[member])
+    let delivered =
+        |_: String, _: i64, _: Option<manage_our_home::notifications::push::Payload>| async {
+            PushOutcome::Delivered
+        };
+    manage_our_home::budget::alerts::push_alerts(db, &delivered, &entries_of(&[member]))
         .await
         .unwrap();
 }
 
 async fn push_an_agenda_change(db: &PgPool, member: Uuid) {
-    let delivered = |_: String, _: i64| async { PushOutcome::Delivered };
-    manage_our_home::agenda::change_notices::push_changes(db, &delivered, &[member])
+    let delivered =
+        |_: String, _: i64, _: Option<manage_our_home::notifications::push::Payload>| async {
+            PushOutcome::Delivered
+        };
+    manage_our_home::agenda::change_notices::push_changes(db, &delivered, &entries_of(&[member]))
         .await
         .unwrap();
 }
@@ -1212,21 +1258,24 @@ async fn an_agenda_change_is_pushed_on_the_channels_that_push(db: PgPool) {
     add_device(&db, on_email, MOZILLA).await;
 
     let pushes = Mutex::new(Vec::new());
-    let send_push = |endpoint: String, ttl: i64| {
-        let outcome = if endpoint == gone {
-            PushOutcome::Gone
-        } else if endpoint == flaky {
-            PushOutcome::Failed("push service answered 503".into())
-        } else {
-            PushOutcome::Delivered
+    let send_push =
+        |endpoint: String,
+         ttl: i64,
+         _payload: Option<manage_our_home::notifications::push::Payload>| {
+            let outcome = if endpoint == gone {
+                PushOutcome::Gone
+            } else if endpoint == flaky {
+                PushOutcome::Failed("push service answered 503".into())
+            } else {
+                PushOutcome::Delivered
+            };
+            pushes.lock().unwrap().push((endpoint, ttl));
+            async move { outcome }
         };
-        pushes.lock().unwrap().push((endpoint, ttl));
-        async move { outcome }
-    };
     manage_our_home::agenda::change_notices::push_changes(
         &db,
         &send_push,
-        &[on_push, on_both, on_email],
+        &entries_of(&[on_push, on_both, on_email]),
     )
     .await
     .unwrap();
@@ -1311,4 +1360,197 @@ async fn the_export_carries_the_channel_and_the_devices(db: PgPool) {
     assert_eq!(devices[0]["pending_pushes"], 0);
     assert!(devices[0]["pending_push_kind"].is_null());
     assert!(devices[0]["pending_until"].is_null());
+}
+
+/// An entry of the notification centre for each of `members` (#862): what
+/// a push names.
+fn entries_of(members: &[Uuid]) -> Vec<manage_our_home::notifications::center::Entry> {
+    members
+        .iter()
+        .map(|&member| manage_our_home::notifications::center::Entry {
+            member,
+            id: Uuid::new_v4(),
+        })
+        .collect()
+}
+
+// -- a click on a push marks its entry read (#862) ----------------------------
+
+// RFC 8291, Appendix A: a browser's keys.
+const UA_PUBLIC: &str =
+    "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+const UA_AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
+
+async fn subscribe_with_keys(
+    router: &axum::Router,
+    cookie: &str,
+    endpoint: &str,
+    keys: serde_json::Value,
+) -> axum::response::Response {
+    call(
+        router,
+        Method::POST,
+        "/account/push-subscriptions",
+        Some(cookie),
+        Some(serde_json::json!({ "endpoint": endpoint, "keys": keys })),
+    )
+    .await
+}
+
+async fn stored_keys(db: &PgPool, endpoint: &str) -> (Option<String>, Option<String>) {
+    sqlx::query_as("SELECT p256dh, auth FROM push_subscriptions WHERE endpoint = $1")
+        .bind(endpoint)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+async fn unread(router: &axum::Router, cookie: &str) -> i64 {
+    let res = call(
+        router,
+        Method::GET,
+        "/notifications/unread_count",
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    json_body(res).await["unread_count"].as_i64().unwrap()
+}
+
+/// What each push of a reminder pass carried: its endpoint and its
+/// payload read back, `None` for a push without payload.
+async fn pass_reading_payloads(db: &PgPool) -> Vec<(String, Option<serde_json::Value>)> {
+    let send = |_: String, _: String, _: manage_our_home::email::EmailContent| async {
+        Ok::<(), anyhow::Error>(())
+    };
+    let pushes = Mutex::new(Vec::new());
+    let send_push =
+        |endpoint: String,
+         _: i64,
+         payload: Option<manage_our_home::notifications::push::Payload>| {
+            let read: Option<serde_json::Value> =
+                payload.map(|p| serde_json::from_slice(&p.plaintext).unwrap());
+            pushes.lock().unwrap().push((endpoint, read));
+            async { PushOutcome::Delivered }
+        };
+    send_due_notifications(db, "https://maison.example", send, send_push)
+        .await
+        .unwrap();
+    let mut pushes = pushes.into_inner().unwrap();
+    pushes.sort_by(|a, b| a.0.cmp(&b.0));
+    pushes
+}
+
+/// The keys go with the endpoint; keys that are not a subscription's are
+/// refused; a page of before #862, sending none, keeps those registered.
+#[sqlx::test]
+async fn a_device_registers_its_keys_with_its_endpoint(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "keys@example.test").await;
+    let keys = serde_json::json!({ "p256dh": UA_PUBLIC, "auth": UA_AUTH });
+
+    let res = subscribe_with_keys(&router, &cookie, FCM, keys).await;
+    assert_status(&res, StatusCode::CREATED);
+    let registered = (Some(UA_PUBLIC.to_string()), Some(UA_AUTH.to_string()));
+    assert_eq!(stored_keys(&db, FCM).await, registered);
+
+    assert_eq!(subscribe(&router, &cookie, FCM).await, StatusCode::CREATED);
+    assert_eq!(stored_keys(&db, FCM).await, registered);
+
+    for bad in [
+        serde_json::json!({ "p256dh": "not a key", "auth": UA_AUTH }),
+        serde_json::json!({ "p256dh": UA_PUBLIC, "auth": "AAAA" }),
+        // Beyond the CHECK of 0065 once stored: refused, not a 500.
+        serde_json::json!({ "p256dh": format!("{UA_PUBLIC}{}", "=".repeat(200)), "auth": UA_AUTH }),
+    ] {
+        let res = subscribe_with_keys(&router, &cookie, MOZILLA, bad).await;
+        assert_status(&res, StatusCode::BAD_REQUEST);
+        assert_eq!(json_body(res).await["error"], "invalid_push_keys");
+    }
+    assert_eq!(device_count(&db).await, 1);
+}
+
+/// The acceptance of #862: the reminder's push names its entry of the
+/// centre, to the device registered with its keys only; marking that
+/// entry read, as the click does through apps/web, takes the count down.
+#[sqlx::test]
+async fn a_click_on_a_reminder_s_push_marks_its_entry_read(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "click@example.test").await;
+    let member: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("click@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    let keys = serde_json::json!({ "p256dh": UA_PUBLIC, "auth": UA_AUTH });
+    let res = subscribe_with_keys(&router, &cookie, FCM, keys).await;
+    assert_status(&res, StatusCode::CREATED);
+    // Registered before #862: no keys, no payload.
+    add_device(&db, member, MOZILLA).await;
+    due_reminder(&db, member).await;
+
+    let pushes = pass_reading_payloads(&db).await;
+    let entry: Uuid = sqlx::query_scalar(
+        "SELECT id FROM notifications WHERE user_id = $1 AND kind = 'agenda_reminder'",
+    )
+    .bind(member)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        pushes,
+        [
+            (
+                FCM.to_string(),
+                Some(serde_json::json!({ "entries": [entry.to_string()] }))
+            ),
+            (MOZILLA.to_string(), None),
+        ]
+    );
+    assert_eq!(unread(&router, &cookie).await, 1);
+
+    // The click: what apps/web relays for each entry the push named.
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/notifications/{entry}/read"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(unread(&router, &cookie).await, 0);
+}
+
+/// A push of an alert, a change or a recap names the entries it is given:
+/// one push per member, naming all of theirs.
+#[sqlx::test]
+async fn a_push_names_every_entry_of_its_member(db: PgPool) {
+    let member = insert_user(&db, "entries@example.test", "push").await;
+    add_device(&db, member, FCM).await;
+    sqlx::query("UPDATE push_subscriptions SET p256dh = $1, auth = $2")
+        .bind(UA_PUBLIC)
+        .bind(UA_AUTH)
+        .execute(&db)
+        .await
+        .unwrap();
+    let entries = [entries_of(&[member]), entries_of(&[member])].concat();
+    let named = Mutex::new(Vec::new());
+    let send_push =
+        |_: String, _: i64, payload: Option<manage_our_home::notifications::push::Payload>| {
+            let read: serde_json::Value =
+                serde_json::from_slice(&payload.unwrap().plaintext).unwrap();
+            named.lock().unwrap().push(read);
+            async { PushOutcome::Delivered }
+        };
+    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &entries)
+        .await
+        .unwrap();
+    let mut ids: Vec<String> = entries.iter().map(|e| e.id.to_string()).collect();
+    ids.sort();
+    assert_eq!(
+        named.into_inner().unwrap(),
+        [serde_json::json!({ "entries": ids })]
+    );
 }

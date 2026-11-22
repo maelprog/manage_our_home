@@ -28,6 +28,7 @@ use manage_our_home_shared::validation::messagerie::author_name;
 use uuid::Uuid;
 
 use crate::app::{html_escape, member_link, shell_with_header, Icon, Width};
+use crate::edit_rule::{who_may, Guarded};
 use crate::icons::{icon, Icon as Glyph};
 use crate::layout::CurrentUser;
 use crate::lenient_query::{lenient, LenientQuery};
@@ -266,7 +267,11 @@ pub async fn get(
         .map(|g| g.members)
         .unwrap_or_default();
 
-    let can_edit = can_modify(&fam.role, event.created_by == me.user_id);
+    let can_edit = can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        event.created_by == me.user_id,
+    );
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
     let reminder = query.rid.map(|rid| (rid, query.offset.unwrap_or(0)));
@@ -285,6 +290,7 @@ pub async fn get(
         attachments.as_deref(),
         &members,
         can_edit,
+        &fam.edit_min_role,
         query.occ.as_deref(),
         notice,
         error,
@@ -328,6 +334,7 @@ fn page(
     attachments: Option<&[AttachmentResponse]>,
     members: &[GroupMember],
     can_edit: bool,
+    edit_min_role: &str,
     focus_occ: Option<&str>,
     notice: Option<&str>,
     error: Option<&str>,
@@ -401,7 +408,8 @@ fn page(
         String::new()
     };
 
-    // Edit/delete controls (creator or owner/admin only).
+    // Edit/delete controls (creator, or a role meeting the family's
+    // `agenda_edit` threshold, #866).
     let controls_html = if can_edit {
         format!(
             r#"<div class="actions">
@@ -412,7 +420,10 @@ fn page(
             delete = delete_control(urls, event, focus_occ),
         )
     } else {
-        r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cet événement.</p>"#.to_string()
+        format!(
+            r#"<p class="muted">{}</p>"#,
+            who_may(edit_min_role, Guarded::Event)
+        )
     };
 
     // Reminders: add form + one-shot display of a just-created reminder
@@ -995,7 +1006,11 @@ pub async fn delete_confirm(
         }
         _ => return service_unavailable_page().into_response(),
     };
-    if !can_modify(&fam.role, event.created_by == me.user_id) {
+    if !can_modify(
+        &fam.role,
+        &fam.edit_min_role,
+        event.created_by == me.user_id,
+    ) {
         return forbidden_page().into_response();
     }
     let Some(occurrence_at) = query.occ.filter(|_| event.rrule.is_some()) else {
@@ -1615,6 +1630,7 @@ mod tests {
             Some(&[]),
             &[member(uid(1), "Alice")],
             true,
+            "admin",
             None,
             None,
             None,
@@ -1622,6 +1638,30 @@ mod tests {
             "",
             None,
         )
+    }
+
+    #[test]
+    fn an_admin_under_an_owner_threshold_is_told_the_owner_alone_edits() {
+        // #962: the line follows the group's `agenda_edit` threshold.
+        let html = page(
+            "",
+            &event(false),
+            Some(&[]),
+            Some(&[]),
+            &[member(uid(1), "Alice")],
+            can_modify("admin", "owner", false),
+            "owner",
+            None,
+            None,
+            None,
+            None,
+            "",
+            None,
+        );
+        assert!(
+            html.contains(r#"<p class="muted">Seul le propriétaire ou le créateur peut modifier ou supprimer cet événement.</p>"#),
+            "{html}"
+        );
     }
 
     // -- an event of another family (#622) ----------------------------------
@@ -1643,6 +1683,7 @@ mod tests {
             Some(&attachments),
             &[member(uid(1), "Alice")],
             true,
+            "admin",
             None,
             None,
             None,

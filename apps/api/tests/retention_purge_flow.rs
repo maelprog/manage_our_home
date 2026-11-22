@@ -8,8 +8,11 @@
 
 mod common;
 
+use axum::http::{Method, StatusCode};
 use chrono::{DateTime, Duration, Months, Utc};
-use common::{drop_prescribed_role, prescribed_role_pool};
+use common::{
+    assert_status, call, drop_prescribed_role, prescribed_role_pool, test_router_with_outbox,
+};
 use manage_our_home::jobs::retention_purge::{purge, PurgeCounts, RetentionCutoffs};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -231,6 +234,7 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
         PurgeCounts {
             audit_log: 1,
             email_verification_tokens: 1,
+            unverified_accounts: 0,
             password_reset_tokens: 1,
             invitations: 1,
             sessions: 4,
@@ -238,6 +242,8 @@ async fn each_table_loses_exactly_the_rows_past_their_retention(db: PgPool) {
             login_throttle: 1,
             rate_limit_log: 1,
             csp_report_throttle: 1,
+            library_reports_lapsed: 0,
+            library_reports: 0,
         }
     );
     for (table, query) in [
@@ -347,6 +353,185 @@ async fn each_sliding_limit_is_purged_on_its_own_window(db: PgPool) {
     );
 }
 
+async fn register(router: &axum::Router, email: &str) {
+    let response = call(
+        router,
+        Method::POST,
+        "/auth/register",
+        None,
+        Some(serde_json::json!({
+            "email": email, "password": "a-long-password1", "display_name": "Inscrit",
+            "declares_minimum_age": true, "accepts_terms": true
+        })),
+    )
+    .await;
+    assert_status(&response, StatusCode::CREATED);
+}
+
+/// Dates an account's creation, and its verification tokens with it.
+async fn backdate(db: &PgPool, email: &str, created: DateTime<Utc>) -> Uuid {
+    let id: Uuid =
+        sqlx::query_scalar("UPDATE users SET created_at = $2 WHERE email = $1 RETURNING id")
+            .bind(email)
+            .bind(created)
+            .fetch_one(db)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE email_verification_tokens SET created_at = $2 WHERE user_id = $1")
+        .bind(id)
+        .bind(created)
+        .execute(db)
+        .await
+        .unwrap();
+    id
+}
+
+async fn user_ids(db: &PgPool, email: &str) -> Vec<Uuid> {
+    sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_all(db)
+        .await
+        .unwrap()
+}
+
+/// #834: an account whose address nobody confirmed goes a week after its
+/// creation — a link mailed since does not push that back —, and its
+/// address registers again as a new account. A verified account goes
+/// nowhere, nor does an unverified one that shows any use or that the
+/// account purge owns.
+#[sqlx::test]
+async fn an_unverified_account_goes_a_week_after_its_creation(db: PgPool) {
+    let (router, _outbox) = test_router_with_outbox(db.clone());
+    let now = Utc::now();
+    let minute = Duration::minutes(1);
+    let week = Duration::days(7);
+    let long_ago = now - Duration::days(400);
+
+    register(&router, "gone@example.test").await;
+    let gone = backdate(&db, "gone@example.test", now - week - minute).await;
+
+    // Created a minute short of the week; its first link is long expired,
+    // so a resend mails a fresh one now.
+    register(&router, "resent@example.test").await;
+    let resent = backdate(&db, "resent@example.test", now - week + minute).await;
+    let resend = call(
+        &router,
+        Method::POST,
+        "/auth/verify-email/resend",
+        None,
+        Some(serde_json::json!({"email": "resent@example.test"})),
+    )
+    .await;
+    assert_status(&resend, StatusCode::OK);
+    let fresh_tokens: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM email_verification_tokens WHERE user_id = $1 AND created_at > $2",
+    )
+    .bind(resent)
+    .bind(now - minute)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(fresh_tokens, 1, "the resend mailed no fresh link");
+
+    register(&router, "verified@example.test").await;
+    let verified = backdate(&db, "verified@example.test", long_ago).await;
+    sqlx::query("UPDATE users SET email_verified = true WHERE id = $1")
+        .bind(verified)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    // Unverified and old, but used, or owned by the account purge.
+    let google = insert_user(&db, "google@example.test", false).await;
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'sub-1')",
+    )
+    .bind(google)
+    .execute(&db)
+    .await
+    .unwrap();
+    let member = insert_user(&db, "member@example.test", false).await;
+    let group: Uuid =
+        sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ('G', $1) RETURNING id")
+            .bind(verified)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO group_members (group_id, user_id, role)
+         VALUES ($1, $2, 'owner'), ($1, $3, 'standard')",
+    )
+    .bind(group)
+    .bind(verified)
+    .bind(member)
+    .execute(&db)
+    .await
+    .unwrap();
+    let invited = insert_user(&db, "invited@example.test", false).await;
+    let invitation = insert_invitation(&db, group, verified, now).await;
+    sqlx::query("UPDATE invitations SET consumed_at = now(), consumed_by = $2 WHERE id = $1")
+        .bind(invitation)
+        .bind(invited)
+        .execute(&db)
+        .await
+        .unwrap();
+    let deactivated = insert_user(&db, "deactivated@example.test", true).await;
+    let purged = insert_user(&db, "purged@example.test", false).await;
+    sqlx::query("UPDATE users SET deleted_at = now() WHERE id = $1")
+        .bind(purged)
+        .execute(&db)
+        .await
+        .unwrap();
+    for id in [google, member, invited, deactivated, purged] {
+        sqlx::query("UPDATE users SET created_at = $2 WHERE id = $1")
+            .bind(id)
+            .bind(long_ago)
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+
+    let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
+    assert_eq!(counts.unverified_accounts, 1);
+    assert!(user_ids(&db, "gone@example.test").await.is_empty());
+    let mut left = ids(&db, "SELECT id FROM users").await;
+    left.sort();
+    let mut expected = vec![
+        resent,
+        verified,
+        google,
+        member,
+        invited,
+        deactivated,
+        purged,
+    ];
+    expected.sort();
+    assert_eq!(left, expected);
+
+    // Two minutes on, the week is up for `resent` too, however fresh its
+    // link: counted from the creation, not from the last mail.
+    let later = purge(&db, RetentionCutoffs::at(now + minute * 2))
+        .await
+        .unwrap();
+    assert_eq!(later.unverified_accounts, 1);
+    assert!(user_ids(&db, "resent@example.test").await.is_empty());
+
+    // The address is free again: registering it makes a new account.
+    register(&router, "gone@example.test").await;
+    let again = user_ids(&db, "gone@example.test").await;
+    assert_eq!(again.len(), 1);
+    assert_ne!(again[0], gone);
+    let fresh: (bool, DateTime<Utc>) =
+        sqlx::query_as("SELECT email_verified, created_at FROM users WHERE id = $1")
+            .bind(again[0])
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(!fresh.0, "a new account starts unverified");
+    assert!(fresh.1 > now - minute, "a new account, not the old row");
+}
+
 /// `invitations` is under a forced RLS policy: on a role that does not
 /// bypass it, its `DELETE` would see no row and the pass would report
 /// success. It refuses instead, before deleting anything anywhere.
@@ -365,4 +550,106 @@ async fn the_pass_refuses_a_role_that_does_not_bypass_rls(db: PgPool) {
         .await
         .unwrap();
     assert_eq!(left, 1);
+}
+
+/// #908 (user's decision of 2026-11-20): a report on a publication of the
+/// shared library is deleted six months after its closure, an open one
+/// never. A report whose publication is gone otherwise than by moderation
+/// is closed by the pass, as `lapsed`, and its six months start then.
+#[sqlx::test]
+async fn library_reports_go_six_months_after_their_closure(db: PgPool) {
+    let now = Utc::now();
+    let six_months = now.checked_sub_months(Months::new(6)).unwrap();
+    let minute = Duration::minutes(1);
+    let reporter = insert_user(&db, "signalant@example.test", false).await;
+    // Verified, or the second pass below would purge the account (#834).
+    sqlx::query("UPDATE users SET email_verified = true WHERE id = $1")
+        .bind(reporter)
+        .execute(&db)
+        .await
+        .unwrap();
+    let live: Uuid = sqlx::query_scalar(
+        "WITH l AS (INSERT INTO library_recipes (name) VALUES ('Tarte') RETURNING id),
+              p AS (INSERT INTO library_recipe_publishers (library_recipe_id, user_id)
+                    SELECT id, $1 FROM l)
+         SELECT id FROM l",
+    )
+    .bind(reporter)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    let old = six_months - Duration::days(9);
+    let mut ids = Vec::new();
+    for (publication, created, resolution, closed) in [
+        // Open, on a live publication, however old: kept open.
+        (live, six_months - Duration::days(400), None, None),
+        // Open, its publication gone: closed now, kept.
+        (Uuid::new_v4(), now - minute, None, None),
+        // Closed past six months: deleted.
+        (
+            Uuid::new_v4(),
+            old,
+            Some("dismissed"),
+            Some(six_months - minute),
+        ),
+        (
+            Uuid::new_v4(),
+            old + minute,
+            Some("withdrawn"),
+            Some(six_months - minute),
+        ),
+        // Closed a minute short of it: kept.
+        (
+            Uuid::new_v4(),
+            old + minute + minute,
+            Some("lapsed"),
+            Some(six_months + minute),
+        ),
+    ] {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO library_reports
+                 (library_recipe_id, reporter_id, reason, created_at, resolution, closed_at)
+             VALUES ($1, $2, 'spam', $3, $4, $5) RETURNING id",
+        )
+        .bind(publication)
+        .bind(reporter)
+        .bind(created)
+        .bind(resolution)
+        .bind(closed)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+
+    let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
+    assert_eq!(counts.library_reports_lapsed, 1);
+    assert_eq!(counts.library_reports, 2);
+
+    let left: Vec<(Uuid, Option<String>, Option<DateTime<Utc>>)> =
+        sqlx::query_as("SELECT id, resolution, closed_at FROM library_reports ORDER BY created_at")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    let left_ids: Vec<Uuid> = left.iter().map(|r| r.0).collect();
+    assert_eq!(left_ids, vec![ids[0], ids[4], ids[1]]);
+    assert_eq!(left[0].1, None);
+    assert_eq!(left[2].1.as_deref(), Some("lapsed"));
+    // Closed at the pass's clock (`timestamptz` keeps microseconds).
+    assert_eq!(
+        left[2].2.map(|t| t.timestamp_micros()),
+        Some(now.timestamp_micros())
+    );
+
+    // Six months on, the lapsed one goes too; the open one stays.
+    let later = now.checked_add_months(Months::new(6)).unwrap() + minute;
+    let counts = purge(&db, RetentionCutoffs::at(later)).await.unwrap();
+    assert_eq!(counts.library_reports_lapsed, 0);
+    assert_eq!(counts.library_reports, 2);
+    let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM library_reports")
+        .fetch_all(&db)
+        .await
+        .unwrap();
+    assert_eq!(left, vec![ids[0]]);
 }

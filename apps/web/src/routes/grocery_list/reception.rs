@@ -28,7 +28,8 @@ use manage_our_home_shared::dto::stocks::{
     StockItemResponse,
 };
 use manage_our_home_shared::validation::stocks::{
-    format_quantity, merge_target, normalize_unit, ReceptionMode, StockCandidate, MAX_QUANTITY,
+    format_quantity, merge_target, normalize_unit, packs_hint, scanned_entry, ReceptionMode,
+    StockCandidate, MAX_QUANTITY,
 };
 use uuid::Uuid;
 
@@ -57,6 +58,10 @@ pub(crate) struct FormLine {
     /// applies its proposal.
     pub mode: Option<ReceptionMode>,
     pub excluded: bool,
+    /// The packs of a scanned article the proposed quantity comes to (#824),
+    /// « ≈ 1 paquet de 1 kg », shown under the unit; empty without one.
+    /// It changes no value.
+    pub pack_hint: String,
 }
 
 /// What stops a line from being received as typed.
@@ -110,6 +115,7 @@ pub(crate) fn form_line(line: &ReceptionLine) -> FormLine {
         expires_on: line.expires_on.map(|d| d.to_string()).unwrap_or_default(),
         mode: Some(line.mode),
         excluded: false,
+        pack_hint: line.pack.as_ref().map(packs_hint).unwrap_or_default(),
     }
 }
 
@@ -158,6 +164,7 @@ pub(crate) fn parse_form(pairs: &[(String, String)]) -> Vec<FormLine> {
                     _ => None,
                 },
                 excluded: f.contains_key("exclude"),
+                pack_hint: text("pack_hint"),
             })
         })
         .collect()
@@ -167,13 +174,28 @@ pub(crate) fn parse_form(pairs: &[(String, String)]) -> Vec<FormLine> {
 /// the lot from those not left out. A `merge` must find a line to add to,
 /// with the rule apps/api applies (`merge_target`): among the family's
 /// stock (`stock`) and the new lines the earlier articles of the lot make.
+/// An article named as a scanned line (`scanned`, the stock lines with a
+/// barcode) is weighed in that line's unit when its own converts into it,
+/// as apps/api enters it (`scanned_entry`, #824); it is sent as typed.
 pub(crate) fn validate_lines(
     lines: &[FormLine],
     stock: &[StockCandidate<'_>],
+    scanned: &[StockCandidate<'_>],
 ) -> Result<Vec<ReceivedItemRequest>, LotError> {
     // The units as apps/api stores them, so that the new lines of the lot
     // can be borrowed as candidates below.
-    let units: Vec<String> = lines.iter().map(|l| normalize_unit(&l.unit)).collect();
+    let units: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            let unit = normalize_unit(&l.unit);
+            match l.quantity.trim().parse::<f64>() {
+                Ok(q) if q > 0.0 && q <= MAX_QUANTITY => scanned_entry(&l.name, q, &unit, scanned)
+                    .map(|(_, u)| u)
+                    .unwrap_or(unit),
+                _ => unit,
+            }
+        })
+        .collect();
     let mut candidates = stock.to_vec();
     // The lines in error whose date does not read and which would make a
     // new line once corrected: a merge that could go into one of them is
@@ -291,6 +313,18 @@ fn line_fieldset(i: usize, line: &FormLine, error: Option<LineError>) -> String 
     let error = error
         .map(|e| format!("<p class=\"field-error\">{}</p>\n", html_escape(e.text())))
         .unwrap_or_default();
+    // The packs' hint (#824), under the unit, which the quantity names.
+    let (described, hint) = if line.pack_hint.is_empty() {
+        (String::new(), String::new())
+    } else {
+        (
+            format!(r#" aria-describedby="hint.{i}""#),
+            format!(
+                "<p class=\"muted\" id=\"hint.{i}\">{}</p>\n",
+                html_escape(&line.pack_hint)
+            ),
+        )
+    };
     let mode = if line.merge_label.is_empty() {
         format!(
             r#"<input type="hidden" name="mode.{i}" value="new"/>
@@ -315,9 +349,10 @@ fn line_fieldset(i: usize, line: &FormLine, error: Option<LineError>) -> String 
 {error}<input type="hidden" name="id.{i}" value="{id}"/>
 <input type="hidden" name="name.{i}" value="{name}"/>
 <input type="hidden" name="merge_label.{i}" value="{merge_label}"/>
-<label>Quantité <input type="number" name="quantity.{i}" step="any" value="{quantity}"/></label>
+<input type="hidden" name="pack_hint.{i}" value="{pack_hint}"/>
+<label>Quantité <input type="number" name="quantity.{i}" step="any" value="{quantity}"{described}/></label>
 <label>Unité <input type="text" name="unit.{i}" value="{unit}" placeholder="unité si vide (ex. kg, L)"/></label>
-<label>Date de péremption
+{hint}<label>Date de péremption
 <input type="date" name="expires_on.{i}" value="{expires_on}" data-expiry-shortcuts/>
 </label>
 {mode}
@@ -327,6 +362,7 @@ fn line_fieldset(i: usize, line: &FormLine, error: Option<LineError>) -> String 
         name = html_escape(&line.name),
         id = line.grocery_item_id,
         merge_label = html_escape(&line.merge_label),
+        pack_hint = html_escape(&line.pack_hint),
         quantity = html_escape(&line.quantity),
         unit = html_escape(&line.unit),
         expires_on = html_escape(&line.expires_on),
@@ -464,7 +500,13 @@ pub async fn post(
             expires_on: s.expires_on,
         })
         .collect();
-    let items = match validate_lines(&lines, &candidates) {
+    let scanned: Vec<StockCandidate<'_>> = stock
+        .iter()
+        .zip(&candidates)
+        .filter(|(s, _)| s.barcode.is_some())
+        .map(|(_, c)| *c)
+        .collect();
+    let items = match validate_lines(&lines, &candidates, &scanned) {
         Ok(items) => items,
         Err(LotError::Lines(errors)) => {
             return again(StatusCode::UNPROCESSABLE_ENTITY, &errors, "lines")
@@ -544,6 +586,7 @@ mod tests {
             expires_on: String::new(),
             mode: Some(mode),
             excluded: false,
+            pack_hint: String::new(),
         }
     }
 
@@ -602,6 +645,7 @@ mod tests {
             expires_on: None,
             mode: ReceptionMode::Merge,
             stock_item: Some(stock_item(10, "Lait", "L", Some(date("2026-11-12")))),
+            pack: None,
         };
         let l = form_line(&proposal);
         assert_eq!(l.grocery_item_id, id(1));
@@ -627,6 +671,7 @@ mod tests {
             expires_on: None,
             mode: ReceptionMode::Merge,
             stock_item: Some(stock_item(10, "Riz", "kg", None)),
+            pack: None,
         };
         let l = form_line(&proposal);
         assert_eq!(l.quantity, "0.5");
@@ -656,6 +701,7 @@ mod tests {
             expires_on: None,
             mode: ReceptionMode::Merge,
             stock_item: None,
+            pack: None,
         };
         assert_eq!(
             form_line(&proposal).merge_label,
@@ -673,6 +719,7 @@ mod tests {
             expires_on: None,
             mode: ReceptionMode::New,
             stock_item: None,
+            pack: None,
         };
         let l = form_line(&proposal);
         assert_eq!(l.merge_label, "");
@@ -714,6 +761,7 @@ mod tests {
                     expires_on: "2026-11-12".into(),
                     mode: Some(ReceptionMode::Merge),
                     excluded: false,
+                    pack_hint: String::new(),
                 },
                 FormLine {
                     grocery_item_id: id(2),
@@ -724,6 +772,7 @@ mod tests {
                     expires_on: String::new(),
                     mode: Some(ReceptionMode::New),
                     excluded: true,
+                    pack_hint: String::new(),
                 },
             ]
         );
@@ -790,7 +839,7 @@ mod tests {
         oeufs.expires_on = "2026-11-20".into();
         let stock = [candidate(10, "Lait", "L", None)];
         assert_eq!(
-            validate_lines(&[lait, pain, oeufs], &stock),
+            validate_lines(&[lait, pain, oeufs], &stock, &[]),
             Ok(vec![
                 ReceivedItemRequest {
                     grocery_item_id: id(1),
@@ -821,7 +870,7 @@ mod tests {
             let mut l = line(1, "Pain", ReceptionMode::New);
             l.quantity = q.into();
             assert_eq!(
-                validate_lines(&[l], &[]),
+                validate_lines(&[l], &[], &[]),
                 Err(LotError::Lines(vec![Some(
                     LineError::QuantityMustBePositive
                 )])),
@@ -836,14 +885,14 @@ mod tests {
             let mut l = line(1, "Pain", ReceptionMode::New);
             l.quantity = q.into();
             assert_eq!(
-                validate_lines(&[l], &[]),
+                validate_lines(&[l], &[], &[]),
                 Err(LotError::Lines(vec![Some(LineError::QuantityTooLarge)])),
                 "{q:?}"
             );
         }
         let mut l = line(1, "Pain", ReceptionMode::New);
         l.quantity = "1000000000".into();
-        assert!(validate_lines(&[l], &[]).is_ok());
+        assert!(validate_lines(&[l], &[], &[]).is_ok());
     }
 
     #[test]
@@ -852,7 +901,7 @@ mod tests {
             let mut l = line(1, "Pain", ReceptionMode::New);
             l.expires_on = d.into();
             assert_eq!(
-                validate_lines(&[l], &[]),
+                validate_lines(&[l], &[], &[]),
                 Err(LotError::Lines(vec![Some(LineError::InvalidDate)])),
                 "{d:?}"
             );
@@ -865,14 +914,14 @@ mod tests {
         l.expires_on = "2026-11-20".into();
         let stock = [candidate(10, "Lait", "L", Some(date("2026-11-12")))];
         assert_eq!(
-            validate_lines(&[l.clone()], &stock),
+            validate_lines(&[l.clone()], &stock, &[]),
             Err(LotError::Lines(vec![Some(LineError::NoStockToMerge)]))
         );
         // The same date as the line, or no date, merges.
         l.expires_on = "2026-11-12".into();
-        assert!(validate_lines(&[l.clone()], &stock).is_ok());
+        assert!(validate_lines(&[l.clone()], &stock, &[]).is_ok());
         l.expires_on = String::new();
-        assert!(validate_lines(&[l], &stock).is_ok());
+        assert!(validate_lines(&[l], &stock, &[]).is_ok());
     }
 
     #[test]
@@ -885,7 +934,7 @@ mod tests {
             candidate(10, "Lait", "L", Some(date("2026-11-12"))),
             candidate(11, "lait ", "L", Some(date("2026-11-20"))),
         ];
-        assert!(validate_lines(&[l], &stock).is_ok());
+        assert!(validate_lines(&[l], &stock, &[]).is_ok());
     }
 
     #[test]
@@ -893,10 +942,10 @@ mod tests {
         let mut l = line(1, "Pain", ReceptionMode::Merge);
         l.unit = "".into();
         let stock = [candidate(10, "Pain", "unité", None)];
-        assert!(validate_lines(&[l.clone()], &stock).is_ok());
+        assert!(validate_lines(&[l.clone()], &stock, &[]).is_ok());
         l.unit = "kg".into();
         assert_eq!(
-            validate_lines(&[l], &stock),
+            validate_lines(&[l], &stock, &[]),
             Err(LotError::Lines(vec![Some(LineError::NoStockToMerge)]))
         );
     }
@@ -905,16 +954,16 @@ mod tests {
     fn a_merge_may_go_into_a_line_made_earlier_in_the_lot() {
         let first = line(1, "Lait", ReceptionMode::New);
         let second = line(2, "Lait", ReceptionMode::Merge);
-        assert!(validate_lines(&[first.clone(), second.clone()], &[]).is_ok());
+        assert!(validate_lines(&[first.clone(), second.clone()], &[], &[]).is_ok());
         // Not into one made later, nor into one left out.
         assert_eq!(
-            validate_lines(&[second.clone(), first.clone()], &[]),
+            validate_lines(&[second.clone(), first.clone()], &[], &[]),
             Err(LotError::Lines(vec![Some(LineError::NoStockToMerge), None]))
         );
         let mut out = first;
         out.excluded = true;
         assert_eq!(
-            validate_lines(&[out, second], &[]),
+            validate_lines(&[out, second], &[], &[]),
             Err(LotError::Lines(vec![None, Some(LineError::NoStockToMerge)]))
         );
     }
@@ -926,7 +975,10 @@ mod tests {
         l.expires_on = "demain".into();
         l.excluded = true;
         let ok = line(2, "Riz", ReceptionMode::New);
-        assert_eq!(validate_lines(&[l, ok], &[]).map(|lot| lot.len()), Ok(1));
+        assert_eq!(
+            validate_lines(&[l, ok], &[], &[]).map(|lot| lot.len()),
+            Ok(1)
+        );
     }
 
     #[test]
@@ -937,7 +989,7 @@ mod tests {
         first.quantity = "0".into();
         let second = line(2, "Lait", ReceptionMode::Merge);
         assert_eq!(
-            validate_lines(&[first, second.clone()], &[]),
+            validate_lines(&[first, second.clone()], &[], &[]),
             Err(LotError::Lines(vec![
                 Some(LineError::QuantityMustBePositive),
                 None
@@ -947,7 +999,7 @@ mod tests {
         let mut first = line(1, "Lait", ReceptionMode::New);
         first.expires_on = "demain".into();
         assert_eq!(
-            validate_lines(&[first, second.clone()], &[]),
+            validate_lines(&[first, second.clone()], &[], &[]),
             Err(LotError::Lines(vec![Some(LineError::InvalidDate), None]))
         );
         // Without a mode, the first would make the line too.
@@ -955,7 +1007,7 @@ mod tests {
         first.mode = None;
         first.quantity = "".into();
         assert_eq!(
-            validate_lines(&[first, second], &[]),
+            validate_lines(&[first, second], &[], &[]),
             Err(LotError::Lines(vec![
                 Some(LineError::QuantityMustBePositive),
                 None
@@ -972,7 +1024,7 @@ mod tests {
         let mut second = line(2, "Lait", ReceptionMode::Merge);
         second.expires_on = "2026-11-20".into();
         assert_eq!(
-            validate_lines(&[first, second], &[]),
+            validate_lines(&[first, second], &[], &[]),
             Err(LotError::Lines(vec![
                 Some(LineError::QuantityMustBePositive),
                 Some(LineError::NoStockToMerge)
@@ -983,7 +1035,7 @@ mod tests {
         first.quantity = "0".into();
         let second = line(2, "Lait", ReceptionMode::Merge);
         assert_eq!(
-            validate_lines(&[first, second], &[]),
+            validate_lines(&[first, second], &[], &[]),
             Err(LotError::Lines(vec![
                 Some(LineError::QuantityMustBePositive),
                 Some(LineError::NoStockToMerge)
@@ -999,7 +1051,7 @@ mod tests {
         let mut c = line(3, "Sel", ReceptionMode::New);
         c.expires_on = "x".into();
         assert_eq!(
-            validate_lines(&[a, b, c], &[]),
+            validate_lines(&[a, b, c], &[], &[]),
             Err(LotError::Lines(vec![
                 Some(LineError::QuantityMustBePositive),
                 None,
@@ -1012,8 +1064,14 @@ mod tests {
     fn nothing_left_to_receive_is_its_own_error() {
         let mut l = line(1, "Pain", ReceptionMode::New);
         l.excluded = true;
-        assert_eq!(validate_lines(&[l], &[]), Err(LotError::NothingToReceive));
-        assert_eq!(validate_lines(&[], &[]), Err(LotError::NothingToReceive));
+        assert_eq!(
+            validate_lines(&[l], &[], &[]),
+            Err(LotError::NothingToReceive)
+        );
+        assert_eq!(
+            validate_lines(&[], &[], &[]),
+            Err(LotError::NothingToReceive)
+        );
     }
 
     #[test]
@@ -1022,7 +1080,7 @@ mod tests {
         l.mode = None;
         l.expires_on = "2026-11-20".into();
         let stock = [candidate(10, "Lait", "L", Some(date("2026-11-12")))];
-        let lot = validate_lines(&[l], &stock).unwrap();
+        let lot = validate_lines(&[l], &stock, &[]).unwrap();
         assert_eq!(lot[0].mode, None);
     }
 
@@ -1174,5 +1232,70 @@ mod tests {
         ] {
             assert_ne!(banner(code), unavailable, "{code}");
         }
+    }
+
+    // -- packs (#824) ---------------------------------------------------------
+
+    #[test]
+    fn a_line_rounded_in_packs_keeps_its_values_and_gets_a_hint() {
+        use manage_our_home_shared::validation::stocks::{PackRounding, PackSize};
+        let proposal = ReceptionLine {
+            grocery_item_id: id(1),
+            name: "Sucre en poudre".into(),
+            quantity: 800.0,
+            unit: "g".into(),
+            expires_on: None,
+            mode: ReceptionMode::Merge,
+            stock_item: Some(stock_item(10, "Sucre en poudre", "kg", None)),
+            pack: Some(PackRounding {
+                count: 1,
+                size: PackSize {
+                    quantity: 1.0,
+                    unit: "kg".into(),
+                },
+            }),
+        };
+        let l = form_line(&proposal);
+        assert_eq!((l.quantity.as_str(), l.unit.as_str()), ("800", "g"));
+        assert_eq!(l.pack_hint, "≈ 1 paquet de 1 kg");
+        let html = page_body(&[l], &[None], "");
+        for field in [
+            r#"<input type="number" name="quantity.0" step="any" value="800" aria-describedby="hint.0"/>"#,
+            r#"<p class="muted" id="hint.0">≈ 1 paquet de 1 kg</p>"#,
+            r#"<input type="hidden" name="pack_hint.0" value="≈ 1 paquet de 1 kg"/>"#,
+        ] {
+            assert!(html.contains(field), "{field}\n{html}");
+        }
+        // The hint rides the form back.
+        let back = parse_form(&pairs(&[
+            ("id.0", &id(1).to_string()),
+            ("pack_hint.0", "≈ 1 paquet de 1 kg"),
+        ]));
+        assert_eq!(back[0].pack_hint, "≈ 1 paquet de 1 kg");
+    }
+
+    #[test]
+    fn a_line_without_packs_has_no_hint() {
+        let html = page_body(&[line(1, "Lait", ReceptionMode::New)], &[None], "");
+        assert!(!html.contains(r#"id="hint.0""#), "{html}");
+        assert!(!html.contains("aria-describedby"), "{html}");
+    }
+
+    #[test]
+    fn a_merge_into_a_scanned_line_of_another_unit_of_its_kind_is_accepted() {
+        // 800 g of sugar, scanned in kilograms: apps/api converts and merges.
+        let mut l = line(1, "Sucre", ReceptionMode::Merge);
+        l.quantity = "800".into();
+        l.unit = "g".into();
+        let scanned = [candidate(10, "Sucre", "kg", None)];
+        let lot = validate_lines(&[l.clone()], &scanned, &scanned).unwrap();
+        // Sent as typed: the conversion is apps/api's.
+        assert_eq!(lot[0].quantity, Some(800.0));
+        assert_eq!(lot[0].unit.as_deref(), Some("g"));
+        // The same line in stock but not scanned: nothing to merge into.
+        assert_eq!(
+            validate_lines(&[l], &scanned, &[]),
+            Err(LotError::Lines(vec![Some(LineError::NoStockToMerge)]))
+        );
     }
 }
