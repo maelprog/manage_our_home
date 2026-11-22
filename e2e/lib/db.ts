@@ -448,8 +448,8 @@ export async function setAccessPolicy(
 
 /**
  * Publishes a recipe in the shared library (#905) in the name of `email`,
- * and returns its id. The publishing screen is #911's: until it exists, the
- * suite writes the publication itself — the snapshot, its ingredients in
+ * and returns its id. The suite writes the publication itself rather than go
+ * through the publishing screen (#911) — the snapshot, its ingredients in
  * order, and the publisher's row its deferred key asks for at commit.
  */
 export async function publishToLibrary(
