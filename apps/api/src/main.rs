@@ -339,7 +339,7 @@ async fn main() -> anyhow::Result<()> {
         state.admin_db.clone(),
         state.storage.clone(),
     ));
-    // On the admin pool: eleven of the tables the purge deletes from are
+    // On the admin pool: thirteen of the tables the purge deletes from are
     // under forced RLS policies, and the pass refuses to run without
     // BYPASSRLS (#139). It also warns the holders of deactivated accounts
     // before their purge (#256) and tells the members who became owners of
