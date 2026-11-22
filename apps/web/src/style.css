@@ -236,8 +236,12 @@ h3 { font-size: var(--t-lg); margin: var(--s4) 0 var(--s1); }
    by one of the two classes below, or the whole column when it names
    neither. `margin: 0 auto` centres it either way. `width: 100%` because
    above 861px it is a grid item, and an `auto` margin there turns the
-   grid's stretch off: without it the column shrank to its content (#673). */
-.content { width: 100%; margin: 0 auto; padding: var(--s6) var(--s4); }
+   grid's stretch off: without it the column shrank to its content (#673).
+   A stacking context of its own (#981): a `z-index` in the content ranks
+   within it alone, so none can reach the phone's tab bar, which comes
+   earlier in the document — the agenda's bars, at the bar's own 1, were
+   painted and clicked over it. */
+.content { isolation: isolate; width: 100%; margin: 0 auto; padding: var(--s6) var(--s4); }
 .w-form { max-width: var(--w-form); }
 .w-read { max-width: var(--w-read); }
 /* Six tabs on a phone (#523), each its icon over its short label. They

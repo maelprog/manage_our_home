@@ -4543,6 +4543,39 @@ mod tests {
     }
 
     #[test]
+    fn nothing_in_the_content_is_painted_over_the_tab_bar() {
+        // #981: the agenda's `.bar`, `.plus` and `.ad` carried `z-index: 1`
+        // in the root stacking context, the tab bar's own value, and came
+        // later in the document — so a phone scrolled them over the tabs.
+        // Raising the bar only moves the race to the next `z-index: 2`;
+        // isolating the content column ends it: every `z-index` inside
+        // `<main>` is then ranked within `<main>` alone, and `<main>` as a
+        // whole sits at the root's level 0, under any positive bar.
+        let css = css();
+        let (content, _) = block_after(&css, "\n.content {", 0);
+        assert!(
+            content.contains("isolation: isolate"),
+            "the content column should be its own stacking context, or a \
+             `z-index` in it can paint over the tab bar: {content}"
+        );
+        let (tabs, _) = block_after(&css, "\n.tabs {", 0);
+        let z = tabs
+            .split(';')
+            .filter_map(|d| d.split_once(':'))
+            .find(|(name, _)| name.trim() == "z-index")
+            .and_then(|(_, value)| value.trim().parse::<i32>().ok())
+            .unwrap_or_else(|| panic!("`.tabs` states no integer z-index: {tabs}"));
+        assert!(
+            z > 0,
+            "the tab bar needs a positive z-index to rank over the isolated \
+             content, which sits at level 0: {tabs}"
+        );
+        // The isolation only holds while the bar is outside `<main>`:
+        // `the_navigation_is_a_sibling_of_the_content_not_a_child` keeps it
+        // there.
+    }
+
+    #[test]
     fn a_tab_is_at_least_the_forty_four_pixels_a_finger_needs() {
         // DESIGN.md → Espacement: ≥ 44px on every interactive element. The
         // height is read back through the spacing token rather than trusted

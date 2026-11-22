@@ -1,4 +1,4 @@
-import { expect, Page, test } from "@playwright/test";
+import { expect, Locator, Page, test } from "@playwright/test";
 import { crc32, deflateSync } from "node:zlib";
 import { fetchEventBounds, fetchVerificationToken } from "../lib/db";
 import { parisDay, parisDayOfMonth } from "../lib/dates";
@@ -1378,6 +1378,89 @@ for (const [layout, viewport] of AGENDA_LAYOUTS) {
     });
   });
 }
+
+/**
+ * Scrolls `target` under the phone's tab bar, then asserts that the centre
+ * of every tab is still the tab's own (#981): the agenda's bars, « +N » and
+ * « Journée » lines carried the bar's `z-index` and came later in the
+ * document, so they were painted, and clicked, over it.
+ */
+async function expectTabsOver(page: Page, target: Locator): Promise<void> {
+  const tabs = page.locator("nav.tabs");
+  const bar = await tabs.boundingBox();
+  const box = await target.boundingBox();
+  if (!bar || !box) throw new Error("the tab bar or the target has no box");
+  const line = bar.y + bar.height / 2;
+  await page.evaluate((dy) => window.scrollBy({ top: dy, behavior: "instant" }), box.y + box.height / 2 - line);
+  // The target really lies under the tabs' centres now — else the check
+  // below proves nothing.
+  const under = await target.boundingBox();
+  if (!under) throw new Error("the target has no box");
+  expect(under.y, "target top above the tabs' centre line").toBeLessThan(line);
+  expect(under.y + under.height, "target bottom below the tabs' centre line").toBeGreaterThan(line);
+  const hits = await tabs.evaluate(
+    (nav, [left, right]) =>
+      Array.from(nav.querySelectorAll(":scope > a"), (tab) => {
+        const r = tab.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        return {
+          tab: tab.textContent?.trim() ?? "",
+          covered: x >= left && x <= right,
+          ok: hit !== null && tab.contains(hit),
+          hit: hit ? `${hit.tagName}.${hit.className}` : "nothing",
+        };
+      }),
+    [under.x, under.x + under.width],
+  );
+  expect(hits.some((h) => h.covered), "the target lies under no tab's centre").toBe(true);
+  for (const h of hits) expect(h.ok, `${h.tab}: ${h.hit} is painted over the tab`).toBe(true);
+}
+
+test.describe("Agenda — la barre d'onglets passe devant l'agenda (#981)", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("the month's bars and « +N », then the day's « Journée », stay under the tabs", async ({ page }) => {
+    await registerAndLogin(page, "e2e-agtabs", "Agenda Onglets");
+    await createGroup(page, "Famille Superposée");
+    // The last of the 42 days April 2027's grid shows, as low on the page
+    // as the month goes: a stay across that whole week, and a crowded
+    // Wednesday for its « +N ».
+    await postEvent(page, "title=S%C3%A9jour+long&all_day=on&starts_at=2027-05-03&ends_at=2027-05-09");
+    for (let i = 1; i <= 5; i++) {
+      await postEvent(page, `title=Rendez-vous+${i}&starts_at=2027-05-05T0${i}:00&ends_at=2027-05-05T0${i}:30`);
+    }
+    // Enough whole days on the Wednesday that its banner reaches the foot
+    // of a phone's screen.
+    for (let i = 1; i <= 20; i++) {
+      await postEvent(page, `title=Journ%C3%A9e+${i}&all_day=on&starts_at=2027-05-05&ends_at=2027-05-05`);
+    }
+
+    await page.goto("/agenda?view=month&date=2027-04-28");
+    const stay = page.locator(".month a.bar", { hasText: "Séjour long" });
+    await expect(stay).toHaveCount(1);
+    await expectTabsOver(page, stay);
+    const plus = page.locator(".month a.plus.phone");
+    await expect(plus).toBeVisible();
+    await expectTabsOver(page, plus);
+    // A click at Accueil's centre goes home, not to the day under it.
+    const home = page.locator("nav.tabs").getByRole("link", { name: "Accueil" });
+    const at = await home.boundingBox();
+    if (!at) throw new Error("Accueil has no box");
+    await page.mouse.click(at.x + at.width / 2, at.y + at.height / 2);
+    await expect(page).toHaveURL("/");
+
+    await page.goto("/agenda?view=day&date=2027-05-05");
+    const last = page.locator(".allday .ad").last();
+    await expect(last).toBeVisible();
+    await expectTabsOver(page, last);
+    const again = await home.boundingBox();
+    if (!again) throw new Error("Accueil has no box");
+    await page.mouse.click(again.x + again.width / 2, again.y + again.height / 2);
+    await expect(page).toHaveURL("/");
+  });
+});
 
 test.describe("Agenda — feuille de création sans JavaScript (#525)", () => {
   test.use({ javaScriptEnabled: false });
