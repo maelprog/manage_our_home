@@ -4557,9 +4557,13 @@ mod tests {
         // which turns Chromium's subpixel text antialiasing into greyscale
         // across the whole column — a visible change the issue rules out.
         //
-        // Every rule on the content column is read, in source order, with
-        // the media it sits in, so that a later `.content` rule cannot undo
-        // the isolation unnoticed.
+        // What is read, in source order: the `isolation` of every rule
+        // whose selector list holds exactly `.content`, `main` or `#main`,
+        // at top level, in `not all and (min-width: 861px)` (the phone) or
+        // in `(min-width: 861px)` (the PC); the last one that applies to
+        // each side wins. What is not: compound selectors (`main.content`,
+        // `.content.w-form`), and any other media query (`max-width: 860px`,
+        // `min-width: 1200px`…) — a rule written there escapes this test.
         const PHONE: &str = "@media not all and (min-width: 861px)";
         const PC: &str = "@media (min-width: 861px)";
         let css = css();
