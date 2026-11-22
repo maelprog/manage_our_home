@@ -1,4 +1,5 @@
 import { expect, Locator, Page, test } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 import { crc32, deflateSync } from "node:zlib";
 import { fetchVerificationToken } from "../lib/db";
 
@@ -72,8 +73,14 @@ function photoInput(page: Page): Locator {
 }
 
 async function uploadPhoto(page: Page, name: string, mimeType: string, buffer: Buffer): Promise<void> {
+  await uploadFile(page, { name, mimeType, buffer });
+}
+
+/** Sends the /account photo form with `file`: a payload, or the path of
+ * a file on disk. */
+async function uploadFile(page: Page, file: string | { name: string; mimeType: string; buffer: Buffer }): Promise<void> {
   await page.goto("/account");
-  await photoInput(page).setInputFiles({ name, mimeType, buffer });
+  await photoInput(page).setInputFiles(file);
   await page.locator("form[action='/account/avatar'] button[type=submit]").click();
 }
 
@@ -163,7 +170,7 @@ test.describe("Profile photo (#468)", () => {
     await context.close();
   });
 
-  test("each refusal of the photo is explained in French", async ({ page }) => {
+  test("each refusal of the photo is explained in French", async ({ page }, testInfo) => {
     await registerAndLogin(page, "e2e-photo-refused", "Photo Refusée");
 
     // WebP is no longer taken (arbitrage of 2026-10-24); the picker does
@@ -186,9 +193,14 @@ test.describe("Profile photo (#468)", () => {
     await expect(page).toHaveURL(/\/account\?error=image_too_large$/);
     await expect(page.getByText("Cette image a trop de pixels pour être traitée.")).toBeVisible();
 
-    // Past apps/api's 32 MiB.
-    const heavy = Buffer.concat([png(8, 8, [0, 0, 0]), Buffer.alloc(33 * 1024 * 1024)]);
-    await uploadPhoto(page, "lourde.png", "image/png", heavy);
+    // Past apps/api's 32 MiB, and its form past the route's limit: refused
+    // by apps/web before relaying it, once read to its end (#976). Handed
+    // over as a file on disk: as a payload, its 33 MiB cross the protocol
+    // to the page in base64, and with several workers at once the page
+    // stalled or crashed in `setInputFiles` before anything was sent.
+    const heavy = testInfo.outputPath("lourde.png");
+    await writeFile(heavy, Buffer.concat([png(8, 8, [0, 0, 0]), Buffer.alloc(33 * 1024 * 1024)]));
+    await uploadFile(page, heavy);
     await expect(page).toHaveURL(/\/account\?error=file_too_large$/);
     await expect(page.getByText("La photo dépasse 32 Mo.")).toBeVisible();
 
