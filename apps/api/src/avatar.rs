@@ -56,6 +56,10 @@ pub const MAX_AVATAR_BYTES: usize = 32 * 1024 * 1024;
 /// handler rather than cut by the limit.
 pub const MAX_AVATAR_BODY_BYTES: usize = MAX_AVATAR_BYTES + UPLOAD_FRAMING_MARGIN_BYTES;
 
+// apps/web refuses a form declared past this limit without relaying it
+// (#976), under the constant `manage_our_home_http_guard` holds for both.
+const _: () = assert!(MAX_AVATAR_BODY_BYTES == manage_our_home_http_guard::MAX_AVATAR_BODY_BYTES);
+
 /// Side, in pixels, of the stored square.
 pub const AVATAR_SIDE: u32 = 256;
 
