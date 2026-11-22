@@ -257,8 +257,9 @@ async fn full_grocery_item_lifecycle(db: PgPool) {
 }
 
 /// AC: any member (not just the creator) may check/uncheck an item off the
-/// shared list, even though only the creator or an admin/owner may edit or
-/// delete it.
+/// shared list, even though only the creator or a member meeting the
+/// family's `grocery_edit` threshold (`admin` by default, as here; #866) may
+/// edit or delete it.
 #[sqlx::test]
 async fn any_member_can_check_item(db: PgPool) {
     let router = test_router(db.clone());

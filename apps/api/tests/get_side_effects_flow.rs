@@ -1,5 +1,7 @@
 //! No `GET` route of apps/api changes anything (#414), outside the closed
-//! list the arbitrages of 2026-10-26, 2026-11-11 and 2026-11-20 admit. `SameSite=Lax` sends the session
+//! list the arbitrages of 2026-10-26 and 2026-11-11 admit, and the counts the
+//! Postgres rate limiter (#428) keeps in `rate_limit_log` for the reads of
+//! the shared recipe library. `SameSite=Lax` sends the session
 //! cookie on a cross-site navigation, so a `GET` that writes is one a third
 //! site can trigger (#223, point 4).
 //!
@@ -51,10 +53,10 @@ const AUDITED: [&str; 4] = [
 ];
 
 /// The `GET` routes of the shared recipe library (#906), the publisher's
-/// own list (#947) included, which the arbitrage of 2026-11-20 limits to
-/// 60 reads a minute per user (`recipes::library::READ_RATE`): each read
-/// counts in `rate_limit_log`, and writes nothing else. Called like the
-/// others.
+/// own list (#947) included, which the user's decision of 2026-11-20 limits
+/// to 60 reads a minute per user (`recipes::library::READ_RATE`): each read
+/// counts in `rate_limit_log`, where the Postgres rate limiter (#428) keeps
+/// its counters, and writes nothing else. Called like the others.
 const RATE_LIMITED: [&str; 3] = [
     "/library/recipes",
     "/library/recipes/mine",

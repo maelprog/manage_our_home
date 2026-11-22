@@ -96,14 +96,14 @@ recipe's **time** in minutes (`duration_minutes`, 1 to 1440, `invalid_duration`)
 | GET | `/recipes/import` | `recipes::import::get` | Import form: the address of a recipe page (#405) | — |
 | POST | `/recipes/import` | `recipes::import::post` | Read the page's recipe, render the create form pre-filled with it; nothing is saved | `POST /groups/:id/recipes/import` |
 | GET | `/recipes/:id` | `recipes::detail::get` | Detail: ingredients, instructions, last-cooked, log-meal form, edit/delete controls | `GET /groups/:id/recipes/:rid`, `GET /groups/:id/recipes/meal-history` |
-| GET | `/recipes/:id/edit` | `recipes::edit::get` | Edit form (creator/admin/owner only) | `GET /groups/:id/recipes/:rid` |
+| GET | `/recipes/:id/edit` | `recipes::edit::get` | Edit form (creator, or a role meeting `recipes_edit`) | `GET /groups/:id/recipes/:rid` |
 | POST | `/recipes/:id/edit` | `recipes::edit::post` | Update a recipe | `PATCH /groups/:id/recipes/:rid` |
 | POST | `/recipes/:id/log` | `recipes::detail::log` | Log this meal (feeds the variety penalty) | `POST /groups/:id/recipes/:rid/meal-history` |
 | GET | `/recipes/:id/done` | `recipes::outcome::done_get` | « Faite » confirmation (#474): one line per stock line proposed, quantity editable, « Retirer du stock » checked | `GET /groups/:id/recipes/:rid/selection/done` |
 | POST | `/recipes/:id/done` | `recipes::outcome::done_post` | Checked against a fresh preview (a line in error re-renders as typed, 422), then PRG → `?notice=recipe_done`; a change since the page was shown re-renders the updated preview (409) | `GET`, `POST /groups/:id/recipes/:rid/selection/done` |
 | GET | `/recipes/:id/abandon` | `recipes::outcome::abandon_get` | « Abandonner » confirmation (#474): the unchecked grocery items generated for the recipe, « Retirer » checked | `GET /groups/:id/recipes/:rid/selection/abandoned` |
 | POST | `/recipes/:id/abandon` | `recipes::outcome::abandon_post` | PRG → `?notice=recipe_abandoned`; an item checked or deleted since re-renders the updated preview (409) | `POST /groups/:id/recipes/:rid/selection/abandoned` |
-| POST | `/recipes/:id/delete` | `recipes::detail::delete` | Delete a recipe (creator/admin/owner only) | `DELETE /groups/:id/recipes/:rid` |
+| POST | `/recipes/:id/delete` | `recipes::detail::delete` | Delete a recipe (creator, or a role meeting `recipes_edit`) | `DELETE /groups/:id/recipes/:rid` |
 
 No active family → every route redirects to `/groups/new` (same as Stocks).
 
@@ -168,8 +168,8 @@ the backend 400s are the defensive fallback.
 | 404 | `not_found` | "Recette introuvable" page |
 | — | transport / other | inline "Service momentanément indisponible…" |
 
-GET renders the form only for `can_modify` (creator/admin/owner); a
-non-permitted user GETting it gets the forbidden page.
+GET renders the form only for `can_modify` (the creator, or a role meeting
+the `recipes_edit` threshold); a non-permitted user GETting it gets the forbidden page.
 
 ### `/recipes/:id/log` (log a meal) — `log_meal`
 
@@ -202,8 +202,8 @@ may create, read, or log a meal. The front mirrors it
 - Create, read, and the **log-a-meal** form render for every member.
 - The **edit link** and **delete button** render only when
   `can_modify(role, min_role, is_creator)`; a member below the threshold
-  viewing another member's recipe sees a muted "Seul le créateur ou un administrateur…"
-  note instead.
+  viewing another member's recipe sees instead a muted note saying who may,
+  worded after the threshold (`edit_rule::who_may`, #962).
 
 The backend stays the authority: a forged edit/delete/log is still
 `403`'d and mapped defensively per the tables above.
@@ -223,7 +223,8 @@ The backend stays the authority: a forged edit/delete/log is still
    instructions, and the last-cooked state; "logger ce repas" records a
    meal and the detail then reflects it (feeding the future variety
    penalty).
-4. The creator (or an admin/owner) can edit and delete a recipe; edits
+4. The creator (or a member meeting the `recipes_edit` threshold) can edit
+   and delete a recipe; edits
    round-trip through the ingredient textarea; delete returns to the list
    with a banner.
 5. A standard member viewing another member's recipe gets no edit/delete

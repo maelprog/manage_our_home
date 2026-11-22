@@ -130,11 +130,14 @@ Au moment de l'ouverture publique :
 
 ## Item #17 — remplacer les placeholders des mentions légales
 
-`docs/legal-notice.md` et `docs/terms-of-service.md` sont compilés dans le
-binaire de `apps/api` (`include_str!`) et servis tels quels sur
-`GET /legal-notice` et `GET /terms-of-service`, pages publiques liées depuis
-les pieds de page de connexion et d'inscription et depuis `/account`. Les CGU
-ne portent aucun placeholder — elles renvoient aux mentions légales.
+`docs/legal-notice.md`, `docs/terms-of-service.md` et
+`docs/terms-of-service-announced.md` sont compilés dans le binaire de
+`apps/api` (`include_str!`) et servis tels quels sur `GET /legal-notice` et
+`GET /terms-of-service` — la version annoncée sur
+`GET /terms-of-service/announced` jusqu'à sa date d'entrée en vigueur, puis
+sur `GET /terms-of-service` —, pages publiques liées depuis les pieds de
+page de connexion et d'inscription et depuis `/account`. Aucune des
+deux versions des CGU ne porte de placeholder — elles renvoient aux mentions légales.
 
 Le régime appliqué est l'anonymat de l'éditeur non professionnel (LCEN
 art. 1-1, II, ancien art. 6-III-2 ; arbitrage du 2026-10-04) : l'article

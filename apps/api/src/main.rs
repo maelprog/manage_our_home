@@ -59,10 +59,9 @@ async fn main() -> anyhow::Result<()> {
         manage_our_home::dev_seed::seed_dev_users(&db).await?;
     }
 
-    // Second pool, connected as `admin_role` (`BYPASSRLS`), for the seven
-    // superadmin endpoints gated behind `SuperAdminUser` (Epic #8) and the
-    // background jobs below: attachment reconcile (#215), account purge
-    // (#139), retention purge (#138) and the event reminder worker (#293).
+    // Second pool, connected as `admin_role` (`BYPASSRLS`), for the eleven
+    // superadmin endpoints gated behind `SuperAdminUser` (Epic #8, #908) and
+    // the seven background jobs spawned on `state.admin_db` below.
     // See apps/api/README.md for the role-setup snippet.
     let admin_database_url =
         env::var("ADMIN_DATABASE_URL").unwrap_or_else(|_| database_url.clone());
@@ -339,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
         state.admin_db.clone(),
         state.storage.clone(),
     ));
-    // On the admin pool: eleven of the tables the purge deletes from are
+    // On the admin pool: thirteen of the tables the purge deletes from are
     // under forced RLS policies, and the pass refuses to run without
     // BYPASSRLS (#139). It also warns the holders of deactivated accounts
     // before their purge (#256) and tells the members who became owners of
