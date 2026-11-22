@@ -1007,7 +1007,8 @@ async fn another_groups_product_is_a_404_and_nothing_is_applied(db: PgPool) {
     assert_eq!(planned_count(&router, &alice, &group_a).await, 1);
 }
 
-/// Adding to the recipe stays for its creator, an admin or the owner, as
+/// Adding to the recipe stays for its creator or a member meeting the
+/// family's `recipes_edit` threshold (`admin` by default, as here; #866), as
 /// changing it does: a standard member gets 403 and nothing is applied,
 /// and may still mark it done with other products without adding them. The
 /// preview says who may.

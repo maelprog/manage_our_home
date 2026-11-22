@@ -278,7 +278,7 @@ docker compose exec postgres \
 # creates from now on belongs to migration_role, so admin_role's grants must
 # be declared as *its* default privileges. The ones the old init script set
 # (FOR ROLE mhome) still exist but no longer cover anything, because mhome
-# creates no more tables. Without these two lines the seven /admin/* endpoints,
+# creates no more tables. Without these two lines the eleven /admin/* endpoints,
 # and the background jobs that share their pool, break on every table added
 # after the upgrade.
 docker compose exec postgres \

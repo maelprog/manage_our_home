@@ -118,11 +118,8 @@ pub struct AppState {
     /// handlers gated behind `SuperAdminUser` (Epic #8, see
     /// `src/user_admin/mod.rs` for why this is a narrow, deliberate
     /// exception to the RLS boundary rather than a general bypass), and by
-    /// four background jobs that serve no request and read or write across
-    /// every family: attachment reconcile (`jobs::attachment_reconcile`,
-    /// #215), retention purge (`jobs::retention_purge`, #138), account
-    /// purge (`jobs::account_purge`, #139) and the reminder worker
-    /// (`jobs::scheduled_notifications`, #293). Request handlers outside
+    /// the background jobs that serve no request and read or write across
+    /// every family (the seven of `apps/api/README.md`). Request handlers outside
     /// `SuperAdminUser` never use it.
     pub admin_db: PgPool,
     /// How long a client may take to send a request body, on every route

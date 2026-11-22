@@ -244,8 +244,10 @@ remplacement) de l'isolation applicative ci-dessous.
    téléphone de l'hébergeur — ce dernier n'étant pas encore choisi, mais
    forcément tiers : l'auto-hébergement ferait de l'éditeur son propre
    hébergeur et ferait tomber l'anonymat (#379). Les CGU
-   (`docs/terms-of-service.md`, servies par `GET /terms-of-service`) n'en
-   portent aucun : elles renvoient aux mentions légales. Tous seront
+   (`docs/terms-of-service.md`, servies par `GET /terms-of-service`, et la
+   version annoncée `docs/terms-of-service-announced.md`, servie par
+   `GET /terms-of-service/announced` puis, à sa date d'entrée en vigueur, par
+   `GET /terms-of-service`) n'en portent aucun : elles renvoient aux mentions légales. Tous seront
    renseignés au moment de l'ouverture publique, et cette phrase
    disparaîtra avec eux — procédure et forme exacte dans
    `docs/v2-deployment.md` #16 et #17. Il porte l'ensemble des rôles
