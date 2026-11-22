@@ -183,9 +183,10 @@ back to current groups and drop received invitations (and, for the last two, the
 
 ### Epic #8 — `admin_role` (superadmin endpoints)
 
-The seven `/admin/*` endpoints (`src/user_admin/`) are a deliberate, narrow
-exception to the RLS boundary above: a superadmin needs to list groups and
-users across every family, which the normal RLS-scoped role can never do
+The eleven `/admin/*` endpoints (seven in `src/user_admin/`, the four of the
+shared library's moderation in `src/recipes/library_moderation.rs`, #908)
+are a deliberate, narrow exception to the RLS boundary above: a superadmin
+needs to list groups and users across every family, which the normal RLS-scoped role can never do
 by design. Rather than weaken the `groups`/`group_members` policies, that
 one code path runs on a **second** connection pool (`AppState.admin_db`,
 `ADMIN_DATABASE_URL` env var), authenticated as a dedicated role with
@@ -201,30 +202,40 @@ Seven other things run on this pool, and none is a request handler:
   Postgres — only MinIO objects;
 - the **hourly retention purge** (#138, `src/jobs/retention_purge.rs`),
   which `DELETE`s rows, across every family, from `audit_log`,
-  `email_verification_tokens`, `password_reset_tokens`, `invitations`,
-  `sessions` and `notifications` (#534). It, the account purge below, two superadmin handlers and the
+  `email_verification_tokens`, `users` (the unverified accounts, #834),
+  `password_reset_tokens`, `invitations`, `notifications` (#534),
+  `sessions`, the limiters' counters (`login_throttle`, #427;
+  `rate_limit_log` and `csp_report_throttle`, #428) and the closed
+  `library_reports` (#908), after closing as `lapsed` (an `UPDATE`) the
+  open reports whose publication is gone. It, the account purge below,
+  four superadmin handlers and the
   reminder worker are the only code on this pool that deletes Postgres
   rows — not the only code that writes them:
-  the seven `/admin/*` handlers each
+  ten of the eleven `/admin/*` handlers, all but `GET /admin/library/reports`,
   `INSERT` into `audit_log`, `deactivate_user` also `UPDATE`s `users`
   and `sessions`, `reactivate_user` `users` and `sessions`, deletes
   the account's pending `account_reactivation_requests` row (#256, #289)
   and, for each group the account comes back to without an owner,
   `UPDATE`s `group_members` to name an heir (#323),
   `refuse_reactivation` deletes that row and `UPDATE`s `users`
-  (#289), and `designate_owner` `UPDATE`s `group_members` (#323); the
-  reminder worker below `UPDATE`s `scheduled_notifications` and `INSERT`s
+  (#289), `designate_owner` `UPDATE`s `group_members` (#323),
+  `dismiss_report` `UPDATE`s the `library_reports` row,
+  `withdraw_publication` deletes the `library_recipes` row (its
+  ingredients and publisher row with it), `INSERT`s or `UPDATE`s its
+  source's `library_withdrawn_sources` row and `UPDATE`s its open
+  `library_reports`, and `lift_withdrawal` deletes that
+  `library_withdrawn_sources` row (#908); the reminder worker below `UPDATE`s `scheduled_notifications` and `INSERT`s
   into it (#293), `INSERT`s into `notifications` (#534), and after each
   push `DELETE`s or `UPDATE`s the device's `push_subscriptions` row
   (#306); the expiry pass below `INSERT`s into `notifications` (#534).
-  Of the six purged tables only `invitations` and `notifications` are
-  RLS'd at all, both `FORCE ROW LEVEL SECURITY`: with no `app.group_id`
-  nor `app.user_id` set, their `DELETE` on the runtime role matches
-  **no row** and the pass would
+  Of the eleven purged tables only `invitations`, `notifications` and
+  `library_reports` are RLS'd at all, all three `FORCE ROW LEVEL SECURITY`:
+  with no `app.group_id` nor `app.user_id` set, their `DELETE` on the
+  runtime role matches **no row** and the pass would
   report a clean sweep having erased none of the invited third parties'
-  addresses it exists to erase, nor any notification. So it calls the same `ensure_bypasses_rls`
+  addresses it exists to erase, nor any notification or closed report. So it calls the same `ensure_bypasses_rls`
   guard as the reconcile pass — `rolsuper OR rolbypassrls` on its own
-  connection — and aborts the whole pass otherwise, the four other
+  connection — and aborts the whole pass otherwise, the eight other
   tables included, logging `retention purge job failed` at ERROR once an
   hour and deleting nothing;
 - the **hourly account purge** (#139, `src/jobs/account_purge.rs`), which,
@@ -238,14 +249,15 @@ Seven other things run on this pool, and none is a request handler:
   (#700), its food constraints (`user_allergies`, `allergy_sharing`,
   `user_dislikes`, #817), the recipes it published to the shared library
   (`library_recipes`, with their ingredients and publisher rows, #905;
-  the copies families made of them stay),
+  the copies families made of them stay), the `library_reports` it made
+  (#908),
   tokens, OAuth identities, its own `audit_log` entries, the `invitations`
   and `calendar_imports` it created) and anonymises its `users` row. Each
   group it owned passes to an heir when a member is eligible (`UPDATE` of
   `group_members`, #323), and a group left with no member at all is
   deleted with its content;
   each pass also emails the members named heirs and stamps their
-  `group_members` row once the email has gone. Eleven of
+  `group_members` row once the email has gone. Thirteen of
   the tables it deletes from, `groups` among them, are
   `FORCE ROW LEVEL SECURITY`; the pass calls the same
   `ensure_bypasses_rls` guard and, on a role that does not bypass RLS,
@@ -318,7 +330,7 @@ session bounds to a minute: it sets `tcp_keepalives_idle=30`,
 hours) do not apply. Each pass holds one connection to the database on top
 of the pool's while it runs.
 
-No request handler other than the seven `/admin/*` ones touches `admin_db`.
+No request handler other than the eleven `/admin/*` ones touches `admin_db`.
 
 ```sql
 CREATE ROLE admin_role LOGIN PASSWORD '...' NOSUPERUSER BYPASSRLS;
