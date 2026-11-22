@@ -1753,6 +1753,13 @@ caption, .skip-link:not(:focus) { clip-path: inset(50%); }
    and (…)` is the 861px query's exact complement, and not a `max-width`
    twin, for the reason Layout gives above. */
 @media not all and (min-width: 861px) {
+  /* The content, a stacking context of its own (#981): a `z-index` in it
+     ranks within it alone, so none reaches the tab bar, which comes earlier
+     in the document — the agenda's bars, at the bar's own 1, were painted
+     and clicked over it. A phone only: a PC's sidebar overlaps nothing, and
+     there an isolated column is composited apart, its text antialiased in
+     greyscale instead of subpixel. */
+  .content { isolation: isolate; }
   .cal, .cal tbody, .cal tr, .cal-cell { display: block; }
   /* `:has()` drops an empty day unaided: no document bytes. A national
      day written out (#565) is not empty. */
