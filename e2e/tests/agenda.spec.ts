@@ -1400,20 +1400,24 @@ async function expectTabsOver(page: Page, target: Locator): Promise<void> {
   expect(under.y + under.height, "target bottom below the tabs' centre line").toBeGreaterThan(line);
   const hits = await tabs.evaluate(
     (nav, [left, right]) =>
-      Array.from(nav.querySelectorAll(":scope > a"), (tab) => {
-        const r = tab.getBoundingClientRect();
-        const x = r.left + r.width / 2;
-        const y = r.top + r.height / 2;
-        const hit = document.elementFromPoint(x, y);
-        return {
-          tab: tab.textContent?.trim() ?? "",
-          covered: x >= left && x <= right,
-          ok: hit !== null && tab.contains(hit),
-          hit: hit ? `${hit.tagName}.${hit.className}` : "nothing",
-        };
-      }),
+      // The links a PC alone shows (`.pc`) have no box on a phone.
+      Array.from(nav.querySelectorAll(":scope > a"))
+        .filter((tab) => tab.getBoundingClientRect().width > 0)
+        .map((tab) => {
+          const r = tab.getBoundingClientRect();
+          const x = r.left + r.width / 2;
+          const y = r.top + r.height / 2;
+          const hit = document.elementFromPoint(x, y);
+          return {
+            tab: tab.textContent?.trim() ?? "",
+            covered: x >= left && x <= right,
+            ok: hit !== null && tab.contains(hit),
+            hit: hit ? `${hit.tagName}.${hit.className}` : "nothing",
+          };
+        }),
     [under.x, under.x + under.width],
   );
+  expect(hits.length, "the phone's tabs").toBe(6);
   expect(hits.some((h) => h.covered), "the target lies under no tab's centre").toBe(true);
   for (const h of hits) expect(h.ok, `${h.tab}: ${h.hit} is painted over the tab`).toBe(true);
 }
