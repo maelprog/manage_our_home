@@ -774,7 +774,8 @@ async fn expiry_status_is_derived_and_sort_puts_undated_last(db: PgPool) {
 
 /// AC (#39): a regular member may adjust the **quantity** of an item another
 /// member created (shared inventory), but a full-record edit (touching any
-/// other field) and delete stay behind the creator/admin/owner bar.
+/// other field) and delete stay for the creator or a member meeting the
+/// family's `stocks_edit` threshold (`admin` by default, as here; #866).
 #[sqlx::test]
 async fn member_can_adjust_quantity_but_not_edit_or_delete(db: PgPool) {
     let router = test_router(db.clone());
@@ -890,7 +891,8 @@ async fn member_can_adjust_quantity_but_not_edit_or_delete(db: PgPool) {
 }
 
 /// AC: a regular member may create/read/adjust stock, but only the item's
-/// creator or a group admin/owner may delete it.
+/// creator or a member meeting the family's `stocks_edit` threshold
+/// (`admin` by default, as here; #866) may delete it.
 #[sqlx::test]
 async fn only_creator_or_admin_can_delete_stock_item(db: PgPool) {
     let router = test_router(db.clone());
@@ -1107,7 +1109,7 @@ async fn item_status(
 /// AC (#800): a quantity adjustment that brings an article without a
 /// reorder threshold to 0 removes it, for the creator and for any other
 /// member alike — the consequence of the adjustment, not a DELETE, so it
-/// does not ask the creator/admin/owner bar. An article with a threshold
+/// does not ask the `stocks_edit` bar. An article with a threshold
 /// stays at 0, « à racheter ». A full-record edit to 0 keeps the article.
 #[sqlx::test]
 async fn an_adjustment_to_zero_removes_an_article_without_a_threshold(db: PgPool) {

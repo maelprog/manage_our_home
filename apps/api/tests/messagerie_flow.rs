@@ -250,8 +250,10 @@ async fn cursor_pagination_orders_newest_first_and_reports_has_more(db: PgPool) 
     assert_eq!(second_messages[1]["content"], "message 1");
 }
 
-/// AC #3, #4: the author can edit/delete their own message; an owner/admin
-/// can edit/delete another member's; a non-author standard member gets 403.
+/// AC #3, #4: the author can edit/delete their own message; a member meeting
+/// the family's `messagerie_moderate` threshold (`admin` by default, as
+/// here; #866) can edit/delete another member's; a non-author standard
+/// member gets 403.
 #[sqlx::test]
 async fn only_author_or_admin_can_modify(db: PgPool) {
     let router = test_router(db.clone());
