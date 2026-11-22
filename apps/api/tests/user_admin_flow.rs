@@ -92,7 +92,7 @@ async fn auth_me_reports_superadmin_flag(db: PgPool) {
     );
 }
 
-/// AC #1: a non-superadmin user gets 403 on all seven `/admin/*` routes,
+/// AC #1: a non-superadmin user gets 403 on the seven routes of `user_admin`,
 /// `designate_owner` included: its `SuperAdminUser` extractor runs before
 /// the JSON body is read.
 #[sqlx::test]
