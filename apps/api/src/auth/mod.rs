@@ -266,10 +266,11 @@ fn privacy_policy_url(state: &AppState) -> String {
     format!("{}/privacy-policy", state.frontend_base_url)
 }
 
-/// Sends one email of the routes under the response floor (#571), within
-/// `response_floor::SMTP_TIMEOUT` in all. Best-effort: a refused email, or
-/// one given up at the deadline, is logged under `what`, and the request
-/// answers as if it had left.
+/// Sends one email of an auth route within `response_floor::SMTP_TIMEOUT`
+/// in all: the routes under the response floor (#571), and the notice of a
+/// password reset, change or addition (#833, `notify_password_change`).
+/// Best-effort: a refused email, or one given up at the deadline, is logged
+/// under `what`, and the request answers as if it had left.
 async fn send_within_deadline(
     state: &AppState,
     to: &str,
