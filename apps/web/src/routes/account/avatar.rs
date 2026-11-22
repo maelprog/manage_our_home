@@ -437,8 +437,6 @@ mod tests {
         }
     }
 
-    /// A body past apps/api's route limit is cut there with a 413: that is
-    /// a file too large too.
     /// A form declared past apps/api's limit is refused before it is
     /// relayed, and read to its end up to the bound of what is read for
     /// nothing; one within the limit, or of no declared length, is
@@ -463,6 +461,8 @@ mod tests {
         );
     }
 
+    /// A body past apps/api's route limit is cut there with a 413: that is
+    /// a file too large too.
     #[test]
     fn a_body_past_the_api_limit_is_a_file_too_large() {
         assert_eq!(upload_outcome(413, None), Outcome::Error("file_too_large"));
