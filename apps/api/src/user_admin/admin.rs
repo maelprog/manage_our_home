@@ -217,8 +217,13 @@ pub async fn deactivate_user(
 /// deactivation stay revoked, and so are the restricted sessions opened
 /// since (#289) — the holder logs in again. A pending reactivation request
 /// is granted by it and deleted. An account that is not deactivated, or
-/// already purged (nothing is left to give back), is a 404. Traced in
-/// `audit_log` like the deactivation, saying whether it answered a request.
+/// already purged (nothing is left to give back), is a 404. An account a
+/// Google sign-in took over while deactivated, left with no way to log in,
+/// gets the Google identity that took it over bound (#987); with none
+/// pending, or one bound to another account since, it stays deactivated
+/// and the answer is a 409. Traced in `audit_log` like the deactivation,
+/// saying whether it answered a request, and that it bound an identity
+/// when it did.
 #[utoipa::path(
     post,
     path = "/admin/users/{id}/reactivate",
@@ -229,6 +234,7 @@ pub async fn deactivate_user(
     responses(
         (status = 204, description = "Account reactivated"),
         (status = 404, description = "`not_found`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`reactivation_no_auth_method`: neither password nor Google identity, none pending; `reactivation_google_identity_taken`: the pending Google identity is bound to another account", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::AdminErrors,
     ),
     security(("session_cookie" = [])),
@@ -240,17 +246,60 @@ pub async fn reactivate_user(
 ) -> AppResult<impl IntoResponse> {
     let mut tx = crate::db::begin(&state.admin_db).await?;
 
-    let updated = sqlx::query!(
+    let Some(account) = sqlx::query!(
+        r#"SELECT (password_hash IS NOT NULL
+                   OR EXISTS (SELECT 1 FROM oauth_identities i WHERE i.user_id = users.id))
+                  AS "has_auth_method!",
+                  pending_google_sub
+           FROM users
+           WHERE id = $1 AND deactivated_at IS NOT NULL AND deleted_at IS NULL
+           FOR UPDATE"#,
+        target_user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        return Err(AppError::NotFound);
+    };
+
+    // #987: an account a Google sign-in took over while it was deactivated
+    // has neither password nor identity, and an active account must have
+    // one (`users_has_auth_method_trigger`): the identity that took it
+    // over is bound now. Bound to another account since, it is not.
+    let bound_google_identity =
+        match reactivation_auth(account.has_auth_method, account.pending_google_sub) {
+            ReactivationAuth::Ready => false,
+            ReactivationAuth::NoAuthMethod => {
+                return Err(AppError::Conflict(REACTIVATION_NO_AUTH_METHOD.into()))
+            }
+            ReactivationAuth::BindPending(sub) => {
+                let bound = sqlx::query_scalar!(
+                    r#"INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+                   VALUES ($1, 'google', $2)
+                   ON CONFLICT (provider, provider_user_id) DO NOTHING
+                   RETURNING id"#,
+                    target_user_id,
+                    sub,
+                )
+                .fetch_optional(&mut *tx)
+                .await?;
+                if bound.is_none() {
+                    return Err(AppError::Conflict(
+                        REACTIVATION_GOOGLE_IDENTITY_TAKEN.into(),
+                    ));
+                }
+                true
+            }
+        };
+
+    sqlx::query!(
         r#"UPDATE users SET deactivated_at = NULL, deactivation_notice_sent_at = NULL,
-                            reactivation_refused_at = NULL
-           WHERE id = $1 AND deactivated_at IS NOT NULL AND deleted_at IS NULL"#,
+                            reactivation_refused_at = NULL, pending_google_sub = NULL
+           WHERE id = $1"#,
         target_user_id
     )
     .execute(&mut *tx)
     .await?;
-    if updated.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
 
     // A group the purge left without an owner, of which this account is a
     // member, gets one again: `successor` runs on its members as they are
@@ -284,13 +333,19 @@ pub async fn reactivate_user(
     .execute(&mut *tx)
     .await?;
 
+    let mut metadata = json!({ "reactivation_request": answered });
+    if bound_google_identity {
+        // #987: only when it happened, so the entry of an ordinary
+        // reactivation keeps its shape.
+        metadata["google_identity_bound"] = json!(true);
+    }
     audit::record(
         &mut tx,
         Some(actor.user_id),
         "admin.user.reactivate",
         "user",
         &target_user_id.to_string(),
-        json!({ "reactivation_request": answered }),
+        metadata,
     )
     .await?;
 
@@ -539,4 +594,71 @@ pub async fn designate_owner(
     .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The 409 of [`reactivate_user`] for an account with neither password
+/// nor Google identity, and no identity pending (#987).
+pub const REACTIVATION_NO_AUTH_METHOD: &str = "reactivation_no_auth_method";
+/// The 409 of [`reactivate_user`] when the Google identity that took the
+/// account over is bound to another account since (#987).
+pub const REACTIVATION_GOOGLE_IDENTITY_TAKEN: &str = "reactivation_google_identity_taken";
+
+/// How [`reactivate_user`] gives an account a way to log in (#987).
+#[derive(Debug, PartialEq, Eq)]
+enum ReactivationAuth {
+    /// It has a password or a Google identity: nothing to add.
+    Ready,
+    /// It has neither, since a Google sign-in took it over while it was
+    /// deactivated: bind the identity that took it over.
+    BindPending(String),
+    /// It has neither, and no identity to bind: reactivating it would
+    /// leave an active account no one can log in to.
+    NoAuthMethod,
+}
+
+fn reactivation_auth(
+    has_auth_method: bool,
+    pending_google_sub: Option<String>,
+) -> ReactivationAuth {
+    match (has_auth_method, pending_google_sub) {
+        (true, _) => ReactivationAuth::Ready,
+        (false, Some(sub)) => ReactivationAuth::BindPending(sub),
+        (false, None) => ReactivationAuth::NoAuthMethod,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_account_with_a_way_to_log_in_is_reactivated_as_it_is() {
+        assert_eq!(reactivation_auth(true, None), ReactivationAuth::Ready);
+    }
+
+    /// A password or identity it has wins: the pending identity is not
+    /// bound on top of it.
+    #[test]
+    fn a_pending_identity_is_not_bound_to_an_account_that_has_a_way_to_log_in() {
+        assert_eq!(
+            reactivation_auth(true, Some("sub".into())),
+            ReactivationAuth::Ready
+        );
+    }
+
+    #[test]
+    fn an_account_taken_over_while_deactivated_gets_the_identity_that_took_it_over() {
+        assert_eq!(
+            reactivation_auth(false, Some("sub".into())),
+            ReactivationAuth::BindPending("sub".into())
+        );
+    }
+
+    #[test]
+    fn an_account_with_no_way_to_log_in_and_nothing_pending_is_not_reactivated() {
+        assert_eq!(
+            reactivation_auth(false, None),
+            ReactivationAuth::NoAuthMethod
+        );
+    }
 }

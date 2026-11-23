@@ -319,13 +319,15 @@ struct UserRow {
     age_declared_at: Option<chrono::DateTime<Utc>>,
     terms_accepted_version: Option<String>,
     terms_accepted_at: Option<chrono::DateTime<Utc>>,
+    pending_google_sub: Option<String>,
     deleted_at: Option<chrono::DateTime<Utc>>,
 }
 
 async fn user_row(db: &PgPool, user: Uuid) -> UserRow {
     sqlx::query_as(
         "SELECT email, display_name, password_hash, age_declared_at,
-                terms_accepted_version, terms_accepted_at, deleted_at
+                terms_accepted_version, terms_accepted_at, pending_google_sub,
+                deleted_at
          FROM users WHERE id = $1",
     )
     .bind(user)
@@ -358,6 +360,12 @@ async fn the_purge_deletes_every_personal_row_and_keeps_the_shared_content(db: P
 
     seed_personal_rows(&db, group, shared_event, leaving, "leaving").await;
     seed_personal_rows(&db, group, shared_event, staying, "staying").await;
+    // #987: a Google identity kept for a reactivation that never came.
+    sqlx::query("UPDATE users SET pending_google_sub = 'pending-sub-987' WHERE id = $1")
+        .bind(leaving)
+        .execute(&db)
+        .await
+        .unwrap();
     // #905: another family copied the purged account's publication.
     let published: Uuid = sqlx::query_scalar(
         "SELECT library_recipe_id FROM library_recipe_publishers WHERE user_id = $1",
@@ -397,6 +405,8 @@ async fn the_purge_deletes_every_personal_row_and_keeps_the_shared_content(db: P
     // #319: and the acceptance of the CGU, version and date.
     assert_eq!(row.terms_accepted_version, None);
     assert_eq!(row.terms_accepted_at, None);
+    // #987: and the Google identity kept for the reactivation.
+    assert_eq!(row.pending_google_sub, None);
     assert!(row.deleted_at.is_some());
 
     // #905: its publications are gone, their ingredients with them; the

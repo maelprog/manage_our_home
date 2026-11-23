@@ -946,6 +946,84 @@ async fn a_deactivated_unverified_account_is_taken_over_then_gets_a_restricted_s
     // has none.
     let attacker = login(&router, email, "attacker-password-987").await;
     assert_status(&attacker, StatusCode::UNAUTHORIZED);
+    // The identity that took it over is kept, unbound, for the
+    // reactivation.
+    assert_eq!(
+        pending_google_sub(&db, user).await.as_deref(),
+        Some("google-sub-deactivated-987")
+    );
+}
+
+async fn pending_google_sub(db: &PgPool, user_id: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT pending_google_sub FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// #987: the superadmin reactivates an account a Google sign-in took over
+/// while it was deactivated. The identity that took it over is bound to
+/// it, and no longer pending; signing in with it opens a full session.
+#[sqlx::test]
+async fn reactivating_a_taken_over_account_binds_the_identity_that_took_it_over(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "reactivated-987@example.test";
+    register(&router, email, "attacker-password-987").await;
+    let user = user_id(&db, email).await.unwrap();
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-reactivated-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+
+    let admin_email = "superadmin-987@example.test";
+    password_account(&router, &db, admin_email).await;
+    sqlx::query("UPDATE users SET is_superadmin = true WHERE email = $1")
+        .bind(admin_email)
+        .execute(&db)
+        .await
+        .unwrap();
+    let admin = login(&router, admin_email, "password-669-a").await;
+    assert_status(&admin, StatusCode::OK);
+    let admin = common::set_cookie(&admin).unwrap();
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/admin/users/{user}/reactivate"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        identities(&db, user).await,
+        vec!["google-sub-reactivated-987"]
+    );
+    assert_eq!(pending_google_sub(&db, user).await, None);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+    let audited: serde_json::Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'admin.user.reactivate' AND target_id = $1",
+    )
+    .bind(user.to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audited["google_identity_bound"], true);
+
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-reactivated-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let session = session_cookie(&res).expect("a session");
+    let me = call(&router, Method::GET, "/auth/me", Some(&session), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(json_body(me).await["user_id"], user.to_string());
 }
 
 /// #987, migration 0070: a deactivated account may have neither password

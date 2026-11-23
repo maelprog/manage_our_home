@@ -13,6 +13,12 @@
 -- UPDATE of `users`, reactivating an account with neither (clearing
 -- `deactivated_at`) is rejected at commit too.
 --
+-- The Google identity that took the account over is kept, unbound, in
+-- `users.pending_google_sub` — the one write #194 lets through on a
+-- deactivated account besides the take-over itself. The reactivation
+-- (`POST /admin/users/:id/reactivate`) binds it when the account has no
+-- other way to log in, then clears it; the account purge clears it too.
+--
 -- `check_user_has_auth_method_from_identity` (on `oauth_identities`) is
 -- left as 0016 wrote it: only the account purge deletes an identity, and
 -- it stamps `deleted_at` in the same transaction.
@@ -34,3 +40,5 @@ BEGIN
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
+
+ALTER TABLE users ADD COLUMN pending_google_sub TEXT;

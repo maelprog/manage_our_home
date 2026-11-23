@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET deactivated_at = NULL, deactivation_notice_sent_at = NULL,\n                            reactivation_refused_at = NULL, pending_google_sub = NULL\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fd2a326de77e5021c539159b73df492f6d9a739d9dae7e077d5b620029c47e79"
+}

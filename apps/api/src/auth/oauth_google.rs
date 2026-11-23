@@ -318,7 +318,8 @@ pub enum SignIn {
 /// the identity takes it over (#956, [`Binding::ClaimUnverified`]). An
 /// account deactivated by support gets a restricted session on both paths,
 /// and no identity bound to it (#194, #289): nothing is written to it but
-/// that take-over, when its address was never verified (#987); a purged
+/// that take-over, when its address was never verified, and the identity
+/// kept for its reactivation to bind (#987); a purged
 /// one is refused with a bare 401. `refresh_token`, when Google gave one, is
 /// stored encrypted via `pgcrypto` and is never written to `tracing` logs.
 pub(crate) async fn sign_in_profile(
@@ -404,12 +405,22 @@ pub(crate) async fn sign_in_profile(
     // credential, so it opens the restricted session a correct password
     // would — and nothing else. #194 still holds: no identity is bound to
     // it, and no full session opens. The one write is the take-over of an
-    // account whose address nobody had proved (#987), as on an active one:
-    // the account is left with no way to log in, which only a deactivated
-    // one may be (migration 0070): reactivating it is refused at commit.
+    // account whose address nobody had proved (#987), as on an active one,
+    // with the Google identity that took it over kept unbound: the account
+    // is left with no way to log in, which only a deactivated one may be
+    // (migration 0070), and its reactivation binds that identity.
     if let Some(account) = existing_account.as_ref().filter(|a| a.deactivated) {
         if binding(identity, account.email_verified) == Binding::ClaimUnverified {
             take_over(&mut tx, account.user_id).await?;
+            // Unbound, for the reactivation to bind (`admin::reactivate_user`):
+            // it is the account's only way back.
+            sqlx::query!(
+                "UPDATE users SET pending_google_sub = $2 WHERE id = $1",
+                account.user_id,
+                profile.sub,
+            )
+            .execute(&mut *tx)
+            .await?;
             tx.commit().await?;
         } else {
             tx.rollback().await?;
