@@ -40,8 +40,8 @@ use super::edit::{occ_param, occurrence_label, read_scope, scope_radios, ScopeCh
 use super::new::{reminder_push_block, reminder_select};
 use super::{
     agenda_cookie, can_modify, event_not_found_page, family_context_for, fmt_paris, forbidden_page,
-    json_from_response, occurrences_from_response, private_line, read_or_log,
-    service_unavailable_page, today_paris, with_family, EventFamily, DISPLAY_TZ,
+    is_private_participant, json_from_response, occurrences_from_response, private_line,
+    read_or_log, service_unavailable_page, today_paris, with_family, EventFamily, DISPLAY_TZ,
 };
 
 #[derive(serde::Deserialize)]
@@ -271,6 +271,12 @@ pub async fn get(
         &fam.role,
         &fam.edit_min_role,
         event.created_by == me.user_id,
+        is_private_participant(
+            event.is_private,
+            me.user_id,
+            event.created_by,
+            &event.assignee_ids,
+        ),
     );
     let notice = query.notice.as_deref().and_then(notice_text);
     let error = query.error.as_deref().and_then(error_text);
@@ -408,8 +414,9 @@ fn page(
         String::new()
     };
 
-    // Edit/delete controls (creator, or a role meeting the family's
-    // `agenda_edit` threshold, #866).
+    // Edit/delete controls (creator, a role meeting the family's
+    // `agenda_edit` threshold, #866, or a participant of a private event,
+    // #986).
     let controls_html = if can_edit {
         format!(
             r#"<div class="actions">
@@ -1010,6 +1017,12 @@ pub async fn delete_confirm(
         &fam.role,
         &fam.edit_min_role,
         event.created_by == me.user_id,
+        is_private_participant(
+            event.is_private,
+            me.user_id,
+            event.created_by,
+            &event.assignee_ids,
+        ),
     ) {
         return forbidden_page().into_response();
     }
@@ -1649,7 +1662,7 @@ mod tests {
             Some(&[]),
             Some(&[]),
             &[member(uid(1), "Alice")],
-            can_modify("admin", "owner", false),
+            can_modify("admin", "owner", false, false),
             "owner",
             None,
             None,

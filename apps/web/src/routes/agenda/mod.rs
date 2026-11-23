@@ -211,10 +211,31 @@ pub(crate) fn resolve_event_family(
 
 /// Mirror of `apps/api/src/agenda/mod.rs::can_modify`: the event's creator,
 /// or a member whose role meets `min_role`, the family's `agenda_edit`
-/// threshold (#866, `admin` by default), may edit or delete it. Used to decide whether to
-/// render those controls (the backend still 403s a forged request).
-pub(crate) fn can_modify(role: &str, min_role: &str, is_creator: bool) -> bool {
-    is_creator || role_meets(role, min_role)
+/// threshold (#866, `admin` by default), may edit or delete it — plus, on a
+/// private event (#620), any of its participants (`is_private_participant`,
+/// #986). Used to decide whether to render those controls (the backend
+/// still 403s a forged request).
+pub(crate) fn can_modify(
+    role: &str,
+    min_role: &str,
+    is_creator: bool,
+    is_private_participant: bool,
+) -> bool {
+    is_creator || role_meets(role, min_role) || is_private_participant
+}
+
+/// Whether `user` is a participant of a private event — its creator or a
+/// member of its « pour qui » — the fourth argument of `can_modify`. Mirror
+/// of `existing.is_private && is_participant(..)` in the API's update and
+/// delete handlers (`apps/api/src/agenda/events.rs`). Always `false` for a
+/// shared event: there, « pour qui » grants nothing.
+pub(crate) fn is_private_participant(
+    is_private: bool,
+    user: Uuid,
+    created_by: Uuid,
+    assignees: &[Uuid],
+) -> bool {
+    is_private && (user == created_by || assignees.contains(&user))
 }
 
 // -- the mark of a private event (#621) ----------------------------------------
@@ -503,11 +524,54 @@ mod tests {
     fn can_modify_follows_the_threshold_and_spares_the_creator() {
         for (role, min_role, creator, expected) in CAN_MODIFY_CASES {
             assert_eq!(
-                can_modify(role, min_role, creator),
+                can_modify(role, min_role, creator, false),
                 expected,
                 "{role} under {min_role}, creator: {creator}"
             );
         }
+    }
+
+    /// The API's rule (#620, #986): a participant of a private event may
+    /// modify it, whatever the family's threshold.
+    #[test]
+    fn a_participant_of_a_private_event_may_modify_it_whatever_the_threshold() {
+        for min_role in ["standard", "admin", "owner"] {
+            assert!(can_modify("standard", min_role, false, true), "{min_role}");
+        }
+    }
+
+    // -- is_private_participant (#986) ----------------------------------------
+
+    #[test]
+    fn an_assignee_of_a_private_event_is_a_private_participant() {
+        assert!(is_private_participant(
+            true,
+            uid(2),
+            uid(1),
+            &[uid(3), uid(2)]
+        ));
+    }
+
+    #[test]
+    fn the_creator_of_a_private_event_is_a_private_participant_even_off_the_assignees() {
+        assert!(is_private_participant(true, uid(1), uid(1), &[uid(2)]));
+    }
+
+    #[test]
+    fn an_assignee_of_a_shared_event_is_no_private_participant() {
+        assert!(!is_private_participant(false, uid(2), uid(1), &[uid(2)]));
+        assert!(!is_private_participant(false, uid(1), uid(1), &[uid(1)]));
+    }
+
+    #[test]
+    fn anyone_else_is_no_private_participant() {
+        assert!(!is_private_participant(
+            true,
+            uid(4),
+            uid(1),
+            &[uid(2), uid(3)]
+        ));
+        assert!(!is_private_participant(true, uid(4), uid(1), &[]));
     }
 
     // -- an event of another family (#622) ----------------------------------
