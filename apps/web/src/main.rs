@@ -11,6 +11,7 @@ mod csp;
 // and its lock file, neither of which belongs in the shipped binary.
 #[cfg(test)]
 mod design_journal;
+mod edit_rule;
 mod family;
 // The guard against a GET route that writes (#414). Test-only: it reads
 // this crate's own source.

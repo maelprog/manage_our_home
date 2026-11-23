@@ -7,7 +7,7 @@
 // apps/api reste seul juge du fichier, et recadre au centre un carré qui
 // est déjà carré.
 //
-// Sans JavaScript, ou sans `createImageBitmap`, `toBlob` ou `fetch`, le bloc
+// Sans JavaScript, ou sans `createImageBitmap`, `toDataURL` ou `fetch`, le bloc
 // reste `hidden` et le champ fichier natif fait ce qu'il faisait.
 //
 // `MHomeAvatarCrop` porte les calculs, sans DOM : un carré est
@@ -137,7 +137,8 @@ var MHomeAvatarCrop = (function () {
     typeof window.fetch !== "function" ||
     typeof window.FormData !== "function" ||
     typeof window.DOMParser !== "function" ||
-    !HTMLCanvasElement.prototype.toBlob
+    typeof window.atob !== "function" ||
+    !HTMLCanvasElement.prototype.toDataURL
   ) {
     return;
   }
@@ -306,23 +307,35 @@ var MHomeAvatarCrop = (function () {
     out.width = side;
     out.height = side;
     out.getContext("2d").drawImage(image, square.x, square.y, square.side, square.side, 0, 0, side, side);
-    out.toBlob(
-      function (blob) {
-        if (!blob) {
-          fail();
-          return;
-        }
-        var body = new FormData();
-        body.append("file", blob, "photo.jpg");
-        window
-          .fetch(form.action, { method: "POST", body: body, credentials: "same-origin" })
-          .then(answered, function () {
-            fail();
-          });
-      },
-      "image/jpeg",
-      0.9
-    );
+    var blob = jpeg(out);
+    if (!blob) {
+      fail();
+      return;
+    }
+    var body = new FormData();
+    body.append("file", blob, "photo.jpg");
+    window
+      .fetch(form.action, { method: "POST", body: body, credentials: "same-origin" })
+      .then(answered, function () {
+        fail();
+      });
+  }
+
+  // Le carré en JPEG, encodé sur-le-champ (#963). Dans Chromium, `toBlob`
+  // n'encode que pendant les temps morts de la page. Il ne s'y force
+  // qu'après 1 s si aucun n'est venu, et, si l'encodage a commencé sans
+  // finir, 5,7 s après ce premier délai (≈ 6,7 s après l'appel ; 4 s puis
+  // 9 s sur Android) : sur un appareil chargé, l'envoi attendait jusque-là
+  // sans rien faire. Un carré de 256 px au plus s'encode en quelques
+  // millisecondes.
+  function jpeg(canvas) {
+    var url = canvas.toDataURL("image/jpeg", 0.9);
+    var comma = url.indexOf(",");
+    if (comma < 0 || comma === url.length - 1) return null;
+    var bytes = window.atob(url.slice(comma + 1));
+    var buffer = new Uint8Array(bytes.length);
+    for (var i = 0; i < bytes.length; i++) buffer[i] = bytes.charCodeAt(i);
+    return new Blob([buffer], { type: url.slice(5, url.indexOf(";")) });
   }
 
   input.addEventListener("change", function () {

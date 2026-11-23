@@ -14,6 +14,6 @@ pub use body::{
     guard_request_body, request_timeout, service_unavailable, BodyGuard, BodyReadTimeout,
 };
 pub use gate::{Busy, UploadGate, UploadPermit};
-pub use limits::{BodyReadLimits, Breach, MAX_UPLOAD_BODY_BYTES};
+pub use limits::{BodyReadLimits, Breach, MAX_AVATAR_BODY_BYTES, MAX_UPLOAD_BODY_BYTES};
 pub use origin::{guard_cross_origin, origin_of, CrossOrigin, OriginGuard};
 pub use shutdown::{Hold, Shutdown};

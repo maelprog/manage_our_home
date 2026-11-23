@@ -103,9 +103,8 @@ pub async fn list_groups(
 /// has no RLS of its own (it isn't family-scoped), but still runs on
 /// `admin_db` per the spec's "among request handlers, only that gated path
 /// is allowed to run on a connection carrying BYPASSRLS" rule (the pool's
-/// other users are the four background jobs — attachment reconcile #215,
-/// retention purge #138, account purge #139, reminder worker #293 — none
-/// of which serves a request), kept uniform across all seven superadmin
+/// other users are the background jobs listed in `apps/api/README.md`, none
+/// of which serves a request), kept uniform across all eleven superadmin
 /// endpoints rather than special-cased per table.
 #[utoipa::path(
     get,

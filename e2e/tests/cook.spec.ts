@@ -201,8 +201,12 @@ test("a timer that ends says « Terminé ! » until « Arrêter »", async ({ pa
   await createRecipe(page);
   await page.clock.install();
   await page.getByRole("link", { name: "Mode cuisine" }).click();
+  // The stepper is shown by the page's script, which also hears the
+  // arrows: an arrow pressed before it ran is lost.
+  await expect(page.getByText("Étape 1 sur 3", { exact: true })).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
+  await expect(page.getByText("Étape 3 sur 3", { exact: true })).toBeVisible();
   const third = page.getByRole("region", { name: "Étape 3" });
   await third.getByRole("button", { name: "Lancer un minuteur de 45 secondes" }).click();
   await expect(page.getByRole("timer", { name: "Étape 3 · 45 s" })).toHaveText("00:45");

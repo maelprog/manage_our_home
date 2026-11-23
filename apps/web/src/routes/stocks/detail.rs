@@ -38,6 +38,7 @@ use manage_our_home_shared::dto::auth::MeResponse;
 use manage_our_home_shared::validation::dietary::SEARCH_QUERY_MAX_LEN;
 
 use crate::app::{html_escape, shell_with_header, Width};
+use crate::edit_rule::{who_may, Guarded};
 use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::routes::account::allergies::Found;
@@ -249,6 +250,7 @@ async fn show(
         &fam.header,
         &item,
         can_edit,
+        &fam.edit_min_role,
         notice.as_deref(),
         error,
         &card,
@@ -558,6 +560,7 @@ fn page(
     header: &str,
     item: &StockItemResponse,
     can_edit: bool,
+    edit_min_role: &str,
     notice: Option<&str>,
     error: Option<&str>,
     ingredient: &str,
@@ -632,7 +635,10 @@ fn page(
 </div>"#
         )
     } else {
-        r#"<p class="muted">Seul le créateur ou un administrateur peut modifier ou supprimer cet article.</p>"#.to_string()
+        format!(
+            r#"<p class="muted">{}</p>"#,
+            who_may(edit_min_role, Guarded::StockItem)
+        )
     };
     let controls_html = format!("{adjust_form}{edit_delete_html}");
     let planned_html = planned_html(item);
@@ -900,14 +906,52 @@ mod tests {
     }
 
     #[test]
+    fn an_admin_under_an_owner_threshold_is_told_the_owner_alone_edits() {
+        // #962: the line follows the group's `stocks_edit` threshold, not a
+        // fixed « créateur ou administrateur ».
+        let can_edit = can_modify("admin", "owner", false);
+        assert!(!can_edit);
+        let html = page(
+            "",
+            &item(1.0, "pot", None),
+            can_edit,
+            "owner",
+            None,
+            None,
+            "",
+        );
+        assert!(
+            html.contains(r#"<p class="muted">Seul le propriétaire ou le créateur peut modifier ou supprimer cet article.</p>"#),
+            "{html}"
+        );
+        assert!(!html.contains("/delete"), "{html}");
+    }
+
+    #[test]
     fn the_quantity_and_the_threshold_read_as_the_list_writes_them() {
-        let html = page("", &item(6.0, "unité", Some(1.5)), false, None, None, "");
+        let html = page(
+            "",
+            &item(6.0, "unité", Some(1.5)),
+            false,
+            "admin",
+            None,
+            None,
+            "",
+        );
         assert!(html.contains("<strong>Quantité :</strong> 6</p>"), "{html}");
         assert!(
             html.contains("<strong>Seuil de réappro :</strong> 1,5</p>"),
             "{html}"
         );
-        let html = page("", &item(2.0, "paquet", Some(1.0)), false, None, None, "");
+        let html = page(
+            "",
+            &item(2.0, "paquet", Some(1.0)),
+            false,
+            "admin",
+            None,
+            None,
+            "",
+        );
         assert!(
             html.contains("<strong>Quantité :</strong> 2 paquets</p>"),
             "{html}"
@@ -1208,7 +1252,7 @@ mod tests {
     fn the_card_sits_between_the_dates_and_the_planned_recipes() {
         let mut pates = item(3.0, "paquet", None);
         pates.planned_usage = Some(vec![usage(1, "Bolo", 1.0, "paquet")]);
-        let html = page("", &pates, false, None, None, "<CARD>");
+        let html = page("", &pates, false, "admin", None, None, "<CARD>");
         let dates = html.find("Aucune date de péremption.").expect(&html);
         let card = html.find("<CARD>").expect(&html);
         let planned = html.find("Utilisé dans").expect(&html);
@@ -1221,6 +1265,7 @@ mod tests {
             "",
             &item(1.0, "pot", None),
             false,
+            "admin",
             Some("Ok."),
             Some("Non."),
             "",
@@ -1244,7 +1289,7 @@ mod tests {
         let mut pates = item(2.0, "paquet", None);
         for planned in [None, Some(vec![])] {
             pates.planned_usage = planned;
-            let html = page("", &pates, false, None, None, "");
+            let html = page("", &pates, false, "admin", None, None, "");
             assert!(!html.contains("Utilisé dans"), "{html}");
             assert!(!html.contains("Total prévu"), "{html}");
         }
@@ -1254,7 +1299,7 @@ mod tests {
     fn one_planned_recipe_is_linked_with_its_quantity_and_the_total() {
         let mut pates = item(3.0, "paquet", None);
         pates.planned_usage = Some(vec![usage(1, "Pâtes <bolo>", 1.0, "paquet")]);
-        let html = page("", &pates, false, None, None, "");
+        let html = page("", &pates, false, "admin", None, None, "");
         assert!(html.contains("<h2>Utilisé dans</h2>"), "{html}");
         assert!(
             html.contains(
@@ -1275,7 +1320,7 @@ mod tests {
         let mut salade = usage(2, "Salade", 0.5, "paquet");
         salade.is_optional = true;
         pates.planned_usage = Some(vec![usage(1, "Bolo", 2.0, "paquet"), salade]);
-        let html = page("", &pates, false, None, None, "");
+        let html = page("", &pates, false, "admin", None, None, "");
         assert_eq!(
             html.matches(r#"<li class="list-row">"#).count(),
             2,
@@ -1299,7 +1344,7 @@ mod tests {
             usage(1, "Bolo", 2.0, "paquet"),
             usage(2, "Gratin", 1.0, "paquet"),
         ]);
-        let html = page("", &pates, false, None, None, "");
+        let html = page("", &pates, false, "admin", None, None, "");
         assert!(
             html.contains(
                 r#"<p><strong>Total prévu :</strong> 3 paquets pour 2 paquets en stock <span class="badge warn">Il manque 1 paquet</span></p>"#

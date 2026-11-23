@@ -207,7 +207,8 @@ async fn non_member_cannot_access_group_recipes(db: PgPool) {
 }
 
 /// AC: a regular member may create/read recipes, but only the recipe's
-/// creator or a group admin/owner may delete it.
+/// creator or a member meeting the family's `recipes_edit` threshold
+/// (`admin` by default, as here; #866) may delete it.
 #[sqlx::test]
 async fn only_creator_or_admin_can_delete_recipe(db: PgPool) {
     let router = test_router(db.clone());

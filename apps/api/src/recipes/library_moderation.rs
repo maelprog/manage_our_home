@@ -126,7 +126,7 @@ pub struct ReportRequest {
     request_body = ReportRequest,
     responses(
         (status = 204, description = "Reported; a second report of the same publication by the same user is answered the same, and changes nothing"),
-        (status = 400, description = "`invalid_reason` (absent, not one of the six, or a body that is not JSON) , `comment_required` (`other` without a comment) or `comment_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 400, description = "`invalid_reason` (absent, not one of the six, or a body that is not JSON), `comment_required` (`other` without a comment) or `comment_too_long`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no such publication", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 429, description = "`too_many_attempts`: 10 reports per user per hour", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,

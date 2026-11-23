@@ -65,7 +65,7 @@ pub const DEACTIVATION_NOTICE_SUBJECT: &str =
     "Votre compte Manage Our Home désactivé va être supprimé";
 
 /// Polling worker. `pool` must be the `BYPASSRLS` admin pool
-/// (`AppState.admin_db`): twelve of the tables it deletes from (`groups`
+/// (`AppState.admin_db`): thirteen of the tables it deletes from (`groups`
 /// among them) are under forced RLS policies, and on any other role the
 /// pass refuses rather than stamp an account purged with its memberships
 /// left in place. Each pass sends the due warnings first, then purges — deleting the profile photos

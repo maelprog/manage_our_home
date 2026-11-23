@@ -750,8 +750,8 @@ pub struct DoneRequest {
     /// Products used that the recipe does not call for (#540).
     #[serde(default)]
     pub others: Vec<OtherRemoval>,
-    /// Adds `others` to the recipe, for the recipe's creator, an admin or
-    /// the owner (`can_modify`).
+    /// Adds `others` to the recipe, for the recipe's creator or a member
+    /// whose role meets the family's `recipes_edit` threshold (`can_modify`).
     #[serde(default)]
     pub add_to_recipe: bool,
     /// Changes to the recipe's ingredients (#558), for the same people as

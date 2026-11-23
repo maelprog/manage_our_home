@@ -2426,7 +2426,15 @@ async fn an_import_counts_for_each_member_the_events_they_see(db: PgPool) {
         ],
     )
     .await;
+    // Each import pushes the members it told on a task of its own, which
+    // reads their devices when it runs: a device registered for a later
+    // import could be pushed by an earlier one still running. So each
+    // import below waits until it pushed both members (#963).
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
     run_import(&f, &f.owner, &import).await;
+    pushed_within_10_s(&db, member_device, "the participant").await;
+    pushed_within_10_s(&db, third_device, "the third member").await;
     let private: String = sqlx::query_scalar(
         "SELECT event_id::text FROM calendar_import_events
          WHERE external_uid = 'import-852-0@google.com'",
@@ -2444,6 +2452,8 @@ async fn an_import_counts_for_each_member_the_events_they_see(db: PgPool) {
     clear_notifications(&db).await;
 
     // Both changed: the participant sees two, the third member one.
+    let member_device = unreachable_device(&db, "member@example.test").await;
+    let third_device = unreachable_device(&db, "third@example.test").await;
     let run = run_import(&f, &f.owner, &import).await;
     assert_eq!(run["updated"].as_u64(), Some(2));
     assert_eq!(
@@ -2459,6 +2469,8 @@ async fn an_import_counts_for_each_member_the_events_they_see(db: PgPool) {
             ),
         ])
     );
+    pushed_within_10_s(&db, member_device, "the participant").await;
+    pushed_within_10_s(&db, third_device, "the third member").await;
 
     // The private one alone: the third member is told nothing, nor pushed.
     clear_notifications(&db).await;

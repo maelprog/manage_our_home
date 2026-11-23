@@ -4985,3 +4985,164 @@ async fn a_password_change_mails_the_notice_only_once_it_succeeds(db: PgPool) {
         "Vos autres sessions ont été fermées",
     );
 }
+
+/// #916 constat 2, #957 : deux demandes de réinitialisation laissent deux
+/// liens valides. Utiliser le second supprime aussi le premier, qui ne
+/// change plus le mot de passe après que le titulaire a repris la main.
+#[sqlx::test]
+async fn pentest_916_a_reset_invalidates_the_other_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "reset-916@example.test";
+    register_verify_login(&router, &db, email, "initial-password-916").await;
+
+    let forgot = serde_json::json!({ "email": email });
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(forgot.clone()),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let first = common::reset_token(&db, email).await;
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(forgot),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let second = common::reset_token(&db, email).await;
+    assert_ne!(first, second);
+
+    let reset = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": second, "new_password": "holder-password-916"})),
+    )
+    .await;
+    assert_status(&reset, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": first, "new_password": "attacker-password-916"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
+}
+
+/// #916 constat 2, #957, côté réglages : un changement de mot de passe
+/// depuis une session supprime les liens de réinitialisation émis avant lui.
+#[sqlx::test]
+async fn pentest_916_a_password_change_invalidates_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "change-916@example.test";
+    let cookie = register_verify_login(&router, &db, email, "initial-password-916").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({ "email": email })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let pending = common::reset_token(&db, email).await;
+
+    let change = call(
+        &router,
+        Method::POST,
+        "/settings/password/change",
+        Some(&cookie),
+        Some(serde_json::json!({
+            "current_password": "initial-password-916",
+            "new_password": "holder-password-916",
+        })),
+    )
+    .await;
+    assert_status(&change, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": pending, "new_password": "attacker-password-916"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
+}
+
+/// #957 : un compte Google seul peut demander un lien de réinitialisation ;
+/// poser ensuite un mot de passe depuis les réglages supprime ce lien, qui
+/// remplacerait sinon le mot de passe choisi par le titulaire.
+#[sqlx::test]
+async fn adding_a_password_invalidates_pending_reset_links(db: PgPool) {
+    let router = test_router(db.clone());
+    let email = "set-957@example.test";
+    // Google-only: the oauth identity goes in the same transaction, since
+    // `users` refuses a row with no auth method (deferred trigger).
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    let user_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, email_verified, age_declared_at,
+                            terms_accepted_version, terms_accepted_at)
+         VALUES ($1, 'Google Only', true, now(), $2, now())
+         RETURNING id",
+    )
+    .bind(email)
+    .bind(terms_in_force_now())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'google-subject-957')",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let cookie = common::insert_session(&db, user_id).await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/forgot",
+        None,
+        Some(serde_json::json!({ "email": email })),
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let pending = common::reset_token(&db, email).await;
+
+    let set = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&cookie),
+        Some(serde_json::json!({"new_password": "holder-password-957"})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+
+    let stale = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": pending, "new_password": "attacker-password-957"})),
+    )
+    .await;
+    assert_status(&stale, StatusCode::NOT_FOUND);
+}
