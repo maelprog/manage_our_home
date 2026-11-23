@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO oauth_identities (user_id, provider, provider_user_id)\n                   VALUES ($1, 'google', $2)\n                   ON CONFLICT (provider, provider_user_id) DO NOTHING\n                   RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "oauth_identities",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6b8a6dc5cdc70464395848017c0cd3e66390a0a332abbb1517b838e8cb56757a"
+}

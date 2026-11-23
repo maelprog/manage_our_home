@@ -10,6 +10,8 @@ mod common;
 
 use axum::http::{header, Method, StatusCode};
 use common::{assert_status, call, json_body};
+use manage_our_home::auth::terms_acceptance::terms_in_force_now;
+use manage_our_home::auth::token::new_token;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -797,4 +799,269 @@ async fn a_bound_google_account_awaiting_its_password_link_keeps_it(db: PgPool) 
 
     assert_eq!(password_and_verified(&db, user).await, (true, false));
     assert_eq!(open_sessions(&db, user).await, 2, "both sign-ins' sessions");
+}
+
+/// #987: a Google account that adds a password (`auth::set_password`) is
+/// unverified until its link is followed. Another Google identity for the
+/// same address binds to it alongside the first, and takes nothing over:
+/// the password and the sessions of the holder stay.
+#[sqlx::test]
+async fn a_second_google_identity_does_not_take_over_an_account_awaiting_its_password_link(
+    db: PgPool,
+) {
+    let router = router(db.clone(), false).await;
+    let email = "second-sub-987@example.test";
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-first-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let first = session_cookie(&res).expect("a session");
+    let user = user_id(&db, email).await.unwrap();
+    // The first sign-in's age declaration and terms (#137, #319), which
+    // the password route asks for.
+    sqlx::query(
+        "UPDATE users SET age_declared_at = now(), terms_accepted_version = $2,
+                          terms_accepted_at = now()
+         WHERE id = $1",
+    )
+    .bind(user)
+    .bind(terms_in_force_now())
+    .execute(&db)
+    .await
+    .unwrap();
+    let set = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&first),
+        Some(serde_json::json!({"new_password": "holder-password-987"})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+    assert_eq!(password_and_verified(&db, user).await, (true, false));
+
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-second-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+
+    let mut bound = identities(&db, user).await;
+    bound.sort();
+    assert_eq!(bound, vec!["google-sub-first-987", "google-sub-second-987"]);
+    assert_eq!(password_and_verified(&db, user).await, (true, false));
+    let me = call(&router, Method::GET, "/auth/me", Some(&first), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(open_sessions(&db, user).await, 2, "both sign-ins' sessions");
+}
+
+/// #987: a password reset link issued before Google takes the account over
+/// opens nothing after: the take-over deletes the account's reset links
+/// with its password.
+#[sqlx::test]
+async fn taking_over_an_unverified_account_deletes_its_password_reset_links(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "reset-987@example.test";
+    register(&router, email, "attacker-password-987").await;
+    let user = user_id(&db, email).await.unwrap();
+    let reset = new_token();
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, expires_at, token_hash) \
+         VALUES ($1, now() + interval '1 hour', $2)",
+    )
+    .bind(user)
+    .bind(&reset.hash()[..])
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-reset-987", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": reset.value(), "new_password": "reset-password-987"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+}
+
+/// #987: a third party registers the holder's address with their password,
+/// and support deactivates the account before anyone proved the address.
+/// The holder's Google sign-in takes it over as on an active account —
+/// password and reset links gone, address verified, earlier sessions
+/// closed — then opens the restricted session. No identity is bound to it
+/// (#194).
+#[sqlx::test]
+async fn a_deactivated_unverified_account_is_taken_over_then_gets_a_restricted_session(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "deactivated-987@example.test";
+    register(&router, email, "attacker-password-987").await;
+    let user = user_id(&db, email).await.unwrap();
+    let earlier = common::insert_session(&db, user).await;
+    let reset = new_token();
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, expires_at, token_hash) \
+         VALUES ($1, now() + interval '1 hour', $2)",
+    )
+    .bind(user)
+    .bind(&reset.hash()[..])
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-deactivated-987", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let session = session_cookie(&res).expect("a session");
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&session), None).await;
+    assert_status(&me, StatusCode::FORBIDDEN);
+    assert_eq!(json_body(me).await["error"], "account_deactivated");
+    assert!(identities(&db, user).await.is_empty());
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+    assert_eq!(open_sessions(&db, user).await, 1, "the restricted one only");
+    let me = call(&router, Method::GET, "/auth/me", Some(&earlier), None).await;
+    assert_status(&me, StatusCode::UNAUTHORIZED);
+    let reset_links: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(reset_links, 0);
+    // The third party's password no longer opens anything: the account
+    // has none.
+    let attacker = login(&router, email, "attacker-password-987").await;
+    assert_status(&attacker, StatusCode::UNAUTHORIZED);
+    // The identity that took it over is kept, unbound, for the
+    // reactivation.
+    assert_eq!(
+        pending_google_sub(&db, user).await.as_deref(),
+        Some("google-sub-deactivated-987")
+    );
+}
+
+async fn pending_google_sub(db: &PgPool, user_id: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT pending_google_sub FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// #987: the superadmin reactivates an account a Google sign-in took over
+/// while it was deactivated. The identity that took it over is bound to
+/// it, and no longer pending; signing in with it opens a full session.
+#[sqlx::test]
+async fn reactivating_a_taken_over_account_binds_the_identity_that_took_it_over(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "reactivated-987@example.test";
+    register(&router, email, "attacker-password-987").await;
+    let user = user_id(&db, email).await.unwrap();
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-reactivated-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+
+    let admin_email = "superadmin-987@example.test";
+    password_account(&router, &db, admin_email).await;
+    sqlx::query("UPDATE users SET is_superadmin = true WHERE email = $1")
+        .bind(admin_email)
+        .execute(&db)
+        .await
+        .unwrap();
+    let admin = login(&router, admin_email, "password-669-a").await;
+    assert_status(&admin, StatusCode::OK);
+    let admin = common::set_cookie(&admin).unwrap();
+    let res = call(
+        &router,
+        Method::POST,
+        &format!("/admin/users/{user}/reactivate"),
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        identities(&db, user).await,
+        vec!["google-sub-reactivated-987"]
+    );
+    assert_eq!(pending_google_sub(&db, user).await, None);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+    let audited: serde_json::Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'admin.user.reactivate' AND target_id = $1",
+    )
+    .bind(user.to_string())
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(audited["google_identity_bound"], true);
+
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-reactivated-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let session = session_cookie(&res).expect("a session");
+    let me = call(&router, Method::GET, "/auth/me", Some(&session), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(json_body(me).await["user_id"], user.to_string());
+}
+
+/// #987, migration 0070: a deactivated account may have neither password
+/// nor identity, an active one may not. Reactivating an account left with
+/// neither is rejected at commit.
+#[sqlx::test]
+async fn reactivating_an_account_with_no_way_to_log_in_is_refused(db: PgPool) {
+    let user: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, password_hash, deactivated_at)
+         VALUES ('none-987@example.test', 'None', 'hash', now()) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    // Deactivated: the password may go.
+    sqlx::query("UPDATE users SET password_hash = NULL WHERE id = $1")
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query("UPDATE users SET deactivated_at = NULL WHERE id = $1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let err = tx
+        .commit()
+        .await
+        .expect_err("an active account with no auth method");
+    assert!(err.to_string().contains("has no auth method"), "{err}");
+    let still: bool =
+        sqlx::query_scalar("SELECT deactivated_at IS NOT NULL FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(still);
 }

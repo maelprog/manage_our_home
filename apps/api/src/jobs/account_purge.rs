@@ -429,6 +429,7 @@ pub async fn purge_account(pool: &PgPool, user_id: Uuid) -> anyhow::Result<Vec<S
             terms_accepted_version = NULL,
             terms_accepted_at = NULL,
             reactivation_refused_at = NULL,
+            pending_google_sub = NULL,
             deleted_at = now()
         WHERE id = $1
         "#,

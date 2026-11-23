@@ -947,3 +947,106 @@ async fn superadmin_membership_in_own_family_is_unaffected(db: PgPool) {
     .await;
     assert_status(&get_res, StatusCode::OK);
 }
+
+/// #987: a deactivated account left with neither password nor Google
+/// identity — a Google sign-in took it over — as the take-over leaves it.
+async fn taken_over_account(db: &PgPool, email: &str, pending_sub: Option<&str>) -> uuid::Uuid {
+    let user: uuid::Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, email_verified, password_hash, deactivated_at)
+         VALUES ($1, 'Taken over', true, 'third-party-hash', now()) RETURNING id",
+    )
+    .bind(email)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET password_hash = NULL, pending_google_sub = $2 WHERE id = $1")
+        .bind(user)
+        .bind(pending_sub)
+        .execute(db)
+        .await
+        .unwrap();
+    user
+}
+
+/// `POST /admin/users/:id/reactivate`, with the status and the body.
+async fn reactivate(
+    router: &axum::Router,
+    cookie: &str,
+    user: uuid::Uuid,
+) -> (StatusCode, serde_json::Value) {
+    let res = call(
+        router,
+        Method::POST,
+        &format!("/admin/users/{user}/reactivate"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    let status = res.status();
+    (status, json_body(res).await)
+}
+
+/// `deactivated_at IS NOT NULL`, `pending_google_sub` of the account.
+async fn deactivated_and_pending(db: &PgPool, user: uuid::Uuid) -> (bool, Option<String>) {
+    sqlx::query_as("SELECT deactivated_at IS NOT NULL, pending_google_sub FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// #987: with neither password nor identity, and no identity pending, the
+/// account is not reactivated: a 409 that says why, not the trigger's 500.
+#[sqlx::test]
+async fn reactivating_an_account_with_no_way_to_log_in_is_a_conflict(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin =
+        register_verify_login(&router, &db, "super-987a@example.test", "super-password1").await;
+    make_superadmin(&db, "super-987a@example.test").await;
+    let target = taken_over_account(&db, "none-987a@example.test", None).await;
+
+    let (status, body) = reactivate(&router, &admin, target).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "reactivation_no_auth_method");
+    assert_eq!(deactivated_and_pending(&db, target).await, (true, None));
+}
+
+/// #987: the Google identity that took the account over was bound to
+/// another account since. It is not moved: the reactivation is a 409, and
+/// the account stays deactivated, its identity still pending.
+#[sqlx::test]
+async fn reactivating_with_a_pending_identity_bound_elsewhere_is_a_conflict(db: PgPool) {
+    let router = test_router(db.clone());
+    let admin =
+        register_verify_login(&router, &db, "super-987b@example.test", "super-password1").await;
+    make_superadmin(&db, "super-987b@example.test").await;
+    let target = taken_over_account(&db, "taken-987b@example.test", Some("sub-987b")).await;
+    let other: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("super-987b@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO oauth_identities (user_id, provider, provider_user_id)
+         VALUES ($1, 'google', 'sub-987b')",
+    )
+    .bind(other)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (status, body) = reactivate(&router, &admin, target).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "reactivation_google_identity_taken");
+    assert_eq!(
+        deactivated_and_pending(&db, target).await,
+        (true, Some("sub-987b".into()))
+    );
+    let bound: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT user_id FROM oauth_identities WHERE provider_user_id = 'sub-987b'",
+    )
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(bound, vec![other]);
+}
