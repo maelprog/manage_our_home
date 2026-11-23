@@ -2974,6 +2974,31 @@ mod tests {
     }
 
     #[test]
+    fn an_all_day_series_cut_onto_the_second_pass_of_the_repeated_hour_carries_onto_that_pass() {
+        // Cut into a series anchored on 25 October at 02:30 CET (01:30Z),
+        // the second pass of the repeated hour: the exclusion of that day
+        // goes onto that pass, where the series unrolls it, not onto the
+        // first (00:30Z).
+        let to = Utc.with_ymd_and_hms(2026, 10, 25, 1, 30, 0).unwrap();
+        let carried = carried_over(
+            &[midnight(2026, 10, 25)],
+            true,
+            false,
+            midnight(2026, 10, 25),
+            to,
+        );
+        let unrolled = expand_occurrences(
+            "FREQ=DAILY",
+            to,
+            midnight(2026, 10, 25),
+            midnight(2026, 10, 26) - Duration::seconds(1),
+        )
+        .unwrap();
+        assert_eq!(unrolled, vec![to]);
+        assert_eq!(carried, unrolled);
+    }
+
+    #[test]
     fn an_hour_bound_series_cut_into_an_all_day_one_carries_its_instants_onto_their_days() {
         // #985: a 14:00 series cut on 2 September into an all-day one. The
         // exclusion of the 4th at 14:00 lands on the 4th's Paris midnight;
