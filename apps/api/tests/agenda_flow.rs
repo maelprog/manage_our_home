@@ -6170,3 +6170,110 @@ async fn a_patch_that_does_not_move_the_series_keeps_its_exclusions(db: PgPool) 
         );
     }
 }
+
+/// AC (#985): a daily task series cut into one of the other kind — all-day
+/// into 14:00–15:00, 14:00–15:00 into all-day — keeps on the new series the
+/// occurrence deleted (the 3rd day) and the one ticked off (the 4th), on the
+/// instants its own occurrences have. Kept on the old series' kind, both
+/// fell beside every occurrence of an hour-bound new series: the deleted one
+/// came back and the ticked-off one was no longer ticked.
+#[sqlx::test]
+async fn a_series_cut_into_the_other_kind_keeps_its_exclusions_and_completions(db: PgPool) {
+    use manage_our_home_shared::validation::agenda::paris_date;
+
+    let router = test_router(db.clone());
+    let cookie =
+        register_verify_login(&router, &db, "cut-kind@example.test", "owner-password1").await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let first = paris_date(Utc::now()) + Duration::days(2);
+    let midnight = |n: i64| paris_at(first + Duration::days(n), 0);
+    let two_pm = |n: i64| paris_at(first + Duration::days(n), 14);
+    let (excluded, ticked) = (3, 4);
+
+    for was_all_day in [true, false] {
+        let on = |n: i64| if was_all_day { midnight(n) } else { two_pm(n) };
+        let cut_on = |n: i64| if was_all_day { two_pm(n) } else { midnight(n) };
+        let ends = |n: i64| {
+            if was_all_day {
+                two_pm(n) + Duration::hours(1)
+            } else {
+                midnight(n + 1)
+            }
+        };
+        let series = create_event_with(
+            &router,
+            &cookie,
+            &group_id,
+            serde_json::json!({
+                "title": format!("Arrosage {was_all_day}"),
+                "starts_at": on(0),
+                "ends_at": if was_all_day { midnight(1) } else { on(0) + Duration::hours(1) },
+                "all_day": was_all_day,
+                "is_task": true,
+                "rrule": "FREQ=DAILY;COUNT=7",
+            }),
+        )
+        .await;
+        let id = series["id"].as_str().unwrap().to_string();
+        let res = delete_scoped(
+            &router,
+            &cookie,
+            &group_id,
+            &id,
+            &scoped("this", on(excluded)),
+        )
+        .await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+        let res = patch_event(
+            &router,
+            &cookie,
+            &group_id,
+            &id,
+            serde_json::json!({"completed": true, "occurrence_at": on(ticked)}),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+
+        let res = patch_event(
+            &router,
+            &cookie,
+            &group_id,
+            &id,
+            serde_json::json!({
+                "scope": "this_and_following",
+                "occurrence_at": on(1),
+                "all_day": !was_all_day,
+                "starts_at": cut_on(1),
+                "ends_at": ends(1),
+            }),
+        )
+        .await;
+        assert_status(&res, StatusCode::OK);
+        let following = json_body(res).await;
+        assert_eq!(following["all_day"], !was_all_day);
+        let following_id = following["id"].as_str().unwrap().to_string();
+
+        assert_eq!(
+            stored_exdates(&db, &group_id, &following_id).await,
+            vec![cut_on(excluded)],
+            "all_day {was_all_day}: exclusion carried"
+        );
+        assert_eq!(
+            completion_instants(&db, &group_id, &following_id).await,
+            vec![cut_on(ticked)],
+            "all_day {was_all_day}: completion carried"
+        );
+        let listed: Vec<(DateTime<Utc>, bool)> =
+            listed_occurrences(&router, &cookie, &group_id, midnight(0), midnight(8))
+                .await
+                .into_iter()
+                .filter(|o| o.0 == following_id)
+                .map(|o| (o.2, o.3))
+                .collect();
+        let expected: Vec<(DateTime<Utc>, bool)> = (1..7)
+            .filter(|n| *n != excluded)
+            .map(|n| (cut_on(n), n == ticked))
+            .collect();
+        assert_eq!(listed, expected, "all_day {was_all_day}: listed");
+    }
+}
