@@ -10,6 +10,8 @@ mod common;
 
 use axum::http::{header, Method, StatusCode};
 use common::{assert_status, call, json_body};
+use manage_our_home::auth::terms_acceptance::terms_in_force_now;
+use manage_our_home::auth::token::new_token;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -797,4 +799,95 @@ async fn a_bound_google_account_awaiting_its_password_link_keeps_it(db: PgPool) 
 
     assert_eq!(password_and_verified(&db, user).await, (true, false));
     assert_eq!(open_sessions(&db, user).await, 2, "both sign-ins' sessions");
+}
+
+/// #987: a Google account that adds a password (`auth::set_password`) is
+/// unverified until its link is followed. Another Google identity for the
+/// same address binds to it alongside the first, and takes nothing over:
+/// the password and the sessions of the holder stay.
+#[sqlx::test]
+async fn a_second_google_identity_does_not_take_over_an_account_awaiting_its_password_link(
+    db: PgPool,
+) {
+    let router = router(db.clone(), false).await;
+    let email = "second-sub-987@example.test";
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-first-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let first = session_cookie(&res).expect("a session");
+    let user = user_id(&db, email).await.unwrap();
+    // The first sign-in's age declaration and terms (#137, #319), which
+    // the password route asks for.
+    sqlx::query(
+        "UPDATE users SET age_declared_at = now(), terms_accepted_version = $2,
+                          terms_accepted_at = now()
+         WHERE id = $1",
+    )
+    .bind(user)
+    .bind(terms_in_force_now())
+    .execute(&db)
+    .await
+    .unwrap();
+    let set = call(
+        &router,
+        Method::POST,
+        "/settings/password/set",
+        Some(&first),
+        Some(serde_json::json!({"new_password": "holder-password-987"})),
+    )
+    .await;
+    assert_status(&set, StatusCode::OK);
+    assert_eq!(password_and_verified(&db, user).await, (true, false));
+
+    let (nonce_value, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-second-987", email, &nonce_value));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+
+    let mut bound = identities(&db, user).await;
+    bound.sort();
+    assert_eq!(bound, vec!["google-sub-first-987", "google-sub-second-987"]);
+    assert_eq!(password_and_verified(&db, user).await, (true, false));
+    let me = call(&router, Method::GET, "/auth/me", Some(&first), None).await;
+    assert_status(&me, StatusCode::OK);
+    assert_eq!(open_sessions(&db, user).await, 2, "both sign-ins' sessions");
+}
+
+/// #987: a password reset link issued before Google takes the account over
+/// opens nothing after: the take-over deletes the account's reset links
+/// with its password.
+#[sqlx::test]
+async fn taking_over_an_unverified_account_deletes_its_password_reset_links(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "reset-987@example.test";
+    register(&router, email, "attacker-password-987").await;
+    let user = user_id(&db, email).await.unwrap();
+    let reset = new_token();
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, expires_at, token_hash) \
+         VALUES ($1, now() + interval '1 hour', $2)",
+    )
+    .bind(user)
+    .bind(&reset.hash()[..])
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-reset-987", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/auth/password/reset",
+        None,
+        Some(serde_json::json!({"token": reset.value(), "new_password": "reset-password-987"})),
+    )
+    .await;
+    assert_status(&res, StatusCode::NOT_FOUND);
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
 }
