@@ -3,7 +3,7 @@
 Registre tenu au titre de l'article 30 du RGPD. Dernière mise à jour :
 2026-11-23 (sessions fermées et jetons de réinitialisation supprimés à la
 prise de possession d'un compte non vérifié par une connexion Google,
-lignes 1 et 1b, #956, #987) ;
+désactivé ou non, lignes 1 et 1b, #956, #987) ;
 2026-11-21 (emails de réinitialisation et de vérification à l'ajout d'un
 mot de passe, qui nomment le destinataire ; export sans les clés
 d'abonnement aux notifications, ligne 12 ; conservation du journal
@@ -629,7 +629,7 @@ Un compte désactivé par le support (`deactivated_at`) n'obtient plus de
 session ordinaire (#289). Avec de mauvais identifiants, la connexion par
 mot de passe répond comme pour un identifiant inconnu. Avec les bons — mot
 de passe sur une adresse vérifiée, ou profil Google vérifié, qui retrouve
-le compte par son identité ou son email sans rien lui écrire (#194) —
+le compte par son identité ou son email sans lui lier d'identité (#194) —
 elle ouvre une session restreinte (`sessions.restricted`) : l'extracteur
 de session la refuse partout (403 `account_deactivated`), sauf sur les
 deux routes du compte désactivé (`/account/deactivated` et sa demande de
@@ -647,6 +647,12 @@ et la session restreinte est révoquée. Le refus
 (`POST /admin/users/:id/reactivation-request/refuse`, journal
 `admin.user.reactivation_refuse`) laisse le compte désactivé et date
 `reactivation_refused_at` (ligne 8).
+Le profil Google n'écrit au compte désactivé que la prise de possession
+d'un compte dont l'adresse n'avait jamais été vérifiée, comme sur un
+compte actif (#987) : mot de passe et jetons de réinitialisation
+supprimés, adresse vérifiée, sessions fermées. Le compte n'a alors plus
+aucun moyen de connexion ; la base refuse de réactiver un compte qui n'en
+a aucun (migration 0070).
 
 ## Durées de conservation — purge horaire
 

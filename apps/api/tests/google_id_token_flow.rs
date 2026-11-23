@@ -891,3 +891,99 @@ async fn taking_over_an_unverified_account_deletes_its_password_reset_links(db: 
     assert_status(&res, StatusCode::NOT_FOUND);
     assert_eq!(password_and_verified(&db, user).await, (false, true));
 }
+
+/// #987: a third party registers the holder's address with their password,
+/// and support deactivates the account before anyone proved the address.
+/// The holder's Google sign-in takes it over as on an active account —
+/// password and reset links gone, address verified, earlier sessions
+/// closed — then opens the restricted session. No identity is bound to it
+/// (#194).
+#[sqlx::test]
+async fn a_deactivated_unverified_account_is_taken_over_then_gets_a_restricted_session(db: PgPool) {
+    let router = router(db.clone(), false).await;
+    let email = "deactivated-987@example.test";
+    register(&router, email, "attacker-password-987").await;
+    let user = user_id(&db, email).await.unwrap();
+    let earlier = common::insert_session(&db, user).await;
+    let reset = new_token();
+    sqlx::query(
+        "INSERT INTO password_reset_tokens (user_id, expires_at, token_hash) \
+         VALUES ($1, now() + interval '1 hour', $2)",
+    )
+    .bind(user)
+    .bind(&reset.hash()[..])
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET deactivated_at = now() WHERE id = $1")
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let (nonce, cookie) = nonce(&router).await;
+    let token = id_token(&claims("google-sub-deactivated-987", email, &nonce));
+    let res = post_id_token(&router, Some(&cookie), &token).await;
+    assert_status(&res, StatusCode::OK);
+    let session = session_cookie(&res).expect("a session");
+
+    let me = call(&router, Method::GET, "/auth/me", Some(&session), None).await;
+    assert_status(&me, StatusCode::FORBIDDEN);
+    assert_eq!(json_body(me).await["error"], "account_deactivated");
+    assert!(identities(&db, user).await.is_empty());
+    assert_eq!(password_and_verified(&db, user).await, (false, true));
+    assert_eq!(open_sessions(&db, user).await, 1, "the restricted one only");
+    let me = call(&router, Method::GET, "/auth/me", Some(&earlier), None).await;
+    assert_status(&me, StatusCode::UNAUTHORIZED);
+    let reset_links: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM password_reset_tokens WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(reset_links, 0);
+    // The third party's password no longer opens anything: the account
+    // has none.
+    let attacker = login(&router, email, "attacker-password-987").await;
+    assert_status(&attacker, StatusCode::UNAUTHORIZED);
+}
+
+/// #987, migration 0070: a deactivated account may have neither password
+/// nor identity, an active one may not. Reactivating an account left with
+/// neither is rejected at commit.
+#[sqlx::test]
+async fn reactivating_an_account_with_no_way_to_log_in_is_refused(db: PgPool) {
+    let user: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, display_name, password_hash, deactivated_at)
+         VALUES ('none-987@example.test', 'None', 'hash', now()) RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    // Deactivated: the password may go.
+    sqlx::query("UPDATE users SET password_hash = NULL WHERE id = $1")
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query("UPDATE users SET deactivated_at = NULL WHERE id = $1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let err = tx
+        .commit()
+        .await
+        .expect_err("an active account with no auth method");
+    assert!(err.to_string().contains("has no auth method"), "{err}");
+    let still: bool =
+        sqlx::query_scalar("SELECT deactivated_at IS NOT NULL FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert!(still);
+}

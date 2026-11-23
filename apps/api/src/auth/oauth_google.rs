@@ -316,8 +316,9 @@ pub enum SignIn {
 /// with the same email, to which the identity is then bound, created if
 /// there is none. Bound to an account whose address was never verified,
 /// the identity takes it over (#956, [`Binding::ClaimUnverified`]). An
-/// account deactivated by support gets a restricted
-/// session on both paths, and nothing written to it (#194, #289); a purged
+/// account deactivated by support gets a restricted session on both paths,
+/// and no identity bound to it (#194, #289): nothing is written to it but
+/// that take-over, when its address was never verified (#987); a purged
 /// one is refused with a bare 401. `refresh_token`, when Google gave one, is
 /// stored encrypted via `pgcrypto` and is never written to `tracing` logs.
 pub(crate) async fn sign_in_profile(
@@ -401,10 +402,18 @@ pub(crate) async fn sign_in_profile(
 
     // #289: a verified Google profile of a deactivated account is the right
     // credential, so it opens the restricted session a correct password
-    // would — and nothing else. #194 still holds: nothing is written to
-    // the account, no identity is bound to it, and no full session opens.
+    // would — and nothing else. #194 still holds: no identity is bound to
+    // it, and no full session opens. The one write is the take-over of an
+    // account whose address nobody had proved (#987), as on an active one:
+    // the account is left with no way to log in, which only a deactivated
+    // one may be (migration 0070): reactivating it is refused at commit.
     if let Some(account) = existing_account.as_ref().filter(|a| a.deactivated) {
-        tx.rollback().await?;
+        if binding(identity, account.email_verified) == Binding::ClaimUnverified {
+            take_over(&mut tx, account.user_id).await?;
+            tx.commit().await?;
+        } else {
+            tx.rollback().await?;
+        }
         let token = create_restricted_session(&state.db, account.user_id, client).await?;
         set_session_cookie(cookies, &token, state.secure_cookies);
         return Ok(SignIn::Session);
@@ -465,16 +474,7 @@ pub(crate) async fn sign_in_profile(
     // goes. In the same transaction: the account is never left Google-bound
     // with the password of whoever registered the address first.
     if binding == Binding::ClaimUnverified {
-        sqlx::query!(
-            "UPDATE users SET password_hash = NULL, email_verified = true WHERE id = $1",
-            user_id
-        )
-        .execute(&mut *tx)
-        .await?;
-        // #987: as wherever a password is written (#957), no reset link
-        // outlives the one erased here.
-        super::delete_password_reset_tokens(&mut *tx, user_id).await?;
-        revoke_all_sessions(&mut *tx, user_id, None).await?;
+        take_over(&mut tx, user_id).await?;
     }
 
     tx.commit().await?;
@@ -483,6 +483,21 @@ pub(crate) async fn sign_in_profile(
     set_session_cookie(cookies, &token, state.secure_cookies);
 
     Ok(SignIn::Session)
+}
+
+/// The writes of [`Binding::ClaimUnverified`], bar the identity: the
+/// password erased, with its reset links (#987, as wherever a password is
+/// written, #957), the address marked verified, and every session closed.
+async fn take_over(tx: &mut sqlx::PgConnection, user_id: uuid::Uuid) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE users SET password_hash = NULL, email_verified = true WHERE id = $1",
+        user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    super::delete_password_reset_tokens(&mut *tx, user_id).await?;
+    revoke_all_sessions(&mut *tx, user_id, None).await?;
+    Ok(())
 }
 
 #[cfg(test)]
