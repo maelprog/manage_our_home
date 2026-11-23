@@ -1656,6 +1656,96 @@ test.describe("Agenda — événements privés (#621)", () => {
     await cContext.close();
   });
 
+  // #986: the API lets a participant of a private event modify it whatever
+  // the family's `agenda_edit` threshold (#620); the site follows. On a
+  // shared event, being in « pour qui » grants nothing.
+  test("sous le seuil, un membre de « pour qui » modifie l'événement privé, pas le partagé (#986)", async ({
+    page,
+    browser,
+  }) => {
+    test.slow();
+    const family = "Famille Leçons";
+    await registerAndLogin(page, "e2e-agprivedit", "Ariane Créatrice");
+    await createGroup(page, family);
+    const toB = await invitation(page, family);
+    const bContext = await browser.newContext({ reducedMotion: "reduce" });
+    const b = await bContext.newPage();
+    await registerAndLogin(b, "e2e-agprivedb", "Bérénice Invitée");
+    await join(b, toB);
+
+    const [first, third, fourth] = [10, 12, 13].map(dayThisMonth);
+    // A private daily series for B, and a shared event for B, both by A.
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Leçon de Bérénice");
+    await page.getByLabel("Début").fill(`${first}T17:00`);
+    await page.getByLabel("Fin").fill(`${first}T18:00`);
+    await page.getByRole("checkbox", { name: "Événement récurrent" }).check();
+    await page.getByLabel("Fréquence").selectOption("daily");
+    await page.getByRole("checkbox", { name: "Bérénice Invitée" }).check();
+    await privateBox(page).check();
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+    await page.goto("/agenda/new");
+    await page.getByLabel("Titre").fill("Goûter de Bérénice");
+    await page.getByLabel("Début").fill(`${first}T09:00`);
+    await page.getByLabel("Fin").fill(`${first}T10:00`);
+    await page.getByRole("checkbox", { name: "Bérénice Invitée" }).check();
+    await page.getByRole("button", { name: "Créer l'événement" }).click();
+    await expect(page).toHaveURL(/\/agenda\?notice=event_created$/);
+
+    const lesson = await eventId(b, first, "Leçon de Bérénice");
+    const snack = await eventId(b, first, "Goûter de Bérénice");
+    const occurrenceOn = (day: string) =>
+      b.locator(`a.bar[href*="occ=${day}T"]`, { hasText: "Leçon de Bérénice" });
+
+    // The private series: B, a standard member under the `admin` default,
+    // gets the controls on an occurrence, its edit form, and saves.
+    await b.goto(`/agenda?date=${first}`);
+    await occurrenceOn(third).click();
+    await expect(b.getByRole("heading", { name: "Leçon de Bérénice" })).toBeVisible();
+    await expect(b.getByText(/^Seuls le créateur/)).toHaveCount(0);
+    await expect(b.getByRole("link", { name: "Supprimer" })).toBeVisible();
+    await b.getByRole("link", { name: "Modifier" }).click();
+    await b
+      .getByRole("group", { name: "Appliquer la modification à" })
+      .getByRole("radio", { name: "Cet événement uniquement" })
+      .check();
+    await b.getByLabel("Titre").fill("Leçon déplacée");
+    await b.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(b.getByText("Événement mis à jour.")).toBeVisible();
+    await expect(b.getByRole("heading", { name: "Leçon déplacée" })).toBeVisible();
+
+    // The series whole: its edit form opens and saves.
+    await b.goto(`/agenda/${lesson}/edit`);
+    await expect(b.getByRole("heading", { name: "Action non autorisée" })).toHaveCount(0);
+    await b.getByLabel("Lieu").fill("Salle de musique");
+    await b.getByRole("button", { name: "Enregistrer" }).click();
+    await expect(b.getByText("Événement mis à jour.")).toBeVisible();
+
+    // An occurrence's delete screen opens, and deletes that one alone.
+    await b.goto(`/agenda?date=${first}`);
+    await occurrenceOn(fourth).click();
+    await b.getByRole("link", { name: "Supprimer" }).click();
+    await expect(b.getByRole("heading", { name: "Supprimer — Leçon de Bérénice" })).toBeVisible();
+    await b.getByRole("radio", { name: "Cet événement uniquement" }).check();
+    await b.getByRole("button", { name: "Supprimer" }).click();
+    await b.goto(`/agenda?date=${first}`);
+    await expect(occurrenceOn(fourth)).toHaveCount(0);
+    await expect(occurrenceOn(first)).toHaveCount(1);
+
+    // The shared event B is in « pour qui » of: still reserved.
+    await b.goto(`/agenda/${snack}`);
+    await expect(
+      b.getByText("Seuls le créateur, les administrateurs et le propriétaire peuvent modifier ou supprimer"),
+    ).toBeVisible();
+    await expect(b.getByRole("link", { name: "Modifier" })).toHaveCount(0);
+    await expect(b.getByRole("button", { name: "Supprimer" })).toHaveCount(0);
+    await b.goto(`/agenda/${snack}/edit`);
+    await expect(b.getByRole("heading", { name: "Action non autorisée" })).toBeVisible();
+
+    await bContext.close();
+  });
+
   test("la case se coche et s'envoie sans JavaScript", async ({ browser }) => {
     const context = await browser.newContext({ javaScriptEnabled: false, reducedMotion: "reduce" });
     const page = await context.newPage();

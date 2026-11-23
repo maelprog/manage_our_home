@@ -34,8 +34,8 @@ use super::new::{
 };
 use super::{
     agenda_cookie, all_day_field_values, can_modify, date_only, event_not_found_page,
-    family_context_for, fmt_paris, forbidden_page, form_bounds, service_unavailable_page,
-    to_datetime_local, with_family, EventFamily,
+    family_context_for, fmt_paris, forbidden_page, form_bounds, is_private_participant,
+    service_unavailable_page, to_datetime_local, with_family, EventFamily,
 };
 
 /// The line under the assignee picker explaining what an empty selection
@@ -483,6 +483,12 @@ pub async fn get(
         &fam.role,
         &fam.edit_min_role,
         event.created_by == me.user_id,
+        is_private_participant(
+            event.is_private,
+            me.user_id,
+            event.created_by,
+            &event.assignee_ids,
+        ),
     ) {
         return forbidden_page().into_response();
     }
