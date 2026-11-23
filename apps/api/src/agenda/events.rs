@@ -1161,8 +1161,9 @@ struct Split<'a> {
 ///   (`recurrence::truncated_before`) and a new series carries on from it
 ///   with the rest of its rule (`recurrence::continued_after`), unless the
 ///   request gives it another one. Its exclusions and task completions from
-///   the occurrence on go with it, moved as the series moves
-///   (`recurrence::carried_over`).
+///   the occurrence on go with it, moved as the series moves and onto the
+///   new series' kind when the cut changes `all_day`
+///   (`recurrence::carried_over`, #985).
 ///
 /// In both cases the new event starts where the occurrence did — or where
 /// `starts_at`/`ends_at` move it — and takes every other field the request
@@ -1247,6 +1248,7 @@ async fn split_series(
         _ => recurrence::carried_over(
             &series.exdates,
             series.all_day,
+            all_day,
             occurrence_starts_at,
             starts_at,
         ),
@@ -1372,7 +1374,7 @@ async fn move_completions(
     if !series.is_task || to.rrule.is_none() {
         return Ok(());
     }
-    let (to, new_start) = (to.id, to.starts_at);
+    let new_start = to.starts_at;
     let rows = sqlx::query!(
         "DELETE FROM event_occurrence_completions WHERE event_id = $1 AND occurrence_at >= $2 RETURNING occurrence_at, completed_at, completed_by",
         series.id,
@@ -1382,10 +1384,14 @@ async fn move_completions(
     .await?;
     for row in rows {
         // One instant at a time, so each keeps its own completion.
-        let Some(occurrence_at) =
-            recurrence::carried_over(&[row.occurrence_at], series.all_day, occurrence, new_start)
-                .pop()
-        else {
+        let Some(occurrence_at) = recurrence::carried_over(
+            &[row.occurrence_at],
+            series.all_day,
+            to.all_day,
+            occurrence,
+            new_start,
+        )
+        .pop() else {
             continue;
         };
         sqlx::query!(
@@ -1394,7 +1400,7 @@ async fn move_completions(
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (event_id, occurrence_at) DO NOTHING
             "#,
-            to,
+            to.id,
             occurrence_at,
             row.completed_at,
             row.completed_by,
