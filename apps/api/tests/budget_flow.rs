@@ -2797,9 +2797,14 @@ async fn push_alerts_follows_each_member_s_channel(db: PgPool) {
             pushed.lock().unwrap().push((endpoint, ttl));
             async { manage_our_home::notifications::push::PushOutcome::Delivered }
         };
-    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &entries_of(&ids))
-        .await
-        .unwrap();
+    manage_our_home::budget::alerts::push_alerts(
+        &db,
+        Some(&send_push),
+        common::NO_FCM,
+        &entries_of(&ids),
+    )
+    .await
+    .unwrap();
     let mut pushed = pushed.into_inner().unwrap();
     pushed.sort();
     let day = manage_our_home::budget::alerts::ALERT_PUSH_TTL_SECS;

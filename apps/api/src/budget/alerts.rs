@@ -35,7 +35,7 @@ use crate::error::{AppError, AppResult};
 use crate::groups::access::{min_role_for, Feature};
 use crate::jobs::scheduled_notifications::push_entries;
 use crate::notifications::center::{self, Event, NewNotification};
-use crate::notifications::push;
+use crate::notifications::{fcm, push};
 use crate::stocks::items::day_or_today;
 use crate::AppState;
 
@@ -369,20 +369,26 @@ pub const ALERT_PUSH_TTL_SECS: i64 = 24 * 3600;
 /// notifications (`ReminderChannel::includes_push`), and records each
 /// device's answer as the reminders do (`push_devices`). A member on email
 /// only gets nothing more than the notification centre: no alert is
-/// emailed. Called by [`push_in_background`]; `send_push` is the push
-/// itself, a parameter so that a test can stand in for the push services.
-pub async fn push_alerts<P, PFut>(
+/// emailed. Called by [`push_in_background`]; `send_push` and `send_fcm`
+/// are the pushes themselves, by Web Push and by FCM (#1003), parameters so
+/// that a test can stand in for the push services — `None` for one the
+/// server has not configured.
+pub async fn push_alerts<P, PFut, F, FFut>(
     pool: &sqlx::PgPool,
-    send_push: &P,
+    send_push: Option<&P>,
+    send_fcm: Option<&F>,
     alerted: &[center::Entry],
 ) -> anyhow::Result<()>
 where
     P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
+    F: Fn(String, fcm::Message) -> FFut,
+    FFut: std::future::Future<Output = push::PushOutcome>,
 {
     push_entries(
         pool,
         send_push,
+        send_fcm,
         alerted,
         push::PushKind::BudgetAlert,
         ALERT_PUSH_TTL_SECS,
@@ -392,22 +398,18 @@ where
 
 /// [`push_alerts`] on a task of its own, once the expense's transaction
 /// committed: the request does not wait for the push services. Nothing
-/// without alerted members, nor on a server without a VAPID key.
+/// without alerted members, nor on a server with neither a VAPID key nor
+/// FCM.
 pub(crate) fn push_in_background(state: &AppState, alerted: Vec<center::Entry>) {
-    let Some(vapid) = state.push.clone() else {
-        return;
-    };
-    if alerted.is_empty() {
+    if alerted.is_empty() || (state.push.is_none() && state.fcm.is_none()) {
         return;
     }
     let pool = state.db.clone();
+    let send_push = state.push.clone().map(push::web_sender);
+    let send_fcm = state.fcm.clone().map(fcm::sender);
     tokio::spawn(async move {
-        let client = push::client();
-        let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
-            let (client, vapid) = (client.clone(), vapid.clone());
-            async move { push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await }
-        };
-        if let Err(e) = push_alerts(&pool, &send_push, &alerted).await {
+        let pushed = push_alerts(&pool, send_push.as_ref(), send_fcm.as_ref(), &alerted);
+        if let Err(e) = pushed.await {
             tracing::error!(error = ?e, "failed to push a budget alert");
         }
     });

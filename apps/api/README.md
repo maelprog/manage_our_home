@@ -825,7 +825,7 @@ row over 7 days (`notifications::push::MAX_CONSECUTIVE_FAILURES`,
 that does not expose a subscription's key keeps the old subscription and
 only recovers the second way.
 
-## Android app notifications: the FCM configuration (#1002)
+## Android app notifications: the FCM configuration (#1002, #1003)
 
 The Android app has no Web Push: its device is pushed through Firebase
 Cloud Messaging, and registers its FCM token with
@@ -835,12 +835,25 @@ start-up:
 - **`FCM_PROJECT_ID`** — the Firebase project's id (a Google Cloud project
   id: 6 to 30 lowercase letters, digits or hyphens);
 - **`FCM_SERVICE_ACCOUNT_FILE`** — the path of the service account's JSON
-  key, the credential the pushes will be sent with (#1003). Only its
-  presence is checked at start-up.
+  key, as Google Cloud's console gives it, the credential the pushes are
+  sent with. The account needs the « Firebase Cloud Messaging API Admin »
+  role. The file is read at start-up and its key signs once there.
 
 Both unset or empty, the app's notifications are off: a token is refused
-with 409 `fcm_not_configured`; browsers are unaffected. One set without the
-other, a malformed id or a missing file, the API refuses to start.
+with 409 `fcm_not_configured`, nothing is sent by FCM; browsers are
+unaffected. One set without the other, a malformed id, a missing file, a
+file that is not a service account's key or a key that cannot sign, the
+API refuses to start.
+
+The agenda changes, the budget alerts and the expiry recap are pushed to
+each `fcm` device of a member whose channel includes notifications, by
+FCM's HTTP v1 API (`notifications::fcm`), as the service account: an
+access token is fetched from Google's token endpoint and kept until a
+minute before it expires. The message is data only — the kind and the
+opaque ids of the notification centre's entries, no text — and is not
+encrypted for the device. The reminders are not sent by FCM: the app
+schedules them on the phone (#668). A device FCM answers `UNREGISTERED`
+(or 404) is forgotten; other failures count as a browser's do.
 
 ## Barcode scan: Open Food Facts (#402)
 

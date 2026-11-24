@@ -1183,10 +1183,10 @@ mod tests {
     /// assertion built on it has to be looked at.
     ///
     /// Two of them are the controller's identity (#131), filled by
-    /// `docs/v2-deployment.md` #16. The other three are the subprocessor
+    /// `docs/v2-deployment.md` #16. The other four are the subprocessor
     /// questions still open: what contract actually binds the email
-    /// subprocessor, and which transfer mechanism covers Google and the
-    /// browsers' push services. Neither the policy nor the registre asserts an
+    /// subprocessor and Firebase Cloud Messaging (#1003), and which transfer
+    /// mechanism covers Google and the browsers' push services. Neither the policy nor the registre asserts an
     /// answer, and `docs/v2-deployment.md` #18 is what closes them. The email
     /// relay's own transfer question is no longer one of them: Scaleway TEM
     /// (#328) declares no processing outside the EU, and both documents say so
@@ -1197,6 +1197,7 @@ mod tests {
         let mut values = pending_controller_values();
         values.extend([
             "cadre contractuel du sous-traitant email".to_string(),
+            "cadre contractuel de Firebase Cloud Messaging".to_string(),
             "transferts hors UE de Google".to_string(),
             "transferts hors UE des services de notification".to_string(),
         ]);
@@ -3054,7 +3055,7 @@ mod tests {
         // to come through that list.
         assert_eq!(release_placeholders(md), pending_release_values());
         assert!(!md.contains("placeholder_name"));
-        // Every placeholder — the two of #131 and the three subprocessor
+        // Every placeholder — the two of #131 and the four subprocessor
         // questions of #136 — survives the renderer as readable text rather
         // than being swallowed as a link label.
         for pending in pending_release_values() {
@@ -3970,7 +3971,7 @@ adressez la demande au responsable de traitement, à l'adresse ci-dessus."
         // reason to appoint. Both are still `[… — à renseigner avant la mise
         // en ligne]`, and they are exactly the two the RGPD documents carry
         // for the controller: the day those are filled, this body is filled
-        // with them (#131). The three subprocessor placeholders the documents
+        // with them (#131). The four subprocessor placeholders the documents
         // also carry (#136) have no place in an invitation email.
         let body = invitation_sample();
         assert_eq!(release_placeholders(&body), pending_controller_values());

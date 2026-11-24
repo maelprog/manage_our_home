@@ -135,10 +135,11 @@ pub struct AppState {
     /// configured, notifications are off on this server — no device can
     /// subscribe, and members who chose them are warned they get nothing.
     pub push: Option<std::sync::Arc<notifications::push::Vapid>>,
-    /// The server's FCM configuration for the Android app (#1002), from
+    /// The server's FCM sender for the Android app (#1002, #1003), from
     /// `FCM_PROJECT_ID`/`FCM_SERVICE_ACCOUNT_FILE`. `None`: no
-    /// configuration, the app's devices cannot register their token.
-    pub fcm: Option<std::sync::Arc<notifications::fcm::FcmConfig>>,
+    /// configuration, the app's devices cannot register their token, and
+    /// nothing is sent by FCM.
+    pub fcm: Option<std::sync::Arc<notifications::fcm::FcmSender>>,
     /// Open Food Facts, asked for the product behind a scanned code (#402).
     /// `stocks::openfoodfacts::DEFAULT_BASE_URL` unless
     /// `OPENFOODFACTS_BASE_URL` says otherwise; tests point it at a local

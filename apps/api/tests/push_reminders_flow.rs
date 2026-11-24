@@ -1544,9 +1544,14 @@ async fn push_an_alert(db: &PgPool, member: Uuid) {
         |_: String, _: i64, _: Option<manage_our_home::notifications::push::Payload>| async {
             PushOutcome::Delivered
         };
-    manage_our_home::budget::alerts::push_alerts(db, &delivered, &entries_of(&[member]))
-        .await
-        .unwrap();
+    manage_our_home::budget::alerts::push_alerts(
+        db,
+        Some(&delivered),
+        common::NO_FCM,
+        &entries_of(&[member]),
+    )
+    .await
+    .unwrap();
 }
 
 async fn push_an_agenda_change(db: &PgPool, member: Uuid) {
@@ -1554,9 +1559,14 @@ async fn push_an_agenda_change(db: &PgPool, member: Uuid) {
         |_: String, _: i64, _: Option<manage_our_home::notifications::push::Payload>| async {
             PushOutcome::Delivered
         };
-    manage_our_home::agenda::change_notices::push_changes(db, &delivered, &entries_of(&[member]))
-        .await
-        .unwrap();
+    manage_our_home::agenda::change_notices::push_changes(
+        db,
+        Some(&delivered),
+        common::NO_FCM,
+        &entries_of(&[member]),
+    )
+    .await
+    .unwrap();
 }
 
 async fn pending_kind(db: &PgPool, endpoint: &str) -> Option<String> {
@@ -1681,7 +1691,8 @@ async fn an_agenda_change_is_pushed_on_the_channels_that_push(db: PgPool) {
         };
     manage_our_home::agenda::change_notices::push_changes(
         &db,
-        &send_push,
+        Some(&send_push),
+        common::NO_FCM,
         &entries_of(&[on_push, on_both, on_email]),
     )
     .await
@@ -1951,7 +1962,7 @@ async fn a_push_names_every_entry_of_its_member(db: PgPool) {
             named.lock().unwrap().push(read);
             async { PushOutcome::Delivered }
         };
-    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &entries)
+    manage_our_home::budget::alerts::push_alerts(&db, Some(&send_push), common::NO_FCM, &entries)
         .await
         .unwrap();
     let mut ids: Vec<String> = entries.iter().map(|e| e.id.to_string()).collect();
@@ -2081,9 +2092,14 @@ async fn a_native_device_is_never_web_pushed(db: PgPool) {
             alerted.lock().unwrap().push(endpoint);
             async { PushOutcome::Delivered }
         };
-    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &entries_of(&[member]))
-        .await
-        .unwrap();
+    manage_our_home::budget::alerts::push_alerts(
+        &db,
+        Some(&send_push),
+        common::NO_FCM,
+        &entries_of(&[member]),
+    )
+    .await
+    .unwrap();
     assert_eq!(alerted.into_inner().unwrap(), [MOZILLA]);
 
     let native: (i32, Option<String>, i32) = sqlx::query_as(

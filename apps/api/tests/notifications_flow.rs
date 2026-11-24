@@ -881,7 +881,9 @@ async fn the_recap_push_follows_each_member_s_channel(db: PgPool) {
             pushed.lock().unwrap().push(endpoint);
             async { PushOutcome::Delivered }
         };
-    push_recap(&db, &send_push, &done.entries).await.unwrap();
+    push_recap(&db, Some(&send_push), common::NO_FCM, &done.entries)
+        .await
+        .unwrap();
     let mut pushed = pushed.into_inner().unwrap();
     pushed.sort();
     assert_eq!(
@@ -919,7 +921,9 @@ async fn the_recap_is_pushed_to_the_members_who_have_a_device(db: PgPool) {
             pushed.lock().unwrap().push((endpoint, ttl));
             async { PushOutcome::Delivered }
         };
-    push_recap(&db, &send_push, &done.entries).await.unwrap();
+    push_recap(&db, Some(&send_push), common::NO_FCM, &done.entries)
+        .await
+        .unwrap();
     assert_eq!(
         pushed.into_inner().unwrap(),
         [(endpoint.to_string(), RECAP_PUSH_TTL_SECS)]
@@ -1018,7 +1022,9 @@ async fn the_recap_s_push_names_the_rows_of_the_centre(db: PgPool) {
             pushed.lock().unwrap().push((endpoint, named));
             async { PushOutcome::Delivered }
         };
-    push_recap(&db, &send_push, &done.entries).await.unwrap();
+    push_recap(&db, Some(&send_push), common::NO_FCM, &done.entries)
+        .await
+        .unwrap();
     let mut pushed = pushed.into_inner().unwrap();
     pushed.sort_by(|a, b| a.0.cmp(&b.0));
 

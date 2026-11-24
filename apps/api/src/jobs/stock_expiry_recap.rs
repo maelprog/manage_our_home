@@ -42,7 +42,7 @@ use crate::attachment_reconcile::ensure_bypasses_rls;
 use crate::jobs::scheduled_notifications::push_entries;
 use crate::jobs::single_runner::{exclusively, Job};
 use crate::notifications::center::{self, Event, NewNotification};
-use crate::notifications::push;
+use crate::notifications::{fcm, push};
 
 /// How often the worker looks for the members whose recap is due: a recap
 /// goes at most this late after its member's hour.
@@ -90,12 +90,18 @@ pub fn in_recap(
 
 /// Polling worker. `pool` must be the `BYPASSRLS` admin pool
 /// (`AppState.admin_db`): it reads `stock_items`, `group_members` and
-/// `users` and writes `notifications` across every family. Without a VAPID
-/// key the recap goes to the notification centre only.
-pub async fn run(pool: PgPool, vapid: Option<std::sync::Arc<push::Vapid>>) {
+/// `users` and writes `notifications` across every family. Pushed to the
+/// browsers with a VAPID key, to the Android app's devices with FCM
+/// (#1003); with neither, the recap goes to the notification centre only.
+pub async fn run(
+    pool: PgPool,
+    vapid: Option<std::sync::Arc<push::Vapid>>,
+    fcm: Option<std::sync::Arc<fcm::FcmSender>>,
+) {
     let mut ticker = interval(RECAP_POLL_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let client = push::client();
+    let send_push = vapid.map(push::web_sender);
+    let send_fcm = fcm.map(fcm::sender);
     loop {
         ticker.tick().await;
         let (today, hour) = paris_clock(Utc::now());
@@ -117,14 +123,9 @@ pub async fn run(pool: PgPool, vapid: Option<std::sync::Arc<push::Vapid>>) {
         if entries.is_empty() {
             continue;
         }
-        if let Some(vapid) = &vapid {
-            let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
-                let (client, vapid) = (client.clone(), vapid.clone());
-                async move { push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await }
-            };
-            if let Err(e) = push_recap(&pool, &send_push, &entries).await {
-                tracing::error!(error = ?e, "failed to push the stock expiry recap");
-            }
+        let pushed = push_recap(&pool, send_push.as_ref(), send_fcm.as_ref(), &entries);
+        if let Err(e) = pushed.await {
+            tracing::error!(error = ?e, "failed to push the stock expiry recap");
         }
     }
 }
@@ -250,21 +251,26 @@ pub async fn recap(pool: &PgPool, today: NaiveDate, hour: u32) -> anyhow::Result
 /// Pushes the devices of the members of `entries` whose channel includes
 /// notifications (`ReminderChannel::includes_push`), recording each
 /// device's answer as the reminders do (`push_entries`): one push per
-/// member, naming their recaps. `send_push` is the
-/// push itself, a parameter so that a test can stand in for the push
-/// services.
-pub async fn push_recap<P, PFut>(
+/// member and device, naming their recaps. `send_push` and `send_fcm` are
+/// the pushes themselves, by Web Push and by FCM (#1003), parameters so
+/// that a test can stand in for the push services — `None` for one the
+/// server has not configured.
+pub async fn push_recap<P, PFut, F, FFut>(
     pool: &PgPool,
-    send_push: &P,
+    send_push: Option<&P>,
+    send_fcm: Option<&F>,
     entries: &[center::Entry],
 ) -> anyhow::Result<()>
 where
     P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
+    F: Fn(String, fcm::Message) -> FFut,
+    FFut: std::future::Future<Output = push::PushOutcome>,
 {
     push_entries(
         pool,
         send_push,
+        send_fcm,
         entries,
         push::PushKind::StockExpiry,
         RECAP_PUSH_TTL_SECS,

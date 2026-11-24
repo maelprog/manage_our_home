@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::agenda::reminders::{refill_notifications, EventTimes};
 use crate::email::{template, EmailContent, EmailSender};
 use crate::jobs::single_runner::{exclusively, Job};
-use crate::notifications::{center, push, ReminderChannel};
+use crate::notifications::{center, fcm, push, ReminderChannel};
 
 const SEND_POLL_INTERVAL_SECS: u64 = 60;
 const REFILL_POLL_INTERVAL_SECS: u64 = 3600;
@@ -509,13 +509,18 @@ where
 
 /// Pushes the devices of the members of `entries` whose channel includes
 /// notifications (`ReminderChannel::includes_push`), active accounts only:
-/// one push per member per device ([`push_devices`]), naming that
-/// member's entries (`center::by_member`, #862). The push of the budget
-/// alerts (#536), of the agenda changes (#851) and of the expiry recap
-/// (#566).
-pub(crate) async fn push_entries<P, PFut>(
+/// one push per member per device, naming that member's entries
+/// (`center::by_member`, #862) — their browsers by Web Push
+/// ([`push_devices`], `send_push`), and the Android app's devices by FCM
+/// ([`push_fcm_devices`], `send_fcm`, #1003) when `kind` goes by FCM
+/// (`fcm::sends`). `None` for a channel the server has not configured
+/// (no VAPID key, no FCM): its devices are left alone. The push of the
+/// budget alerts (#536), of the agenda changes (#851) and of the expiry
+/// recap (#566).
+pub(crate) async fn push_entries<P, PFut, F, FFut>(
     pool: &PgPool,
-    send_push: &P,
+    send_push: Option<&P>,
+    send_fcm: Option<&F>,
     entries: &[center::Entry],
     kind: push::PushKind,
     ttl: i64,
@@ -523,7 +528,13 @@ pub(crate) async fn push_entries<P, PFut>(
 where
     P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
+    F: Fn(String, fcm::Message) -> FFut,
+    FFut: std::future::Future<Output = push::PushOutcome>,
 {
+    let send_fcm = send_fcm.filter(|_| fcm::sends(kind));
+    if send_push.is_none() && send_fcm.is_none() {
+        return Ok(());
+    }
     let by_member = center::by_member(entries);
     let members: Vec<Uuid> = by_member.iter().map(|(member, _)| *member).collect();
     let channels: std::collections::HashMap<Uuid, String> = sqlx::query!(
@@ -541,15 +552,27 @@ where
             .get(&member)
             .and_then(|channel| ReminderChannel::parse(channel))
             .is_some_and(ReminderChannel::includes_push);
-        if pushes {
+        if !pushes {
+            continue;
+        }
+        if let Some(send_push) = send_push {
             push_devices(pool, send_push, member, kind, ttl, &ids).await?;
+        }
+        if let Some(send_fcm) = send_fcm {
+            let message = fcm::Message {
+                kind,
+                entries: ids,
+                ttl_secs: ttl,
+            };
+            push_fcm_devices(pool, send_fcm, member, &message).await?;
         }
     }
     Ok(())
 }
 
 /// Pushes every browser of `user` — its `web` devices: an Android device's
-/// FCM token (#1001) is no Web Push endpoint — up to
+/// FCM token (#1001) is no Web Push endpoint, [`push_fcm_devices`] pushes
+/// it — up to
 /// [`MAX_CONCURRENT_DEVICES`] at once, with a TTL of `ttl` seconds, and
 /// records each one's answer. Every
 /// device is pushed and recorded even when one fails to be; the first such
@@ -571,15 +594,7 @@ where
     P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
 {
-    let devices = sqlx::query_as!(
-        Device,
-        r#"SELECT id, endpoint, consecutive_failures, failing_since, p256dh, auth
-                   FROM push_subscriptions WHERE user_id = $1 AND platform = 'web'
-                   ORDER BY created_at"#,
-        user,
-    )
-    .fetch_all(pool)
-    .await?;
+    let devices = devices_of(pool, user, "web").await?;
     let plaintext = push::payload(entries);
 
     let mut in_flight = FuturesOrdered::new();
@@ -597,7 +612,65 @@ where
     answers.into_iter().collect()
 }
 
-/// A subscribed device, as [`push_devices`] reads it.
+/// The devices of `user` on `platform` (`web` or `fcm`), oldest first.
+async fn devices_of(pool: &PgPool, user: Uuid, platform: &str) -> anyhow::Result<Vec<Device>> {
+    Ok(sqlx::query_as!(
+        Device,
+        r#"SELECT id, endpoint, consecutive_failures, failing_since, p256dh, auth
+                   FROM push_subscriptions WHERE user_id = $1 AND platform = $2
+                   ORDER BY created_at"#,
+        user,
+        platform,
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Pushes `message` by FCM to every Android device of `user` — its `fcm`
+/// devices, #1003 — up to [`MAX_CONCURRENT_DEVICES`] at once, and records
+/// each one's answer as a browser's ([`push::device_after`]): FCM's
+/// `UNREGISTERED` forgets the device. No pending push is counted: the
+/// message tells the app its kind (`fcm::message_body`), which a browser
+/// asks the site for. Every device is pushed and recorded even when one
+/// fails to be; the first such error is returned once they all answered.
+async fn push_fcm_devices<F, FFut>(
+    pool: &PgPool,
+    send_fcm: &F,
+    user: Uuid,
+    message: &fcm::Message,
+) -> anyhow::Result<()>
+where
+    F: Fn(String, fcm::Message) -> FFut,
+    FFut: std::future::Future<Output = push::PushOutcome>,
+{
+    let devices = devices_of(pool, user, "fcm").await?;
+    let push = |device: Device| async move {
+        let outcome = send_fcm(device.endpoint, message.clone()).await;
+        record_device(
+            pool,
+            device.id,
+            &outcome,
+            device.consecutive_failures,
+            device.failing_since,
+        )
+        .await
+    };
+    let mut in_flight = FuturesOrdered::new();
+    let mut answers = Vec::with_capacity(devices.len());
+    for device in devices {
+        if in_flight.len() == MAX_CONCURRENT_DEVICES {
+            answers.extend(in_flight.next().await);
+        }
+        in_flight.push_back(push(device));
+    }
+    while let Some(answer) = in_flight.next().await {
+        answers.push(answer);
+    }
+    answers.into_iter().collect()
+}
+
+/// A subscribed device, as [`push_devices`] and [`push_fcm_devices`] read
+/// it.
 struct Device {
     id: Uuid,
     endpoint: String,
