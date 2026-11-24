@@ -98,6 +98,19 @@ spec:
             - name: VAPID_PRIVATE_KEY
               valueFrom:
                 secretKeyRef: {name: api-secrets, key: VAPID_PRIVATE_KEY, optional: true}
+            # The Android app's notifications by FCM (#1002, #1003), from
+            # the Secret `fcm`, optional as a whole: absent, both variables
+            # are unset and the app's notifications are off; present, the
+            # API reads the service account's key where FCM_SERVICE_ACCOUNT_FILE
+            # says — the `fcm` volume below. The path is in the Secret
+            # with the rest so that neither variable is ever set without
+            # the other: the API refuses to start on half a configuration.
+            - name: FCM_PROJECT_ID
+              valueFrom:
+                secretKeyRef: {name: fcm, key: FCM_PROJECT_ID, optional: true}
+            - name: FCM_SERVICE_ACCOUNT_FILE
+              valueFrom:
+                secretKeyRef: {name: fcm, key: FCM_SERVICE_ACCOUNT_FILE, optional: true}
             - name: SMTP_USERNAME
               valueFrom:
                 secretKeyRef: {name: api-secrets, key: SMTP_USERNAME}
@@ -116,7 +129,7 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             # The server writes nothing to disk (attachments go to MinIO):
-            # no volume, not even /tmp.
+            # no writable volume, not even /tmp.
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
@@ -153,6 +166,12 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 2
+          # FCM's service account key (#1003), read-only; empty without
+          # the Secret `fcm`.
+          volumeMounts:
+            - name: fcm
+              mountPath: /run/secrets/fcm
+              readOnly: true
           lifecycle:
             # The listener closes as soon as SIGTERM arrives (#424), so a
             # request routed to this pod before every node has dropped it
@@ -162,6 +181,18 @@ spec:
             preStop:
               sleep:
                 seconds: 10
+      volumes:
+        # The key file alone, readable by the pod's user (the files of a
+        # Secret volume belong to root): FCM_SERVICE_ACCOUNT_FILE is
+        # /run/secrets/fcm/service-account.json.
+        - name: fcm
+          secret:
+            secretName: fcm
+            optional: true
+            defaultMode: 0444
+            items:
+              - key: service-account.json
+                path: service-account.json
 ---
 apiVersion: v1
 kind: Service
