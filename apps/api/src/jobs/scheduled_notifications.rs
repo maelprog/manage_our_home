@@ -548,8 +548,10 @@ where
     Ok(())
 }
 
-/// Pushes every device of `user`, up to [`MAX_CONCURRENT_DEVICES`] at
-/// once, with a TTL of `ttl` seconds, and records each one's answer. Every
+/// Pushes every browser of `user` — its `web` devices: an Android device's
+/// FCM token (#1001) is no Web Push endpoint — up to
+/// [`MAX_CONCURRENT_DEVICES`] at once, with a TTL of `ttl` seconds, and
+/// records each one's answer. Every
 /// device is pushed and recorded even when one fails to be; the first such
 /// error is returned once they all answered. Also the budget alerts' push
 /// (#536, `budget::alerts::push_alerts`): `kind` is what each device is
@@ -572,7 +574,8 @@ where
     let devices = sqlx::query_as!(
         Device,
         r#"SELECT id, endpoint, consecutive_failures, failing_since, p256dh, auth
-                   FROM push_subscriptions WHERE user_id = $1 ORDER BY created_at"#,
+                   FROM push_subscriptions WHERE user_id = $1 AND platform = 'web'
+                   ORDER BY created_at"#,
         user,
     )
     .fetch_all(pool)
