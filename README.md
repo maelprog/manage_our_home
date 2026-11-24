@@ -165,6 +165,7 @@ listées ci-dessous.
 |---|---|---|
 | `api-secrets` | `DATABASE_URL`, `ADMIN_DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH_ENCRYPTION_KEY`, `MESSAGE_ENCRYPTION_KEY`, `CALENDAR_FEED_ENCRYPTION_KEY`, `LOGIN_THROTTLE_KEY`, `VAPID_PRIVATE_KEY` (facultative), `SMTP_USERNAME`, `SMTP_PASSWORD` | api |
 | `migrate-secrets` | `MIGRATION_DATABASE_URL` | Job `migrate` |
+| `fcm` (facultatif, #1003) | `FCM_PROJECT_ID`, `FCM_SERVICE_ACCOUNT_FILE` (`/run/secrets/fcm/service-account.json`), `service-account.json` (la clé JSON du compte de service, rôle « Firebase Cloud Messaging API Admin ») | api : les deux variables, et la clé montée en lecture seule sous `/run/secrets/fcm`. Absent, les notifications de l'application Android sont coupées |
 | `minio` | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | MinIO, le Job `minio-bucket`, et api (ses `MINIO_ACCESS_KEY` et `MINIO_SECRET_KEY`) |
 | `postgres-app-role`, `postgres-migration-role`, `postgres-admin-role` | `username`, `password` (type `kubernetes.io/basic-auth`) | Cluster `postgres` : mot de passe de chaque rôle |
 | `postgres-backup` | `ACCESS_KEY_ID`, `ACCESS_SECRET_KEY`, `REGION` (`fr-par`) | Cluster `postgres` : clé du bucket de sauvegarde |
