@@ -34,7 +34,7 @@ use crate::agenda::is_participant;
 use crate::error::AppResult;
 use crate::jobs::scheduled_notifications::push_entries;
 use crate::notifications::center::{self, AgendaChanges};
-use crate::notifications::push;
+use crate::notifications::{fcm, push};
 use crate::AppState;
 
 /// Who sees an event: everyone in the family when it is shared, its
@@ -447,20 +447,26 @@ pub const CHANGE_PUSH_TTL_SECS: i64 = 24 * 3600;
 /// Pushes the devices of the members `told` whose channel includes
 /// notifications (`ReminderChannel::includes_push`), recording each
 /// device's answer as the reminders do (`push_entries`). Called by
-/// [`push_in_background`]; `send_push` is the push itself, a parameter so
-/// that a test can stand in for the push services.
-pub async fn push_changes<P, PFut>(
+/// [`push_in_background`]; `send_push` and `send_fcm` are the pushes
+/// themselves, by Web Push and by FCM (#1003), parameters so that a test
+/// can stand in for the push services — `None` for one the server has not
+/// configured.
+pub async fn push_changes<P, PFut, F, FFut>(
     pool: &sqlx::PgPool,
-    send_push: &P,
+    send_push: Option<&P>,
+    send_fcm: Option<&F>,
     told: &[center::Entry],
 ) -> anyhow::Result<()>
 where
     P: Fn(String, i64, Option<push::Payload>) -> PFut,
     PFut: std::future::Future<Output = push::PushOutcome>,
+    F: Fn(String, fcm::Message) -> FFut,
+    FFut: std::future::Future<Output = push::PushOutcome>,
 {
     push_entries(
         pool,
         send_push,
+        send_fcm,
         told,
         push::PushKind::AgendaChange,
         CHANGE_PUSH_TTL_SECS,
@@ -470,22 +476,17 @@ where
 
 /// [`push_changes`] on a task of its own, once the write's transaction
 /// committed: the request does not wait for the push services. Nothing
-/// without members told, nor on a server without a VAPID key.
+/// without members told, nor on a server with neither a VAPID key nor FCM.
 pub(crate) fn push_in_background(state: &AppState, told: Vec<center::Entry>) {
-    let Some(vapid) = state.push.clone() else {
-        return;
-    };
-    if told.is_empty() {
+    if told.is_empty() || (state.push.is_none() && state.fcm.is_none()) {
         return;
     }
     let pool = state.db.clone();
+    let send_push = state.push.clone().map(push::web_sender);
+    let send_fcm = state.fcm.clone().map(fcm::sender);
     tokio::spawn(async move {
-        let client = push::client();
-        let send_push = |endpoint: String, ttl_secs: i64, payload: Option<push::Payload>| {
-            let (client, vapid) = (client.clone(), vapid.clone());
-            async move { push::send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await }
-        };
-        if let Err(e) = push_changes(&pool, &send_push, &told).await {
+        let pushed = push_changes(&pool, send_push.as_ref(), send_fcm.as_ref(), &told);
+        if let Err(e) = pushed.await {
             tracing::error!(error = ?e, "failed to push an agenda change");
         }
     });

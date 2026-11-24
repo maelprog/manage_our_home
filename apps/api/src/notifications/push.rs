@@ -669,6 +669,21 @@ pub fn client() -> reqwest::Client {
         .expect("static reqwest configuration")
 }
 
+/// The push of `vapid` ([`send`], through one [`client`]), as
+/// `push_entries` takes it: the budget alerts' (#536), the agenda
+/// changes' (#851) and the expiry recap's (#566).
+pub fn web_sender(
+    vapid: std::sync::Arc<Vapid>,
+) -> impl Fn(String, i64, Option<Payload>) -> futures::future::BoxFuture<'static, PushOutcome>
+       + Send
+       + Sync {
+    let client = client();
+    move |endpoint, ttl_secs, payload| {
+        let (client, vapid) = (client.clone(), vapid.clone());
+        Box::pin(async move { send(&client, &vapid, &endpoint, ttl_secs, payload.as_ref()).await })
+    }
+}
+
 /// What a push carries (#862): [`payload`], in the clear until [`send`]
 /// encrypts it for the device's `keys`.
 #[derive(Debug, Clone)]

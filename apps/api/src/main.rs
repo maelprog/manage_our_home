@@ -149,9 +149,11 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // The Android app's notifications (#1002). Unset: its devices cannot
-    // register; set but unusable: refuse to start.
-    let fcm = manage_our_home::notifications::fcm::FcmConfig::from_env()?.map(std::sync::Arc::new);
+    // The Android app's notifications (#1002, #1003). Unset: its devices
+    // cannot register, nothing is sent by FCM; set but unusable — one
+    // variable without the other, the file missing, not a service
+    // account's, or its key unable to sign —: refuse to start.
+    let fcm = manage_our_home::notifications::fcm::FcmSender::from_env()?.map(std::sync::Arc::new);
     if fcm.is_none() {
         tracing::warn!(
             "{} unset — the Android app's devices cannot register for notifications on this server",
@@ -378,10 +380,12 @@ async fn main() -> anyhow::Result<()> {
     // the pass refuses to run without BYPASSRLS (#534).
     tokio::spawn(jobs::stock_expiry::run(state.admin_db.clone()));
     // Same pool, same reason: the daily recap of those items (#566), pushed
-    // to the devices too when the server has a VAPID key.
+    // to the browsers too when the server has a VAPID key, and to the
+    // Android app's devices when it has FCM (#1003).
     tokio::spawn(jobs::stock_expiry_recap::run(
         state.admin_db.clone(),
         state.push.clone(),
+        state.fcm.clone(),
     ));
     // On the application pool: `school_holidays` is a public cache without
     // RLS (#563). The first pass runs at start-up, then once a day.

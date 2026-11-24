@@ -12,6 +12,41 @@ use sqlx::PgPool;
 // TODO: remove #[allow(dead_code)] once every integration test binary uses
 // this helper (clippy sees each test binary's copy separately, and flags
 // helpers unused by that particular binary as dead code).
+/// An FCM sender with the test service account
+/// (`tests/fixtures/fcm/service_account.json`), its token endpoint and
+/// FCM's API both at `base_url` (`/token`, `/v1/projects/…`) (#1003).
+#[allow(dead_code)]
+pub fn test_fcm_sender(base_url: &str) -> manage_our_home::notifications::fcm::FcmSender {
+    let config = manage_our_home::notifications::fcm::FcmConfig::new(
+        "manage-our-home-test",
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fcm/service_account.json"
+        ),
+    )
+    .unwrap();
+    manage_our_home::notifications::fcm::FcmSender::load(&config)
+        .unwrap()
+        .with_endpoints(&format!("{base_url}/token"), base_url)
+}
+
+/// The FCM sender of a test of the web push alone (#1003): none.
+#[allow(dead_code)]
+pub type NoFcm = fn(
+    String,
+    manage_our_home::notifications::fcm::Message,
+) -> std::future::Ready<manage_our_home::notifications::push::PushOutcome>;
+#[allow(dead_code)]
+pub const NO_FCM: Option<&NoFcm> = None;
+
+/// The web push of a test of FCM alone (#1003), as `None::<&NoWeb>`.
+#[allow(dead_code)]
+pub type NoWeb = fn(
+    String,
+    i64,
+    Option<manage_our_home::notifications::push::Payload>,
+) -> std::future::Ready<manage_our_home::notifications::push::PushOutcome>;
+
 #[allow(dead_code)]
 pub fn test_state(db: PgPool) -> AppState {
     let google_oauth = BasicClient::new(ClientId::new("test-client-id".into()))
@@ -137,15 +172,10 @@ pub fn test_state(db: PgPool) -> AppState {
             .unwrap(),
         )),
         // The Android app's notifications on (#1002): a token can be
-        // registered. The file is not read before #1003. Tests of a server
-        // without FCM build their own state.
-        fcm: Some(std::sync::Arc::new(
-            manage_our_home::notifications::fcm::FcmConfig::new(
-                "manage-our-home-test",
-                "/nonexistent/fcm-service-account.json",
-            )
-            .unwrap(),
-        )),
+        // registered. Nothing listens where it sends (#1003): no test
+        // reaches Google. Tests of a server without FCM build their own
+        // state; `fcm_push_flow` points its own at a local stand-in.
+        fcm: Some(std::sync::Arc::new(test_fcm_sender("http://127.0.0.1:1"))),
         // Nothing listens there: no test reaches the real Open Food Facts.
         // The scan tests that need an answer point this at a local stub.
         openfoodfacts_base_url: "http://127.0.0.1:1".into(),

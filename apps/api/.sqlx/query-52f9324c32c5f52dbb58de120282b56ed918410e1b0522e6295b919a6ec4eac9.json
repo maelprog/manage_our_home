@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, endpoint, consecutive_failures, failing_since, p256dh, auth\n                   FROM push_subscriptions WHERE user_id = $1 AND platform = 'web'\n                   ORDER BY created_at",
+  "query": "SELECT id, endpoint, consecutive_failures, failing_since, p256dh, auth\n                   FROM push_subscriptions WHERE user_id = $1 AND platform = $2\n                   ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -72,7 +72,8 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "Text"
       ]
     },
     "nullable": [
@@ -84,5 +85,5 @@
       true
     ]
   },
-  "hash": "c2c6b4232904aa29ac8ea3e59ffe45a9764fa20e08adebd2f14a195b9ff26835"
+  "hash": "52f9324c32c5f52dbb58de120282b56ed918410e1b0522e6295b919a6ec4eac9"
 }
