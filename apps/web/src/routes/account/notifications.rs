@@ -47,7 +47,8 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Form, Json};
 use manage_our_home_shared::dto::notifications::{
-    NotificationSettings, PushSubscriptionRequest, UpcomingReminder, UpdateNotificationSettings,
+    FcmTokenRequest, NotificationSettings, PushSubscriptionRequest, UpcomingReminder,
+    UpdateNotificationSettings,
 };
 
 use crate::app::{html_escape, shell_with_header, submit_fallback, Width};
@@ -749,6 +750,47 @@ pub async fn subscription(
             .unwrap_or(StatusCode::BAD_GATEWAY)
             .into_response(),
         Err(_) => StatusCode::BAD_GATEWAY.into_response(),
+    }
+}
+
+/// `POST` and `DELETE /account/notifications/fcm-token`, `{"token": …}` —
+/// [`LOCAL_REMINDERS_SCRIPT`]'s calls (#1004), relayed to apps/api's
+/// `/account/fcm-tokens` (#1002): the Android app's push token, registered
+/// on each page (which moves the device's `last_seen_at`), forgotten as
+/// the member logs out. 204 once done, the API's status otherwise (401
+/// without a session, 400 for what cannot be a token, 409 on a server
+/// without FCM), 502 when the API cannot be reached. No `CurrentUser`, as
+/// [`upcoming`]: the API's session check decides, and a redirect to
+/// `/login` would read as a success. JSON only, as [`subscription`].
+pub async fn fcm_token(
+    State(state): State<AppState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    Json(body): Json<FcmTokenRequest>,
+) -> Response {
+    let cookie = account_cookie(&headers);
+    let (relayed, done) = if method == axum::http::Method::DELETE {
+        (reqwest::Method::DELETE, reqwest::StatusCode::NO_CONTENT)
+    } else {
+        (reqwest::Method::POST, reqwest::StatusCode::CREATED)
+    };
+    let result = api_request_auth(
+        &state,
+        relayed,
+        "/account/fcm-tokens",
+        cookie.as_deref(),
+        Some(serde_json::to_value(body).unwrap()),
+    )
+    .await;
+    let no_store = [(header::CACHE_CONTROL, "no-store")];
+    match result {
+        Ok(resp) if resp.status == done => (no_store, StatusCode::NO_CONTENT).into_response(),
+        Ok(resp) => (
+            no_store,
+            StatusCode::from_u16(resp.status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+        )
+            .into_response(),
+        Err(_) => (no_store, StatusCode::BAD_GATEWAY).into_response(),
     }
 }
 

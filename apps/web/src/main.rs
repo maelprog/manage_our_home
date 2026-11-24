@@ -226,6 +226,13 @@ fn build_router(state: AppState) -> Router {
             "/account/notifications/upcoming",
             get(routes::account::notifications::upcoming),
         )
+        // The app's push token (#1004), registered on each page and
+        // forgotten at logout by the same script.
+        .route(
+            "/account/notifications/fcm-token",
+            post(routes::account::notifications::fcm_token)
+                .delete(routes::account::notifications::fcm_token),
+        )
         // What the service worker asks on each push (#536). A `POST`: the
         // answer takes the push off the device's count (#783).
         .route(
@@ -1197,5 +1204,130 @@ mod local_reminders_tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+}
+
+/// The relay of the Android app's push token (#1004) on the real router:
+/// `apps/web/src/local-reminders.js` hands the token to
+/// `/account/notifications/fcm-token`, which goes to apps/api's
+/// `/account/fcm-tokens` with the member's session.
+#[cfg(test)]
+mod fcm_token_tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::body::Body;
+    use axum::http::{header, HeaderMap, Method, Request, StatusCode};
+    use axum::routing::post;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    /// What the fake apps/api saw: method, cookie, body.
+    type Seen = Arc<Mutex<Vec<(Method, Option<String>, serde_json::Value)>>>;
+
+    /// An apps/api whose `/account/fcm-tokens` answers `registered` to a
+    /// POST and `removed` to a DELETE, recording each call.
+    async fn web(registered: StatusCode, removed: StatusCode) -> (Router, Seen) {
+        let seen: Seen = Arc::default();
+        let record = |seen: Seen, status: StatusCode| {
+            move |method: Method, headers: HeaderMap, body: axum::Json<serde_json::Value>| {
+                let seen = seen.clone();
+                async move {
+                    let cookie = headers
+                        .get(header::COOKIE)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    seen.lock().unwrap().push((method, cookie, body.0));
+                    status
+                }
+            }
+        };
+        let app = Router::new().route(
+            "/account/fcm-tokens",
+            post(record(seen.clone(), registered)).delete(record(seen.clone(), removed)),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let router = build_router(AppState {
+            http: reqwest::Client::new(),
+            api_internal_base_url: format!("http://{addr}"),
+            api_public_base_url: "/api".into(),
+            body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
+            upload_gate: manage_our_home_http_guard::UploadGate::production(),
+            shutdown: manage_our_home_http_guard::Shutdown::new(),
+        });
+        (router, seen)
+    }
+
+    async fn send(router: Router, method: Method, body: &str) -> StatusCode {
+        let request = Request::builder()
+            .method(method)
+            .uri("/account/notifications/fcm-token")
+            .header(header::COOKIE, "session=x")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("sec-fetch-site", "same-origin")
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+        router.oneshot(request).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn the_token_goes_to_the_api_with_the_session() {
+        let (router, seen) = web(StatusCode::CREATED, StatusCode::NO_CONTENT).await;
+        let status = send(router, Method::POST, r#"{"token":"tok:en_1"}"#).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(
+                Method::POST,
+                Some("session=x".to_owned()),
+                serde_json::json!({ "token": "tok:en_1" })
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_logout_has_the_api_forget_the_token() {
+        let (router, seen) = web(StatusCode::CREATED, StatusCode::NO_CONTENT).await;
+        let status = send(router, Method::DELETE, r#"{"token":"tok:en_1"}"#).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(
+                Method::DELETE,
+                Some("session=x".to_owned()),
+                serde_json::json!({ "token": "tok:en_1" })
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_apis_refusals_come_back_as_they_are() {
+        // No session, a token the API refuses, a server without FCM.
+        for refused in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::BAD_REQUEST,
+            StatusCode::CONFLICT,
+        ] {
+            let (router, _) = web(refused, refused).await;
+            assert_eq!(
+                send(router.clone(), Method::POST, r#"{"token":"t"}"#).await,
+                refused
+            );
+            assert_eq!(
+                send(router, Method::DELETE, r#"{"token":"t"}"#).await,
+                refused
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn what_is_not_a_token_never_reaches_the_api() {
+        let (router, seen) = web(StatusCode::CREATED, StatusCode::NO_CONTENT).await;
+        let status = send(router, Method::POST, r#"{"endpoint":"x"}"#).await;
+        assert!(status.is_client_error(), "{status}");
+        assert!(seen.lock().unwrap().is_empty());
     }
 }
