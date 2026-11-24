@@ -88,6 +88,9 @@ async fn seed_personal_rows(db: &PgPool, group: Uuid, event: Uuid, user: Uuid, t
          VALUES ($1, 'account_data_exported', 'user', $1::text)",
         "INSERT INTO push_subscriptions (user_id, endpoint)
          VALUES ($1, 'https://fcm.googleapis.com/fcm/send/' || $2)",
+        // The Android app's device (#1002): its FCM token, no keys.
+        "INSERT INTO push_subscriptions (user_id, endpoint, platform)
+         VALUES ($1, 'fcm-token-' || $2, 'fcm')",
     ] {
         let query = sqlx::query(sql).bind(user);
         let query = if sql.contains("$2") {
@@ -234,7 +237,11 @@ async fn personal_rows(db: &PgPool, user: Uuid) -> Vec<(&'static str, i64)> {
         ),
         (
             "push_subscriptions",
-            "SELECT count(*) FROM push_subscriptions WHERE user_id = $1",
+            "SELECT count(*) FROM push_subscriptions WHERE user_id = $1 AND platform = 'web'",
+        ),
+        (
+            "push_subscriptions fcm",
+            "SELECT count(*) FROM push_subscriptions WHERE user_id = $1 AND platform = 'fcm'",
         ),
         (
             "stock_expiry_announcements",
@@ -296,6 +303,7 @@ fn all(n: i64) -> Vec<(&'static str, i64)> {
         "invitations",
         "calendar_imports",
         "push_subscriptions",
+        "push_subscriptions fcm",
         "stock_expiry_announcements",
         "notifications",
         "notifications caused",

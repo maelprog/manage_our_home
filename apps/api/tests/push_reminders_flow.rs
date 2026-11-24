@@ -513,6 +513,413 @@ async fn a_server_without_a_key_takes_no_subscription(db: PgPool) {
     assert_eq!(json_body(res).await["error"], "push_not_configured");
 }
 
+// -- the Android app's devices (#1002) ------------------------------------------
+
+/// The shape of an FCM registration token: an instance id, `:`, `APA91b…`.
+const TOKEN: &str = "dVq3mJ8kTq2xQ9Yw1ZbC0e:APA91bHk3s-Lp_Q7vR2mXy8T0aBcDeFgHiJkLmNoPq";
+
+async fn fcm_call(router: &axum::Router, method: Method, cookie: &str, token: &str) -> StatusCode {
+    call(
+        router,
+        method,
+        "/account/fcm-tokens",
+        Some(cookie),
+        Some(serde_json::json!({ "token": token })),
+    )
+    .await
+    .status()
+}
+
+async fn register_token(router: &axum::Router, cookie: &str, token: &str) -> StatusCode {
+    fcm_call(router, Method::POST, cookie, token).await
+}
+
+async fn remove_token(router: &axum::Router, cookie: &str, token: &str) -> StatusCode {
+    fcm_call(router, Method::DELETE, cookie, token).await
+}
+
+/// The rows of `token`: (platform, has keys, owner's email).
+async fn token_rows(db: &PgPool, token: &str) -> Vec<(String, bool, String)> {
+    sqlx::query_as(
+        "SELECT p.platform, p.p256dh IS NOT NULL OR p.auth IS NOT NULL, u.email
+         FROM push_subscriptions p JOIN users u ON u.id = p.user_id WHERE p.endpoint = $1",
+    )
+    .bind(token)
+    .fetch_all(db)
+    .await
+    .unwrap()
+}
+
+/// A token is stored as an `fcm` device without keys, counted with the
+/// browsers in the settings (the « no device » warning of
+/// `/account/notifications`), and registered again keeps its record.
+#[sqlx::test]
+async fn an_android_device_registers_its_token_and_counts_as_a_device(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "android@example.test").await;
+
+    assert_eq!(
+        register_token(&router, &cookie, TOKEN).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        token_rows(&db, TOKEN).await,
+        vec![("fcm".into(), false, "android@example.test".into())]
+    );
+    assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 1);
+    assert_eq!(
+        subscribe(&router, &cookie, MOZILLA).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 2);
+
+    // Registered again: one row, its dates kept but `last_seen_at`.
+    sqlx::query(
+        "UPDATE push_subscriptions
+         SET created_at = now() - interval '3 days', last_seen_at = now() - interval '3 days',
+             last_success_at = now() - interval '1 day'
+         WHERE endpoint = $1",
+    )
+    .bind(TOKEN)
+    .execute(&db)
+    .await
+    .unwrap();
+    type Dates = (DateTime<Utc>, DateTime<Utc>, Option<DateTime<Utc>>);
+    let dates = || async {
+        sqlx::query_as::<_, Dates>(
+            "SELECT created_at, last_seen_at, last_success_at FROM push_subscriptions
+             WHERE endpoint = $1",
+        )
+        .bind(TOKEN)
+        .fetch_one(&db)
+        .await
+        .unwrap()
+    };
+    let before = dates().await;
+    assert_eq!(
+        register_token(&router, &cookie, TOKEN).await,
+        StatusCode::CREATED
+    );
+    let after = dates().await;
+    assert_eq!((before.0, before.2), (after.0, after.2));
+    assert!(
+        after.1 > Utc::now() - chrono::Duration::minutes(1),
+        "{after:?}"
+    );
+    assert_eq!(token_rows(&db, TOKEN).await.len(), 1);
+    assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 2);
+}
+
+/// Anything that cannot be a token is refused, and nothing is stored —
+/// a browser's endpoint among them: no row moves from one platform to
+/// the other.
+#[sqlx::test]
+async fn a_malformed_token_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "badtoken@example.test").await;
+    let too_long = "A".repeat(manage_our_home::notifications::fcm::MAX_TOKEN_LEN + 1);
+    for token in ["", "ab c", "ab/c", FCM, MOZILLA, too_long.as_str()] {
+        for method in [Method::POST, Method::DELETE] {
+            let res = call(
+                &router,
+                method.clone(),
+                "/account/fcm-tokens",
+                Some(&cookie),
+                Some(serde_json::json!({ "token": token })),
+            )
+            .await;
+            assert_status(&res, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                json_body(res).await["error"],
+                "invalid_fcm_token",
+                "{method} {token}"
+            );
+        }
+    }
+    assert_eq!(device_count(&db).await, 0);
+}
+
+/// A phone signed into another account moves to it, with a fresh record.
+#[sqlx::test]
+async fn a_token_registered_again_by_another_account_moves_to_it(db: PgPool) {
+    let router = test_router(db.clone());
+    let first = register_verify_login(&router, &db, "phone-first@example.test").await;
+    let second = register_verify_login(&router, &db, "phone-second@example.test").await;
+    assert_eq!(
+        register_token(&router, &first, TOKEN).await,
+        StatusCode::CREATED
+    );
+    sqlx::query(
+        "UPDATE push_subscriptions
+         SET created_at = now() - interval '30 days',
+             last_success_at = now() - interval '3 days',
+             consecutive_failures = 2, failing_since = now() - interval '2 days'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        register_token(&router, &second, TOKEN).await,
+        StatusCode::CREATED
+    );
+
+    assert_eq!(
+        token_rows(&db, TOKEN).await,
+        vec![("fcm".into(), false, "phone-second@example.test".into())]
+    );
+    assert_eq!(settings(&router, &first).await["push_subscriptions"], 0);
+    assert_eq!(settings(&router, &second).await["push_subscriptions"], 1);
+    type Record = (
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        i32,
+        Option<DateTime<Utc>>,
+    );
+    let record: Record = sqlx::query_as(
+        "SELECT created_at, last_success_at, consecutive_failures, failing_since
+         FROM push_subscriptions WHERE endpoint = $1",
+    )
+    .bind(TOKEN)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert!(
+        record.0 > Utc::now() - chrono::Duration::days(1),
+        "{record:?}"
+    );
+    assert_eq!((record.1, record.2, record.3), (None, 0, None));
+}
+
+/// The ceiling of 50 devices counts browsers and phones together: the
+/// 51st device, a phone, replaces the least recently used browser; the
+/// 51st again, a browser, the least recently used phone.
+#[sqlx::test]
+async fn the_fifty_devices_count_browsers_and_phones_together(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "mixed@example.test").await;
+    for i in 0..25 {
+        assert_eq!(
+            subscribe(&router, &cookie, &format!("{FCM}-{i}")).await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            register_token(&router, &cookie, &format!("{TOKEN}-{i}")).await,
+            StatusCode::CREATED
+        );
+    }
+    assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 50);
+    sqlx::query("UPDATE push_subscriptions SET last_seen_at = now() - interval '1 hour'")
+        .execute(&db)
+        .await
+        .unwrap();
+    let age = |endpoint: String| {
+        let db = db.clone();
+        async move {
+            sqlx::query(
+                "UPDATE push_subscriptions SET last_seen_at = now() - interval '10 days'
+                 WHERE endpoint = $1",
+            )
+            .bind(endpoint)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+    };
+    let left = |endpoint: String| {
+        let db = db.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM push_subscriptions WHERE endpoint = $1",
+            )
+            .bind(endpoint)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        }
+    };
+
+    age(format!("{FCM}-7")).await;
+    assert_eq!(
+        register_token(&router, &cookie, &format!("{TOKEN}-new")).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(device_count(&db).await, 50);
+    assert_eq!(left(format!("{FCM}-7")).await, 0);
+    assert_eq!(left(format!("{TOKEN}-new")).await, 1);
+
+    age(format!("{TOKEN}-3")).await;
+    assert_eq!(
+        subscribe(&router, &cookie, &format!("{FCM}-new")).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(device_count(&db).await, 50);
+    assert_eq!(left(format!("{TOKEN}-3")).await, 0);
+    assert_eq!(left(format!("{FCM}-new")).await, 1);
+}
+
+/// The ceiling holds when the tokens arrive all at once.
+#[sqlx::test]
+async fn the_ceiling_holds_under_concurrent_tokens(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "tokenrush@example.test").await;
+    let calls = (0..80).map(|i| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move { register_token(&router, &cookie, &format!("{TOKEN}-rush-{i}")).await }
+    });
+    let statuses = futures::future::join_all(calls).await;
+    assert!(
+        statuses.iter().all(|s| *s == StatusCode::CREATED),
+        "{statuses:?}"
+    );
+    assert_eq!(device_count(&db).await, 50);
+}
+
+/// Signing out of the app forgets its device, and that one alone: not the
+/// member's browsers, not another account's phone.
+#[sqlx::test]
+async fn signing_out_of_the_app_removes_its_token(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "signout@example.test").await;
+    let other = register_verify_login(&router, &db, "other-phone@example.test").await;
+    let other_token = format!("{TOKEN}-other");
+    assert_eq!(
+        register_token(&router, &cookie, TOKEN).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        subscribe(&router, &cookie, MOZILLA).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        register_token(&router, &other, &other_token).await,
+        StatusCode::CREATED
+    );
+
+    assert_eq!(
+        remove_token(&router, &cookie, TOKEN).await,
+        StatusCode::NO_CONTENT
+    );
+    assert!(token_rows(&db, TOKEN).await.is_empty());
+    assert_eq!(settings(&router, &cookie).await["push_subscriptions"], 1);
+
+    // Another account's token: nothing said, nothing removed.
+    assert_eq!(
+        remove_token(&router, &cookie, &other_token).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(token_rows(&db, &other_token).await.len(), 1);
+    // Already gone: still 204.
+    assert_eq!(
+        remove_token(&router, &cookie, TOKEN).await,
+        StatusCode::NO_CONTENT
+    );
+}
+
+/// « Remove my devices » removes the phones too.
+#[sqlx::test]
+async fn removing_every_device_removes_the_phones(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "allphones@example.test").await;
+    assert_eq!(
+        register_token(&router, &cookie, TOKEN).await,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        subscribe(&router, &cookie, MOZILLA).await,
+        StatusCode::CREATED
+    );
+
+    let res = call(
+        &router,
+        Method::DELETE,
+        "/account/push-subscriptions",
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    assert_eq!(device_count(&db).await, 0);
+}
+
+#[sqlx::test]
+async fn the_tokens_need_a_session(db: PgPool) {
+    let router = test_router(db.clone());
+    for method in [Method::POST, Method::DELETE] {
+        let res = call(
+            &router,
+            method,
+            "/account/fcm-tokens",
+            None,
+            Some(serde_json::json!({ "token": TOKEN })),
+        )
+        .await;
+        assert_status(&res, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(device_count(&db).await, 0);
+}
+
+/// Without an FCM configuration the API refuses a token rather than store
+/// one nothing will ever be sent to; a token already stored can still be
+/// removed, and the browsers still subscribe.
+#[sqlx::test]
+async fn a_server_without_fcm_takes_no_token(db: PgPool) {
+    let mut state = test_state(db.clone());
+    state.fcm = None;
+    let router = manage_our_home::build_router(state);
+    let cookie = register_verify_login(&router, &db, "nofcm@example.test").await;
+
+    let res = call(
+        &router,
+        Method::POST,
+        "/account/fcm-tokens",
+        Some(&cookie),
+        Some(serde_json::json!({ "token": TOKEN })),
+    )
+    .await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(json_body(res).await["error"], "fcm_not_configured");
+    assert_eq!(device_count(&db).await, 0);
+
+    sqlx::query(
+        "INSERT INTO push_subscriptions (user_id, endpoint, platform)
+         SELECT id, $1, 'fcm' FROM users WHERE email = 'nofcm@example.test'",
+    )
+    .bind(TOKEN)
+    .execute(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        remove_token(&router, &cookie, TOKEN).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(device_count(&db).await, 0);
+    assert_eq!(
+        subscribe(&router, &cookie, MOZILLA).await,
+        StatusCode::CREATED
+    );
+}
+
+/// The art. 15 export carries the phone: its platform and its token.
+#[sqlx::test]
+async fn the_export_carries_the_phones(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "exportphone@example.test").await;
+    assert_eq!(
+        register_token(&router, &cookie, TOKEN).await,
+        StatusCode::CREATED
+    );
+
+    let res = call(&router, Method::GET, "/account/export", Some(&cookie), None).await;
+    assert_status(&res, StatusCode::OK);
+    let doc = json_body(res).await;
+    let devices = doc["push_subscriptions"].as_array().unwrap();
+    assert_eq!(devices.len(), 1, "{devices:?}");
+    assert_eq!(devices[0]["platform"], "fcm");
+    assert_eq!(devices[0]["endpoint"], TOKEN);
+}
+
 // -- the reminder pass ----------------------------------------------------------
 
 async fn insert_user(db: &PgPool, email: &str, channel: &str) -> Uuid {

@@ -825,6 +825,23 @@ row over 7 days (`notifications::push::MAX_CONSECUTIVE_FAILURES`,
 that does not expose a subscription's key keeps the old subscription and
 only recovers the second way.
 
+## Android app notifications: the FCM configuration (#1002)
+
+The Android app has no Web Push: its device is pushed through Firebase
+Cloud Messaging, and registers its FCM token with
+`POST /account/fcm-tokens` (`DELETE` on sign-out). The server reads at
+start-up:
+
+- **`FCM_PROJECT_ID`** — the Firebase project's id (a Google Cloud project
+  id: 6 to 30 lowercase letters, digits or hyphens);
+- **`FCM_SERVICE_ACCOUNT_FILE`** — the path of the service account's JSON
+  key, the credential the pushes will be sent with (#1003). Only its
+  presence is checked at start-up.
+
+Both unset or empty, the app's notifications are off: a token is refused
+with 409 `fcm_not_configured`; browsers are unaffected. One set without the
+other, a malformed id or a missing file, the API refuses to start.
+
 ## Barcode scan: Open Food Facts (#402)
 
 `POST /groups/:id/stock-items/scan` asks Open Food Facts for the product

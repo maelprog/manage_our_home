@@ -149,6 +149,8 @@ pub const SESSION_SCHEME: &str = "session_cookie";
         crate::notifications::center::unread_count,
         crate::notifications::preferences::get_settings,
         crate::notifications::preferences::received,
+        crate::notifications::preferences::register_fcm_token,
+        crate::notifications::preferences::remove_fcm_token,
         crate::notifications::preferences::subscribe,
         crate::notifications::preferences::unsubscribe_all,
         crate::notifications::preferences::update_settings,

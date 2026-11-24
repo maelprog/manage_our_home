@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO push_subscriptions (user_id, endpoint, platform, created_at, last_seen_at)\n           VALUES ($1, $2, 'fcm', clock_timestamp(), clock_timestamp())\n           ON CONFLICT (endpoint) DO UPDATE SET\n               last_seen_at = EXCLUDED.last_seen_at,\n               user_id = EXCLUDED.user_id,\n               created_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.created_at ELSE EXCLUDED.created_at END,\n               last_success_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.last_success_at END,\n               consecutive_failures = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.consecutive_failures ELSE 0 END,\n               failing_since = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.failing_since END,\n               pending_push_kind = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.pending_push_kind END,\n               pending_pushes = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.pending_pushes ELSE 0 END,\n               pending_until = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id\n                   THEN push_subscriptions.pending_until END",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dab47b91573700e7a9eaf92216400d4120088bb8082039a4ced03c65077f280d"
+}
