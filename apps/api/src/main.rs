@@ -149,6 +149,16 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // The Android app's notifications (#1002). Unset: its devices cannot
+    // register; set but unusable: refuse to start.
+    let fcm = manage_our_home::notifications::fcm::FcmConfig::from_env()?.map(std::sync::Arc::new);
+    if fcm.is_none() {
+        tracing::warn!(
+            "{} unset — the Android app's devices cannot register for notifications on this server",
+            manage_our_home::notifications::fcm::PROJECT_ID_VAR
+        );
+    }
+
     let message_encryption_key = env::var("MESSAGE_ENCRYPTION_KEY")?;
     let message_hubs =
         manage_our_home::messagerie::MessageHub::new(db.clone(), &message_encryption_key);
@@ -309,6 +319,7 @@ async fn main() -> anyhow::Result<()> {
         body_read_limits: manage_our_home_http_guard::BodyReadLimits::PRODUCTION,
         upload_gate: manage_our_home_http_guard::UploadGate::production(),
         push,
+        fcm,
         openfoodfacts_base_url: env::var(manage_our_home::stocks::openfoodfacts::BASE_URL_ENV)
             .ok()
             .filter(|v| !v.trim().is_empty())

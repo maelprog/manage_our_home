@@ -710,7 +710,10 @@ pub async fn export_account(
     // server's VAPID key. Its two keys (`p256dh`, `auth`, #862) are left
     // out, like the ICS feed URL above: they only encrypt the payload for
     // the browser that made them and keeps them, and `auth` is a secret.
-    // The privacy policy declares the exception (#961).
+    // The privacy policy declares the exception (#961). An Android device
+    // (`platform` 'fcm', #1002) has its FCM registration token as
+    // `endpoint`, and no keys: FCM takes a message to it only from a
+    // holder of the Firebase project's service account.
     let devices = sqlx::query!(
         r#"SELECT platform, endpoint, created_at, last_seen_at, last_success_at,
                   consecutive_failures, failing_since, pending_push_kind, pending_pushes,

@@ -16,7 +16,8 @@ pub struct NotificationSettings {
     /// since #853: the reminders reach the notification centre alone).
     pub reminder_channel: String,
     /// Devices currently subscribed for this account, whatever their
-    /// browser. Expired ones are deleted as soon as a push service says so.
+    /// browser, and the Android app's (#1002). Expired ones are deleted as
+    /// soon as a push service says so.
     pub push_subscriptions: i64,
     /// The server's VAPID public key (unpadded base64url), the
     /// `applicationServerKey` a browser subscribes with — `None` when this
@@ -84,6 +85,14 @@ pub struct PushSubscriptionKeys {
     pub p256dh: String,
     /// The 16-byte authentication secret.
     pub auth: String,
+}
+
+/// `POST` and `DELETE /account/fcm-tokens` (#1002): the FCM registration
+/// token of the Android device, as the Firebase SDK gives it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct FcmTokenRequest {
+    pub token: String,
 }
 
 /// One entry of the notification centre (#534), `GET /notifications`.

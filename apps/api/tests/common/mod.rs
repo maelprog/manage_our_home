@@ -136,6 +136,16 @@ pub fn test_state(db: PgPool) -> AppState {
             )
             .unwrap(),
         )),
+        // The Android app's notifications on (#1002): a token can be
+        // registered. The file is not read before #1003. Tests of a server
+        // without FCM build their own state.
+        fcm: Some(std::sync::Arc::new(
+            manage_our_home::notifications::fcm::FcmConfig::new(
+                "manage-our-home-test",
+                "/nonexistent/fcm-service-account.json",
+            )
+            .unwrap(),
+        )),
         // Nothing listens there: no test reaches the real Open Food Facts.
         // The scan tests that need an answer point this at a local stub.
         openfoodfacts_base_url: "http://127.0.0.1:1".into(),

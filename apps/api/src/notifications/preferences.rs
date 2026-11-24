@@ -1,4 +1,5 @@
-//! A member's reminder channel and their subscribed devices (#306), and
+//! A member's reminder channel and their subscribed devices — browsers
+//! (#306) and the Android app's (#1002) —, and
 //! the hour of their daily expiry recap (#700), and whether they are told
 //! of the agenda changes (#850).
 //!
@@ -11,9 +12,10 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use manage_our_home_shared::dto::notifications::{
-    NotificationSettings, PushSubscriptionRequest, UpdateNotificationSettings,
+    FcmTokenRequest, NotificationSettings, PushSubscriptionRequest, UpdateNotificationSettings,
 };
 
+use super::fcm;
 use super::push::{self, validate_endpoint};
 use super::{parse_expiry_digest_hour, ReminderChannel};
 use crate::auth::session::AuthUser;
@@ -167,12 +169,10 @@ pub async fn subscribe(
         None => (None, None),
     };
     let mut tx = crate::db::begin(&state.db).await?;
-    sqlx::query!(
-        "SELECT id FROM users WHERE id = $1 FOR UPDATE",
-        auth.user_id
-    )
-    .fetch_one(&mut *tx)
-    .await?;
+    lock_account(&mut tx, auth.user_id).await?;
+    // `platform` is left to its default, 'web'. The row this endpoint may
+    // conflict with is a browser's: no FCM token is a push service's URL
+    // (`fcm::validate_token` admits neither `/` nor `.`).
     sqlx::query!(
         r#"INSERT INTO push_subscriptions (user_id, endpoint, created_at, last_seen_at, p256dh, auth)
            VALUES ($1, $2, clock_timestamp(), clock_timestamp(), $3, $4)
@@ -203,17 +203,145 @@ pub async fn subscribe(
     )
     .execute(&mut *tx)
     .await?;
+    keep_latest_devices(&mut tx, auth.user_id).await?;
+    tx.commit().await?;
+    Ok(StatusCode::CREATED)
+}
+
+/// Locks the caller's `users` row for the transaction: concurrent
+/// registrations of one account, browsers and Android devices alike, are
+/// counted one after the other, and [`MAX_DEVICES_PER_ACCOUNT`] holds.
+async fn lock_account(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: uuid::Uuid,
+) -> sqlx::Result<()> {
+    sqlx::query!("SELECT id FROM users WHERE id = $1 FOR UPDATE", user_id)
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Removes the account's devices beyond [`MAX_DEVICES_PER_ACCOUNT`], both
+/// platforms counted together: the least recently in use go —
+/// registered (`last_seen_at`) or delivered to (`last_success_at`),
+/// whichever is later.
+async fn keep_latest_devices(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: uuid::Uuid,
+) -> sqlx::Result<()> {
     sqlx::query!(
         r#"DELETE FROM push_subscriptions WHERE id IN (
                SELECT id FROM push_subscriptions WHERE user_id = $1
                ORDER BY GREATEST(last_seen_at, last_success_at) DESC, id DESC OFFSET $2)"#,
-        auth.user_id,
+        user_id,
         MAX_DEVICES_PER_ACCOUNT
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// `POST /account/fcm-tokens`, `{"token": …}` — registers the FCM token of
+/// the caller's Android device (#1002): 201. 400 `invalid_fcm_token` for
+/// anything that cannot be one (`fcm::validate_token`), 409
+/// `fcm_not_configured` on a server without an FCM configuration, where
+/// nothing could ever be sent to it.
+///
+/// The rules of a browser's subscription ([`subscribe`]): a token already
+/// registered under another account moves to the caller with a fresh
+/// record; registered again by the same account, it keeps its record and
+/// only has `last_seen_at` moved; the device beyond
+/// [`MAX_DEVICES_PER_ACCOUNT`], browsers and Android devices counted
+/// together, replaces the least recently in use. The row is `platform =
+/// 'fcm'`, without keys; it never conflicts with a browser's, whose
+/// endpoint no token can be (`fcm`'s module documentation).
+#[utoipa::path(
+    post,
+    path = "/account/fcm-tokens",
+    tag = "notifications",
+    request_body = FcmTokenRequest,
+    responses(
+        (status = 201, description = "FCM token stored"),
+        (status = 400, description = "`invalid_fcm_token`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`fcm_not_configured`: the server has no FCM configuration", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn register_fcm_token(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<FcmTokenRequest>,
+) -> AppResult<impl IntoResponse> {
+    if state.fcm.is_none() {
+        return Err(AppError::Conflict("fcm_not_configured".into()));
+    }
+    let token = fcm::validate_token(&body.token)
+        .map_err(|_| AppError::BadRequest("invalid_fcm_token".into()))?;
+    let mut tx = crate::db::begin(&state.db).await?;
+    lock_account(&mut tx, auth.user_id).await?;
+    sqlx::query!(
+        r#"INSERT INTO push_subscriptions (user_id, endpoint, platform, created_at, last_seen_at)
+           VALUES ($1, $2, 'fcm', clock_timestamp(), clock_timestamp())
+           ON CONFLICT (endpoint) DO UPDATE SET
+               last_seen_at = EXCLUDED.last_seen_at,
+               user_id = EXCLUDED.user_id,
+               created_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.created_at ELSE EXCLUDED.created_at END,
+               last_success_at = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.last_success_at END,
+               consecutive_failures = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.consecutive_failures ELSE 0 END,
+               failing_since = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.failing_since END,
+               pending_push_kind = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.pending_push_kind END,
+               pending_pushes = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.pending_pushes ELSE 0 END,
+               pending_until = CASE WHEN push_subscriptions.user_id = EXCLUDED.user_id
+                   THEN push_subscriptions.pending_until END"#,
+        auth.user_id,
+        token,
     )
     .execute(&mut *tx)
     .await?;
+    keep_latest_devices(&mut tx, auth.user_id).await?;
     tx.commit().await?;
     Ok(StatusCode::CREATED)
+}
+
+/// `DELETE /account/fcm-tokens`, `{"token": …}` — forgets the caller's
+/// Android device, as the app signs out (#1002): 204, whether or not the
+/// token was the caller's — another account's device is left alone. 400
+/// `invalid_fcm_token` for anything that cannot be one. Open on a server
+/// without an FCM configuration: a device may always be forgotten.
+#[utoipa::path(
+    delete,
+    path = "/account/fcm-tokens",
+    tag = "notifications",
+    request_body = FcmTokenRequest,
+    responses(
+        (status = 204, description = "The device's token removed, if it was the account's"),
+        (status = 400, description = "`invalid_fcm_token`", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::SessionErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn remove_fcm_token(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<FcmTokenRequest>,
+) -> AppResult<impl IntoResponse> {
+    let token = fcm::validate_token(&body.token)
+        .map_err(|_| AppError::BadRequest("invalid_fcm_token".into()))?;
+    sqlx::query!(
+        "DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2 AND platform = 'fcm'",
+        auth.user_id,
+        token,
+    )
+    .execute(&state.db)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Devices an account keeps subscribed (controller's decision of
@@ -292,8 +420,9 @@ pub(crate) async fn write_pending(
 }
 
 /// `DELETE /account/push-subscriptions` — forgets every device of the
-/// caller: 204. The browsers keep their side of the subscription until
-/// the member withdraws the permission; nothing is sent to them any more.
+/// caller, browsers and Android devices (#1002) alike: 204. The browsers
+/// keep their side of the subscription until the member withdraws the
+/// permission, the app its token; nothing is sent to them any more.
 #[utoipa::path(
     delete,
     path = "/account/push-subscriptions",

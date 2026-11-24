@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2 AND platform = 'fcm'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "41d7ff8fe37981a52be3a22e9a91da7853e6eb6d9616a0191435e0080fa0f3a5"
+}

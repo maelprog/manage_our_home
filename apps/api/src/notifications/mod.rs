@@ -13,6 +13,7 @@
 //! `/account/notifications`).
 
 pub mod center;
+pub mod fcm;
 pub mod preferences;
 pub mod push;
 pub mod upcoming;
