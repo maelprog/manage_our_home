@@ -939,21 +939,20 @@ pub async fn reset_password(
     // Looked up by its hash (#335): a malformed token is unknown without a
     // query.
     let token_hash = token_hash(&body.token).ok_or(AppError::NotFound)?;
-    let mut tx = crate::db::begin(&state.db).await?;
     // A token of a deactivated (`deactivated_at`) or purged (`deleted_at`)
     // account answers like an unknown one, and never gives that row a
-    // password (#139, #256).
+    // password (#139, #256). Read unlocked: the account's row is locked
+    // before its links, below, and the password hashed before either.
     let row = sqlx::query!(
         r#"
         SELECT t.user_id, t.expires_at
         FROM password_reset_tokens t
         JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = $1 AND u.deleted_at IS NULL AND u.deactivated_at IS NULL
-        FOR UPDATE OF t
         "#,
         &token_hash[..]
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&state.db)
     .await?
     .ok_or(AppError::NotFound)?;
 
@@ -963,6 +962,22 @@ pub async fn reset_password(
 
     validate_password(&body.new_password).map_err(unprocessable)?;
     let password_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
+
+    let mut tx = crate::db::begin(&state.db).await?;
+    // #988: the account first, as every write of its password does, then
+    // the link. Taken the other way round, a reset and a change, a set or
+    // another reset of the same account deadlocked.
+    lock_live_account(&mut tx, row.user_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    // Used meanwhile, or gone with the account's other links: unknown now.
+    sqlx::query!(
+        "SELECT 1 AS one FROM password_reset_tokens WHERE token_hash = $1 FOR UPDATE",
+        &token_hash[..]
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
 
     // Deleted at use rather than marked consumed (#138): a used token is
     // worth nothing, so nothing of it is kept. A second use finds no row
@@ -992,6 +1007,32 @@ pub async fn reset_password(
     notify_password_change(&state, &user.email, greeted, PasswordChange::Reset).await;
 
     Ok(StatusCode::OK)
+}
+
+/// The account a write of its password is about to change, locked.
+struct LockedAccount {
+    password_hash: Option<String>,
+}
+
+/// Locks the `users` row of `user_id` for a write of its password, if the
+/// account is neither deactivated nor purged, and reads its password as it
+/// stands under that lock (#988). Every such write takes this lock before
+/// any other of the account — its reset links above all — so that two of
+/// them queue up instead of deadlocking, and the second one judges the
+/// account as the first one left it.
+async fn lock_live_account(
+    tx: &mut sqlx::PgConnection,
+    user_id: Uuid,
+) -> Result<Option<LockedAccount>, sqlx::Error> {
+    sqlx::query_as!(
+        LockedAccount,
+        "SELECT password_hash FROM users
+         WHERE id = $1 AND deleted_at IS NULL AND deactivated_at IS NULL
+         FOR UPDATE",
+        user_id
+    )
+    .fetch_optional(&mut *tx)
+    .await
 }
 
 /// Deletes every password reset link of `user_id` (#957). Called in the
@@ -1046,6 +1087,15 @@ pub async fn change_password(
     validate_password(&body.new_password).map_err(unprocessable)?;
     let new_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
     let mut tx = crate::db::begin(&state.db).await?;
+    // #988: the account locked before any write, as in `reset_password`.
+    // Its password replaced meanwhile — a reset, another change — the one
+    // the request gave is no longer the current one.
+    let locked = lock_live_account(&mut tx, auth.user_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    if locked.password_hash.as_deref() != Some(hash.as_str()) {
+        return Err(AppError::Unauthorized);
+    }
     sqlx::query!(
         "UPDATE users SET password_hash = $1 WHERE id = $2",
         new_hash,
@@ -1107,6 +1157,14 @@ pub async fn set_password(
     let password_hash = hash_password(&body.new_password).map_err(AppError::Internal)?;
 
     let mut tx = crate::db::begin(&state.db).await?;
+    // #988: as in `change_password`. A password set meanwhile — by a reset
+    // link — is one this request may not replace.
+    let locked = lock_live_account(&mut tx, auth.user_id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    if locked.password_hash.is_some() {
+        return Err(AppError::Conflict("password_already_set".into()));
+    }
     sqlx::query!(
         "UPDATE users SET password_hash = $1, email_verified = false WHERE id = $2",
         password_hash,
