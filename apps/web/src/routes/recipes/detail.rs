@@ -130,6 +130,9 @@ pub(super) fn error_text(code: &str) -> Option<&'static str> {
         "unpublish_failed" => Some(
             "Le retrait n'a pas pu être enregistré. La recette est toujours dans la bibliothèque. Réessayez dans un instant.",
         ),
+        "unpublish_too_many" => Some(
+            "Trop de publications et de retraits en peu de temps. La recette est toujours dans la bibliothèque. Réessayez dans une minute.",
+        ),
         _ => None,
     }
 }
@@ -1092,6 +1095,12 @@ mod tests {
         assert!(error_text("unpublish_failed")
             .unwrap()
             .contains("toujours dans la bibliothèque"));
+        let too_many = error_text("unpublish_too_many").unwrap();
+        assert!(
+            too_many.contains("toujours dans la bibliothèque"),
+            "{too_many}"
+        );
+        assert!(too_many.contains("une minute"), "{too_many}");
     }
 
     #[test]

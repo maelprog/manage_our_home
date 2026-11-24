@@ -1,6 +1,6 @@
 # Politique de confidentialité — Manage Our Home
 
-Dernière mise à jour : 2026-11-21.
+Dernière mise à jour : 2026-11-24.
 
 ## Qui est responsable de vos données ?
 
@@ -281,7 +281,8 @@ recette la publie.
 - **Publier** : un membre qui peut modifier une recette de sa famille peut
   la publier, qu'il l'ait écrite ou non, après avoir confirmé son accord
   pour cette recette-là. Rien n'est publié sans cet accord. Une famille
-  publie 50 recettes au plus.
+  publie 50 recettes au plus, et un compte 200 au plus, toutes familles
+  confondues.
 - **Ce qui est visible** : une copie de la recette prise au moment de la
   publication — nom, instructions, nombre de personnes, durée, ingrédients
   avec leurs quantités et leurs saisons, et, pour une recette importée,
@@ -537,10 +538,11 @@ de la purge dépasserait.
   au premier passage de purge qui suit les 10 minutes de sa dernière
   demande, plus tôt par la première demande du même genre arrivée après ce
   délai. La bibliothèque de recettes est limitée, par membre, à 60 lectures
-  par minute, 10 publications par minute et 10 signalements par heure : les
-  horaires d'un compteur sont supprimés au plus tard au premier passage de
-  purge qui suit la minute ou l'heure de votre dernière demande, plus tôt
-  par la première demande du même genre arrivée après ce délai.
+  par minute, 10 publications et retraits par minute et 10 signalements
+  par heure : les horaires d'un compteur sont supprimés au plus tard au
+  premier passage de purge qui suit la minute ou l'heure de votre dernière
+  demande, plus tôt par la première demande du même genre arrivée après ce
+  délai.
 - **Photo d'un code-barres** (scan d'un article de stock) : pas conservée
   du tout. Elle peut montrer l'intérieur de votre logement ; le serveur la
   lit en mémoire le temps de trouver le code, puis l'oublie avec la

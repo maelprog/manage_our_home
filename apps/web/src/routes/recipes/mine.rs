@@ -9,7 +9,9 @@
 //!   the family's recipe) and « Retirer ».
 //! - `POST /recipes/library/:id/withdraw` — one click, no confirmation
 //!   (arbitrage of 2026-11-20): `DELETE /library/recipes/:id`, then back
-//!   to the list (PRG), `?notice=unpublished` or `?error=unpublish_failed`.
+//!   to the list (PRG), `?notice=unpublished`, or `?error=unpublish_failed`
+//!   (`unpublish_too_many` when refused 429: publications and withdrawals
+//!   are counted together, #989).
 //!   The URL carries no name, which anyone could forge into the banner: a
 //!   failure carries the publication's id, and the page names it from the
 //!   API's list — a publication of the reader's own, or no name at all.
@@ -46,10 +48,13 @@ pub struct MineQuery {
 }
 
 /// Where « Retirer » leads, by the API's answer: the list, saying it went
-/// — gone already (404) is gone too — or that publication `id` did not.
+/// — gone already (404) is gone too — or that publication `id` did not,
+/// and why when it was too many publications and withdrawals in a minute
+/// (429).
 pub(crate) fn withdraw_target(status: Option<u16>, id: Uuid) -> String {
     match status {
         Some(204 | 404) => format!("{LIST}?notice=unpublished"),
+        Some(429) => format!("{LIST}?error=unpublish_too_many&id={id}"),
         _ => format!("{LIST}?error=unpublish_failed&id={id}"),
     }
 }
@@ -75,6 +80,10 @@ pub(crate) fn banner(notice: Option<&str>, error: Option<&str>, name: Option<&st
     match (notice, error) {
         (_, Some("unpublish_failed")) => format!(
             r#"<p class="notice error" role="alert">Le retrait n'a pas pu être enregistré. {} est toujours dans la bibliothèque. Réessayez dans un instant.</p>"#,
+            quoted("La recette")
+        ),
+        (_, Some("unpublish_too_many")) => format!(
+            r#"<p class="notice error" role="alert">Trop de publications et de retraits en peu de temps. {} est toujours dans la bibliothèque. Réessayez dans une minute.</p>"#,
             quoted("La recette")
         ),
         (Some("unpublished"), _) => format!(
@@ -225,7 +234,11 @@ mod tests {
                 "{status:?}"
             );
         }
-        for status in [Some(500), Some(429), None] {
+        assert_eq!(
+            withdraw_target(Some(429), id),
+            format!("/recipes/library/mine?error=unpublish_too_many&id={id}")
+        );
+        for status in [Some(500), None] {
             assert_eq!(
                 withdraw_target(status, id),
                 format!("/recipes/library/mine?error=unpublish_failed&id={id}"),
@@ -265,6 +278,10 @@ mod tests {
         let failed = banner(None, Some("unpublish_failed"), Some("<b>"));
         assert!(failed.contains(r#"role="alert""#));
         assert!(failed.contains("« &lt;b&gt; » est toujours dans la bibliothèque"));
+        let too_many = banner(None, Some("unpublish_too_many"), Some("<b>"));
+        assert!(too_many.contains(r#"role="alert""#));
+        assert!(too_many.contains("« &lt;b&gt; » est toujours dans la bibliothèque"));
+        assert!(too_many.contains("une minute"), "{too_many}");
         assert_eq!(banner(Some("other"), None, Some("x")), "");
         assert_eq!(banner(None, None, None), "");
     }
