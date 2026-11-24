@@ -30,7 +30,7 @@ accordingly; the rationale is in `version-y-microservices.md`.
 | 15 | Secrets in production: Sealed Secrets | missing | Requalified 2026-10-10 (#441); was "Secrets via sops in production". Application secrets are to be `SealedSecret` objects on the `deploy` branch, opened only by the cluster's controller; the controller's private key is never to be committed and is to be backed up off the cluster (#432). |
 | 16 | RGPD: pseudonyme et adresse de contact du responsable de traitement | missing | **À remplacer avant la mise en ligne** — bloquant (#131, #379). Art. 13(1)(a) exige l'identité *et* les coordonnées du responsable. Le porteur du projet (personne physique) est désigné par un pseudonyme, jamais par son nom civil (arbitrage du 2026-10-05, #379 : son nom publié viderait l'anonymat LCEN de l'item #17 ; il tient parce que le service est chez un hébergeur tiers, arbitrage du 2026-10-10, #440) ; le risque résiduel au regard de l'art. 13 est décrit dans `docs/registre-traitements.md`, à valider en relecture. Il fournit ce pseudonyme et une adresse dédiée au service, relevée par une personne — pas un `noreply@` — au moment de l'ouverture publique. Voir la procédure ci-dessous. |
 | 17 | LCEN: hébergeur des mentions légales et identité de l'éditeur confiée à l'hébergeur | missing | **À remplacer avant la mise en ligne** — bloquant (#132, #314). Les mentions légales existent et sont servies (`docs/legal-notice.md`, `GET /legal-notice`), mais trois valeurs y sont encore des placeholders. L'éditeur use de l'anonymat de la LCEN art. 1-1, II (arbitrage du 2026-10-04) : son identité est communiquée à l'hébergeur, pas publiée. L'hébergeur dépend de l'item #1 et doit être un tiers : l'anonymat ne tient pas en auto-hébergement (#379). L'arbitrage du 2026-10-10 (#440) le confirme : le service tourne sur un VPS loué à un tiers, l'hébergeur nommé. Voir la procédure ci-dessous. |
-| 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway) et les transferts hors UE de Google et des services de notification des navigateurs (#306) : trois placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
+| 18 | RGPD: cadre contractuel du sous-traitant email et transferts hors UE | missing | **À faire avant la mise en ligne** — bloquant (#136, #328). Le fournisseur est arrêté (Scaleway Transactional Email, arbitrage du 2026-10-02 qui remplace Mailjet) et ne transfère rien hors UE, relevé daté dans le registre. Restent à établir le cadre contractuel opposable (DPA accepté depuis la console Scaleway), celui de Firebase Cloud Messaging (#1003), et les transferts hors UE de Google et des services de notification des navigateurs (#306) : quatre placeholders les portent dans la politique et le registre. Rien dans le code ne contraint `SMTP_HOST`. Voir la procédure ci-dessous. |
 | 19 | RGPD: AIPD signée et registre des violations ouvert | missing | **À faire avant la mise en ligne** — bloquant (#143). L'AIPD est rédigée (`docs/aipd.md`) mais sa conclusion n'est qu'une proposition : le responsable de traitement la relit et la signe, ce qui remplit son placeholder (`conclusion de l'AIPD, date et signature`). Elle conditionne l'ouverture aux items #2, #8, #9, #12, #13, #15, #16 et #18. Le registre des violations est tenu hors du dépôt, qui est public (`docs/registre-violations.md` en fixe la forme) : l'ouvrir et en noter l'emplacement à la place du placeholder de ce fichier (`emplacement du registre des violations`). `docs/procedure-violation.md` porte le placeholder `adresse de contact`, rempli par l'item #16. Les trois sont épinglés par `the_breach_and_aipd_documents_carry_only_the_placeholders_pinned_here` (`apps/shared/src/validation/rgpd.rs`) : retirer l'attente correspondante en remplissant chacun. |
 | 20 | Chiffrement au repos du volume des données de Postgres et de MinIO | missing | **À faire avant la mise en ligne** — bloquant (#380). Mesure 5 de l'AIPD, retenue par l'arbitrage du 2026-10-05 ; `docs/privacy-policy.md` (« Sécurité ») et `docs/registre-traitements.md` l'annoncent. Protège les données si le support est volé ou réutilisé (disque, instantané, volume rendu au fournisseur), pas contre une intrusion sur le serveur en marche, où le volume est ouvert. Dépend de l'item #1 ; les sauvegardes (#8) restent à chiffrer à part. `infra/check-volume-encryption.sh` vérifie le résultat. Voir la procédure ci-dessous. |
 
@@ -44,17 +44,18 @@ responsible first deployment; 1 and 10-13 support them.
 
 `docs/privacy-policy.md` est compilé dans le binaire de `apps/api`
 (`include_str!`) et servi tel quel sur `GET /privacy-policy`, page publique
-liée depuis les pieds de page de connexion et d'inscription. Cinq valeurs y
+liée depuis les pieds de page de connexion et d'inscription. Six valeurs y
 sont des placeholders, sous la forme
 `[<quoi> — à renseigner avant la mise en ligne]`. Deux relèvent de cet item :
 
 - `pseudonyme du responsable de traitement`
 - `adresse de contact`
 
-Les trois autres (`cadre contractuel du sous-traitant email`,
+Les quatre autres (`cadre contractuel du sous-traitant email`,
+`cadre contractuel de Firebase Cloud Messaging`,
 `transferts hors UE de Google`,
 `transferts hors UE des services de notification`)
-relèvent de l'item #18 ci-dessous. Les cinq figurent à l'identique, et dans le
+relèvent de l'item #18 ci-dessous. Les six figurent à l'identique, et dans le
 même ordre de lecture, dans `docs/registre-traitements.md` — c'est ce que la
 suite de tests épingle. `docs/architecture.md` ("Questions résolues" #3)
 renvoie aux deux premiers. `adresse de contact` figure aussi, seule, dans
@@ -109,7 +110,7 @@ Au moment de l'ouverture publique :
    sont pas la suite reste rouge — c'est le rappel mécanique, pas seulement
    écrit :
    - dans `apps/shared/src/validation/rgpd.rs`, `pending_release_values`
-     est leur source unique, et elle porte les cinq placeholders, ceux de
+     est leur source unique, et elle porte les six placeholders, ceux de
      l'item #18 compris : en retirer deux au pas 1 ne la vide donc pas, et
      `the_internal_rgpd_documents_carry_the_same_placeholders` n'exige que
      `docs/architecture.md` ait perdu son annonce que le jour où les deux
@@ -215,11 +216,14 @@ celui du 2026-09-19 (#136, Mailjet) : **Scaleway Transactional Email**
 transferts sont établis : aucun hors UE, relevé daté et sourcé dans le
 registre (FAQ du service et liste des sous-traitants de Scaleway, consultées le
 2026-10-04). Ce qui n'est pas arrêté, ce sont le cadre contractuel opposable
-et les transferts des autres destinataires. Trois placeholders les portent, à
+et les transferts des autres destinataires. Quatre placeholders les portent, à
 remplir ensemble, dans la politique **et** dans le registre (même libellé,
 même ordre de lecture) :
 
 - `cadre contractuel du sous-traitant email`
+- `cadre contractuel de Firebase Cloud Messaging` (#1003) : la qualité de
+  Google pour FCM et les conditions de traitement des données de Firebase
+  acceptées pour le projet du service
 - `transferts hors UE de Google`
 - `transferts hors UE des services de notification` (#306)
 
@@ -277,8 +281,13 @@ Au moment de l'ouverture publique :
    `api-secrets`, envoi réel constaté avec SPF, DKIM et DMARC en `pass`
    (`docs/install-k3s.md` de `deploy`, « Le relais SMTP du staging »).
    La configuration de production reste à pointer.
-5. **Faire le travail de transferts pour Google** (connexion et flux iCal)
-   et remplir le deuxième placeholder. La liste officielle du cadre de
+5. **Établir le cadre de Firebase Cloud Messaging** (#1003) : accepter,
+   pour le projet Firebase du service, les conditions de traitement des
+   données de Firebase, et noter leur version, leur date et le projet
+   couvert : cela remplace le placeholder `cadre contractuel de Firebase
+   Cloud Messaging`. Puis **faire le travail de transferts pour Google**
+   (connexion, flux iCal et Firebase Cloud Messaging) et remplir le
+   placeholder `transferts hors UE de Google`. La liste officielle du cadre de
    confidentialité des données n'était pas consultable le 2026-09-21 (site
    en erreur) : la déclaration de Google, qui porte la réserve « sauf
    exclusion explicite », ne suffit pas à nommer un mécanisme.
@@ -286,9 +295,10 @@ Au moment de l'ouverture publique :
    Chrome, Mozilla, Apple, Microsoft), qui reçoivent l'adresse d'abonnement
    d'un appareil et l'heure d'un message vide à chaque rappel par
    notification : le service ne les choisit pas, le navigateur du membre le
-   fait. La réponse remplace le troisième placeholder.
+   fait. La réponse remplace le placeholder `transferts hors UE des
+   services de notification`.
 6. Rafraîchir la date de dernière mise à jour en tête des deux documents, et
-   retirer les trois entrées correspondantes de `pending_release_values` dans
+   retirer les quatre entrées correspondantes de `pending_release_values` dans
    `apps/shared/src/validation/rgpd.rs` — la suite reste rouge tant que la
    liste et les documents ne disent pas la même chose.
 
