@@ -16,6 +16,9 @@
 //! Issue #947: the publisher lists their own publications and withdraws
 //! one by its id alone, through no family — its family deleted since
 //! included.
+//!
+//! Issue #989: at most 200 publications per account, across its families;
+//! withdrawals counted with the publications, 10 a minute.
 
 mod common;
 
@@ -2743,4 +2746,128 @@ async fn a_publication_says_what_its_reader_and_its_publisher_need(db: PgPool) {
         let (_, detail) = get(&router, &detail_uri, cookie).await;
         assert_eq!(detail["reported_at"], Value::Null);
     }
+}
+
+// --- #989: the account's quota, and withdrawals counted with publications ---
+
+/// A family owned by `owner` alone, under the default `recipes_edit`
+/// threshold: the owner publishes there.
+async fn owned_family(db: &PgPool, owner: Uuid) -> Uuid {
+    let group: Uuid = sqlx::query_scalar(
+        "INSERT INTO groups (name, created_by) VALUES ('Foyer', $1) RETURNING id",
+    )
+    .bind(owner)
+    .fetch_one(db)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO group_members (group_id, user_id, role) VALUES ($1, $2, 'owner')")
+        .bind(group)
+        .bind(owner)
+        .execute(db)
+        .await
+        .unwrap();
+    group
+}
+
+/// AC of #989: 200 publications per account at most, across its families —
+/// each of which is under its own quota of 50 — the 201st refused 409
+/// `account_library_quota_exceeded`, nothing written; one whose source
+/// recipe was deleted still counts; one withdrawn makes room. `/mine`
+/// lists the 200, which is all it ever lists.
+#[sqlx::test]
+async fn an_account_holds_two_hundred_publications_at_most(db: PgPool) {
+    let router = test_router(db.clone());
+    let (user, cookie) = api_user(&db, "account-quota@example.test").await;
+    let mut seeded = Vec::new();
+    for i in 0..4 {
+        let group = owned_family(&db, user).await;
+        seeded.extend(seed_publications(&db, group, user, 50, &format!("Plat {i}")).await);
+    }
+    // Another account's publications are not the user's.
+    let other = fam(&db, "account-quota-other").await;
+    seed_publications(&db, other.id, other.owner.id, 3, "Autre").await;
+
+    let room = owned_family(&db, user).await;
+    let recipe = new_recipe(&router, room, &cookie, leek_tart()).await;
+    let res = publish_call(&router, room, recipe, &cookie, consent()).await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(res).await["error"],
+        "account_library_quota_exceeded"
+    );
+    assert_eq!(library_rows(&db).await, 203);
+
+    // Unlike the family's, the account's count keeps a publication whose
+    // source recipe is gone: its publisher still holds it.
+    sqlx::query("DELETE FROM recipes WHERE id = $1")
+        .bind(seeded[0])
+        .execute(&db)
+        .await
+        .unwrap();
+    let res = publish_call(&router, room, recipe, &cookie, consent()).await;
+    assert_status(&res, StatusCode::CONFLICT);
+    assert_eq!(
+        json_body(res).await["error"],
+        "account_library_quota_exceeded"
+    );
+
+    let listed = mine(&router, &cookie).await;
+    assert_eq!(listed.len(), 200);
+    let uri = format!("/library/recipes/{}", listed[0]);
+    let res = call(&router, Method::DELETE, &uri, Some(&cookie), None).await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let res = publish_call(&router, room, recipe, &cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    assert_eq!(mine(&router, &cookie).await.len(), 200);
+}
+
+/// AC of #989: publications and the three withdrawals share one budget of
+/// 10 a minute per user; the 11th call, publication or withdrawal, is
+/// refused 429 and withdraws nothing. Another user's budget is theirs.
+#[sqlx::test]
+async fn withdrawals_count_with_publications(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "wrate").await;
+    let cookie = &f.owner.cookie;
+    let recipe = new_recipe(&router, f.id, cookie, leek_tart()).await;
+    let kept = seed_publications(&db, f.id, f.owner.id, 1, "Gardée").await[0];
+    let kept_id: Uuid = sqlx::query_scalar(
+        "SELECT library_recipe_id FROM library_recipe_publishers WHERE source_recipe_id = $1",
+    )
+    .bind(kept)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+
+    let by_recipe = |r: Uuid| format!("/groups/{}/recipes/{r}/publish", f.id);
+    let by_family = |l: &str| format!("/groups/{}/library/recipes/{l}", f.id);
+    let by_publisher = |l: &str| format!("/library/recipes/{l}");
+    // Ten admitted calls: five publications, each withdrawn through one of
+    // the three routes in turn.
+    for round in 0..5 {
+        let res = publish_call(&router, f.id, recipe, cookie, consent()).await;
+        assert_status(&res, StatusCode::CREATED);
+        let id = json_body(res).await["id"].as_str().unwrap().to_string();
+        let uri = match round % 3 {
+            0 => by_recipe(recipe),
+            1 => by_family(&id),
+            _ => by_publisher(&id),
+        };
+        let res = call(&router, Method::DELETE, &uri, Some(cookie), None).await;
+        assert_status(&res, StatusCode::NO_CONTENT);
+    }
+
+    let kept_id = kept_id.to_string();
+    for uri in [by_recipe(kept), by_family(&kept_id), by_publisher(&kept_id)] {
+        let res = call(&router, Method::DELETE, &uri, Some(cookie), None).await;
+        assert_status(&res, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(json_body(res).await["error"], "too_many_attempts", "{uri}");
+    }
+    let res = publish_call(&router, f.id, recipe, cookie, consent()).await;
+    assert_status(&res, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(library_rows(&db).await, 1);
+
+    let theirs = new_recipe(&router, f.id, &f.admin.cookie, leek_tart()).await;
+    let res = publish_call(&router, f.id, theirs, &f.admin.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
 }

@@ -53,9 +53,13 @@
 //! is unique and its key ignores RLS, so a client-given id would let one
 //! family probe another's recipes through the unique violation.
 //!
-//! Limits (user's decisions of 2026-11-20): at most [`FAMILY_QUOTA`]
-//! publications per family, 409 `library_quota_exceeded` past it; reads at
-//! [`READ_RATE`], publications at [`PUBLISH_RATE`] and reports at
+//! Limits (user's decisions of 2026-11-20 and 2026-11-23): at most
+//! [`FAMILY_QUOTA`] publications per family, 409 `library_quota_exceeded`
+//! past it, and at most [`ACCOUNT_QUOTA`] per account across its families,
+//! 409 `account_library_quota_exceeded` past it — which bounds `/mine`,
+//! not paged; reads at [`READ_RATE`], publications and the three
+//! withdrawals (`DELETE` of the recipe's, of the family's and of the
+//! publisher's route) together at [`PUBLISH_RATE`] and reports at
 //! [`REPORT_RATE`] per user, 429 past them (`rate_limit::LIMITS`); a search
 //! term of [`SEARCH_MAX_CHARS`] characters at most, 400 `search_too_long` past it; pages of
 //! [`PAGE_DEFAULT`], [`PAGE_MAX`] at most.
@@ -90,6 +94,13 @@ use crate::AppState;
 /// recipe since deleted no longer counts.
 pub const FAMILY_QUOTA: i64 = 50;
 
+/// Publications an account may hold at once, whatever their families and
+/// whatever became of them (user's decision of 2026-11-23): every row of
+/// `library_recipe_publishers` of theirs counts, its source recipe or its
+/// family deleted since included. It also bounds `GET
+/// /library/recipes/mine`, which is not paged.
+pub const ACCOUNT_QUOTA: i64 = 200;
+
 /// Entries of a page when the client asks for no size.
 pub const PAGE_DEFAULT: i64 = 20;
 
@@ -105,7 +116,8 @@ pub const READ_RATE: SlidingWindow = SlidingWindow {
     window: Duration::from_secs(60),
 };
 
-/// Publications (first or again) per user.
+/// Publications (first or again) and withdrawals per user, counted
+/// together under [`PUBLISH_KIND`] (user's decision of 2026-11-23).
 pub const PUBLISH_RATE: SlidingWindow = SlidingWindow {
     limit: 10,
     window: Duration::from_secs(60),
@@ -139,6 +151,12 @@ const INGREDIENTS_MAX: usize = 100;
 /// The second key is `hashtext` of the family's id; two families that
 /// collide only wait on each other.
 const QUOTA_LOCK: i32 = i32::from_be_bytes(*b"mlbq");
+
+/// Advisory lock class of an account's publications, taken after the
+/// family's [`QUOTA_LOCK`]: two publications of one account into two
+/// families cannot both read « 199 ». Second key `hashtext` of the user's
+/// id.
+const ACCOUNT_LOCK: i32 = i32::from_be_bytes(*b"mlba");
 
 /// Advisory lock class of a family's copies: two copies of one publication
 /// cannot both find none in the family. Second key as [`QUOTA_LOCK`]'s.
@@ -180,6 +198,13 @@ pub(crate) fn unpublishes_for_the_family(actor_role: &str) -> bool {
 /// when it replaces one of them, under [`FAMILY_QUOTA`] otherwise.
 pub(crate) fn within_quota(published: i64, republishing: bool) -> bool {
     republishing || published < FAMILY_QUOTA
+}
+
+/// Whether an account holding `held` publications, across all its
+/// families and the ones whose family is gone, may publish one more under
+/// [`ACCOUNT_QUOTA`]. Publishing one again holds no more: not asked.
+pub(crate) fn within_account_quota(held: i64) -> bool {
+    held < ACCOUNT_QUOTA
 }
 
 /// A search term as the client sent it: trimmed, `None` when blank (no
@@ -612,8 +637,8 @@ async fn fetch_publication(
         (status = 200, description = "Published again: the snapshot replaced", body = LibraryRecipeResponse),
         (status = 400, description = "`consent_required` (absent or not `true`, or a body that is not JSON); the recipe past a bound of the library: `name_required`, `name_too_long`, `instructions_too_long`, `invalid_servings`, `invalid_duration`, `too_many_ingredients`, `ingredient_name_required`, `ingredient_name_too_long`, `ingredient_unit_too_long`, `ingredient_quantity_must_be_non_negative` or `invalid_seasonal_month`", body = manage_our_home_shared::dto::auth::ErrorResponse),
         (status = 404, description = "`not_found`: no such recipe in the family", body = manage_our_home_shared::dto::auth::ErrorResponse),
-        (status = 409, description = "`withdrawn_by_moderation`: the superadmin withdrew this recipe's publication and has not lifted the block; `published_by_another_member`: another member already published this recipe; `library_quota_exceeded`: the family holds 50 publications", body = manage_our_home_shared::dto::auth::ErrorResponse),
-        (status = 429, description = "`too_many_attempts`: 10 publications per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 409, description = "`withdrawn_by_moderation`: the superadmin withdrew this recipe's publication and has not lifted the block; `published_by_another_member`: another member already published this recipe; `library_quota_exceeded`: the family holds 50 publications; `account_library_quota_exceeded`: the caller holds 200 publications, across their families", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 429, description = "`too_many_attempts`: 10 publications and withdrawals per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
     security(("session_cookie" = [])),
@@ -685,6 +710,11 @@ pub async fn publish_recipe(
     sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
         .bind(QUOTA_LOCK)
         .bind(group_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(ACCOUNT_LOCK)
+        .bind(auth.user_id.to_string())
         .execute(&mut *tx)
         .await?;
     // The caller's own publication of this recipe; the publishers' policy
@@ -766,6 +796,18 @@ pub async fn publish_recipe(
             .await?;
             if !within_quota(published - 1, false) {
                 return Err(AppError::Conflict("library_quota_exceeded".into()));
+            }
+            // The account's, across its families, this one included as
+            // above. The publishers' policy shows the caller their own rows
+            // alone; the `user_id` says so again.
+            let held = sqlx::query_scalar!(
+                r#"SELECT count(*) AS "n!" FROM library_recipe_publishers WHERE user_id = $1"#,
+                auth.user_id
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            if !within_account_quota(held - 1) {
+                return Err(AppError::Conflict("account_library_quota_exceeded".into()));
             }
             id
         }
@@ -856,6 +898,7 @@ pub async fn get_my_publication_of_recipe(
     responses(
         (status = 204, description = "The publication of the recipe withdrawn: the caller's own, or, for the family's owner, whoever published it"),
         (status = 404, description = "`not_found`: no such recipe in the family, or no publication of it the caller may withdraw", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 429, description = "`too_many_attempts`: counted with the publications, 10 publications and withdrawals per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
     security(("session_cookie" = [])),
@@ -865,6 +908,9 @@ pub async fn unpublish_recipe(
     auth: AuthUser,
     Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<impl IntoResponse> {
+    // Counted with the publications, before any transaction opens (see
+    // `publish_recipe`).
+    LibraryThrottle::admit(&state.library_throttle.publish, auth.user_id).await?;
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
     sqlx::query_scalar!(
@@ -902,6 +948,7 @@ pub async fn unpublish_recipe(
     responses(
         (status = 204, description = "The publication, taken from the family, withdrawn: the caller's own, or, for the family's owner, whoever published it — its source recipe deleted since or not"),
         (status = 404, description = "`not_found`: no publication taken from the family the caller may withdraw", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 429, description = "`too_many_attempts`: counted with the publications, 10 publications and withdrawals per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::MemberErrors,
     ),
     security(("session_cookie" = [])),
@@ -911,6 +958,9 @@ pub async fn unpublish_library_recipe(
     auth: AuthUser,
     Path((group_id, library_id)): Path<(Uuid, Uuid)>,
 ) -> AppResult<impl IntoResponse> {
+    // Counted with the publications, before any transaction opens (see
+    // `publish_recipe`).
+    LibraryThrottle::admit(&state.library_throttle.publish, auth.user_id).await?;
     let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
     let actor_role = require_role(&mut tx, group_id, auth.user_id).await?;
     let withdrawn = withdraw(
@@ -1061,7 +1111,7 @@ pub async fn list_library(
     path = "/library/recipes/mine",
     tag = "recipes",
     responses(
-        (status = 200, description = "The caller's own publications, newest first, whatever became of the family they were taken from, each saying whether its source recipe still exists; nobody else's", body = MyPublications),
+        (status = 200, description = "The caller's own publications, newest first, whatever became of the family they were taken from, each saying whether its source recipe still exists; nobody else's. Not paged: an account holds 200 publications at most", body = MyPublications),
         (status = 429, description = "`too_many_attempts`: counted with the reads of the library, 60 per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
     ),
@@ -1103,6 +1153,7 @@ pub async fn list_my_publications(
     responses(
         (status = 204, description = "The caller's own publication withdrawn, whatever became of the family it was taken from"),
         (status = 404, description = "`not_found`: no publication of the caller's by that id", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        (status = 429, description = "`too_many_attempts`: counted with the publications, 10 publications and withdrawals per user per minute", body = manage_our_home_shared::dto::auth::ErrorResponse),
         crate::api_docs::SessionErrors,
     ),
     security(("session_cookie" = [])),
@@ -1112,6 +1163,9 @@ pub async fn withdraw_my_publication(
     auth: AuthUser,
     Path(id): Path<Uuid>,
 ) -> AppResult<impl IntoResponse> {
+    // Counted with the publications, before any transaction opens (see
+    // `publish_recipe`).
+    LibraryThrottle::admit(&state.library_throttle.publish, auth.user_id).await?;
     let mut tx = user_scoped_tx(&state.db, auth.user_id).await?;
     // Its publisher alone, as `withdraw`, but through no family: the
     // policies of 0066 let no one else, and the `user_id` says so again.
@@ -1313,6 +1367,15 @@ mod tests {
             "republishing adds nothing"
         );
         assert_eq!(FAMILY_QUOTA, 50);
+    }
+
+    #[test]
+    fn an_account_holds_two_hundred_publications_at_most() {
+        assert!(within_account_quota(0));
+        assert!(within_account_quota(ACCOUNT_QUOTA - 1));
+        assert!(!within_account_quota(ACCOUNT_QUOTA));
+        assert!(!within_account_quota(ACCOUNT_QUOTA + 3));
+        assert_eq!(ACCOUNT_QUOTA, 200);
     }
 
     // --- Search -----------------------------------------------------------

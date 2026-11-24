@@ -14,7 +14,8 @@
 //!   `?notice=publication_updated` (200). A refusal is shown on the screen.
 //! - `POST /recipes/:id/unpublish` — one click, no confirmation (arbitrage
 //!   of 2026-11-20): `DELETE /groups/:gid/recipes/:id/publish`, then back to
-//!   the recipe, `?notice=unpublished` or `?error=unpublish_failed`.
+//!   the recipe, `?notice=unpublished` or `?error=unpublish_failed`
+//!   (`unpublish_too_many` when refused 429, #989).
 //!
 //! Who may: whoever may edit the recipe (`can_modify`, the API's
 //! `publish_bar`); the others read why the card offers them nothing.
@@ -73,13 +74,16 @@ pub(crate) fn refusal_text(code: &str) -> &'static str {
         "library_quota_exceeded" => {
             "Rien n'a été publié : votre foyer a déjà 50 recettes dans la bibliothèque. Retirez-en une pour publier celle-ci."
         }
+        "account_library_quota_exceeded" => {
+            "Rien n'a été publié : vous avez déjà 200 recettes dans la bibliothèque, tous foyers confondus. Retirez-en une depuis « Mes publications » pour publier celle-ci."
+        }
         "name_too_long" | "name_required" | "instructions_too_long" | "invalid_servings"
         | "invalid_duration" | "too_many_ingredients" | "ingredient_name_required"
         | "ingredient_name_too_long" | "ingredient_unit_too_long"
         | "ingredient_quantity_must_be_non_negative" | "invalid_seasonal_month" => {
             "Rien n'a été publié : la recette dépasse les limites de la bibliothèque (nom de 200 caractères, étapes de 20 000 caractères, 100 ingrédients au plus). Modifiez-la, puis réessayez."
         }
-        "too_many" => "Rien n'a été publié : trop de publications en peu de temps. Réessayez dans une minute.",
+        "too_many" => "Rien n'a été publié : trop de publications et de retraits en peu de temps. Réessayez dans une minute.",
         _ => "La publication a échoué. Rien n'a été publié. Réessayez dans un instant.",
     }
 }
@@ -101,12 +105,14 @@ pub(crate) fn publish_outcome(id: Uuid, status: Option<u16>, code: &str) -> Publ
 }
 
 /// Where « Retirer de la bibliothèque » leads, by the API's answer: the
-/// recipe, saying it went or that it did not. Nothing of the caller's to
-/// withdraw (404): the recipe as it now stands.
+/// recipe, saying it went or that it did not — refused for too many
+/// publications and withdrawals in a minute (429), it says so. Nothing of
+/// the caller's to withdraw (404): the recipe as it now stands.
 pub(crate) fn unpublish_target(id: Uuid, status: Option<u16>) -> String {
     match status {
         Some(204) => format!("/recipes/{id}?notice=unpublished"),
         Some(404) => format!("/recipes/{id}"),
+        Some(429) => format!("/recipes/{id}?error=unpublish_too_many"),
         _ => format!("/recipes/{id}?error=unpublish_failed"),
     }
 }
@@ -562,6 +568,10 @@ mod tests {
         };
         assert!(refused(Some(409), "withdrawn_by_moderation").contains("modération"));
         assert!(refused(Some(409), "library_quota_exceeded").contains("50 recettes"));
+        let account = refused(Some(409), "account_library_quota_exceeded");
+        assert!(account.contains("200 recettes"), "{account}");
+        assert!(account.contains("Mes publications"), "{account}");
+        assert_ne!(account, refused(Some(409), "library_quota_exceeded"));
         assert!(refused(Some(400), "name_too_long").contains("limites de la bibliothèque"));
         assert_eq!(
             refused(Some(400), "too_many_ingredients"),
@@ -578,6 +588,7 @@ mod tests {
             "consent_required",
             "withdrawn_by_moderation",
             "library_quota_exceeded",
+            "account_library_quota_exceeded",
             "name_too_long",
             "too_many",
             "unavailable",
@@ -594,6 +605,10 @@ mod tests {
             format!("/recipes/{id}?notice=unpublished")
         );
         assert_eq!(unpublish_target(id, Some(404)), format!("/recipes/{id}"));
+        assert_eq!(
+            unpublish_target(id, Some(429)),
+            format!("/recipes/{id}?error=unpublish_too_many")
+        );
         for status in [Some(500), Some(403), None] {
             assert_eq!(
                 unpublish_target(id, status),
