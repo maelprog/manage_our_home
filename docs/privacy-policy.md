@@ -48,7 +48,7 @@ données sont-elles conservées ? ».
 | Invitations | adresse email de la personne invitée (si le membre qui invite la saisit), lien d'invitation valable 7 jours ; l'email envoyé nomme le groupe et le membre qui invite | Intérêt légitime (permettre à un membre d'inviter un proche dans son groupe) |
 | Désactivation d'un compte | date à laquelle l'administrateur du service a désactivé le compte, date de l'email qui prévient de sa suppression ; si vous demandez la réactivation, la date de votre demande et le message facultatif que vous y joignez, et la date du premier refus | Intérêt légitime (exploitation et sécurité du service) |
 | Agenda | événements, tâches, pièces jointes, membres assignés à un événement | Exécution du contrat |
-| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue, les deux clés de cet abonnement avec lesquelles le message qui lui est envoyé est chiffré pour votre navigateur, et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue ; dans l'application Android, la notification est programmée sur le téléphone et affiche le titre de l'événement et son heure (voir « Application Android ») | Exécution du contrat |
+| Rappels d'événements | délai choisi avant l'événement ; la façon dont vos rappels vous parviennent (notification, email ou les deux) ; pour chaque appareil où vous activez les notifications, l'adresse d'abonnement que le service de notification de votre navigateur lui attribue, les deux clés de cet abonnement avec lesquelles le message qui lui est envoyé est chiffré pour votre navigateur — ou, dans l'application Android, le jeton d'enregistrement que Firebase Cloud Messaging, le service de notification de Google, attribue au téléphone, sans clé —, et ses dates d'abonnement, de dernier renouvellement et de dernier envoi réussi, et le nombre et la date de début de ses envois échoués d'affilée, le nombre et le type des notifications qui lui ont été envoyées et qu'il n'a pas encore affichées (50 appareils au plus par compte). L'email de rappel porte le titre et la date de l'événement ; la notification n'affiche que « Rappel d'un événement à venir », ou « Nouvelle notification » quand l'appareil ne peut pas savoir laquelle il a reçue ; dans l'application Android, la notification est programmée sur le téléphone et affiche le titre de l'événement et son heure (voir « Application Android ») | Exécution du contrat |
 | Notifications dans l'application | pour chaque notification qui vous est adressée : son type (rappel d'événement, article bientôt périmé, récapitulatif quotidien des articles bientôt périmés ou périmés, message, invitation, ajout à la liste de courses, alerte de plafond du budget pour les propriétaires et administrateurs d'une famille), la famille concernée, l'élément visé, un texte court (titre de l'événement et sa date, nom de l'article, nom affiché du membre à l'origine de l'action, nom du groupe, nom de la catégorie de dépense — jamais le contenu d'un message), la date de création, la date à laquelle vous l'avez lue et le membre à l'origine de l'action ; l'heure à laquelle vous recevez le récapitulatif des articles bientôt périmés (9 h par défaut), le jour du dernier, et les articles qu'il vous a déjà annoncés, pour ne pas vous les annoncer deux fois | Exécution du contrat |
 | Stocks / recettes / liste de courses | articles (et leur code-barres quand il a été scanné ou saisi), recettes (et l'adresse de la page d'où une recette a été importée), ingrédients ; l'historique des repas : pour chaque recette marquée faite, le jour, le membre qui l'a marquée et son avis — aimé, neutre ou pas aimé, neutre par défaut, et, s'il en écrit un, un avis libre de 200 caractères au plus, que tous les membres de la famille peuvent lire (un texte libre : aucune information de santé n'y est demandée, mais il garde ce que vous y écrivez) ; la photo prise pour scanner un code-barres, lue puis oubliée (voir ci-dessous) | Exécution du contrat |
 | Bibliothèque de recettes | si vous publiez une recette : ce qui en est publié, lisible par tous les utilisateurs (nom, instructions, nombre de personnes, durée, ingrédients et leurs saisons, adresse de la page d'où la recette a été importée s'il y en a une, dates de publication et de dernière mise à jour), et, visibles de vous seul, le lien entre vous et cette publication et la recette de votre famille d'où elle vient ; si vous copiez une recette de la bibliothèque dans votre famille, la publication d'où vient la copie | **Consentement explicite** pour la publication : rien n'est publié sans que vous le confirmiez, recette par recette, et vous le retirez en retirant la recette (voir « La bibliothèque de recettes ») ; exécution du contrat pour la copie |
@@ -207,6 +207,27 @@ possibles sont :
   ou pas de réseau. Pas de repli : sans appareil abonné, un
   rappel par notification n'est pas envoyé du tout, et le site vous en
   avertit là où vous programmez vos rappels.
+- **Google, par son service Firebase Cloud Messaging**, uniquement si vos
+  rappels vous parviennent par notification et que l'application Android
+  a enregistré votre téléphone auprès du serveur : il porte au téléphone
+  les alertes de plafond du budget, si vous êtes propriétaire ou
+  administrateur d'une famille, le récapitulatif quotidien des articles
+  bientôt périmés, et les changements qu'un autre membre fait à un
+  événement de l'agenda que vous voyez. Pas vos rappels : l'application
+  les programme sur le téléphone (voir « Application Android »). Ce
+  service-là, c'est le responsable de traitement qui le choisit. Le cadre
+  contractuel qui le lie à Google sera indiqué ici avant l'ouverture du
+  service : [cadre contractuel de Firebase Cloud Messaging — à renseigner
+  avant la mise en ligne]. À chaque envoi, le serveur remet à Google le
+  jeton d'enregistrement du téléphone, le type du message (alerte de
+  budget, récapitulatif ou changement de l'agenda) et le numéro opaque,
+  tiré au hasard, des notifications correspondantes dans votre centre de
+  notifications. **Contrairement au message envoyé à un navigateur, il
+  n'est pas chiffré pour votre téléphone** : Google peut lire ce type et
+  ces numéros, et apprend donc, par exemple, qu'une alerte de budget part
+  vers ce téléphone à cette heure. Il ne reçoit ni le titre de
+  l'événement, ni le nom de son auteur, ni montant, ni catégorie, ni nom
+  d'article, ni aucun identifiant de votre compte ou de votre famille.
 - **Open Food Facts**, base publique de produits alimentaires, quand vous
   scannez ou saisissez le code-barres d'un article de stock : le serveur lui
   demande la fiche du produit, avec ce code pour seule information — ni
@@ -352,14 +373,16 @@ plus que ce qui est établi. Voici où en est chacun des cinq cas.
   relais : une fois l'email remis à votre fournisseur de messagerie, il est
   conservé là où celui-ci héberge votre boîte, qui peut se trouver hors de
   l'Union européenne.
-- **Google** reçoit des données dans deux cas seulement : si vous choisissez
-  la connexion avec Google, et si un import calendrier est configuré dans
-  votre groupe. Son infrastructure est mondiale, donc pour partie hors de
+- **Google** reçoit des données dans trois cas seulement : si vous
+  choisissez la connexion avec Google, si un import calendrier est
+  configuré dans votre groupe, et si l'application Android reçoit vos
+  notifications par Firebase Cloud Messaging (voir plus haut). Son infrastructure est mondiale, donc pour partie hors de
   l'Union européenne. Le mécanisme qui encadre ce transfert sera indiqué ici
   avant l'ouverture du service : [transferts hors UE de Google — à renseigner
-  avant la mise en ligne]. Si vous ne vous connectez pas avec Google et
-  qu'aucun import calendrier n'est configuré dans votre groupe, rien ne part
-  vers Google.
+  avant la mise en ligne]. Si vous ne vous connectez pas avec Google,
+  qu'aucun import calendrier n'est configuré dans votre groupe et que
+  l'application Android ne reçoit pas vos notifications, rien ne part vers
+  Google par ces chemins.
 - **Les notifications de rappel** passent par le service de notification
   de votre navigateur (Google, Mozilla, Apple ou Microsoft), dont
   l'infrastructure est pour partie hors de l'Union européenne. Ce qu'il
@@ -585,7 +608,9 @@ de la purge dépasserait.
   nommer.
 - **Appareils abonnés aux notifications** : jusqu'à ce que le service de
   notification du navigateur signale l'abonnement expiré ou retiré (il est
-  alors supprimé au premier rappel qui l'essaie), que chaque envoi y
+  alors supprimé au premier rappel qui l'essaie) — pour un téléphone de
+  l'application Android, jusqu'à ce que Firebase Cloud Messaging signale
+  son jeton périmé ou retiré, au premier envoi qui l'essaie —, que chaque envoi y
   échoue pendant au moins 7 jours, à raison d'au moins 20 échecs
   d'affilée, que vous désabonniez vos appareils depuis « Notifications de
   rappel », ou à la purge de votre compte. Un compte garde 50 appareils au
@@ -840,7 +865,11 @@ Elle demande au téléphone :
   le reste de l'application fonctionne sans. La photo suit le même chemin
   que depuis un navigateur : envoyée au serveur, lue puis oubliée (voir
   « Quelles données sont collectées, et pourquoi », Stocks) ;
-- **les notifications**, pour vos rappels d'événements. Depuis Android 13,
+- **les notifications**, pour vos rappels d'événements, et pour les
+  alertes de budget, le récapitulatif des articles bientôt périmés et les
+  changements de l'agenda que le serveur lui envoie par Firebase Cloud
+  Messaging, le service de notification de Google (voir « Avec qui vos
+  données sont-elles partagées ? »). Depuis Android 13,
   elle vous les demande quand vous appuyez sur « Autoriser les
   notifications sur ce téléphone », dans « Notifications de rappel » ; vous
   pouvez refuser, et vos rappels ne vous parviennent alors pas sur ce
