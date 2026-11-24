@@ -170,6 +170,9 @@ public class MainActivity extends BridgeActivity {
             // page could not be must not get the plugin.
             registerPlugin(SitePlugin.class);
         }
+        // Whether Firebase is there (#1004), for the site's pages and the
+        // choice page alike.
+        registerPlugin(PushSupportPlugin.class);
         super.onCreate(savedInstanceState);
         addChangeSiteShortcut();
     }

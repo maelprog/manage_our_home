@@ -200,6 +200,23 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
     implementation project(':capacitor-cordova-android-plugins')
+    // PushMessagingService and PushSupportPlugin (#1004) build on the
+    // Push Notifications plugin's Firebase, at the version it takes
+    // (variables.gradle).
+    implementation "com.google.firebase:firebase-messaging:$firebaseMessagingVersion"
 }
 
 apply from: 'capacitor.build.gradle'
+
+// Firebase Cloud Messaging (#1004): the Firebase project the server pushes
+// through, in google-services.json, next to this file. Never versioned
+// (.gitignore: the repository is public): the release workflow writes it
+// from a secret, a person building by hand puts theirs there
+// (apps/mobile/README.md). Google's plugin fails the build without it:
+// applied only when it is there. Without it, the APK builds and runs, and
+// receives no push (PushSupportPlugin tells the page).
+if (file('google-services.json').isFile()) {
+    apply plugin: 'com.google.gms.google-services'
+} else {
+    logger.lifecycle('apps/mobile/android/app/google-services.json is missing: building without the pushes of Firebase Cloud Messaging')
+}

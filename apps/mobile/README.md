@@ -8,7 +8,7 @@ du site.
 
 | Fichier | Rôle |
 |---|---|
-| `package.json`, `package-lock.json` | Capacitor 8.6, `@capacitor/android`, `@capacitor/app`, `@capacitor/local-notifications` ; TypeScript pour lire la configuration |
+| `package.json`, `package-lock.json` | Capacitor 8.6, `@capacitor/android`, `@capacitor/app`, `@capacitor/local-notifications`, `@capacitor/push-notifications` ; TypeScript pour lire la configuration |
 | `capacitor.config.ts` | le site ouvert (`staging` ou `prod`), le nom, le marqueur de User-Agent, la page hors ligne |
 | `www/hors-ligne.html` | la page affichée quand le site ne répond pas |
 | `www/choix-du-site.html`, `www/choix-du-site.js` | l'écran du choix du site : site standard ou personnalisé, au premier lancement (#737) et pour en changer (#738) |
@@ -16,6 +16,8 @@ du site.
 | `android/` | le projet Android (Gradle), versionné |
 | `scripts/check-shell.test.mjs` | les contrôles de la coquille (`npm test`) |
 | `scripts/local-reminders.test.mjs` | les tests du script des rappels locaux, `apps/web/src/local-reminders.js` (`npm test`) |
+| `scripts/app-pushes.test.mjs` | les tests de la partie de ce script qui enregistre le téléphone pour les notifications poussées (#1004) |
+| `android/app/google-services.json` | le projet Firebase des notifications poussées : **jamais versionné** (« Notifications poussées : le projet Firebase ») |
 | `scripts/site-address.test.mjs`, `scripts/site-choice.test.mjs` | les tests de `www/site-address.js` et de `www/site-choice.js` (`npm test`) |
 
 ## Ce que fait l'application
@@ -137,6 +139,36 @@ du site.
   exactes, les rappels partent quand même, avec quelques minutes de retard
   possibles. Un événement modifié pendant que le téléphone est hors ligne
   garde son rappel à l'ancienne heure jusqu'à la prochaine ouverture.
+- **Les notifications poussées par le serveur** (#1004) : les changements
+  de l'agenda faits par un autre membre, les alertes de budget et le
+  récapitulatif des produits bientôt périmés, par Firebase Cloud Messaging
+  (FCM), le service de notification de Google — jamais un rappel, qui
+  reste programmé sur le téléphone. Le même script
+  (`local-reminders.js`), la permission des notifications accordée et le
+  membre connecté, demande au plugin Push Notifications le jeton FCM du
+  téléphone à chaque page et à chaque retour au premier plan, et le remet
+  au site (`POST /account/notifications/fcm-token`, relayé à
+  `/account/fcm-tokens` de l'API, #1002). Il ne demande jamais la
+  permission lui-même : c'est celle des rappels. Le serveur n'envoie
+  qu'un message de données, sans texte : son type (`kind`) et les
+  identifiants des entrées du centre de notifications (`entries`,
+  séparés par des virgules). L'application l'affiche elle-même,
+  fermée ou ouverte (`PushMessagingService.java`, `PushNotices.java`),
+  avec les **textes fixes** que `apps/web/src/sw.js` montre dans un
+  navigateur pour le même type (« Agenda de la famille modifié »…), le
+  texte neutre pour un type inconnu : rien du message n'est affiché
+  (`npm test` tient les deux tables égales). Elles arrivent sur un canal
+  Android à part, « Agenda, budget et stocks », distinct de celui des
+  rappels. Un toucher ouvre l'application, marque lues les entrées du
+  centre (#862) et ouvre la page du type : l'agenda, le budget ou les
+  stocks. La déconnexion fait oublier le jeton au site, puis le retire de
+  Firebase ; un changement de site le retire de Firebase (l'ancien site,
+  à son envoi suivant, reçoit `UNREGISTERED` et oublie le téléphone). Un
+  APK construit sans `google-services.json` fonctionne, sans notification
+  poussée : le plugin `PushSupport` (`PushSupportPlugin.java`) le dit à la
+  page, qui n'appelle alors pas le plugin Push Notifications (il fermerait
+  l'application). La configuration : « Notifications poussées : le
+  projet Firebase » plus bas.
 
 L'APK signé que les familles installent est publié en release GitHub
 (#666) : « Publier un APK signé » et « Installer l'application
@@ -213,14 +245,18 @@ cd android
 À voir :
 
 - `npm ci` finit par `found 0 vulnerabilities` ;
-- `npm test` affiche `ℹ pass 95` et `ℹ fail 0` ;
+- `npm test` affiche `ℹ pass 125` et `ℹ fail 0` ;
 - `npx cap sync android` finit par `✔ update android` et `[info] Sync
   finished` ; il écrit la configuration du staging dans
   `android/app/src/main/assets/capacitor.config.json` (`"url":
   "https://staging.watallo.fr"`) ;
 - `./gradlew assembleStagingDebug` télécharge Gradle 8.14.3 et ses
   dépendances au premier lancement (plusieurs minutes), puis finit par
-  `BUILD SUCCESSFUL`.
+  `BUILD SUCCESSFUL`. Sans `android/app/google-services.json`, il écrit
+  d'abord `google-services.json is missing: building without the pushes
+  of Firebase Cloud Messaging` : l'APK fonctionne, sans notification
+  poussée. Pour les avoir, poser le fichier avant de construire
+  (« Notifications poussées : le projet Firebase », étape 3).
 
 L'APK est `android/app/build/outputs/apk/staging/debug/app-staging-debug.apk`.
 Il est signé d'une clé de débogage : installable par `adb` ou à la main, pas
@@ -415,6 +451,88 @@ des applications. À l'ouverture :
    `scripts/site-choice.test.mjs`, son appel avant `site.choose` dans
    `scripts/check-shell.test.mjs`). En mode avion, la page « Pas de
    connexion » a un bouton « Changer de site », qui mène au même écran.
+10. **Les notifications poussées** (#1004). Il faut un APK construit avec
+    `google-services.json` (« Notifications poussées : le projet
+    Firebase »), un staging dont l'API a sa configuration FCM
+    (`FCM_PROJECT_ID`, `FCM_SERVICE_ACCOUNT_FILE` : `apps/api/README.md` ;
+    sur k3s, le Secret `fcm` des manifestes de la branche `deploy`), un
+    second compte membre de la même famille, et, sur « Mon compte ›
+    Notifications », les changements de l'agenda cochés et un canal de
+    notification qui comprend les notifications. Sur le téléphone,
+    connecté, permission des notifications accordée (étape 9) :
+
+    1. Dans `chrome://inspect` (étape 7), la console de la page n'affiche
+       aucune erreur, et l'onglet Réseau montre à chaque page un `POST
+       /account/notifications/fcm-token` qui répond `204`. Un `409` dit
+       que l'API n'a pas de configuration FCM.
+    2. Fermer l'application (balayer depuis les applications récentes).
+       Depuis un autre appareil, avec l'autre compte : créer un
+       événement dans la famille, le modifier, puis le supprimer. **Trois
+       notifications « Agenda de la famille modifié »** arrivent, chacune
+       avec « Un événement a été ajouté, modifié ou supprimé. Ouvrez
+       l'agenda pour le voir. », sans titre d'événement ni nom.
+       Réglages › Applications › MHome › Notifications : leur canal est
+       « Agenda, budget et stocks », à côté de celui des rappels.
+    3. Toucher l'une d'elles : l'application s'ouvre sur l'agenda. Le
+       centre de notifications compte une entrée non lue de moins :
+       celle de cette notification est lue.
+    4. **Aucun rappel en double** : un événement avec un rappel dans
+       quelques minutes ne donne, à son heure, qu'une notification, celle
+       du rappel programmé sur le téléphone (titre de l'événement et
+       heure).
+    5. Se déconnecter : l'onglet Réseau montre `DELETE
+       /account/notifications/fcm-token` (`204`) avant `POST /logout`.
+       Une nouvelle modification de l'agenda par l'autre compte n'arrive
+       plus sur ce téléphone.
+
+    Sans `google-services.json`, rien de cela : aucun appel à
+    `/account/notifications/fcm-token`, et l'application fonctionne.
+
+## Notifications poussées : le projet Firebase (#1004)
+
+L'API envoie par Firebase Cloud Messaging au nom d'un projet Google Cloud
+(`FCM_PROJECT_ID`, avec la clé d'un compte de service :
+`apps/api/README.md`) ; l'application reçoit dans ce même projet, que lui
+nomme `android/app/google-services.json`. C'est vous qui faites les
+étapes 1 à 4, une fois.
+
+1. <https://console.firebase.google.com/> → **Ajouter un projet**, ou
+   choisir le projet Google Cloud existant (celui de `FCM_PROJECT_ID`).
+   Google Analytics : **non** (l'application ne l'embarque pas).
+2. Dans le projet → **Ajouter une application** → Android, deux fois :
+   `fr.watallo.mhome.staging` puis `fr.watallo.mhome`. Le build de chaque
+   variante exige la sienne dans le fichier ; aucune empreinte SHA n'est
+   demandée pour FCM.
+3. **Paramètres du projet** → **Général** → télécharger
+   `google-services.json` (il porte les deux applications) et le poser
+   dans `apps/mobile/android/app/`. Il n'est jamais versionné
+   (`android/.gitignore`) : le dépôt est public. Il ne contient pas de
+   secret qui permette d'envoyer une notification (c'est la clé du compte
+   de service, côté API), mais il identifie le projet.
+4. Pour l'APK publié : le secret GitHub **`MHOME_GOOGLE_SERVICES_JSON`**,
+   le contenu du fichier tel quel (« Publier un APK signé », étape 4) :
+
+   ```sh
+   gh secret set MHOME_GOOGLE_SERVICES_JSON --repo maelprog/manage_our_home \
+     < apps/mobile/android/app/google-services.json
+   ```
+
+   Sans lui, le workflow de publication construit l'APK sans
+   notification poussée, et le dit par un avertissement du run.
+
+Ce que reçoit Google, pour la déclaration **Data safety** (#666) et la
+politique de confidentialité (`docs/privacy-policy.md`, « Application
+Android ») : le SDK Firebase du téléphone demande à Google un jeton
+d'enregistrement (avec l'identifiant d'installation Firebase qu'il crée
+pour cela) une fois la permission des notifications accordée et le
+membre connecté, jamais avant (`firebase_messaging_auto_init_enabled` à
+`false` dans le manifeste) ; le serveur remet ce jeton à Google à chaque
+envoi, avec le type du message et les identifiants opaques de ses
+entrées, non chiffrés pour le téléphone. Dans le formulaire Data safety :
+« Identifiants de l'appareil ou autres », collectés, partagés avec Google
+pour le fonctionnement de l'application (notifications), non facultatifs
+une fois les notifications autorisées ; aucun SDK d'analyse ni de
+publicité.
 
 ## Utiliser son propre serveur
 
@@ -460,7 +578,8 @@ perd ses données (la session et les rappels programmés).
 
 Le workflow `.github/workflows/mobile-release.yml` fait le reste à chaque
 tag `mobile-vX.Y.Z` : `npm ci`, `npm audit --audit-level=high` (bloquant),
-`npm test`, `npx cap sync android` vers le staging, `./gradlew
+`npm test`, `npx cap sync android` vers le staging, `google-services.json`
+écrit depuis le secret `MHOME_GOOGLE_SERVICES_JSON` s'il existe, `./gradlew
 assembleStagingRelease` signé, contrôle de la signature et de la version, puis
 une release GitHub du tag avec `mhome-X.Y.Z.apk` et `mhome-X.Y.Z.apk.sha256`.
 La version vient du tag : `versionName` X.Y.Z, `versionCode`
@@ -554,6 +673,9 @@ Sur GitHub, page du dépôt → **Settings** → **Secrets and variables** →
   - `MHOME_KEYSTORE_BASE64` : le fichier encodé en base64, sur une ligne
     (`base64 -w0 ~/mhome-release/mhome-release.p12` l'affiche) ;
   - `MHOME_KEYSTORE_PASSWORD` : le mot de passe ;
+  - `MHOME_GOOGLE_SERVICES_JSON` (facultatif) : le contenu de
+    `google-services.json`, pour les notifications poussées
+    (« Notifications poussées : le projet Firebase ») ;
 
 Ou, avec `gh` (connecté au compte propriétaire du dépôt) :
 
@@ -767,7 +889,8 @@ ne pas désinstaller pour la forcer, et prévenir l'administrateur.
 Le job `mobile` de `.github/workflows/ci.yml` lance `npm ci`,
 `npm audit --audit-level=high` (bloquant, sans liste d'ignore, comme
 `cargo audit`), `npm test`, `npx cap sync android` puis
-`./gradlew assembleStagingDebug`. Le workflow `mobile-release.yml` publie
+`./gradlew assembleStagingDebug`, sans `google-services.json` : il
+vérifie que l'APK se construit sans le projet Firebase (#1004). Le workflow `mobile-release.yml` publie
 l'APK signé (« Publier un APK signé »). Renovate tient `package.json` à
 jour (`renovate.json`), les paquets `@capacitor/*` ensemble, sans
 changement de version majeure (une majeure de Capacitor se migre à la

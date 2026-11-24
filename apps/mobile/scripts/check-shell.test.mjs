@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 const mobile = fileURLToPath(new URL('..', import.meta.url));
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -307,13 +308,14 @@ test("the choice page keeps the current site as it is, and leaves another one's 
   const body = store[1].replace(/\s+/g, ' ');
   // The same site: reopened, and nothing else.
   assert.match(body, /^ const kind = changeKind\(current, choice\); if \(kind === 'keep'\) \{ await reopen\(onError\); return; \}/);
-  // Another site: its reminders gone first, or no change at all.
+  // Another site: its reminders and its push token (#1004) gone first, or
+  // no change at all.
   const leave = body.indexOf(
-    "if (kind === 'change') { const forgot = await forgetReminders(window.Capacitor?.Plugins?.LocalNotifications); if (forgot.error) { onError(forgot.error); return; } }",
+    "if (kind === 'change') { const forgot = await forgetReminders(window.Capacitor?.Plugins?.LocalNotifications); if (forgot.error) { onError(forgot.error); return; } const unpushed = await forgetPush(window.Capacitor?.Plugins?.PushNotifications, window.Capacitor?.Plugins?.PushSupport); if (unpushed.error) { onError(unpushed.error); return; } }",
   );
   const choose = body.indexOf('await site.choose(choice);');
-  assert.ok(leave !== -1, 'store leaves the old site through forgetReminders, and stops on its error');
-  assert.ok(choose > leave, 'store chooses after the reminders are gone');
+  assert.ok(leave !== -1, 'store leaves the old site through forgetReminders and forgetPush, and stops on their error');
+  assert.ok(choose > leave, 'store chooses after the reminders and the token are gone');
   assert.equal(body.split('site.choose').length, 2, 'site.choose is called once, after them');
 });
 
@@ -530,4 +532,148 @@ test('the photo of a barcode opens the camera, and a refused camera says so (#80
   assert.match(client, /if \(\w+ == null && !cameraGranted\(\)\) \{\s*Toast\.makeText\([^;]*R\.string\.camera_refused/);
   const strings = elements(read(`${res}/values/strings.xml`), 'string').map((s) => s.name);
   assert.ok(strings.includes('camera_refused'), 'the message is a string resource');
+});
+
+// -- the pushes of Firebase Cloud Messaging (#1004) --------------------------
+
+const pushJava = (name) => read(`android/app/src/main/java/fr/watallo/mhome/${name}.java`);
+
+// The texts of apps/web/src/sw.js, the service worker of the browsers:
+// TEXTS (kind → title, body, url) and NEUTRAL, run in a context of their
+// own with a `self` that listens to nothing.
+function serviceWorkerTexts() {
+  const context = vm.createContext({ self: { addEventListener() {} } });
+  vm.runInContext(readFileSync(new URL('../../web/src/sw.js', import.meta.url), 'utf8'), context);
+  return JSON.parse(vm.runInContext('JSON.stringify({ texts: TEXTS, neutral: NEUTRAL })', context));
+}
+
+// The table of PushNotices.java: `{ "kind", "title", "body" }` rows of
+// TEXTS, and the NEUTRAL pair.
+function appTexts() {
+  const java = pushJava('PushNotices');
+  const table = java.match(/static final String\[\]\[\] TEXTS = \{([\s\S]*?)\n {4}\};/);
+  assert.ok(table, 'PushNotices.java: static final String[][] TEXTS = { … };');
+  const rows = [...table[1].matchAll(/\{\s*"([^"]*)",\s*"([^"]*)",\s*"([^"]*)"\s*\}/g)];
+  const neutral = java.match(/static final String\[\] NEUTRAL = \{\s*"([^"]*)",\s*"([^"]*)"\s*\};/);
+  assert.ok(neutral, 'PushNotices.java: static final String[] NEUTRAL = { "title", "body" };');
+  return {
+    texts: Object.fromEntries(rows.map(([, kind, title, body]) => [kind, { title, body }])),
+    neutral: { title: neutral[1], body: neutral[2] },
+  };
+}
+
+test("a push shows the service worker's fixed text of its kind, and the neutral one otherwise", () => {
+  const web = serviceWorkerTexts();
+  const app = appTexts();
+  assert.deepEqual(
+    app.texts,
+    Object.fromEntries(Object.entries(web.texts).map(([kind, { title, body }]) => [kind, { title, body }])),
+  );
+  assert.deepEqual(app.neutral, { title: web.neutral.title, body: web.neutral.body });
+  // The choice: the row of the kind, the neutral pair for anything else.
+  const java = pushJava('PushNotices');
+  const choose = java.match(/static String\[\] textsFor\(String kind\) \{([\s\S]*?)\n {4}\}/);
+  assert.ok(choose, 'PushNotices.textsFor(String kind)');
+  assert.match(
+    choose[1],
+    /for \(String\[\] row : TEXTS\) \{\s*if \(row\[0\]\.equals\(kind\)\) \{\s*return new String\[\] \{ row\[1\], row\[2\] \};\s*\}\s*\}\s*return NEUTRAL;/,
+  );
+});
+
+test('no text of the network reaches the notification', () => {
+  // The message is data only (apps/api notifications::fcm::message_body):
+  // the service reads its kind and its entries, and nothing else of it.
+  const service = pushJava('PushMessagingService');
+  const notices = pushJava('PushNotices');
+  for (const java of [service, notices]) {
+    assert.doesNotMatch(java, /getNotification\(\)/);
+    assert.doesNotMatch(java, /\bget(Title|Body)\(\)/);
+  }
+  const reads = [...service.matchAll(/getData\(\)\.get\("(\w+)"\)/g)].map(([, key]) => key).sort();
+  assert.deepEqual(reads, ['entries', 'kind']);
+  // The title and the text come from TEXTS alone.
+  assert.match(notices, /String\[\] text = textsFor\(kind\);/);
+  assert.match(notices, /\.setContentTitle\(text\[0\]\)/);
+  assert.match(notices, /\.setContentText\(text\[1\]\)/);
+});
+
+test('no agenda reminder is shown twice: the app schedules them itself (#668)', () => {
+  // The API sends none by FCM (notifications::fcm::sends); a reminder that
+  // came anyway would double the one Local Notifications shows.
+  const service = pushJava('PushMessagingService');
+  assert.match(service, /if \(PushNotices\.REMINDER\.equals\(kind\)\) \{\s*return;\s*\}/);
+  assert.match(pushJava('PushNotices'), /static final String REMINDER = "agenda_reminder";/);
+});
+
+test('the pushes have a channel of their own, named in French', () => {
+  const notices = pushJava('PushNotices');
+  const id = notices.match(/static final String CHANNEL = "([\w-]+)";/);
+  assert.ok(id, 'PushNotices.CHANNEL');
+  // "default" is the channel of the reminders (the Local Notifications plugin).
+  assert.notEqual(id[1], 'default');
+  assert.match(notices, /new NotificationChannel\(\s*CHANNEL,\s*context\.getString\(R\.string\.push_channel_name\)/);
+  const strings = Object.fromEntries(
+    [...uncommented(read(`${res}/values/strings.xml`)).matchAll(/<string name="(\w+)">([^<]*)<\/string>/g)].map(
+      ([, name, text]) => [name, text],
+    ),
+  );
+  assert.equal(strings.push_channel_name, 'Agenda, budget et stocks');
+  assert.ok(strings.push_channel_description, 'a description of the channel');
+});
+
+test("a touch opens the app with the push's kind and entries, which the page reads", () => {
+  // The Push Notifications plugin hands the page the extras of an intent
+  // that carries google.message_id (pushNotificationActionPerformed), at a
+  // cold start too (BridgeActivity passes it the launch intent).
+  const notices = pushJava('PushNotices');
+  assert.match(notices, /new Intent\(context, MainActivity\.class\)/);
+  for (const extra of ['"google\\.message_id"', 'KIND', 'ENTRIES']) {
+    assert.match(notices, new RegExp(`\\.putExtra\\(${extra},`), extra);
+  }
+  assert.match(notices, /PendingIntent\.FLAG_IMMUTABLE/);
+});
+
+test("the app's messaging service takes the plugin's place, and Firebase starts only when asked", () => {
+  const manifest = read('android/app/src/main/AndroidManifest.xml');
+  const services = elements(manifest, 'service');
+  assert.deepEqual(
+    services.find((s) => s['android:name'] === 'com.capacitorjs.plugins.pushnotifications.MessagingService'),
+    { 'android:name': 'com.capacitorjs.plugins.pushnotifications.MessagingService', 'tools:node': 'remove' },
+  );
+  const own = services.find((s) => s['android:name'] === '.PushMessagingService');
+  assert.ok(own, 'the app declares .PushMessagingService');
+  assert.equal(own['android:exported'], 'false');
+  const service = uncommented(manifest).match(/<service\s+android:name="\.PushMessagingService"[\s\S]*?<\/service>/);
+  assert.ok(service, '.PushMessagingService has a body');
+  assert.ok(elements(service[0], 'action').some((a) => a['android:name'] === 'com.google.firebase.MESSAGING_EVENT'));
+  // No token is asked of Google before the page registers the phone
+  // (permission granted, member logged in): auto-init off.
+  const meta = elements(manifest, 'meta-data').find((m) => m['android:name'] === 'firebase_messaging_auto_init_enabled');
+  assert.deepEqual(meta, { 'android:name': 'firebase_messaging_auto_init_enabled', 'android:value': 'false' });
+  // The plugin's own service is extended, so that the page still hears of
+  // a new token.
+  assert.match(pushJava('PushMessagingService'), /class PushMessagingService extends MessagingService/);
+  assert.match(pushJava('PushMessagingService'), /super\.onMessageReceived\(\w+\);/);
+});
+
+test('google-services.json is never versioned, and the APK builds without it', () => {
+  const ignored = spawnSync('git', ['check-ignore', '-q', 'android/app/google-services.json'], { cwd: mobile });
+  assert.equal(ignored.status, 0, 'git ignores android/app/google-services.json');
+  const tracked = spawnSync('git', ['ls-files', '--', ':(glob)**/google-services.json'], { cwd: mobile, encoding: 'utf8' });
+  assert.equal(tracked.status, 0);
+  assert.equal(tracked.stdout, '', 'no google-services.json in the repository');
+  // Firebase's Gradle plugin fails the build without the file: applied
+  // only when it is there.
+  const gradle = read('android/app/build.gradle');
+  assert.match(gradle, /if \(file\('google-services\.json'\)\.isFile\(\)\) \{\s*apply plugin: 'com\.google\.gms\.google-services'/);
+  assert.equal(gradle.split("apply plugin: 'com.google.gms.google-services'").length, 2, 'applied in one place');
+  // Without it, Firebase is not initialised, and the plugin's register()
+  // would throw out of the bridge and close the app: the page asks the
+  // app's PushSupport plugin first, registered on every page.
+  const support = pushJava('PushSupportPlugin');
+  assert.match(support, /@CapacitorPlugin\(name = "PushSupport"\)/);
+  assert.match(support, /FirebaseApp\.getApps\(getContext\(\)\)\.isEmpty\(\)/);
+  const activity = pushJava('MainActivity');
+  const onCreate = activity.slice(activity.indexOf('protected void onCreate('), activity.indexOf('super.onCreate(savedInstanceState);'));
+  assert.match(onCreate, /\n {8}registerPlugin\(PushSupportPlugin\.class\);/);
 });

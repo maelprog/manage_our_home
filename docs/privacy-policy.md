@@ -842,9 +842,28 @@ L'application Android de MHome est une fenêtre sur ce même site : elle
 ouvre ses pages à son adresse, et toutes vos données restent servies et
 conservées par le même serveur, aux conditions décrites sur cette page.
 Elle ne contient aucune logique du service, aucun outil de mesure
-d'audience, aucun SDK publicitaire ni de statistiques, et ne contacte aucun
-autre serveur que celui du site : les liens vers un autre site s'ouvrent
-dans le navigateur du téléphone. Une seule exception, à votre demande : si
+d'audience, aucun SDK publicitaire ni de statistiques, et ne contacte
+d'autre serveur que celui du site que dans les deux cas qui suivent : les
+liens vers un autre site s'ouvrent dans le navigateur du téléphone.
+
+Le premier : pour recevoir les alertes de budget, le récapitulatif des
+articles bientôt périmés et les changements de l'agenda, l'application
+embarque le module de Firebase Cloud Messaging, le service de
+notification de Google. Une fois les notifications autorisées sur le
+téléphone, et seulement quand vous êtes connecté, ce module demande à
+Google un jeton d'enregistrement du téléphone (Google lui associe un
+identifiant d'installation qu'il crée pour cela), que l'application
+remet au serveur à chaque page ouverte, puis reçoit les messages que le
+serveur envoie par Google (voir « Avec qui vos données sont-elles
+partagées ? »). Ces messages ne portent aucun texte : l'application
+affiche elle-même un texte fixe selon leur type, par exemple « Agenda de
+la famille modifié », jamais le titre d'un événement, un montant ou un
+nom. Quand vous vous déconnectez, l'application demande au serveur
+d'oublier ce jeton, puis à Google de le retirer ; quand vous changez de
+site, elle le retire chez Google. Vos rappels d'événements, eux, ne
+passent pas par Google : ils sont programmés sur le téléphone.
+
+Le second, à votre demande : si
 vous touchez « Continuer avec Google », le téléphone demande à Google le
 jeton d'identité du compte que vous choisissez (voir « Avec qui vos
 données sont-elles partagées ? »). L'application demande au module de
