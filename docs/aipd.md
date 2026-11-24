@@ -74,6 +74,14 @@ recettes, et le service n'est pas à grande échelle (section 1).
   rappel par notification un message dont la seule charge utile,
   l'identifiant opaque de l'entrée du centre de notifications, est
   chiffrée pour le navigateur (#862).
+- Google, par Firebase Cloud Messaging, pour les téléphones de
+  l'application Android (#1003) : à chaque changement de l'agenda, alerte
+  de plafond du budget ou récapitulatif des articles bientôt périmés, un
+  message par appareil portant le jeton de l'appareil, le type du message
+  et les identifiants opaques des entrées du centre de notifications. Cette
+  charge n'est **pas** chiffrée pour l'appareil : Google peut la lire. Les
+  rappels d'événements n'y passent pas, l'application les programme sur le
+  téléphone (#668).
 - Le navigateur de chaque membre.
 
 ## 3. Principes fondamentaux
@@ -88,7 +96,7 @@ recettes, et le service n'est pas à grande échelle (section 1).
 | Droits d'accès et de portabilité | `GET /account/export` | — |
 | Effacement | `POST /account/delete`, purge à 30 jours ; le contenu partagé reste au groupe, anonymisé (CGU, « Vos contenus ») | — |
 | Rectification, opposition, limitation | Écrans de compte, ou adresse de contact | Même réserve que l'information |
-| Sous-traitance (art. 28) | Scaleway, DPA du fournisseur accepté depuis la console | Version opposable à établir (`docs/v2-deployment.md` #18) |
+| Sous-traitance (art. 28) | Scaleway, DPA du fournisseur accepté depuis la console ; Google pour Firebase Cloud Messaging (#1003), choisi par le responsable | Version opposable à établir pour Scaleway, cadre contractuel de Firebase Cloud Messaging à établir (`docs/v2-deployment.md` #18) |
 | Transferts hors UE | Aucun voulu ; aucun pour les emails (Scaleway déclare traiter le service dans l'UE, registre) | Mécanismes à établir pour Google et les services de notification (#18) |
 
 ## 4. Risques
