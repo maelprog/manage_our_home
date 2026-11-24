@@ -227,7 +227,8 @@ pub const MAX_DEVICES_PER_ACCOUNT: i64 = 50;
 /// `{"kind": …}`, the kind of notification this device got
 /// (`push::pending_on_receipt`), `null` for the neutral text — pushes of
 /// two kinds on their way, none pending, or an endpoint that is not one of
-/// the caller's devices. The receipt is taken off the device's count.
+/// the caller's browsers (an FCM token, #1001, is none). The receipt is
+/// taken off the device's count.
 #[utoipa::path(
     post,
     path = "/account/push-subscriptions/received",
@@ -247,7 +248,7 @@ pub async fn received(
     let mut tx = crate::db::begin(&state.db).await?;
     let device = sqlx::query!(
         r#"SELECT id, pending_push_kind, pending_pushes, pending_until FROM push_subscriptions
-           WHERE user_id = $1 AND endpoint = $2 FOR UPDATE"#,
+           WHERE user_id = $1 AND endpoint = $2 AND platform = 'web' FOR UPDATE"#,
         auth.user_id,
         body.endpoint,
     )

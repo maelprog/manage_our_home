@@ -1554,3 +1554,172 @@ async fn a_push_names_every_entry_of_its_member(db: PgPool) {
         [serde_json::json!({ "entries": ids })]
     );
 }
+
+// -- native devices (#1001) ------------------------------------------------------
+
+/// An FCM registration token, as an Android device is given one: opaque
+/// text, not a URL.
+const NATIVE_TOKEN: &str = "dVq3mJ8xTzKq:APA91bHPRgkF3JUikC4ENAHEeMrd41Zxv3hVZjC9KtT8OvPVGJ";
+
+async fn insert_device_row(
+    db: &PgPool,
+    user: Uuid,
+    platform: &str,
+    endpoint: &str,
+    p256dh: Option<&str>,
+    auth: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO push_subscriptions (user_id, platform, endpoint, p256dh, auth)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(user)
+    .bind(platform)
+    .bind(endpoint)
+    .bind(p256dh)
+    .bind(auth)
+    .execute(db)
+    .await
+    .map(|_| ())
+}
+
+/// The constraint a check violation names.
+fn violated(result: Result<(), sqlx::Error>) -> String {
+    match result {
+        Err(sqlx::Error::Database(e)) => {
+            assert_eq!(e.code().as_deref(), Some("23514"), "{e}");
+            e.constraint().unwrap_or_default().to_string()
+        }
+        other => panic!("expected a check violation, got {other:?}"),
+    }
+}
+
+/// A row may hold an Android device's FCM token: no browser keys, the
+/// token as its endpoint, still unique. No platform but 'web' and 'fcm'.
+#[sqlx::test]
+async fn a_device_row_holds_an_fcm_token_without_keys(db: PgPool) {
+    let member = insert_user(&db, "native@example.test", "push").await;
+
+    insert_device_row(&db, member, "fcm", NATIVE_TOKEN, None, None)
+        .await
+        .unwrap();
+    let keyed = insert_device_row(
+        &db,
+        member,
+        "fcm",
+        "another-token",
+        Some(UA_PUBLIC),
+        Some(UA_AUTH),
+    )
+    .await;
+    assert_eq!(violated(keyed), "push_subscriptions_fcm_without_keys");
+    let apns = insert_device_row(&db, member, "apns", "apns-token", None, None).await;
+    assert_eq!(violated(apns), "push_subscriptions_platform_check");
+    let again = insert_device_row(&db, member, "fcm", NATIVE_TOKEN, None, None).await;
+    assert!(
+        matches!(&again, Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("23505")),
+        "{again:?}"
+    );
+
+    // A browser's row is as before: 'web' by default, its keys both or
+    // neither.
+    add_device(&db, member, MOZILLA).await;
+    insert_device_row(&db, member, "web", FCM, Some(UA_PUBLIC), Some(UA_AUTH))
+        .await
+        .unwrap();
+    let half = insert_device_row(
+        &db,
+        member,
+        "web",
+        "https://push.example/half",
+        Some(UA_PUBLIC),
+        None,
+    )
+    .await;
+    assert_eq!(violated(half), "push_subscriptions_keys_together");
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT endpoint, platform FROM push_subscriptions ORDER BY endpoint")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (NATIVE_TOKEN.to_string(), "fcm".to_string()),
+            (FCM.to_string(), "web".to_string()),
+            (MOZILLA.to_string(), "web".to_string()),
+        ]
+    );
+}
+
+/// A native device is never handed to the web push: a reminder or an
+/// alert goes to the member's browsers alone, and the native row is left
+/// as it was — no push counted on it, no failure recorded.
+#[sqlx::test]
+async fn a_native_device_is_never_web_pushed(db: PgPool) {
+    let member = insert_user(&db, "mixed@example.test", "push").await;
+    add_device(&db, member, MOZILLA).await;
+    insert_device_row(&db, member, "fcm", NATIVE_TOKEN, None, None)
+        .await
+        .unwrap();
+    due_reminder(&db, member).await;
+
+    let (_, pushes) = pass(&db, |_| PushOutcome::Failed("not a URL".into())).await;
+    let sent_to: Vec<&str> = pushes.iter().map(|(e, _)| e.as_str()).collect();
+    assert_eq!(sent_to, [MOZILLA]);
+
+    let alerted = Mutex::new(Vec::new());
+    let send_push =
+        |endpoint: String, _: i64, _: Option<manage_our_home::notifications::push::Payload>| {
+            alerted.lock().unwrap().push(endpoint);
+            async { PushOutcome::Delivered }
+        };
+    manage_our_home::budget::alerts::push_alerts(&db, &send_push, &entries_of(&[member]))
+        .await
+        .unwrap();
+    assert_eq!(alerted.into_inner().unwrap(), [MOZILLA]);
+
+    let native: (i32, Option<String>, i32) = sqlx::query_as(
+        "SELECT consecutive_failures, pending_push_kind, pending_pushes
+         FROM push_subscriptions WHERE endpoint = $1",
+    )
+    .bind(NATIVE_TOKEN)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(native, (0, None, 0));
+}
+
+/// The receipt is the service worker's: a native token sent as an
+/// endpoint is none of the caller's browsers, and its row is left as it
+/// was.
+#[sqlx::test]
+async fn a_receipt_never_reads_a_native_device(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(&router, &db, "receipt@example.test").await;
+    let member: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind("receipt@example.test")
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    insert_device_row(&db, member, "fcm", NATIVE_TOKEN, None, None)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE push_subscriptions
+         SET pending_push_kind = 'budget_alert', pending_pushes = 1,
+             pending_until = now() + interval '1 hour'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        received(&router, &cookie, NATIVE_TOKEN).await,
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        pending_kind(&db, NATIVE_TOKEN).await.as_deref(),
+        Some("budget_alert")
+    );
+}
