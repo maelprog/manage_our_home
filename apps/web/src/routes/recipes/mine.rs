@@ -22,14 +22,14 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use manage_our_home_shared::dto::recipes::{MyPublication, MyPublications};
 use uuid::Uuid;
 
-use crate::app::{html_escape, kitchen_segment, shell_with_header, Width};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::lenient_query::LenientQuery;
 use crate::state::{api_request_auth, AppState};
 
+use super::library::library_segment;
 use super::publish::dates_text;
-use super::recipes_cookie;
-use crate::routes::groups::header_with_groups;
+use super::{reader_context, recipes_cookie};
 
 const LIST: &str = "/recipes/library/mine";
 
@@ -112,16 +112,23 @@ fn card(p: &MyPublication) -> String {
 }
 
 /// The page: `list` the reader's publications, `None` when the API did not
-/// answer them; `banner` the one of the URL.
-pub(crate) fn mine_body(list: Option<&[MyPublication]>, banner: &str) -> String {
+/// answer them; `banner` the one of the URL. Without a `family`, no
+/// « Voir mes recettes »: it would only redirect (#990).
+pub(crate) fn mine_body(list: Option<&[MyPublication]>, banner: &str, family: bool) -> String {
+    let recipes = if family {
+        r#"
+<div class="actions"><a class="btn" href="/recipes">Voir mes recettes</a></div>"#
+    } else {
+        ""
+    };
     let content = match list {
         None => format!(
             r#"<p class="notice error" role="alert">Vos publications n'ont pas pu être chargées. <a href="{LIST}">Réessayer</a></p>"#
         ),
-        Some([]) => r#"<div class="card"><h2>Aucune publication</h2>
-<p>Vous n'avez publié aucune recette dans la bibliothèque. Ouvrez une de vos recettes et choisissez « Publier dans la bibliothèque » pour la partager avec les autres foyers.</p>
-<div class="actions"><a class="btn" href="/recipes">Voir mes recettes</a></div></div>"#
-            .to_string(),
+        Some([]) => format!(
+            r#"<div class="card"><h2>Aucune publication</h2>
+<p>Vous n'avez publié aucune recette dans la bibliothèque. Ouvrez une de vos recettes et choisissez « Publier dans la bibliothèque » pour la partager avec les autres foyers.</p>{recipes}</div>"#
+        ),
         Some(list) => format!(
             r#"<p class="muted">Les recettes que vous avez publiées, visibles par tous les foyers. « Retirer » les enlève de la bibliothèque ; les foyers qui les ont déjà copiées les gardent.</p>
 <ul class="pubs" aria-label="Recettes publiées">{}</ul>"#,
@@ -134,7 +141,7 @@ pub(crate) fn mine_body(list: Option<&[MyPublication]>, banner: &str) -> String 
 {banner}
 {content}
 <div class="links"><a href="/recipes/library">Retour à la bibliothèque</a></div>"#,
-        segment = kitchen_segment("/recipes"),
+        segment = library_segment(family),
     )
 }
 
@@ -149,7 +156,7 @@ pub async fn get(
     // No family needed: a publication outlives the family it came from,
     // and this is where it is withdrawn from (#947) — a reader without
     // one still gets the page, under the header of no family.
-    let (_, header) = header_with_groups(&state, &headers, &me, LIST).await;
+    let (fam, header) = reader_context(&state, &headers, &me, LIST).await;
     let cookie = recipes_cookie(&headers);
     let list = match api_request_auth(
         &state,
@@ -183,7 +190,7 @@ pub async fn get(
             Width::Read,
             "Mes publications",
             &header,
-            &mine_body(list.as_deref(), &banner),
+            &mine_body(list.as_deref(), &banner, fam.is_some()),
         )),
     )
         .into_response()
@@ -292,7 +299,7 @@ mod tests {
             publication(1, "Gratin", true, "2026-11-20T10:00:00Z"),
             publication(2, "Soupe", false, "2026-11-02T10:00:00Z"),
         ];
-        let html = mine_body(Some(&list), "");
+        let html = mine_body(Some(&list), "", true);
         assert!(html.contains("<h1>Mes publications</h1>"));
         assert_eq!(html.matches(r#"<li class="card">"#).count(), 2);
         let cards: Vec<&str> = html.split(r#"<li class="card">"#).skip(1).collect();
@@ -317,17 +324,35 @@ mod tests {
 
     #[test]
     fn an_empty_list_and_a_list_that_failed_say_different_things() {
-        let empty = mine_body(Some(&[]), "");
+        let empty = mine_body(Some(&[]), "", true);
         assert!(empty.contains("<h2>Aucune publication</h2>"));
         assert!(empty.contains(r#"<a class="btn" href="/recipes">Voir mes recettes</a>"#));
         assert!(!empty.contains("pubs"));
-        let failed = mine_body(None, "");
+        let failed = mine_body(None, "", true);
         assert!(failed.contains("Vos publications n'ont pas pu être chargées."));
         assert!(!failed.contains("Aucune publication"));
         let names = mine_body(
             Some(&[publication(1, "<i>", true, "2026-11-02T10:00:00Z")]),
             "",
+            true,
         );
         assert!(names.contains("<h2>&lt;i&gt;</h2>"));
+    }
+
+    #[test]
+    fn without_a_family_nothing_leads_to_the_recipes_that_redirect() {
+        let empty = mine_body(Some(&[]), "", false);
+        assert!(!empty.contains(r#"class="segment""#), "{empty}");
+        assert!(empty.contains("<h2>Aucune publication</h2>"));
+        assert!(!empty.contains("Voir mes recettes"));
+        assert!(!empty.contains(r#"href="/recipes""#), "{empty}");
+        assert!(empty.contains(r#"href="/recipes/library">Retour à la bibliothèque</a>"#));
+        let list = [publication(2, "Soupe", false, "2026-11-02T10:00:00Z")];
+        let html = mine_body(Some(&list), "", false);
+        assert!(html.contains(&format!(
+            r#"href="/recipes/library/{}" aria-label="Voir la fiche de Soupe dans la bibliothèque">Voir la fiche</a>"#,
+            Uuid::from_u128(2)
+        )));
+        assert!(!html.contains(r#"href="/recipes""#));
     }
 }

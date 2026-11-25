@@ -1124,8 +1124,9 @@ test.describe("Recipes — publier et signaler (#911)", () => {
   });
 
   // A publication outlives its family: its publisher, in no family any
-  // more, still reads « Mes publications » and withdraws it from there.
-  test("« Mes publications » without a family: listed and withdrawn", async ({ page }) => {
+  // more, still reads « Mes publications » and the library (#990), and
+  // withdraws it from there.
+  test("the library without a family: read, reported, listed and withdrawn", async ({ page }) => {
     const email = await registerAndLogin(page, "e2e-rcpubalone", "Lone Publisher");
     const name = `Gratin ${Date.now()}${Math.floor(Math.random() * 1e6)}`;
     await publishToLibrary(email, { name, ingredients: ["pommes de terre"] });
@@ -1135,10 +1136,49 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     await expect(page.getByRole("heading", { name: "Mes publications", level: 1 })).toBeVisible();
     await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
     await expect(page.getByText("Cette recette n'est plus dans vos recettes")).toBeVisible();
+    // Without a family, both kitchen tabs would redirect: no segment at all.
+    await expect(page.locator("nav.segment")).toHaveCount(0);
+
+    // The library reads without a family too (#990): its list, the
+    // publication and its report open, and nothing leads to the family's
+    // recipes, which would only redirect to /groups/new.
+    await page.getByRole("link", { name: `Voir la fiche de ${name} dans la bibliothèque` }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/[0-9a-f-]{36}$/);
+    const publication = page.url();
+    await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible();
+    await expect(page.getByText("pommes de terre")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Ajouter à mes recettes" })).toHaveCount(0);
+    await expect(page.getByText("Ajouter cette recette à un groupe")).toBeVisible();
+    await expect(page.locator('main a[href="/recipes"]')).toHaveCount(0);
+    await expect(page.locator("nav.segment")).toHaveCount(0);
+    await page.getByRole("link", { name: "Signaler cette recette" }).click();
+    await expect(page).toHaveURL(`${publication}/report`);
+    await expect(page.getByRole("radio")).toHaveCount(6);
+    await expect(page.locator("nav.segment")).toHaveCount(0);
+    await page.goto(publication);
+    await page.getByRole("link", { name: "Ajouter à mon groupe" }).click();
+    await expect(page).toHaveURL(/\/groups\/new$/);
+    await expect(page.getByRole("heading", { name: "Créer un groupe", level: 1 })).toBeVisible();
+
+    const list = await page.goto(`/recipes/library?q=${encodeURIComponent(name)}`);
+    expect(list?.status()).toBe(200);
+    await expect(page).toHaveURL(/\/recipes\/library\?q=/);
+    await expect(page.getByRole("heading", { name: "Bibliothèque", level: 1 })).toBeVisible();
+    await expect(page.getByRole("link", { name: new RegExp(name) })).toHaveAttribute(
+      "href",
+      new URL(publication).pathname,
+    );
+    await expect(page.getByText("Issue de la bibliothèque")).toHaveCount(0);
+    await expect(page.locator('main a[href="/recipes"]')).toHaveCount(0);
+    await expect(page.locator("nav.segment")).toHaveCount(0);
+    await page.getByRole("link", { name: "Mes publications" }).click();
+    await expect(page).toHaveURL(/\/recipes\/library\/mine$/);
+
     await page.getByRole("button", { name: `Retirer ${name} de la bibliothèque` }).click();
     await expect(page).toHaveURL(/\/recipes\/library\/mine\?notice=unpublished$/);
     await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Aucune publication" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Voir mes recettes" })).toHaveCount(0);
     // A forged URL names nothing: the name is never read from it.
     await page.goto("/recipes/library/mine?notice=unpublished&nom=Arnaque");
     await expect(page.getByText("Recette retirée de la bibliothèque.")).toBeVisible();

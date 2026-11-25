@@ -59,7 +59,8 @@ use crate::state::{api_request_auth, AppState};
 /// Resolved active-family context for a Recipes page: the family id every
 /// `/groups/:gid/…` API call is scoped to, the caller's role in it (for the
 /// permission bar), and the shared authenticated header. `None` means the
-/// user has no group yet — callers redirect to `/groups/new`.
+/// user has no group yet — callers redirect to `/groups/new`, but for the
+/// library's pages, which read [`reader_context`] (#990).
 pub(crate) struct FamilyContext {
     pub gid: Uuid,
     pub name: String,
@@ -76,16 +77,29 @@ pub(crate) async fn family_context(
     me: &MeResponse,
     redirect_to: &str,
 ) -> Option<FamilyContext> {
+    reader_context(state, headers, me, redirect_to).await.0
+}
+
+/// [`family_context`] for the pages a reader opens without a family (the
+/// library, #990): the family when there is one, and the header either
+/// way — without one, that of no family, as on `/groups/new`.
+pub(crate) async fn reader_context(
+    state: &AppState,
+    headers: &HeaderMap,
+    me: &MeResponse,
+    redirect_to: &str,
+) -> (Option<FamilyContext>, String) {
     let (groups, header) = header_with_groups(state, headers, me, redirect_to).await;
     let preferred = active_group_id_from_headers(headers);
     let active: Option<&GroupSummary> = resolve_active_group(&groups, preferred);
-    active.map(|g| FamilyContext {
+    let fam = active.map(|g| FamilyContext {
         gid: g.group_id,
         name: g.name.clone(),
         role: g.role.clone(),
         edit_min_role: g.min_role(Feature::RecipesEdit).to_string(),
-        header,
-    })
+        header: header.clone(),
+    });
+    (fam, header)
 }
 
 /// Mirror of `apps/api/src/recipes/mod.rs::can_modify`: the recipe's

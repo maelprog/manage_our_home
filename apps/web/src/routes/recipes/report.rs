@@ -22,12 +22,12 @@ use axum::Form;
 use manage_our_home_shared::dto::recipes::{LibraryRecipe, ReportRequest};
 use uuid::Uuid;
 
-use crate::app::{html_escape, kitchen_segment, shell_with_header, Width};
+use crate::app::{html_escape, shell_with_header, Width};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::library::{error_html, refusal_code, withdrawn_body};
-use super::{family_context, recipes_cookie};
+use super::library::{error_html, library_segment, refusal_code, withdrawn_body};
+use super::{reader_context, recipes_cookie};
 
 /// The longest comment, in characters once trimmed: the API's
 /// `COMMENT_MAX_CHARS`.
@@ -113,6 +113,7 @@ pub(crate) fn report_body(
     comment: &str,
     errors: &ReportErrors,
     failure: Option<&str>,
+    family: bool,
 ) -> String {
     let banner = if let Some(text) = failure {
         format!(
@@ -163,7 +164,7 @@ pub(crate) fn report_body(
 <div class="actions"><button type="submit" data-busy-label="Envoi…">Envoyer le signalement</button>
 <a class="btn secondary" href="/recipes/library/{id}">Annuler</a></div>
 </form>"#,
-        segment = kitchen_segment("/recipes"),
+        segment = library_segment(family),
         name = html_escape(name),
         comment = html_escape(comment),
     )
@@ -183,8 +184,14 @@ pub struct ReportForm {
 /// title and body.
 type Refusal = (StatusCode, &'static str, String);
 
-/// The publication, or why there is none.
-async fn fetch(state: &AppState, id: Uuid, cookie: Option<&str>) -> Result<LibraryRecipe, Refusal> {
+/// The publication, or why there is none; `family`, whether the reader
+/// has one (#990), for the segment of a withdrawn one.
+async fn fetch(
+    state: &AppState,
+    id: Uuid,
+    cookie: Option<&str>,
+    family: bool,
+) -> Result<LibraryRecipe, Refusal> {
     let here = format!("/recipes/library/{id}/report");
     let unavailable = || {
         (
@@ -205,9 +212,11 @@ async fn fetch(state: &AppState, id: Uuid, cookie: Option<&str>) -> Result<Libra
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             serde_json::from_value(resp.body).map_err(|_| unavailable())
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            Err((StatusCode::NOT_FOUND, "Recette retirée", withdrawn_body()))
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => Err((
+            StatusCode::NOT_FOUND,
+            "Recette retirée",
+            withdrawn_body(family),
+        )),
         Ok(resp) => Err((
             StatusCode::OK,
             "Bibliothèque",
@@ -224,18 +233,18 @@ pub async fn get(
     Path(id): Path<Uuid>,
 ) -> Response {
     let here = format!("/recipes/library/{id}/report");
-    let Some(fam) = family_context(&state, &headers, &me, &here).await else {
-        return Redirect::to("/groups/new").into_response();
-    };
+    // Reported without a family too (#990): the API asks a session only.
+    let (fam, header) = reader_context(&state, &headers, &me, &here).await;
+    let family = fam.is_some();
     let cookie = recipes_cookie(&headers);
     let page = |status: StatusCode, title: &str, body: &str| {
         (
             status,
-            Html(shell_with_header(Width::Read, title, &fam.header, body)),
+            Html(shell_with_header(Width::Read, title, &header, body)),
         )
             .into_response()
     };
-    let recipe = match fetch(&state, id, cookie.as_deref()).await {
+    let recipe = match fetch(&state, id, cookie.as_deref(), family).await {
         Ok(r) => r,
         Err((status, title, body)) => return page(status, title, &body),
     };
@@ -245,7 +254,15 @@ pub async fn get(
     page(
         StatusCode::OK,
         "Signaler une recette",
-        &report_body(id, &recipe.name, None, "", &ReportErrors::default(), None),
+        &report_body(
+            id,
+            &recipe.name,
+            None,
+            "",
+            &ReportErrors::default(),
+            None,
+            family,
+        ),
     )
 }
 
@@ -257,14 +274,14 @@ pub async fn post(
     Form(form): Form<ReportForm>,
 ) -> Response {
     let here = format!("/recipes/library/{id}/report");
-    let Some(fam) = family_context(&state, &headers, &me, &here).await else {
-        return Redirect::to("/groups/new").into_response();
-    };
+    // Reported without a family too (#990): the API asks a session only.
+    let (fam, header) = reader_context(&state, &headers, &me, &here).await;
+    let family = fam.is_some();
     let cookie = recipes_cookie(&headers);
     let page = |status: StatusCode, title: &str, body: &str| {
         (
             status,
-            Html(shell_with_header(Width::Read, title, &fam.header, body)),
+            Html(shell_with_header(Width::Read, title, &header, body)),
         )
             .into_response()
     };
@@ -284,13 +301,17 @@ pub async fn post(
             match report_outcome(id, status) {
                 ReportOutcome::Done(to) => return Redirect::to(&to).into_response(),
                 ReportOutcome::Gone => {
-                    return page(StatusCode::NOT_FOUND, "Recette retirée", &withdrawn_body())
+                    return page(
+                        StatusCode::NOT_FOUND,
+                        "Recette retirée",
+                        &withdrawn_body(family),
+                    )
                 }
                 ReportOutcome::Failed(text) => (ReportErrors::default(), Some(text)),
             }
         }
     };
-    let recipe = match fetch(&state, id, cookie.as_deref()).await {
+    let recipe = match fetch(&state, id, cookie.as_deref(), family).await {
         Ok(r) => r,
         Err((status, title, body)) => return page(status, title, &body),
     };
@@ -309,6 +330,7 @@ pub async fn post(
             &form.comment,
             &errors,
             failure,
+            family,
         ),
     )
 }
@@ -414,7 +436,7 @@ mod tests {
     #[test]
     fn the_screen_lists_the_reasons_and_keeps_the_entry() {
         let id = Uuid::from_u128(5);
-        let html = report_body(id, "Gratin", None, "", &ReportErrors::default(), None);
+        let html = report_body(id, "Gratin", None, "", &ReportErrors::default(), None, true);
         assert!(html.contains("<h1>Signaler une recette</h1>"));
         assert_eq!(
             html.matches(r#"<input type="radio" name="reason""#).count(),
@@ -426,7 +448,7 @@ mod tests {
         assert!(html.contains(&format!(r#"action="/recipes/library/{id}/report""#)));
 
         let errors = parse_report(Some("other"), "").unwrap_err();
-        let kept = report_body(id, "Gratin", Some("other"), "<b>", &errors, None);
+        let kept = report_body(id, "Gratin", Some("other"), "<b>", &errors, None, true);
         assert!(kept.contains(r#"value="other" checked/>"#));
         assert!(kept
             .contains("Le signalement n'a pas été envoyé : corrigez le champ indiqué ci-dessous."));
@@ -437,7 +459,7 @@ mod tests {
         assert!(kept.contains(">&lt;b&gt;</textarea>"));
 
         let errors = parse_report(None, "").unwrap_err();
-        let no_reason = report_body(id, "Gratin", None, "", &errors, None);
+        let no_reason = report_body(id, "Gratin", None, "", &errors, None, true);
         assert!(no_reason.contains(r#"aria-labelledby="motif-l" aria-describedby="motif-err""#));
         assert!(
             no_reason.contains(r#"<p class="field-error" id="motif-err">Choisissez un motif.</p>"#)
@@ -450,9 +472,29 @@ mod tests {
             "Pub",
             &ReportErrors::default(),
             Some("Hors service"),
+            true,
         );
         assert!(failed.contains(r#"<p class="notice error" role="alert">Hors service</p>"#));
         assert!(failed.contains(r#"value="spam" checked/>"#));
         assert!(failed.contains(">Pub</textarea>"));
+    }
+
+    #[test]
+    fn without_a_family_the_screen_drops_the_recipes_tab() {
+        let id = Uuid::from_u128(5);
+        let html = report_body(
+            id,
+            "Gratin",
+            None,
+            "",
+            &ReportErrors::default(),
+            None,
+            false,
+        );
+        assert!(!html.contains(r#"class="segment""#), "{html}");
+        assert!(!html.contains(r#"href="/recipes""#));
+        assert!(html.contains(&format!(r#"action="/recipes/library/{id}/report""#)));
+        let with = report_body(id, "Gratin", None, "", &ReportErrors::default(), None, true);
+        assert!(with.starts_with(&library_segment(true)));
     }
 }
