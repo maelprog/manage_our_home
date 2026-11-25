@@ -2871,3 +2871,78 @@ async fn withdrawals_count_with_publications(db: PgPool) {
     let res = publish_call(&router, f.id, theirs, &f.admin.cookie, consent()).await;
     assert_status(&res, StatusCode::CREATED);
 }
+
+/// Issue #991: any member of the family reads when a recipe of theirs was
+/// published, whoever of them published it — its dates and nothing else,
+/// nothing of the publisher. Not published, withdrawn, or outside the
+/// family: 404 (403 for a stranger naming the family).
+#[sqlx::test]
+async fn any_member_reads_when_a_recipe_of_the_family_was_published(db: PgPool) {
+    let router = test_router(db.clone());
+    let f = fam(&db, "pubdate").await;
+    let recipe = new_recipe(&router, f.id, &f.owner.cookie, leek_tart()).await;
+    let uri = format!("/groups/{}/recipes/{recipe}/publication", f.id);
+
+    let (status, _) = get(&router, &uri, &f.admin.cookie).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "not published yet");
+
+    let res = publish_call(&router, f.id, recipe, &f.owner.cookie, consent()).await;
+    assert_status(&res, StatusCode::CREATED);
+    let published = json_body(res).await;
+    let dates = json!({
+        "published_at": published["published_at"],
+        "updated_at": published["updated_at"],
+    });
+    for cookie in [&f.owner.cookie, &f.admin.cookie, &f.standard.cookie] {
+        let (status, body) = get(&router, &uri, cookie).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, dates, "the dates alone");
+    }
+
+    // Outside the family: neither through it, nor through another one.
+    let other = fam(&db, "pubdate-other").await;
+    let (status, _) = get(&router, &uri, &other.owner.cookie).await;
+    assert!(
+        matches!(status, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND),
+        "{status}"
+    );
+    let (status, _) = get(
+        &router,
+        &format!("/groups/{}/recipes/{recipe}/publication", other.id),
+        &other.owner.cookie,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The function itself, under the runtime policies: the family of
+    // `app.group_id`, for one of its members, and nobody else.
+    let role = restricted_role(&db).await;
+    for (user, scope, group, expected) in [
+        (f.standard.id, f.id, f.id, 1_usize),
+        (other.owner.id, f.id, f.id, 0),
+        (other.owner.id, other.id, f.id, 0),
+        (f.standard.id, other.id, f.id, 0),
+    ] {
+        let mut tx = as_user(&db, &role, Some((user, scope))).await;
+        let rows: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)> =
+            sqlx::query_as("SELECT * FROM group_recipe_publication_dates($1, $2)")
+                .bind(group)
+                .bind(recipe)
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), expected, "{user} in {scope} on {group}");
+    }
+
+    let res = call(
+        &router,
+        Method::DELETE,
+        &format!("/groups/{}/recipes/{recipe}/publish", f.id),
+        Some(&f.owner.cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::NO_CONTENT);
+    let (status, _) = get(&router, &uri, &f.standard.cookie).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "withdrawn");
+}
