@@ -28,7 +28,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::Form;
 use chrono::{DateTime, Utc};
-use manage_our_home_shared::dto::recipes::{PublicationOfRecipe, PublishRequest, RecipeResponse};
+use manage_our_home_shared::dto::recipes::{
+    PublicationOfRecipe, PublishRequest, RecipePublicationDates, RecipeResponse,
+};
 use uuid::Uuid;
 
 use crate::app::{html_escape, kitchen_segment, shell_with_header, Width};
@@ -218,9 +220,11 @@ pub(crate) enum Mode<'a> {
     Publish,
     Update(&'a PublicationOfRecipe),
     /// Another member's publication: `owner`, the visitor is the family's
-    /// owner, who may withdraw it (the API's `unpublish_recipe`).
+    /// owner, who may withdraw it (the API's `unpublish_recipe`); `dates`,
+    /// when it was published, unknown when the API did not answer.
     Already {
         owner: bool,
+        dates: Option<&'a RecipePublicationDates>,
     },
 }
 
@@ -247,10 +251,18 @@ pub(crate) fn screen_body(
         r#"<div class="links"><a href="/recipes/{id}"><span aria-hidden="true">‹</span> Retour à la recette</a></div>"#
     );
     let title = mode_title(mode);
-    if let Mode::Already { owner } = mode {
-        // Its card (#991): the family's owner withdraws it, whoever
-        // published it; the others read who may. Its date is another
-        // member's, which the API does not serve.
+    if let Mode::Already { owner, dates } = mode {
+        // Its card (#991), dated as the library dates it: the family's
+        // owner withdraws it, whoever published it; the others read who
+        // may.
+        let dates = dates
+            .map(|d| {
+                format!(
+                    r#" <span class="muted">{}</span>"#,
+                    html_escape(&dates_text(d.published_at, d.updated_at))
+                )
+            })
+            .unwrap_or_default();
         let withdraw = if owner {
             unpublish_form(id)
         } else {
@@ -261,7 +273,7 @@ pub(crate) fn screen_body(
 <h1>{title}</h1>
 <p class="notice warning" role="status">Cette recette est déjà publiée dans la bibliothèque par un autre membre de votre foyer. <a href="/recipes/{id}">Retour à la recette</a></p>
 <section class="card already" aria-labelledby="already-h"><h2 id="already-h">{name}</h2>
-<p><span class="badge ok">Publiée</span></p>
+<p><span class="badge ok">Publiée</span>{dates}</p>
 {withdraw}</section>"#,
             segment = kitchen_segment("/recipes"),
         );
@@ -352,6 +364,30 @@ pub(crate) fn screen_body(
 }
 
 // -- handlers -----------------------------------------------------------------
+
+/// When the recipe was published, whoever of the family published it
+/// (#991). Unknown (`None`) when it is not or the API does not answer: the
+/// card then shows its badge alone.
+async fn publication_dates(
+    state: &AppState,
+    gid: Uuid,
+    id: Uuid,
+    cookie: Option<&str>,
+) -> Option<RecipePublicationDates> {
+    let resp = api_request_auth(
+        state,
+        reqwest::Method::GET,
+        &format!("/groups/{gid}/recipes/{id}/publication"),
+        cookie,
+        None,
+    )
+    .await
+    .ok()?;
+    if resp.status != reqwest::StatusCode::OK {
+        return None;
+    }
+    serde_json::from_value(resp.body).ok()
+}
 
 /// The caller's own publication of the recipe, if any. Unknown (`None`)
 /// when the API does not answer: the card then offers to publish, and the
@@ -498,9 +534,15 @@ pub async fn post(
         Err(page) => return page.into_response(),
     };
     let publication = my_publication(&state, fam.gid, id, cookie.as_deref()).await;
+    let dates = if already {
+        publication_dates(&state, fam.gid, id, cookie.as_deref()).await
+    } else {
+        None
+    };
     let mode = if already {
         Mode::Already {
             owner: fam.role == "owner",
+            dates: dates.as_ref(),
         }
     } else {
         publication.as_ref().map_or(Mode::Publish, Mode::Update)
@@ -806,13 +848,39 @@ mod tests {
     #[test]
     fn a_recipe_another_member_published_shows_its_card() {
         let id = Uuid::from_u128(7);
-        let html = screen_body(&recipe(None), Mode::Already { owner: false }, false, None);
+        let dates = RecipePublicationDates {
+            published_at: at("2026-11-18T09:00:00Z"),
+            updated_at: at("2026-11-20T09:00:00Z"),
+        };
+        let html = screen_body(
+            &recipe(None),
+            Mode::Already {
+                owner: false,
+                dates: Some(&dates),
+            },
+            false,
+            None,
+        );
         assert!(html.contains("<h1>Publier dans la bibliothèque</h1>"));
         assert!(html.contains("déjà publiée dans la bibliothèque par un autre membre"));
         assert!(html.contains(
             r#"<section class="card already" aria-labelledby="already-h"><h2 id="already-h">Gratin &lt;dauphinois&gt;</h2>"#
         ));
-        assert!(html.contains(r#"<p><span class="badge ok">Publiée</span></p>"#));
+        // Dated as the mockup dates it, the update said once there is one.
+        assert!(html.contains(
+            r#"<p><span class="badge ok">Publiée</span> <span class="muted">le 18 novembre 2026 · mise à jour le 20 novembre 2026</span></p>"#
+        ));
+        // The API did not answer: the badge alone.
+        let undated = screen_body(
+            &recipe(None),
+            Mode::Already {
+                owner: false,
+                dates: None,
+            },
+            false,
+            None,
+        );
+        assert!(undated.contains(r#"<p><span class="badge ok">Publiée</span></p>"#));
         // Not the family's owner: nothing to send, and why.
         assert!(!html.contains("<form"));
         assert!(html.contains(
@@ -821,7 +889,15 @@ mod tests {
         assert!(!html.contains("Ce qui devient visible"));
 
         // The owner withdraws whoever's publication it is.
-        let owner = screen_body(&recipe(None), Mode::Already { owner: true }, false, None);
+        let owner = screen_body(
+            &recipe(None),
+            Mode::Already {
+                owner: true,
+                dates: None,
+            },
+            false,
+            None,
+        );
         assert!(owner.contains(r#"<section class="card already""#));
         assert!(owner.contains(&format!(
             r#"<form method="post" action="/recipes/{id}/unpublish"><button type="submit" class="secondary danger" data-busy-label="Retrait…">Retirer de la bibliothèque</button></form>"#
@@ -842,7 +918,10 @@ mod tests {
         assert_eq!(mode_title(Mode::Update(&p)), "Mettre à jour la publication");
         assert_eq!(mode_title(Mode::Publish), "Publier dans la bibliothèque");
         assert_eq!(
-            mode_title(Mode::Already { owner: true }),
+            mode_title(Mode::Already {
+                owner: true,
+                dates: None,
+            }),
             "Publier dans la bibliothèque"
         );
     }

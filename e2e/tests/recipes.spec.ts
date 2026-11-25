@@ -1174,6 +1174,8 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     const alreadyCard = page.locator("section.card.already");
     await expect(alreadyCard.getByRole("heading", { name, level: 2 })).toBeVisible();
     await expect(alreadyCard.getByText("Publiée", { exact: true })).toBeVisible();
+    // Dated, though another member published it (#991).
+    await expect(alreadyCard.locator("p .muted")).toHaveText(/^le \d{1,2} [a-zéû]+ \d{4}$/);
     await expect(alreadyCard.getByRole("button", { name: "Retirer de la bibliothèque" })).toBeVisible();
 
     // Made a standard member: the recipe is no longer theirs to edit, but
