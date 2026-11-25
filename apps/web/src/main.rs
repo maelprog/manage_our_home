@@ -1327,7 +1327,8 @@ mod fcm_token_tests {
     async fn what_is_not_a_token_never_reaches_the_api() {
         let (router, seen) = web(StatusCode::CREATED, StatusCode::NO_CONTENT).await;
         let status = send(router, Method::POST, r#"{"endpoint":"x"}"#).await;
-        assert!(status.is_client_error(), "{status}");
+        // The `Json` extractor's refusal, not a 404 from a missing route.
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(seen.lock().unwrap().is_empty());
     }
 }
