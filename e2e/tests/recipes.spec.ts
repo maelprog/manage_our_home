@@ -237,6 +237,7 @@ test.describe("Recipes — à réaliser (#470)", () => {
 
     await page.goto("/recipes/new");
     await page.getByLabel("Nom").fill("Ratatouille");
+    await fillSteps(page, "Couper les légumes");
     await fillIngredients(page, "Courgette | 2 | pièce\nLait | 1500 | ml");
     // A new recipe is for 1 until told otherwise (#1016).
     await expect(page.getByLabel("Personnes")).toHaveValue("1");
@@ -264,10 +265,36 @@ test.describe("Recipes — à réaliser (#470)", () => {
         "La recette est écrite pour 4 personnes ; les quantités ont été multipliées par 0.5.",
       ),
     ).toBeVisible();
+    const ratatouille = new URL(page.url()).pathname;
+
+    // A second recipe planned for another number: the cooking mode reads
+    // the selection of its own recipe, not the first one planned (#1016).
+    await createRecipe(page, {
+      name: "Riz au lait",
+      instructions: "Cuire le riz",
+      ingredients: "Riz | 100 | g",
+    });
+    await expect(page.getByLabel("Personnes")).toHaveValue("1");
+    await page.getByLabel("Personnes").fill("3");
+    await page.getByRole("button", { name: "À réaliser" }).click();
+    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_selected$/);
+    const rice = new URL(page.url()).pathname;
+
+    for (const [path, people, items] of [
+      [ratatouille, "Pour 2 personnes, comme prévu.", ["Courgette — 1 pièce", "Lait — 750 ml"]],
+      [rice, "Pour 3 personnes, comme prévu.", ["Riz — 300 g"]],
+    ] as const) {
+      await page.goto(`${path}/cook`);
+      await page.getByRole("link", { name: "Ingrédients" }).click();
+      const dialog = page.getByRole("dialog", { name: "Ingrédients" });
+      await expect(dialog.getByText(people)).toBeVisible();
+      await expect(dialog.getByRole("listitem")).toHaveText([...items]);
+      await dialog.getByRole("button", { name: "Fermer" }).click();
+    }
 
     // The list says so too.
     await page.goto("/recipes");
-    await expect(page.getByText("1 recette prévue pour la liste de courses")).toBeVisible();
+    await expect(page.getByText("2 recettes prévues pour la liste de courses")).toBeVisible();
 
     await page.getByRole("link", { name: "Ratatouille" }).first().click();
     await page.getByRole("button", { name: "Retirer" }).click();
