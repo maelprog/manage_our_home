@@ -24,10 +24,46 @@
 // `touchTarget`) and `sync` are tested by apps/mobile/scripts/
 // local-reminders.test.mjs, which runs this file in a context with no
 // `window`: only `start` touches the page.
+//
+// It also registers the phone for the notifications the server pushes by
+// Firebase Cloud Messaging (#1004): the agenda changes, the budget alerts
+// and the expiry recap — never a reminder, which stays local. With the
+// notification permission granted and the member logged in, it asks the
+// Push Notifications plugin for the phone's token on each page and each
+// resume, and hands it to the site (`POST /account/notifications/fcm-token`,
+// relayed to apps/api's `/account/fcm-tokens`, #1002), which moves the
+// device's `last_seen_at`. Logged out (a 401 above), it withdraws the
+// token from Firebase; on the logout form, it has the site forget it
+// first; the permission taken back, the next page does both. The
+// notification itself is the app's (PushMessagingService.java,
+// the fixed texts of sw.js): the page is not there when it comes. A touch
+// on it opens the app, and the page then marks its entries read and goes
+// to the kind's page. An APK built without Firebase (no
+// google-services.json) says so through the app's PushSupport plugin, and
+// the Push Notifications plugin is then never called: its `register`
+// would throw out of the bridge. `pushPage`, `pushedEntries`,
+// `pushTouch`, `pushSync`, `saveToken`, `forgetToken` and `isLogoutForm`
+// are tested by apps/mobile/scripts/app-pushes.test.mjs.
 var MHomeLocalReminders = (function () {
   "use strict";
 
   var UPCOMING_URL = "/account/notifications/upcoming";
+  var PUSH_TOKEN_URL = "/account/notifications/fcm-token";
+  var PUSHED_READ_URL = "/notifications/pushed/read";
+  // Where the page keeps the token it handed to the site (localStorage).
+  var PUSH_TOKEN_KEY = "mhome.pushToken";
+  // The page of each kind of push, as sw.js opens it; "/" for any other.
+  var PUSH_PAGES = {
+    agenda_reminder: "/agenda",
+    budget_alert: "/budget",
+    stock_expiry: "/stocks",
+    agenda_change: "/agenda"
+  };
+  // At most what the API ever names in a push (push::MAX_PAYLOAD_ENTRIES).
+  var MAX_PUSHED_ENTRIES = 20;
+  var ENTRY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  // How long the logout and a touch wait for the site before going on.
+  var PUSH_WAIT_MS = 1500;
   // The plugin's "no notification" in the intent that opens the activity.
   var INT_MIN = -2147483648;
   var UUID = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
@@ -177,15 +213,148 @@ var MHomeLocalReminders = (function () {
       .catch(function () { return { state: "failed" }; });
   }
 
+  // -- the pushes (#1004) ----------------------------------------------------
+
+  function pushPage(kind) {
+    return typeof kind === "string" && Object.prototype.hasOwnProperty.call(PUSH_PAGES, kind)
+      ? PUSH_PAGES[kind]
+      : "/";
+  }
+
+  // The entries a push names, its `entries` data: ids separated by commas,
+  // [] for anything else or for more than the API sends. What is not an id
+  // is left out.
+  function pushedEntries(text) {
+    if (typeof text !== "string" || text === "") return [];
+    var ids = text.split(",");
+    if (ids.length > MAX_PUSHED_ENTRIES) return [];
+    return ids.filter(function (id) { return ENTRY_ID.test(id); });
+  }
+
+  // A touch on a push (`pushNotificationActionPerformed`): the page to
+  // open and the entries to mark read, `null` for what is not a push.
+  function pushTouch(action) {
+    var data = action && action.notification && action.notification.data;
+    if (!data || typeof data.kind !== "string") return null;
+    return { url: pushPage(data.kind), entries: pushedEntries(data.entries) };
+  }
+
+  // One registration. `env`: `push` (Push Notifications), `support` (the
+  // app's PushSupport), `signedOut`, `fetch`, `memory` (the token last
+  // handed to the site, kept on the phone: `get`, `clear`). Resolves to
+  // what happened, never rejects: `unsupported` (an APK without the
+  // plugins), `unavailable` (no Firebase in the APK), `forgotten` (signed
+  // out: the token withdrawn), `withdrawn` (the permission taken back
+  // after a registration: the site forgets the token, then `unregister()`
+  // asks Firebase to delete it, once), `not-allowed` (no permission,
+  // nothing to withdraw, and no prompt), `registered` (the token will come
+  // by the plugin's `registration` event), `failed`. The kept token goes
+  // as soon as `unregister()` returns: the plugin (8.1.3) starts Firebase's
+  // `deleteToken()` without waiting for it, so nothing says Google
+  // deleted the token. It stays for the next page only when the bridge
+  // throws.
+  function pushSync(env) {
+    var push = env.push;
+    var support = env.support;
+    var memory = env.memory;
+    if (!push || !support) return Promise.resolve("unsupported");
+    function drop() { if (memory) memory.clear(); }
+    return Promise.resolve()
+      .then(function () { return support.status(); })
+      .then(function (status) {
+        if (!status || status.available !== true) return "unavailable";
+        if (env.signedOut) {
+          return Promise.resolve(push.unregister()).then(function () { drop(); return "forgotten"; });
+        }
+        return Promise.resolve(push.checkPermissions()).then(function (permission) {
+          if (permission && permission.receive === "granted") {
+            return Promise.resolve(push.register()).then(function () { return "registered"; });
+          }
+          var kept = memory ? memory.get() : null;
+          if (typeof kept !== "string" || kept === "") return "not-allowed";
+          return Promise.resolve()
+            .then(function () { return env.fetch(PUSH_TOKEN_URL, tokenRequest("DELETE", kept)); })
+            .catch(function () {})
+            .then(function () { return push.unregister(); })
+            .then(function () { drop(); return "withdrawn"; });
+        });
+      })
+      .catch(function () { return "failed"; });
+  }
+
+  function tokenRequest(method, token) {
+    return {
+      method: method,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: token })
+    };
+  }
+
+  // Hands the phone's token to the site: true once stored.
+  function saveToken(env, token) {
+    if (typeof token !== "string" || token === "") return Promise.resolve(false);
+    return Promise.resolve()
+      .then(function () { return env.fetch(PUSH_TOKEN_URL, tokenRequest("POST", token)); })
+      .then(function (res) { return !!res && res.ok === true; }, function () { return false; });
+  }
+
+  // As the member logs out: the site forgets the token (while the session
+  // still holds), then `unregister()` asks Firebase to delete it, and the
+  // kept token (`env.memory`) goes once `unregister()` returns, whether
+  // Google deleted it or not. Never rejects: the logout goes on whatever
+  // fails.
+  function forgetToken(env, token) {
+    var told = typeof token === "string" && token !== ""
+      ? Promise.resolve()
+        .then(function () { return env.fetch(PUSH_TOKEN_URL, tokenRequest("DELETE", token)); })
+        .catch(function () {})
+      : Promise.resolve();
+    return told
+      .then(function () { if (env.push) return env.push.unregister(); })
+      .then(function () { if (env.memory) env.memory.clear(); })
+      .catch(function () {});
+  }
+
+  // The forms that end the session: `POST /logout`.
+  function isLogoutForm(form) {
+    if (!form || typeof form.getAttribute !== "function") return false;
+    return form.getAttribute("action") === "/logout" &&
+      String(form.getAttribute("method")).toLowerCase() === "post";
+  }
+
+  function within(ms, promise) {
+    return Promise.race([promise, new Promise(function (resolve) { setTimeout(resolve, ms); })]);
+  }
+
   // In the app's page: synchronise now and on each resume, follow a touch
   // on a notification, and drive the block of `/account/notifications`.
   function start(win) {
     var cap = win.Capacitor;
     var plugins = cap && cap.Plugins;
     var plugin = plugins && plugins.LocalNotifications;
+    var push = plugins && plugins.PushNotifications;
+    var support = plugins && plugins.PushSupport;
     var doc = win.document;
     var last = null;
     var running = Promise.resolve();
+    // The phone's token, once the plugin gave it on this page.
+    var token = null;
+    var pushes = "unsupported";
+    var leaving = false;
+    // The token last handed to the site, kept on the phone so that a later
+    // page can withdraw it once the permission is taken back (`pushSync`).
+    var memory = {
+      get: function () {
+        try { return win.localStorage.getItem(PUSH_TOKEN_KEY); } catch (e) { return null; }
+      },
+      set: function (value) {
+        try { win.localStorage.setItem(PUSH_TOKEN_KEY, value); } catch (e) { /* kept nowhere */ }
+      },
+      clear: function () {
+        try { win.localStorage.removeItem(PUSH_TOKEN_KEY); } catch (e) { /* nothing kept */ }
+      }
+    };
 
     function el(id) { return doc.getElementById(id); }
     function show(id, on) { var e = el(id); if (e) e.hidden = !on; }
@@ -221,6 +390,15 @@ var MHomeLocalReminders = (function () {
       }).then(function (result) {
         last = result;
         onReady(render);
+        // Offline, nothing to tell the site; signed out, the token goes.
+        if (result.state === "unreachable") return null;
+        return pushSync({
+          push: push,
+          support: support,
+          signedOut: result.state === "signed-out",
+          fetch: function (url, init) { return win.fetch(url, init); },
+          memory: memory
+        }).then(function (state) { pushes = state; });
       });
       return running;
     }
@@ -235,6 +413,45 @@ var MHomeLocalReminders = (function () {
       var target = touchTarget(action);
       if (target) win.location.assign(target);
     });
+    if (push && support) {
+      push.addListener("registration", function (event) {
+        token = event && typeof event.value === "string" ? event.value : null;
+        if (token) memory.set(token);
+        saveToken({ fetch: function (url, init) { return win.fetch(url, init); } }, token);
+      });
+      // A push received with the page open: already shown by the app
+      // (PushMessagingService). Heard all the same, or the plugin would
+      // keep each one for a listener that never comes.
+      push.addListener("pushNotificationReceived", function () {});
+      // A touch on a push: its entries marked read (#862), then its page.
+      push.addListener("pushNotificationActionPerformed", function (action) {
+        var touched = pushTouch(action);
+        if (!touched) return;
+        var marked = touched.entries.length
+          ? win.fetch(PUSHED_READ_URL, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ entries: touched.entries })
+          }).catch(function () {})
+          : Promise.resolve();
+        within(PUSH_WAIT_MS, marked).then(function () { win.location.assign(touched.url); });
+      });
+      // The logout form waits for the site to forget the token, a moment
+      // at most, then goes.
+      doc.addEventListener("submit", function (event) {
+        var form = event.target;
+        if (leaving || pushes !== "registered" || !isLogoutForm(form)) return;
+        event.preventDefault();
+        leaving = true;
+        var go = function () { form.submit(); };
+        within(PUSH_WAIT_MS, forgetToken({
+          fetch: function (url, init) { return win.fetch(url, init); },
+          push: push,
+          memory: memory
+        }, token || memory.get())).then(go, go);
+      });
+    }
     if (plugins.App) plugins.App.addListener("resume", run);
     run();
 
@@ -268,6 +485,14 @@ var MHomeLocalReminders = (function () {
     countText: countText,
     touchTarget: touchTarget,
     sync: sync,
+    PUSH_TOKEN_URL: PUSH_TOKEN_URL,
+    pushPage: pushPage,
+    pushedEntries: pushedEntries,
+    pushTouch: pushTouch,
+    pushSync: pushSync,
+    saveToken: saveToken,
+    forgetToken: forgetToken,
+    isLogoutForm: isLogoutForm,
     start: start
   };
 })();

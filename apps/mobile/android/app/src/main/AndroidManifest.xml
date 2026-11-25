@@ -47,6 +47,30 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!--
+          The server's pushes by Firebase Cloud Messaging (#1004). The app's
+          service shows them, app closed or open (PushMessagingService); the
+          Push Notifications plugin's, which it extends, is removed: two
+          services on MESSAGING_EVENT, and Firebase would deliver to either.
+          Auto-init off: no token is asked of Google at launch, only once
+          the page registers the phone (permission granted, member logged
+          in: apps/web/src/local-reminders.js). The plugin's register()
+          turns it on, its unregister() off again.
+        -->
+        <service
+            android:name=".PushMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <service
+            android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"
+            tools:node="remove" />
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
     </application>
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -79,6 +103,7 @@
       delayed by battery saving. From Android 14 the member grants them in
       « Alarmes et rappels », and the reminders go on inexact if they do
       not. Not USE_EXACT_ALARM: Android would grant it without asking.
+      The same permission shows the server's pushes (#1004).
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />

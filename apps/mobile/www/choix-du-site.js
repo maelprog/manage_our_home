@@ -3,7 +3,7 @@
 // form, lets site-choice.js decide, and hands the probe and the storing to
 // MainActivity's Site plugin. Storing a choice, or keeping the current
 // one, restarts the activity on that site: this page is then gone.
-import { changeKind, currentLabel, forgetReminders, judgeProbe, readChoice, standardLabel } from './site-choice.js';
+import { changeKind, currentLabel, forgetPush, forgetReminders, judgeProbe, readChoice, standardLabel } from './site-choice.js';
 
 const site = window.Capacitor?.Plugins?.Site;
 const standard = document.getElementById('standard');
@@ -47,8 +47,8 @@ async function reopen(onError) {
 
 // `onError` says the failure: refuse for a typed address, fail for the
 // standard site. The current site chosen again is kept as it is; another
-// one leaves it, its reminders first (the Site plugin then clears its
-// session).
+// one leaves it, its reminders and its push token first (the Site plugin
+// then clears its session).
 async function store(choice, onError) {
   const kind = changeKind(current, choice);
   if (kind === 'keep') {
@@ -60,6 +60,11 @@ async function store(choice, onError) {
     const forgot = await forgetReminders(window.Capacitor?.Plugins?.LocalNotifications);
     if (forgot.error) {
       onError(forgot.error);
+      return;
+    }
+    const unpushed = await forgetPush(window.Capacitor?.Plugins?.PushNotifications, window.Capacitor?.Plugins?.PushSupport);
+    if (unpushed.error) {
+      onError(unpushed.error);
       return;
     }
   }

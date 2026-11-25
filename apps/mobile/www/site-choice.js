@@ -151,3 +151,23 @@ export async function forgetReminders(plugin) {
   }
   return {};
 }
+
+// Leaving a site, its push token too (#1004): the old site would go on
+// pushing its notifications to this phone, and a touch would open the new
+// site. Withdrawn from Firebase through the Push Notifications plugin
+// (`unregister`): the old site keeps the token, but FCM then answers its
+// pushes UNREGISTERED, and it forgets the phone. `{}`, or `{ error }` if it
+// fails, and the change is then not made. Neither plugin (an APK built
+// before #1004), or no Firebase in the APK (PushSupport says so, and
+// `unregister` would throw out of the bridge): no token was ever made.
+export async function forgetPush(push, support) {
+  if (!push || !support) return {};
+  try {
+    const status = await support.status();
+    if (status?.available !== true) return {};
+    await push.unregister();
+  } catch {
+    return { error: `Les notifications de l'ancien site n'ont pas pu être retirées du téléphone. ${NOTHING_STORED} Réessayez.` };
+  }
+  return {};
+}

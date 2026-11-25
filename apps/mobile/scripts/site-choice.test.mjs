@@ -6,6 +6,7 @@ import {
   MANIFEST_PATH,
   changeKind,
   currentLabel,
+  forgetPush,
   forgetReminders,
   judgeProbe,
   readChoice,
@@ -220,4 +221,48 @@ test('reminders that could not be removed stop the change, and say so', async ()
 test('without the Local Notifications plugin, no reminder was ever scheduled', async () => {
   assert.deepEqual(await forgetReminders(undefined), {});
   assert.deepEqual(await forgetReminders(null), {});
+});
+
+// The Push Notifications plugin and the app's PushSupport plugin (#1004),
+// recording their calls.
+function pushes({ available = true, failing = [] } = {}) {
+  const calls = [];
+  const method = (name, result) => async () => {
+    calls.push(name);
+    if (failing.includes(name)) throw new Error(name);
+    return result;
+  };
+  return {
+    calls,
+    push: { unregister: method('unregister') },
+    support: { status: method('status', { available }) },
+  };
+}
+
+test("leaving a site withdraws the phone's push token from Firebase", async () => {
+  // The old site keeps the token, and every push to it now fails: FCM
+  // answers UNREGISTERED, and the old site forgets the phone.
+  const { calls, push, support } = pushes();
+  assert.deepEqual(await forgetPush(push, support), {});
+  assert.deepEqual(calls, ['status', 'unregister']);
+});
+
+test('a token that could not be withdrawn stops the change, and says so', async () => {
+  for (const failing of [['status'], ['unregister']]) {
+    const { push, support } = pushes({ failing });
+    const { error } = await forgetPush(push, support);
+    assert.match(error, /notifications/, failing[0]);
+    assert.match(error, /Rien n'a été enregistré/, failing[0]);
+  }
+});
+
+test('an APK without Firebase, or without the plugins, has no token to withdraw', async () => {
+  // unregister() would throw out of the plugin without Firebase, and the
+  // app would close.
+  const { calls, push, support } = pushes({ available: false });
+  assert.deepEqual(await forgetPush(push, support), {});
+  assert.deepEqual(calls, ['status']);
+  assert.deepEqual(await forgetPush(undefined, support), {});
+  assert.deepEqual(await forgetPush(push, undefined), {});
+  assert.deepEqual(await forgetPush(null, null), {});
 });

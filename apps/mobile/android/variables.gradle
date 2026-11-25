@@ -13,4 +13,7 @@ ext {
     androidxJunitVersion = '1.3.0'
     androidxEspressoCoreVersion = '3.7.0'
     cordovaAndroidVersion = '14.0.1'
+    // The Push Notifications plugin's own default (#1004), read by it and
+    // by app/build.gradle: one Firebase for both.
+    firebaseMessagingVersion = '25.0.1'
 }

@@ -13,6 +13,9 @@
 # - secret MHOME_KEYSTORE_BASE64: the PKCS12 keystore, base64-encoded;
 # - secret MHOME_KEYSTORE_PASSWORD: its password;
 # Missing any of them stops the run at its first step, saying which.
+# Optional, secret MHOME_GOOGLE_SERVICES_JSON: the google-services.json of
+# the Firebase project the pushes go through (#1004); without it the APK
+# is built without them, with a warning.
 #
 # A tag mobile-v… does not start with v: images.yml and promote.yml, which
 # follow v* tags, are not triggered.
@@ -179,6 +182,19 @@ jobs:
       # No MHOME_TARGET: the default target is the staging server.
       - name: Sync the staging target
         run: npx cap sync android
+
+      # The Firebase project of the pushes (#1004), never versioned: from
+      # the secret when there is one. Without it the APK builds and runs,
+      # with no push (app/build.gradle), and the run says so.
+      - name: Firebase project
+        env:
+          MHOME_GOOGLE_SERVICES_JSON: ${{ secrets.MHOME_GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$MHOME_GOOGLE_SERVICES_JSON" ]; then
+            echo "::warning::secret MHOME_GOOGLE_SERVICES_JSON is not set: this APK receives no push (apps/mobile/README.md, « Notifications poussées : le projet Firebase »)"
+            exit 0
+          fi
+          printf '%s' "$MHOME_GOOGLE_SERVICES_JSON" > android/app/google-services.json
 
       - name: Build and sign
         env:
