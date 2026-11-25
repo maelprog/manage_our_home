@@ -324,6 +324,20 @@ mod tests {
     }
 
     #[test]
+    fn a_recipe_without_a_number_of_people_uses_as_written_for_one() {
+        // #1014: 250 g, the selection for 4 → 1000 g.
+        let stock = [line(1, "Pommes de terre", "g", 2000.0, None)];
+        let gratin = recipe(
+            10,
+            "Gratin",
+            (None, Some(4)),
+            vec![ing("Pommes de terre", 250.0, "g")],
+        );
+        let got = planned_usage(&[gratin], &stock);
+        assert_eq!(got[&id(1)], vec![usage(10, "Gratin", 1000.0, "g", false)]);
+    }
+
+    #[test]
     fn an_ingredient_over_several_lots_counts_on_each_for_its_share() {
         let stock = [
             line(1, "Farine", "g", 500.0, date(20)),

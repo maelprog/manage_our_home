@@ -634,8 +634,9 @@ async fn generate_without_selection_adds_low_stock_only(db: PgPool) {
 /// selection's number of people against the recipe's base, and an
 /// ingredient two planned recipes share makes one line, summed when the
 /// units match and attributed to the recipe planned first. A selection
-/// without a number of people, or a recipe without a base, keeps the
-/// quantities as written.
+/// without a number of people keeps the quantities as written; a recipe
+/// without a base counts as written for 1 (#1014, arbitrage of 2026-11-25,
+/// replacing the decision of 2026-10-24 that took it as written).
 #[sqlx::test]
 async fn generate_scales_and_sums_the_planned_quantities(db: PgPool) {
     let router = test_router(db.clone());
@@ -663,7 +664,7 @@ async fn generate_scales_and_sums_the_planned_quantities(db: PgPool) {
         }),
     )
     .await;
-    // No base: taken as written whatever the selection says.
+    // No base: written for 1, cooked for 8: ×8.
     let gateau = create_recipe(
         &router,
         &cookie,
@@ -691,7 +692,19 @@ async fn generate_scales_and_sums_the_planned_quantities(db: PgPool) {
     .await;
     select(&router, &cookie, &group_id, &crepes, Some(6)).await;
     select(&router, &cookie, &group_id, &gateau, Some(8)).await;
+    // No base, 250 g cooked for 4: 1000 g.
+    let gratin = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Gratin",
+            "ingredients": [{"name": "Pommes de terre", "quantity": 250.0, "unit": "g"}]
+        }),
+    )
+    .await;
     select(&router, &cookie, &group_id, &pain, None).await;
+    select(&router, &cookie, &group_id, &gratin, Some(4)).await;
 
     let items = generate(&router, &cookie, &group_id).await;
     let item = |name: &str| {
@@ -701,10 +714,10 @@ async fn generate_scales_and_sums_the_planned_quantities(db: PgPool) {
             .unwrap_or_else(|| panic!("{name} missing: {items:?}"))
             .clone()
     };
-    assert_eq!(items.len(), 3, "one line per ingredient name: {items:?}");
-    // 200 g × 6/4 + 400 g.
+    assert_eq!(items.len(), 4, "one line per ingredient name: {items:?}");
+    // 200 g × 6/4 + 400 g × 8/1.
     let flour = item("Farine");
-    assert_eq!(flour["quantity"], 700.0);
+    assert_eq!(flour["quantity"], 3500.0);
     assert_eq!(flour["unit"], "g");
     assert_eq!(flour["source_recipe_id"], crepes.as_str());
     // 0.5 L × 6/4 = 0.75 L; the 20 cl are in another unit, not added.
@@ -715,6 +728,10 @@ async fn generate_scales_and_sums_the_planned_quantities(db: PgPool) {
     let yeast = item("Levure");
     assert_eq!(yeast["quantity"], 10.0);
     assert_eq!(yeast["source_recipe_id"], pain.as_str());
+    let potatoes = item("Pommes de terre");
+    assert_eq!(potatoes["quantity"], 1000.0);
+    assert_eq!(potatoes["unit"], "g");
+    assert_eq!(potatoes["source_recipe_id"], gratin.as_str());
 
     // A deselected recipe stops counting.
     let res = call(
@@ -741,7 +758,7 @@ async fn generate_scales_and_sums_the_planned_quantities(db: PgPool) {
     let items = generate(&router, &cookie, &group_id).await;
     let mut names: Vec<&str> = items.iter().map(|i| i["name"].as_str().unwrap()).collect();
     names.sort();
-    assert_eq!(names, ["Farine", "Lait"], "{items:?}");
+    assert_eq!(names, ["Farine", "Lait", "Pommes de terre"], "{items:?}");
 }
 
 /// Issue #559: adding a planned recipe's missing ingredients to the list

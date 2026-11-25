@@ -2352,12 +2352,13 @@ async fn replacing_a_dated_recipe_keeps_its_plan_and_follows_on_the_grocery_list
         serde_json::json!([{"name": "Riz", "quantity": 300.0, "unit": "g", "is_optional": false}]),
     )
     .await;
-    // The stock covers part of the soup: it ranks above the rice.
+    // The stock covers part of the soup: it ranks above the rice. The soup
+    // says no number of people, so for 4 it needs 4 l (#1014).
     stock_line(
         &router,
         &owner_cookie,
         &group_id,
-        serde_json::json!({"name": "Bouillon", "quantity": 1.0, "unit": "l"}),
+        serde_json::json!({"name": "Bouillon", "quantity": 4.0, "unit": "l"}),
     )
     .await;
 

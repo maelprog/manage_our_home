@@ -3,11 +3,14 @@
 //!
 //! Only the recipes with a `planned` selection (`recipe_selections`, #469)
 //! count. Each quantity is scaled to the selection's number of people
-//! against the recipe's base (`recipes.servings`, 0034); without either
-//! one it is taken as written. An ingredient named the same in several
-//! planned recipes makes one line, attributed to the first recipe: the
-//! quantities add up when their units are the same, and otherwise the first
-//! one stands (decisions of 2026-10-24). Those lines are then counted
+//! against the recipe's base (`recipes.servings`, 0034), a recipe without
+//! one counting as written for 1 (`scale_to_selection`, #1014, arbitrage of
+//! 2026-11-25, replacing the decision of 2026-10-24 that took it as
+//! written); a selection without one takes the quantity as written. An
+//! ingredient named the same in several planned recipes makes one line,
+//! attributed to the first recipe: the quantities add up when their units
+//! are the same, and otherwise the first one stands (decisions of
+//! 2026-10-24). Those lines are then counted
 //! against the recipe lines already on the list (`count_against_list`,
 //! #842).
 //!
@@ -23,7 +26,7 @@ use manage_our_home_shared::validation::grocery_list::normalize_unit;
 // Shared with the recipe edit form (#845), which scales the quantities of a
 // recipe whose number of people changes the same way.
 pub(crate) use manage_our_home_shared::validation::recipes::{
-    scale_quantity, without_binary_noise,
+    scale_to_recipe, scale_to_selection, without_binary_noise,
 };
 use uuid::Uuid;
 
@@ -37,7 +40,8 @@ pub(crate) struct PlannedIngredient {
     pub name: String,
     pub quantity: Option<f64>,
     pub unit: Option<String>,
-    /// The number of people the recipe is written for (`recipes.servings`).
+    /// The number of people the recipe is written for (`recipes.servings`);
+    /// none counts as 1 when the selection says one (#1014).
     pub recipe_servings: Option<i32>,
     /// The number of people it is cooked for this time
     /// (`recipe_selections.servings`).
@@ -120,7 +124,8 @@ pub(crate) fn plan_lines(
     ingredients: impl IntoIterator<Item = PlannedIngredient>,
 ) -> Vec<PlannedLine> {
     let scaled = ingredients.into_iter().map(|ing| {
-        let quantity = scale_quantity(ing.quantity, ing.recipe_servings, ing.selection_servings);
+        let quantity =
+            scale_to_selection(ing.quantity, ing.recipe_servings, ing.selection_servings);
         PlannedLine {
             recipe_id: ing.recipe_id,
             name: ing.name.trim().to_string(),
