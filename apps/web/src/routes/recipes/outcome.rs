@@ -49,6 +49,7 @@ use manage_our_home_shared::dto::recipes::{
     TASTE_NOTE_MAX_CHARS,
 };
 use manage_our_home_shared::dto::stocks::{StockItemList, StockItemResponse};
+use manage_our_home_shared::validation::recipes::{recipe_base, scale_to_recipe, servings_label};
 use manage_our_home_shared::validation::stocks::{article_key, format_quantity, normalize_unit};
 use uuid::Uuid;
 
@@ -668,15 +669,12 @@ pub(crate) fn update_proposals(preview: &DonePreview, form: &DoneForm) -> Vec<Up
         } else if used == without_noise(scaled) {
             continue;
         } else {
-            // Back to the recipe's number of people, as apps/api scales
-            // the other way.
-            Some(
-                match (preview.selection.servings, preview.recipe_servings) {
-                    (Some(cooked), Some(written)) if cooked > 0 => {
-                        without_noise(used * f64::from(written) / f64::from(cooked))
-                    }
-                    _ => used,
-                },
+            // Back to the recipe's number of people, 1 when it says none
+            // (#1014), as apps/api scales the other way.
+            scale_to_recipe(
+                Some(used),
+                preview.selection.servings,
+                preview.recipe_servings,
             )
         };
         proposals.push(UpdateProposal {
@@ -1137,10 +1135,12 @@ pub(crate) fn update_body(
     } else {
         banner("invalid")
     };
-    // The quantities are the recipe's, not those cooked.
-    let servings = match (preview.recipe_servings, preview.selection.servings) {
+    // The quantities are the recipe's, not those cooked: written for 1
+    // when it says no number of people (#1014).
+    let written_for = recipe_base(preview.recipe_servings, preview.selection.servings);
+    let servings = match (written_for, preview.selection.servings) {
         (Some(written), Some(cooked)) if written != cooked => {
-            format!(", pour {written} personnes comme elle")
+            format!(", pour {} comme elle", servings_label(written))
         }
         _ => String::new(),
     };
@@ -3914,9 +3914,30 @@ mod tests {
     }
 
     #[test]
+    fn what_was_used_goes_back_to_a_recipe_without_a_number_of_people_as_for_one() {
+        // #1014: Oeufs 1 for a recipe saying no number, cooked for 4 (4
+        // scaled); 6 used are 1.5 for the recipe.
+        let mut p = for_two();
+        p.recipe_servings = None;
+        let mut oeufs = ingredient(
+            7,
+            "Oeufs",
+            Some(4.0),
+            Some("unité"),
+            vec![(stock(70, "Oeufs", 12.0, "unité"), 4.0)],
+            None,
+        );
+        oeufs.recipe_quantity = Some(1.0);
+        p.ingredients = vec![oeufs];
+        let got = update_proposals(&p, &form(vec![line(70, "6", true)]));
+        assert_eq!(got, vec![proposal(7, "Oeufs", 1.0, "unité", Some(1.5))]);
+    }
+
+    #[test]
     fn an_ingredient_without_unit_compares_with_a_stock_counted_in_units() {
         let mut p = for_two();
         p.recipe_servings = None;
+        p.selection.servings = None;
         p.ingredients = vec![ingredient(
             7,
             "Oeufs",
@@ -3926,7 +3947,7 @@ mod tests {
             None,
         )];
         let got = update_proposals(&p, &form(vec![line(70, "4", true)]));
-        // Without the recipe's number of people: as used.
+        // Cooked for an unsaid number of people: as used.
         assert_eq!(got, vec![proposal(7, "Oeufs", 3.0, "", Some(4.0))]);
     }
 
@@ -3935,6 +3956,7 @@ mod tests {
         // 0.1 + 0.2 typed over two lots is the 0.3 of the recipe.
         let mut p = for_two();
         p.recipe_servings = None;
+        p.selection.servings = None;
         p.ingredients = vec![ingredient(
             8,
             "Lait",
@@ -3954,6 +3976,7 @@ mod tests {
     fn two_ingredients_of_one_name_are_proposed_apart() {
         let mut p = shared_preview(600.0);
         p.can_edit_recipe = true;
+        p.selection.servings = None;
         let got = update_proposals(
             &p,
             &form(vec![line(10, "400", true), line(10, "100", true)]),
@@ -4534,5 +4557,28 @@ mod tests {
         let back = parse_done_form(&hidden_pairs(&html));
         assert_eq!((back.taste, back.taste_note.as_str()), (Taste::Neutre, ""));
         assert!(!html.contains("taste_note"), "{html}");
+    }
+
+    #[test]
+    fn the_update_step_says_for_how_many_people_the_recipe_is_written() {
+        let f = form(vec![line(10, "100", true)]);
+        let proposals = [proposal(1, "Farine", 200.0, "g", Some(250.0))];
+        let html = update_body(id(901), &for_two(), &f, &proposals, &[]);
+        assert!(
+            html.contains("enregistrés, pour 2 personnes comme elle"),
+            "{html}"
+        );
+        // #1014: a recipe saying no number of people is written for 1.
+        let mut p = for_two();
+        p.recipe_servings = None;
+        let html = update_body(id(901), &p, &f, &proposals, &[]);
+        assert!(
+            html.contains("enregistrés, pour 1 personne comme elle"),
+            "{html}"
+        );
+        // Cooked for an unsaid number of people: nothing to say.
+        p.selection.servings = None;
+        let html = update_body(id(901), &p, &f, &proposals, &[]);
+        assert!(!html.contains("comme elle"), "{html}");
     }
 }

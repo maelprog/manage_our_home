@@ -12,10 +12,12 @@
 //!   month) so the first error the form surfaces is the one a forged request
 //!   would hit; `ingredient_fields` pre-fills the edit form. `steps_of` /
 //!   `join_steps` do the same for the numbered steps.
-//! - `scale_quantity` scales a quantity between two numbers of people,
-//!   for the grocery list and the cooked recipe (`apps/api`) as for the
-//!   edit form, whose `rescale_untouched` scales the quantities left as
-//!   they were when the recipe's number of people changes (#845).
+//! - `scale_to_selection` / `scale_to_recipe` scale a quantity between the
+//!   recipe's number of people and the selection's, a recipe saying none
+//!   counting as written for 1 (`recipe_base`, #1014), for the grocery list
+//!   and the cooked recipe (`apps/api`) as for the edit form, whose
+//!   `rescale_untouched` scales the quantities left as they were when the
+//!   recipe's number of people changes (#845).
 //! - `stock_summary` turns a suggestion's matched/total required-ingredient
 //!   counts into the human badge the suggestion view shows *instead of* the
 //!   raw internal `score` (which the UI never renders).
@@ -193,9 +195,10 @@ pub fn ingredient_fields(ingredients: &[IngredientResponse]) -> Vec<IngredientFi
 
 /// The quantities of an edited recipe whose number of people changes from
 /// `servings_was` to `servings` (#845): each one left as it was saved is
-/// scaled by `servings / servings_was` ([`scale_quantity`]), a quantity
-/// typed over or on a new line is taken as typed. Nothing changes when
-/// either number is missing or they are equal. `lines` are the form's lines
+/// scaled by `servings / servings_was` ([`scale_to_selection`]), a quantity
+/// typed over or on a new line is taken as typed. A recipe that said no
+/// number of people was written for 1 (#1014): blank → 4 multiplies by 4.
+/// Nothing changes when the new number is missing or they are equal. `lines` are the form's lines
 /// and `ingredients` what [`parse_ingredient_fields`] read from them: one
 /// per line that is not blank, in order.
 pub fn rescale_untouched(
@@ -214,7 +217,7 @@ pub fn rescale_untouched(
             .as_deref()
             .is_some_and(|was| was.trim() == line.quantity.trim());
         if untouched {
-            ingredient.quantity = scale_quantity(ingredient.quantity, servings_was, servings);
+            ingredient.quantity = scale_to_selection(ingredient.quantity, servings_was, servings);
         }
     }
 }
@@ -343,17 +346,46 @@ pub fn without_binary_noise(q: f64) -> f64 {
 
 /// `quantity × target / base`, not rounded, only without its binary noise;
 /// the quantity as written when it, the base or the target is missing.
-pub fn scale_quantity(
-    quantity: Option<f64>,
-    base: Option<i32>,
-    target: Option<i32>,
-) -> Option<f64> {
+/// Called through [`scale_to_selection`] and [`scale_to_recipe`], which
+/// give a recipe without a number of people its base.
+fn scale_quantity(quantity: Option<f64>, base: Option<i32>, target: Option<i32>) -> Option<f64> {
     match (quantity, base, target) {
         (Some(q), Some(b), Some(t)) if b > 0 => {
             Some(without_binary_noise(q * f64::from(t) / f64::from(b)))
         }
         _ => quantity,
     }
+}
+
+/// The number of people a recipe's quantities are counted for when they
+/// are scaled to a selection (#1014, arbitrage of 2026-11-25, replacing the
+/// decision of 2026-10-24): its own (`recipes.servings`), or 1 when it says
+/// none and the selection does. A selection that says none keeps the
+/// quantities as written, whatever the recipe says.
+pub fn recipe_base(recipe: Option<i32>, selection: Option<i32>) -> Option<i32> {
+    recipe.or(selection.map(|_| 1))
+}
+
+/// A quantity written for the recipe's number of people ([`recipe_base`]),
+/// scaled to the selection's (`scale_quantity`): for the grocery list, the
+/// planned recipes' needs and stock use, and the cooked recipe's preview.
+pub fn scale_to_selection(
+    quantity: Option<f64>,
+    recipe: Option<i32>,
+    selection: Option<i32>,
+) -> Option<f64> {
+    scale_quantity(quantity, recipe_base(recipe, selection), selection)
+}
+
+/// The other way: a quantity used for the selection's number of people,
+/// brought back to the recipe's ([`recipe_base`]), as used when the
+/// selection says none.
+pub fn scale_to_recipe(
+    quantity: Option<f64>,
+    selection: Option<i32>,
+    recipe: Option<i32>,
+) -> Option<f64> {
+    scale_quantity(quantity, selection, recipe_base(recipe, selection))
 }
 
 #[cfg(test)]
@@ -410,6 +442,52 @@ mod tests {
         assert_eq!(scale_quantity(Some(200.0), Some(4), None), Some(200.0));
         assert_eq!(scale_quantity(Some(0.125), None, None), Some(0.125));
         assert_eq!(scale_quantity(None, Some(4), Some(6)), None);
+    }
+
+    // -- scale_to_selection / scale_to_recipe --------------------------------
+
+    #[test]
+    fn a_recipe_without_a_number_of_people_counts_as_written_for_one() {
+        // #1014 (arbitrage of 2026-11-25): 250 g for a selection of 4 is 1000 g.
+        assert_eq!(scale_to_selection(Some(250.0), None, Some(4)), Some(1000.0));
+        assert_eq!(scale_to_selection(Some(250.0), None, Some(1)), Some(250.0));
+    }
+
+    #[test]
+    fn a_selection_without_a_number_of_people_takes_the_quantity_as_written() {
+        assert_eq!(scale_to_selection(Some(250.0), None, None), Some(250.0));
+        assert_eq!(scale_to_selection(Some(250.0), Some(2), None), Some(250.0));
+        assert_eq!(scale_to_selection(None, None, Some(4)), None);
+    }
+
+    #[test]
+    fn a_recipe_with_a_number_of_people_scales_against_it() {
+        assert_eq!(
+            scale_to_selection(Some(250.0), Some(2), Some(4)),
+            Some(500.0)
+        );
+        assert_eq!(
+            scale_to_selection(Some(200.0), Some(3), Some(5)),
+            Some(333.333333333)
+        );
+    }
+
+    #[test]
+    fn back_to_a_recipe_without_a_number_of_people_is_back_to_one() {
+        // 1000 g used for 4 is 250 g for the recipe, written for 1.
+        assert_eq!(scale_to_recipe(Some(1000.0), Some(4), None), Some(250.0));
+        assert_eq!(scale_to_recipe(Some(1000.0), Some(4), Some(2)), Some(500.0));
+        // Cooked for an unsaid number of people: as used.
+        assert_eq!(scale_to_recipe(Some(1000.0), None, None), Some(1000.0));
+        assert_eq!(scale_to_recipe(Some(1000.0), None, Some(2)), Some(1000.0));
+    }
+
+    #[test]
+    fn scaling_there_and_back_gives_the_quantity_written() {
+        for (recipe, selection) in [(None, Some(4)), (Some(2), Some(6)), (None, None)] {
+            let there = scale_to_selection(Some(250.0), recipe, selection);
+            assert_eq!(scale_to_recipe(there, selection, recipe), Some(250.0));
+        }
     }
 
     // -- parse_servings ------------------------------------------------------
@@ -702,9 +780,16 @@ mod tests {
     }
 
     #[test]
-    fn without_a_number_of_people_before_or_after_nothing_scales() {
+    fn a_recipe_without_a_number_of_people_given_one_is_scaled_as_written_for_one() {
+        // #1014: blank → 8, the recipe was written for 1.
         let lines = [edited("200", Some("200"), "Farine")];
-        assert_eq!(rescaled(&lines, None, Some(8)), [Some(200.0)]);
+        assert_eq!(rescaled(&lines, None, Some(8)), [Some(1600.0)]);
+        assert_eq!(rescaled(&lines, None, Some(1)), [Some(200.0)]);
+    }
+
+    #[test]
+    fn without_a_number_of_people_after_or_at_all_nothing_scales() {
+        let lines = [edited("200", Some("200"), "Farine")];
         assert_eq!(rescaled(&lines, Some(4), None), [Some(200.0)]);
         assert_eq!(rescaled(&lines, None, None), [Some(200.0)]);
         assert_eq!(rescaled(&lines, Some(4), Some(4)), [Some(200.0)]);

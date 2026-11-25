@@ -41,8 +41,8 @@ pub(crate) struct RecipeIngredient {
 }
 
 /// What a planned recipe needs: its required ingredients, scaled from the
-/// recipe's number of people (`written_for`) to the selection's
-/// (`cooked_for`) and merged by name or by tag (`plan_lines`, #902).
+/// recipe's number of people (`written_for`, 1 when it says none and the
+/// selection does, #1014) to the selection's (`cooked_for`) and merged by name or by tag (`plan_lines`, #902).
 /// Optional ingredients are left out.
 pub(crate) fn needs(
     recipe_id: Uuid,
@@ -383,6 +383,20 @@ mod tests {
                 need("Farine", Some(600.0), Some("g")),
                 need("Sel", None, None),
             ]
+        );
+    }
+
+    #[test]
+    fn a_recipe_without_a_number_of_people_needs_as_written_for_one() {
+        // #1014: 250 g, the selection for 4 → 1000 g; unsaid → as written.
+        let potatoes = [ingredient("Pommes de terre", Some(250.0), Some("g"), false)];
+        assert_eq!(
+            needs(RECIPE, &potatoes, None, Some(4)),
+            vec![need("Pommes de terre", Some(1000.0), Some("g"))]
+        );
+        assert_eq!(
+            needs(RECIPE, &potatoes, None, None),
+            vec![need("Pommes de terre", Some(250.0), Some("g"))]
         );
     }
 

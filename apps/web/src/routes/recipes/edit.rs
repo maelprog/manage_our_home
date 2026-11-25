@@ -6,8 +6,8 @@
 //! per the backend's double-`Option` PATCH contract); the edit form always
 //! sends the full ingredient list, replacing the recipe's ingredients.
 //! Changing « Personnes » from one number to another scales each quantity
-//! left as it was saved by the same ratio (#845, `rescale_untouched`): the
-//! form carries the number of people and the quantities as saved in hidden
+//! left as it was saved by the same ratio (#845, `rescale_untouched`), a
+//! recipe that said none counting as written for 1 (#1014): the form carries the number of people and the quantities as saved in hidden
 //! fields, so a quantity typed over is told from one left alone.
 //! Success (200) → PRG `/recipes/:id?notice=recipe_updated`.
 
@@ -136,11 +136,12 @@ fn form_of(recipe: &RecipeResponse) -> RecipeForm {
 /// clears it.
 fn update_request(form: &mut RecipeForm) -> Result<UpdateRecipeRequest, String> {
     let checked = check(form)?;
-    // A number as saved that does not read (a forged form) scales nothing.
-    let servings_was = form
-        .servings_was
-        .as_deref()
-        .and_then(|s| parse_servings(s).ok().flatten());
+    // Blank as saved: written for 1 (#1014). Not sent, or a number that
+    // does not read (a forged form): scales nothing.
+    let servings_was = match form.servings_was.as_deref().map(parse_servings) {
+        Some(Ok(was)) => was,
+        _ => checked.servings,
+    };
     let mut ingredients = checked.ingredients;
     rescale_untouched(
         &form.ingredients,
@@ -284,13 +285,21 @@ mod tests {
     }
 
     #[test]
-    fn without_a_number_of_people_before_or_after_nothing_scales() {
-        let cleared = crepes("", "200");
-        assert_eq!(sent(&as_pairs(&cleared)), [Some(200.0), Some(3.0), None]);
+    fn a_recipe_that_said_no_number_of_people_scales_as_written_for_one() {
+        // #1014: blank → 8 multiplies by 8.
         let mut unsaid = crepes("8", "200");
         unsaid.retain(|(k, _)| *k != "servings_was");
         unsaid.push(("servings_was", String::new()));
-        assert_eq!(sent(&as_pairs(&unsaid)), [Some(200.0), Some(3.0), None]);
+        assert_eq!(sent(&as_pairs(&unsaid)), [Some(1600.0), Some(24.0), None]);
+    }
+
+    #[test]
+    fn without_a_number_of_people_after_or_a_readable_one_before_nothing_scales() {
+        let cleared = crepes("", "200");
+        assert_eq!(sent(&as_pairs(&cleared)), [Some(200.0), Some(3.0), None]);
+        let mut not_sent = crepes("8", "200");
+        not_sent.retain(|(k, _)| *k != "servings_was");
+        assert_eq!(sent(&as_pairs(&not_sent)), [Some(200.0), Some(3.0), None]);
         // A number as saved that does not read scales nothing.
         let mut forged = crepes("8", "200");
         forged.retain(|(k, _)| *k != "servings_was");

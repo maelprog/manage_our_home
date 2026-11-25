@@ -7,7 +7,8 @@
 //!
 //! **Done.** The preview lists every ingredient of the recipe, its quantity
 //! scaled to the selection's number of people as the grocery list scales it
-//! (`grocery_list::planned::scale_quantity`), and the stock lines (`lots`)
+//! (`grocery_list::planned::scale_to_selection`: a recipe without a number
+//! of people counts as written for 1, #1014), and the stock lines (`lots`)
 //! the quantity is proposed from (`propose`): every line of its name and
 //! unit, the one expiring first first (`lots_in_order`), as many as needed,
 //! so 100 g + 500 g cover 400 g. The proposal is capped only when they all
@@ -88,7 +89,7 @@ use uuid::Uuid;
 
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
-use crate::grocery_list::planned::{scale_quantity, without_binary_noise};
+use crate::grocery_list::planned::{scale_to_recipe, scale_to_selection, without_binary_noise};
 use crate::groups::access::{min_role_for, Feature};
 use crate::groups::require_role;
 use crate::recipes::can_modify;
@@ -301,7 +302,7 @@ pub(crate) fn propose(ingredients: &[Ingredient<'_>], stock: &[StockLine<'_>]) -
 /// stock list shows as the planned recipes' use (#711): each ingredient as
 /// written for the recipe's number of people (`written_for`), its quantity
 /// scaled to the selection's (`cooked_for`) as the grocery list scales it
-/// (`scale_quantity`), then `propose`d from `stock`. Gives, per ingredient,
+/// (`scale_to_selection`, a recipe saying none being written for 1), then `propose`d from `stock`. Gives, per ingredient,
 /// the scaled quantity and the proposal.
 pub(crate) fn propose_for_selection(
     written: &[Ingredient<'_>],
@@ -312,7 +313,7 @@ pub(crate) fn propose_for_selection(
     let scaled: Vec<Ingredient<'_>> = written
         .iter()
         .map(|i| Ingredient {
-            quantity: scale_quantity(i.quantity, written_for, cooked_for),
+            quantity: scale_to_selection(i.quantity, written_for, cooked_for),
             ..*i
         })
         .collect();
@@ -409,8 +410,9 @@ pub(crate) struct NewIngredient {
 /// line. Several lines of that name and unit add up; a line in another unit
 /// cannot be added to them (no conversion) and is left out. The quantity
 /// used, for the selection's number of people (`cooked_for`), is brought
-/// back to the recipe's (`written_for`), as the preview scales the other
-/// way (`scale_quantity`); as used when either is missing.
+/// back to the recipe's (`written_for`, 1 when it says none), as the
+/// preview scales the other way (`scale_to_recipe`); as used when the
+/// selection says no number of people.
 pub(crate) fn ingredients_to_add(
     used: &[Used<'_>],
     existing: &[&str],
@@ -442,7 +444,7 @@ pub(crate) fn ingredients_to_add(
     added
         .into_iter()
         .map(|(_, ing)| NewIngredient {
-            quantity: scale_quantity(Some(ing.quantity), cooked_for, written_for)
+            quantity: scale_to_recipe(Some(ing.quantity), cooked_for, written_for)
                 .unwrap_or(ing.quantity),
             ..ing
         })
@@ -1243,9 +1245,23 @@ mod tests {
     }
 
     #[test]
+    fn a_recipe_without_a_number_of_people_is_proposed_as_written_for_one() {
+        // #1014: 200 g of a recipe saying no number, cooked for 4, is 800 g.
+        let stock = [line(1, "Farine", "g", 1000.0, None)];
+        let got = propose_for_selection(
+            &[ing("Farine", Some(200.0), Some("g"))],
+            None,
+            Some(4),
+            &stock,
+        );
+        assert_eq!(got[0].0, Some(800.0));
+        assert_eq!(got[0].1.lots, vec![take(1, 800.0)]);
+    }
+
+    #[test]
     fn a_selection_without_a_number_of_people_is_proposed_as_written() {
         let stock = [line(1, "Farine", "g", 500.0, None)];
-        for (written_for, cooked_for) in [(None, Some(4)), (Some(2), None), (Some(0), Some(4))] {
+        for (written_for, cooked_for) in [(None, None), (Some(2), None), (Some(0), Some(4))] {
             let got = propose_for_selection(
                 &[ing("Farine", Some(200.0), Some("g"))],
                 written_for,
@@ -1833,7 +1849,10 @@ mod tests {
         // Cooked for 4, the recipe written for 2: half of what was used.
         let got = ingredients_to_add(&[used("Crème", "cL", 30.0)], &[], Some(4), Some(2));
         assert_eq!(got, vec![new_ing("Crème", 15.0, "cL")]);
-        // Either number missing: the quantity used.
+        // Cooked for 4, the recipe saying no number: written for 1 (#1014).
+        let got = ingredients_to_add(&[used("Crème", "cL", 30.0)], &[], Some(4), None);
+        assert_eq!(got, vec![new_ing("Crème", 7.5, "cL")]);
+        // Cooked for an unsaid number of people: the quantity used.
         let got = ingredients_to_add(&[used("Crème", "cL", 30.0)], &[], None, Some(2));
         assert_eq!(got, vec![new_ing("Crème", 30.0, "cL")]);
     }
