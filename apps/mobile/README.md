@@ -161,10 +161,13 @@ du site.
   Android à part, « Agenda, budget et stocks », distinct de celui des
   rappels. Un toucher ouvre l'application, marque lues les entrées du
   centre (#862) et ouvre la page du type : l'agenda, le budget ou les
-  stocks. La déconnexion fait oublier le jeton au site, puis le retire de
-  Firebase ; la permission retirée, la page suivante fait de même (la
-  page garde pour cela le jeton dans son `localStorage`) ; un changement de site le retire de Firebase (l'ancien site,
-  à son envoi suivant, reçoit `UNREGISTERED` et oublie le téléphone). Un
+  stocks. La déconnexion fait oublier le jeton au site, puis demande à
+  Firebase de le retirer ; la permission retirée, la page suivante fait
+  de même (la page garde pour cela le jeton dans son `localStorage`, et
+  l'efface dès que `unregister()` rend la main : le plugin lance
+  `deleteToken()` sans en attendre le résultat, rien ne garantit que
+  Google l'a retiré) ; un changement de site le retire de Firebase
+  (l'ancien site, à son envoi suivant, reçoit `UNREGISTERED` et oublie le téléphone). Un
   APK construit sans `google-services.json` fonctionne, sans notification
   poussée : le plugin `PushSupport` (`PushSupportPlugin.java`) le dit à la
   page, qui n'appelle alors pas le plugin Push Notifications (il fermerait

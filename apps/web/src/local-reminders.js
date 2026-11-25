@@ -245,11 +245,14 @@ var MHomeLocalReminders = (function () {
   // what happened, never rejects: `unsupported` (an APK without the
   // plugins), `unavailable` (no Firebase in the APK), `forgotten` (signed
   // out: the token withdrawn), `withdrawn` (the permission taken back
-  // after a registration: the site forgets the token, then Firebase
-  // withdraws it, once), `not-allowed` (no permission, nothing to
-  // withdraw, and no prompt), `registered` (the token will come by the
-  // plugin's `registration` event), `failed` (the kept token stays, for
-  // the next page).
+  // after a registration: the site forgets the token, then `unregister()`
+  // asks Firebase to delete it, once), `not-allowed` (no permission,
+  // nothing to withdraw, and no prompt), `registered` (the token will come
+  // by the plugin's `registration` event), `failed`. The kept token goes
+  // as soon as `unregister()` returns: the plugin (8.1.3) starts Firebase's
+  // `deleteToken()` without waiting for it, so nothing says Google
+  // deleted the token. It stays for the next page only when the bridge
+  // throws.
   function pushSync(env) {
     var push = env.push;
     var support = env.support;
@@ -297,8 +300,10 @@ var MHomeLocalReminders = (function () {
   }
 
   // As the member logs out: the site forgets the token (while the session
-  // still holds), then Firebase withdraws it, and the kept token goes
-  // (`env.memory`). Never rejects: the logout goes on whatever fails.
+  // still holds), then `unregister()` asks Firebase to delete it, and the
+  // kept token (`env.memory`) goes once `unregister()` returns, whether
+  // Google deleted it or not. Never rejects: the logout goes on whatever
+  // fails.
   function forgetToken(env, token) {
     var told = typeof token === "string" && token !== ""
       ? Promise.resolve()

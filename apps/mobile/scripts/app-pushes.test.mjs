@@ -154,7 +154,7 @@ test('the permission withdrawn: the site forgets the token, then Firebase does',
   }
 });
 
-test('the permission withdrawn, the site failing: Firebase withdraws it all the same', async () => {
+test('the permission withdrawn, the site failing: unregister() all the same', async () => {
   const offline = async () => {
     throw new TypeError('Failed to fetch');
   };
@@ -168,7 +168,9 @@ test('the permission withdrawn, the site failing: Firebase withdraws it all the 
   }
 });
 
-test('the permission withdrawn, Firebase failing: tried again on the next page', async () => {
+// The plugin's unregister() returns before Firebase's deleteToken() ends:
+// only a bridge that throws keeps the token for the next page.
+test('the permission withdrawn, unregister() throwing: tried again on the next page', async () => {
   const p = fakePlugins({ receive: 'denied', failing: ['unregister'] });
   const m = memory('tok');
   const state = await R.pushSync({ push: p.push, support: p.support, signedOut: false, fetch: recorder().fetch, memory: m });
@@ -204,7 +206,7 @@ test('logged out: the kept token goes with Firebase\'s', async () => {
   assert.equal(m.kept, null);
 });
 
-test('the logout drops the kept token once Firebase withdrew it', async () => {
+test('the logout drops the kept token once unregister() returned', async () => {
   const m = memory('tok');
   await R.forgetToken({ fetch: recorder().fetch, push: fakePlugins().push, memory: m }, 'tok');
   assert.equal(m.kept, null);
