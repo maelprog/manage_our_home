@@ -68,11 +68,11 @@ fn starts_a_decimal(after: &str) -> bool {
 }
 
 /// What follows a number past the second one of a range: « -6 »,
-/// « – 6 », « à 6 », « to 6 », « ou 6 »; `after` itself when it starts no
-/// range.
+/// « – 6 », « /8 », « à 6 », « to 6 », « ou 6 »; `after` itself when it
+/// starts no range.
 fn skip_range(after: &str) -> &str {
     let trimmed = after.trim_start();
-    let bound = ["-", "–", "à ", "a ", "to ", "ou ", "or "]
+    let bound = ["-", "–", "/", "à ", "a ", "to ", "ou ", "or "]
         .iter()
         .find_map(|word| trimmed.strip_prefix(word))
         .map(str::trim_start)
@@ -91,13 +91,15 @@ fn first_word(text: &str) -> &str {
         .unwrap_or(text.len())]
 }
 
-/// A lowercased word that counts people, in French or English.
+/// A lowercased word that counts people, in French or English: one of
+/// these, singular or plural. The whole word: « persil » is not « pers ».
 fn names_people(word: &str) -> bool {
-    [
-        "pers", "portion", "serving", "people", "couvert", "convive", "part", "adult",
-    ]
-    .iter()
-    .any(|stem| word.starts_with(stem))
+    const WORDS: [&str; 11] = [
+        "personne", "pers", "person", "people", "portion", "serving", "couvert", "convive", "part",
+        "adulte", "adult",
+    ];
+    let singular = word.strip_suffix('s').unwrap_or(word);
+    WORDS.contains(&word) || WORDS.contains(&singular)
 }
 
 /// `recipeYield` as servings: a text (`servings_in`), a whole number, or
@@ -698,6 +700,9 @@ mod tests {
             ("1 part", 1),
             ("4 adultes", 4),
             ("1 tarte (8 parts)", 8),
+            ("6/8 personnes", 6),
+            ("6 / 8 personnes", 6),
+            ("2 adults", 2),
         ] {
             assert_eq!(servings_in(text), Some(servings), "{text:?}");
         }
@@ -725,6 +730,9 @@ mod tests {
             "quelques personnes",
             "1 tarte",
             "20 crêpes",
+            "4 persil",
+            "2 partenaires",
+            "3 personnages",
             "1,5 litre",
             "2.5 personnes",
             "portion",
