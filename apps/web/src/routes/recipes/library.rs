@@ -313,15 +313,15 @@ pub(crate) fn list_body(q: &str, results: &str, family: bool) -> String {
 }
 
 /// The kitchen's segment over a library page. The library opens without a
-/// family (#990), the family's recipes do not: there, « Recettes » would
-/// only lead to `/groups/new`, so the tab is left out (arbitrage of
+/// family (#990), the family's recipes and stocks do not: there, both tabs
+/// would only lead to `/groups/new`, and a segment needs two links, one of
+/// them the current page (DESIGN.md), so none is rendered (arbitrage of
 /// 2026-11-25).
 pub(crate) fn library_segment(family: bool) -> String {
     if family {
         kitchen_segment("/recipes")
     } else {
-        r#"<nav class="segment" aria-label="Cuisine"><a href="/stocks">Stocks</a></nav>"#
-            .to_string()
+        String::new()
     }
 }
 
@@ -1057,18 +1057,17 @@ mod tests {
     // -- without a family (#990) ----------------------------------------------
 
     #[test]
-    fn without_a_family_the_segment_leaves_out_the_recipes_that_redirect() {
+    fn without_a_family_no_segment_is_rendered() {
         assert_eq!(library_segment(true), kitchen_segment("/recipes"));
-        assert_eq!(
-            library_segment(false),
-            r#"<nav class="segment" aria-label="Cuisine"><a href="/stocks">Stocks</a></nav>"#
-        );
+        // Both tabs would redirect to /groups/new, and a segment of one
+        // link is not a segment (DESIGN.md): none at all.
+        assert_eq!(library_segment(false), "");
     }
 
     #[test]
     fn without_a_family_the_list_leads_nowhere_that_redirects() {
         let html = list_body("", "", false);
-        assert!(html.starts_with(&library_segment(false)));
+        assert!(!html.contains(r#"class="segment""#), "{html}");
         assert!(html.contains(
             r#"<a class="btn secondary" href="/recipes/library/mine">Mes publications</a>"#
         ));
@@ -1098,7 +1097,7 @@ mod tests {
     #[test]
     fn without_a_family_a_publication_invites_to_make_or_join_a_group() {
         let html = detail_body(&publication(), None, None, None, false);
-        assert!(html.starts_with(&library_segment(false)));
+        assert!(!html.contains(r#"class="segment""#), "{html}");
         assert!(html.contains("<h1>Gratin dauphinois</h1>"));
         assert!(!html.contains("<form"), "nothing to post without a family");
         assert!(!html.contains("Ajouter à mes recettes"));
@@ -1122,7 +1121,7 @@ mod tests {
     #[test]
     fn without_a_family_a_withdrawn_publication_drops_the_recipes_tab() {
         let html = withdrawn_body(false);
-        assert!(html.starts_with(&library_segment(false)));
+        assert!(!html.contains(r#"class="segment""#), "{html}");
         assert!(html.contains("retirée de la bibliothèque"));
         assert!(!html.contains(r#"href="/recipes""#));
     }

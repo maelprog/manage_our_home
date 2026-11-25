@@ -1136,6 +1136,8 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     await expect(page.getByRole("heading", { name: "Mes publications", level: 1 })).toBeVisible();
     await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
     await expect(page.getByText("Cette recette n'est plus dans vos recettes")).toBeVisible();
+    // Without a family, both kitchen tabs would redirect: no segment at all.
+    await expect(page.locator("nav.segment")).toHaveCount(0);
 
     // The library reads without a family too (#990): its list, the
     // publication and its report open, and nothing leads to the family's
@@ -1148,9 +1150,11 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     await expect(page.getByRole("button", { name: "Ajouter à mes recettes" })).toHaveCount(0);
     await expect(page.getByText("Ajouter cette recette à un groupe")).toBeVisible();
     await expect(page.locator('main a[href="/recipes"]')).toHaveCount(0);
+    await expect(page.locator("nav.segment")).toHaveCount(0);
     await page.getByRole("link", { name: "Signaler cette recette" }).click();
     await expect(page).toHaveURL(`${publication}/report`);
     await expect(page.getByRole("radio")).toHaveCount(6);
+    await expect(page.locator("nav.segment")).toHaveCount(0);
     await page.goto(publication);
     await page.getByRole("link", { name: "Ajouter à mon groupe" }).click();
     await expect(page).toHaveURL(/\/groups\/new$/);
@@ -1166,6 +1170,7 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     );
     await expect(page.getByText("Issue de la bibliothèque")).toHaveCount(0);
     await expect(page.locator('main a[href="/recipes"]')).toHaveCount(0);
+    await expect(page.locator("nav.segment")).toHaveCount(0);
     await page.getByRole("link", { name: "Mes publications" }).click();
     await expect(page).toHaveURL(/\/recipes\/library\/mine$/);
 

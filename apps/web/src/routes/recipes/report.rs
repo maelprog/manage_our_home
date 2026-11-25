@@ -491,7 +491,7 @@ mod tests {
             None,
             false,
         );
-        assert!(html.starts_with(&library_segment(false)));
+        assert!(!html.contains(r#"class="segment""#), "{html}");
         assert!(!html.contains(r#"href="/recipes""#));
         assert!(html.contains(&format!(r#"action="/recipes/library/{id}/report""#)));
         let with = report_body(id, "Gratin", None, "", &ReportErrors::default(), None, true);

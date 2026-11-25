@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn without_a_family_nothing_leads_to_the_recipes_that_redirect() {
         let empty = mine_body(Some(&[]), "", false);
-        assert!(empty.starts_with(&library_segment(false)));
+        assert!(!empty.contains(r#"class="segment""#), "{empty}");
         assert!(empty.contains("<h2>Aucune publication</h2>"));
         assert!(!empty.contains("Voir mes recettes"));
         assert!(!empty.contains(r#"href="/recipes""#), "{empty}");
