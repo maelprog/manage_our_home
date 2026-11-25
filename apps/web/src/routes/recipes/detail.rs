@@ -40,7 +40,10 @@ use crate::edit_rule::{who_may, Guarded};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use manage_our_home_shared::validation::recipes::{duration_label, servings_label, steps_of};
+use manage_our_home_shared::validation::recipes::{
+    duration_label, quantity_display, scale_factor_label, scale_to_selection, servings_label,
+    steps_of,
+};
 
 use super::missing::{after_stock_change, incomplete_banner, incomplete_count};
 use super::{
@@ -139,8 +142,8 @@ pub(super) fn error_text(code: &str) -> Option<&'static str> {
     }
 }
 
-/// One ingredient → a list item with its quantity/unit and optional/seasonal
-/// markers.
+/// One ingredient → a list item with its quantity/unit as written and
+/// optional/seasonal markers.
 pub(super) fn ingredient_html(ing: &IngredientResponse) -> String {
     let qty = match (ing.quantity, ing.unit.as_deref()) {
         (Some(q), Some(u)) => format!(" — {} {}", fmt_num(q), html_escape(u)),
@@ -148,6 +151,46 @@ pub(super) fn ingredient_html(ing: &IngredientResponse) -> String {
         (None, Some(u)) => format!(" — {}", html_escape(u)),
         (None, None) => String::new(),
     };
+    ingredient_li(ing, &qty)
+}
+
+/// The numbers of people a recipe's ingredients are shown for, on its page
+/// and in the cooking mode (#1016): the one it is written for, and the one
+/// it is planned for when its selection says one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Portions {
+    pub written: Option<i32>,
+    pub planned: Option<i32>,
+}
+
+impl Portions {
+    pub(super) fn of(recipe: &RecipeResponse, planned: Option<&RecipeSelectionResponse>) -> Self {
+        Self {
+            written: recipe.servings,
+            planned: planned.and_then(|s| s.servings),
+        }
+    }
+
+    /// The people the quantities are written for: 1 when the recipe does
+    /// not say (#1014).
+    pub(super) fn base(self) -> i32 {
+        self.written.unwrap_or(1)
+    }
+}
+
+/// One ingredient as the recipe's page and the cooking mode list it
+/// (#1016): its quantity scaled to the people planned
+/// (`scale_to_selection`), then written by `quantity_display`.
+pub(super) fn scaled_ingredient_html(ing: &IngredientResponse, portions: Portions) -> String {
+    let quantity = scale_to_selection(ing.quantity, portions.written, portions.planned);
+    let qty = quantity_display(quantity, ing.unit.as_deref())
+        .map(|q| format!(" — {}", html_escape(&q)))
+        .unwrap_or_default();
+    ingredient_li(ing, &qty)
+}
+
+/// The list item of an ingredient whose quantity reads `qty`.
+fn ingredient_li(ing: &IngredientResponse, qty: &str) -> String {
     let optional = if ing.is_optional {
         r#" <span class="muted">· optionnel</span>"#.to_string()
     } else {
@@ -474,16 +517,7 @@ fn page(
 ) -> String {
     let id = recipe.id;
 
-    let ingredients_html = if recipe.ingredients.is_empty() {
-        r#"<p class="muted">Aucun ingrédient renseigné.</p>"#.to_string()
-    } else {
-        let items = recipe
-            .ingredients
-            .iter()
-            .map(ingredient_html)
-            .collect::<String>();
-        format!("<ul>{items}</ul>")
-    };
+    let ingredients_html = ingredients_section(recipe, planned);
 
     let instructions_html = steps_html(recipe.instructions.as_deref());
 
@@ -526,10 +560,6 @@ fn page(
     };
 
     let source_html = source_html(recipe.source_url.as_deref());
-    let servings_html = recipe
-        .servings
-        .map(|s| format!(r#"<p class="muted">Pour {}.</p>"#, servings_label(s)))
-        .unwrap_or_default();
     let selection_html = selection_html(
         id,
         &recipe.name,
@@ -552,8 +582,6 @@ fn page(
 {selection_html}
 {plan_html}
 {equipment_html}
-<h2>Ingrédients</h2>
-{servings_html}
 {ingredients_html}
 {instructions_html}
 {last_eaten_html}
@@ -564,6 +592,53 @@ fn page(
         name = html_escape(&recipe.name),
     );
     shell_with_header(Width::Read, &recipe.name, header, &body)
+}
+
+/// « Ingrédients » on the recipe's page (#1016), in a card: for the people
+/// it is planned for when its selection says how many, the quantities
+/// scaled from those it is written for (1 when it does not say); as
+/// written otherwise.
+fn ingredients_section(
+    recipe: &RecipeResponse,
+    planned: Option<&RecipeSelectionResponse>,
+) -> String {
+    let portions = Portions::of(recipe, planned);
+    let base = portions.base();
+    let people = match portions.planned {
+        Some(n) if n == base => format!(
+            r#"<p><strong>Pour {n}</strong>, comme prévu.</p>
+<p class="muted">La recette est écrite pour {n}.</p>"#,
+            n = servings_label(n),
+        ),
+        Some(n) => format!(
+            r#"<p><strong>Pour {n}</strong>, comme prévu.</p>
+<p class="muted">La recette est écrite pour {b} ; les quantités ont été multipliées par {factor}.</p>"#,
+            n = servings_label(n),
+            b = servings_label(base),
+            factor = scale_factor_label(base, n),
+        ),
+        None => format!(r#"<p class="muted">Pour {}.</p>"#, servings_label(base)),
+    };
+    let list = if recipe.ingredients.is_empty() {
+        r#"<p class="muted">Aucun ingrédient renseigné.</p>"#.to_string()
+    } else {
+        let items: String = recipe
+            .ingredients
+            .iter()
+            .map(|i| scaled_ingredient_html(i, portions))
+            .collect();
+        format!("<ul>{items}</ul>")
+    };
+    let unplanned = if planned.is_none() && !recipe.ingredients.is_empty() {
+        r#"<p class="muted">Quantités telles qu'écrites : la recette n'est pas planifiée.</p>"#
+    } else {
+        ""
+    };
+    format!(
+        r#"<section class="card"><h2>Ingrédients</h2>
+{people}
+{list}{unplanned}</section>"#
+    )
 }
 
 // -- mutations --------------------------------------------------------------
@@ -681,7 +756,7 @@ fn time_html(minutes: Option<i32>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -1139,5 +1214,137 @@ mod tests {
         assert!(!html.contains(r#"class="allergy"#), "{html}");
         assert!(!html.contains("Aide uniquement"), "{html}");
         assert!(!html.contains("sans allergène"), "{html}");
+    }
+    /// A gratin written for `servings` (none: not said), 250 g of potatoes
+    /// and salt without a quantity.
+    pub(in crate::routes::recipes) fn gratin(servings: Option<i32>) -> RecipeResponse {
+        serde_json::from_value(serde_json::json!({
+            "id": Uuid::nil(),
+            "group_id": Uuid::nil(),
+            "name": "Gratin",
+            "instructions": "Éplucher.",
+            "servings": servings,
+            "created_by": Uuid::nil(),
+            "created_at": "2026-11-14T10:00:00Z",
+            "updated_at": "2026-11-14T10:00:00Z",
+            "ingredients": [
+                {"id": Uuid::from_u128(10), "name": "Pommes de terre", "quantity": 250.0,
+                 "unit": "g", "is_optional": false, "seasonal_months": null},
+                {"id": Uuid::from_u128(11), "name": "Sel", "quantity": null,
+                 "unit": null, "is_optional": false, "seasonal_months": null},
+            ],
+        }))
+        .unwrap()
+    }
+
+    fn render_planned(
+        recipe: &RecipeResponse,
+        selection: Option<&RecipeSelectionResponse>,
+    ) -> String {
+        page(
+            "", recipe, None, None, None, selection, false, false, "admin", "", "",
+        )
+    }
+
+    #[test]
+    fn a_recipe_planned_for_four_shows_its_quantities_for_four() {
+        // #1016: written for 1, planned for 4, 250 g reads 1 kg.
+        let selection = planned(None, None);
+        let html = render_planned(&gratin(Some(1)), Some(&selection));
+        assert!(
+            html.contains("<strong>Pommes de terre</strong> — 1 kg"),
+            "{html}"
+        );
+        assert!(!html.contains("250 g"), "{html}");
+        assert!(
+            html.contains("<p><strong>Pour 4 personnes</strong>, comme prévu.</p>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="muted">La recette est écrite pour 1 personne ; les quantités ont été multipliées par 4.</p>"#),
+            "{html}"
+        );
+        assert!(html.contains("<li><strong>Sel</strong></li>"), "{html}");
+        assert!(!html.contains("pas planifiée"), "{html}");
+    }
+
+    #[test]
+    fn a_recipe_without_servings_is_scaled_as_written_for_one() {
+        let selection = planned(None, None);
+        let html = render_planned(&gratin(None), Some(&selection));
+        assert!(
+            html.contains("<strong>Pommes de terre</strong> — 1 kg"),
+            "{html}"
+        );
+        assert!(html.contains("écrite pour 1 personne ;"), "{html}");
+    }
+
+    #[test]
+    fn a_recipe_written_for_two_planned_for_three() {
+        let mut selection = planned(None, None);
+        selection.servings = Some(3);
+        let html = render_planned(&gratin(Some(2)), Some(&selection));
+        assert!(
+            html.contains("<strong>Pommes de terre</strong> — 375 g"),
+            "{html}"
+        );
+        assert!(html.contains("multipliées par 1.5."), "{html}");
+        // Planned for as many as written: nothing multiplied.
+        selection.servings = Some(2);
+        let html = render_planned(&gratin(Some(2)), Some(&selection));
+        assert!(html.contains("— 250 g"), "{html}");
+        assert!(
+            html.contains(r#"<p class="muted">La recette est écrite pour 2 personnes.</p>"#),
+            "{html}"
+        );
+        assert!(!html.contains("multipliées"), "{html}");
+    }
+
+    #[test]
+    fn an_unplanned_recipe_shows_its_quantities_as_written() {
+        let html = render_planned(&gratin(Some(1)), None);
+        assert!(
+            html.contains("<strong>Pommes de terre</strong> — 250 g"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="muted">Pour 1 personne.</p>"#),
+            "{html}"
+        );
+        assert!(!html.contains("comme prévu"), "{html}");
+        assert!(
+            html.contains("Quantités telles qu'écrites : la recette n'est pas planifiée."),
+            "{html}"
+        );
+        // Without servings: for 1 all the same.
+        let html = render_planned(&gratin(None), None);
+        assert!(
+            html.contains(r#"<p class="muted">Pour 1 personne.</p>"#),
+            "{html}"
+        );
+        assert!(html.contains("— 250 g"), "{html}");
+    }
+
+    #[test]
+    fn a_recipe_planned_without_a_number_of_people_is_as_written() {
+        let mut selection = planned(None, None);
+        selection.servings = None;
+        let html = render_planned(&gratin(Some(2)), Some(&selection));
+        assert!(html.contains("— 250 g"), "{html}");
+        assert!(
+            html.contains(r#"<p class="muted">Pour 2 personnes.</p>"#),
+            "{html}"
+        );
+        assert!(!html.contains("comme prévu"), "{html}");
+        assert!(!html.contains("pas planifiée"), "{html}");
+    }
+
+    #[test]
+    fn the_ingredients_are_a_card() {
+        let html = render_planned(&gratin(Some(1)), None);
+        assert!(
+            html.contains(r#"<section class="card"><h2>Ingrédients</h2>"#),
+            "{html}"
+        );
     }
 }
