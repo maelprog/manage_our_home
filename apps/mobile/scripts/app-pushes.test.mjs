@@ -118,6 +118,101 @@ test('without the permission, nothing is registered and no prompt opens', async 
   }
 });
 
+// The token the page last handed to the site, as `start` keeps it on the
+// phone.
+function memory(kept = null) {
+  const m = {
+    kept,
+    get: () => m.kept,
+    set: (token) => { m.kept = token; },
+    clear: () => { m.kept = null; },
+  };
+  return m;
+}
+
+test('the permission withdrawn: the site forgets the token, then Firebase does', async () => {
+  for (const receive of ['prompt', 'prompt-with-rationale', 'denied']) {
+    const p = fakePlugins({ receive });
+    const r = recorder();
+    const order = [];
+    const fetch = async (url, init) => (order.push('site'), r.fetch(url, init));
+    const unregister = p.push.unregister;
+    p.push.unregister = async () => (order.push('unregister'), unregister());
+    const m = memory('tok');
+    const state = await R.pushSync({ push: p.push, support: p.support, signedOut: false, fetch, memory: m });
+    assert.equal(state, 'withdrawn', receive);
+    assert.deepEqual(order, ['site', 'unregister'], receive);
+    assert.deepEqual(p.calls, ['status', 'checkPermissions', 'unregister'], receive);
+    assert.equal(r.requests.length, 1, receive);
+    const [req] = r.requests;
+    assert.equal(req.url, R.PUSH_TOKEN_URL);
+    assert.equal(req.method, 'DELETE');
+    assert.equal(req.credentials, 'same-origin');
+    assert.deepEqual(req.body, { token: 'tok' });
+    // Done once: the next page has nothing left to withdraw.
+    assert.equal(m.kept, null, receive);
+  }
+});
+
+test('the permission withdrawn, the site failing: Firebase withdraws it all the same', async () => {
+  const offline = async () => {
+    throw new TypeError('Failed to fetch');
+  };
+  for (const fetch of [offline, recorder(500).fetch]) {
+    const p = fakePlugins({ receive: 'denied' });
+    const m = memory('tok');
+    const state = await R.pushSync({ push: p.push, support: p.support, signedOut: false, fetch, memory: m });
+    assert.equal(state, 'withdrawn');
+    assert.deepEqual(p.calls, ['status', 'checkPermissions', 'unregister']);
+    assert.equal(m.kept, null);
+  }
+});
+
+test('the permission withdrawn, Firebase failing: tried again on the next page', async () => {
+  const p = fakePlugins({ receive: 'denied', failing: ['unregister'] });
+  const m = memory('tok');
+  const state = await R.pushSync({ push: p.push, support: p.support, signedOut: false, fetch: recorder().fetch, memory: m });
+  assert.equal(state, 'failed');
+  assert.equal(m.kept, 'tok');
+});
+
+test('never registered: no permission is nothing to withdraw', async () => {
+  for (const kept of [null, undefined, '']) {
+    const p = fakePlugins({ receive: 'denied' });
+    const r = recorder();
+    const state = await R.pushSync({ push: p.push, support: p.support, signedOut: false, fetch: r.fetch, memory: memory(kept) });
+    assert.equal(state, 'not-allowed');
+    assert.deepEqual(p.calls, ['status', 'checkPermissions']);
+    assert.equal(r.requests.length, 0);
+  }
+});
+
+test('permission granted: the kept token stays kept', async () => {
+  const p = fakePlugins();
+  const r = recorder();
+  const m = memory('tok');
+  const state = await R.pushSync({ push: p.push, support: p.support, signedOut: false, fetch: r.fetch, memory: m });
+  assert.equal(state, 'registered');
+  assert.equal(r.requests.length, 0);
+  assert.equal(m.kept, 'tok');
+});
+
+test('logged out: the kept token goes with Firebase\'s', async () => {
+  const p = fakePlugins();
+  const m = memory('tok');
+  assert.equal(await R.pushSync({ push: p.push, support: p.support, signedOut: true, memory: m }), 'forgotten');
+  assert.equal(m.kept, null);
+});
+
+test('the logout drops the kept token once Firebase withdrew it', async () => {
+  const m = memory('tok');
+  await R.forgetToken({ fetch: recorder().fetch, push: fakePlugins().push, memory: m }, 'tok');
+  assert.equal(m.kept, null);
+  const failing = memory('tok');
+  await R.forgetToken({ fetch: recorder().fetch, push: fakePlugins({ failing: ['unregister'] }).push, memory: failing }, 'tok');
+  assert.equal(failing.kept, 'tok');
+});
+
 test('logged out: the token is withdrawn from Firebase, nothing registered', async () => {
   const p = fakePlugins();
   const state = await R.pushSync({ push: p.push, support: p.support, signedOut: true });

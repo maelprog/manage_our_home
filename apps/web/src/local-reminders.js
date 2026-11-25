@@ -34,7 +34,8 @@
 // relayed to apps/api's `/account/fcm-tokens`, #1002), which moves the
 // device's `last_seen_at`. Logged out (a 401 above), it withdraws the
 // token from Firebase; on the logout form, it has the site forget it
-// first. The notification itself is the app's (PushMessagingService.java,
+// first; the permission taken back, the next page does both. The
+// notification itself is the app's (PushMessagingService.java,
 // the fixed texts of sw.js): the page is not there when it comes. A touch
 // on it opens the app, and the page then marks its entries read and goes
 // to the kind's page. An APK built without Firebase (no
@@ -49,6 +50,8 @@ var MHomeLocalReminders = (function () {
   var UPCOMING_URL = "/account/notifications/upcoming";
   var PUSH_TOKEN_URL = "/account/notifications/fcm-token";
   var PUSHED_READ_URL = "/notifications/pushed/read";
+  // Where the page keeps the token it handed to the site (localStorage).
+  var PUSH_TOKEN_KEY = "mhome.pushToken";
   // The page of each kind of push, as sw.js opens it; "/" for any other.
   var PUSH_PAGES = {
     agenda_reminder: "/agenda",
@@ -237,25 +240,40 @@ var MHomeLocalReminders = (function () {
   }
 
   // One registration. `env`: `push` (Push Notifications), `support` (the
-  // app's PushSupport), `signedOut`. Resolves to what happened, never
-  // rejects: `unsupported` (an APK without the plugins), `unavailable` (no
-  // Firebase in the APK), `forgotten` (signed out: the token withdrawn),
-  // `not-allowed` (no permission, and no prompt), `registered` (the token
-  // will come by the plugin's `registration` event), `failed`.
+  // app's PushSupport), `signedOut`, `fetch`, `memory` (the token last
+  // handed to the site, kept on the phone: `get`, `clear`). Resolves to
+  // what happened, never rejects: `unsupported` (an APK without the
+  // plugins), `unavailable` (no Firebase in the APK), `forgotten` (signed
+  // out: the token withdrawn), `withdrawn` (the permission taken back
+  // after a registration: the site forgets the token, then Firebase
+  // withdraws it, once), `not-allowed` (no permission, nothing to
+  // withdraw, and no prompt), `registered` (the token will come by the
+  // plugin's `registration` event), `failed` (the kept token stays, for
+  // the next page).
   function pushSync(env) {
     var push = env.push;
     var support = env.support;
+    var memory = env.memory;
     if (!push || !support) return Promise.resolve("unsupported");
+    function drop() { if (memory) memory.clear(); }
     return Promise.resolve()
       .then(function () { return support.status(); })
       .then(function (status) {
         if (!status || status.available !== true) return "unavailable";
         if (env.signedOut) {
-          return Promise.resolve(push.unregister()).then(function () { return "forgotten"; });
+          return Promise.resolve(push.unregister()).then(function () { drop(); return "forgotten"; });
         }
         return Promise.resolve(push.checkPermissions()).then(function (permission) {
-          if (!permission || permission.receive !== "granted") return "not-allowed";
-          return Promise.resolve(push.register()).then(function () { return "registered"; });
+          if (permission && permission.receive === "granted") {
+            return Promise.resolve(push.register()).then(function () { return "registered"; });
+          }
+          var kept = memory ? memory.get() : null;
+          if (typeof kept !== "string" || kept === "") return "not-allowed";
+          return Promise.resolve()
+            .then(function () { return env.fetch(PUSH_TOKEN_URL, tokenRequest("DELETE", kept)); })
+            .catch(function () {})
+            .then(function () { return push.unregister(); })
+            .then(function () { drop(); return "withdrawn"; });
         });
       })
       .catch(function () { return "failed"; });
@@ -279,8 +297,8 @@ var MHomeLocalReminders = (function () {
   }
 
   // As the member logs out: the site forgets the token (while the session
-  // still holds), then Firebase withdraws it. Never rejects: the logout
-  // goes on whatever fails.
+  // still holds), then Firebase withdraws it, and the kept token goes
+  // (`env.memory`). Never rejects: the logout goes on whatever fails.
   function forgetToken(env, token) {
     var told = typeof token === "string" && token !== ""
       ? Promise.resolve()
@@ -289,6 +307,7 @@ var MHomeLocalReminders = (function () {
       : Promise.resolve();
     return told
       .then(function () { if (env.push) return env.push.unregister(); })
+      .then(function () { if (env.memory) env.memory.clear(); })
       .catch(function () {});
   }
 
@@ -318,6 +337,19 @@ var MHomeLocalReminders = (function () {
     var token = null;
     var pushes = "unsupported";
     var leaving = false;
+    // The token last handed to the site, kept on the phone so that a later
+    // page can withdraw it once the permission is taken back (`pushSync`).
+    var memory = {
+      get: function () {
+        try { return win.localStorage.getItem(PUSH_TOKEN_KEY); } catch (e) { return null; }
+      },
+      set: function (value) {
+        try { win.localStorage.setItem(PUSH_TOKEN_KEY, value); } catch (e) { /* kept nowhere */ }
+      },
+      clear: function () {
+        try { win.localStorage.removeItem(PUSH_TOKEN_KEY); } catch (e) { /* nothing kept */ }
+      }
+    };
 
     function el(id) { return doc.getElementById(id); }
     function show(id, on) { var e = el(id); if (e) e.hidden = !on; }
@@ -355,8 +387,13 @@ var MHomeLocalReminders = (function () {
         onReady(render);
         // Offline, nothing to tell the site; signed out, the token goes.
         if (result.state === "unreachable") return null;
-        return pushSync({ push: push, support: support, signedOut: result.state === "signed-out" })
-          .then(function (state) { pushes = state; });
+        return pushSync({
+          push: push,
+          support: support,
+          signedOut: result.state === "signed-out",
+          fetch: function (url, init) { return win.fetch(url, init); },
+          memory: memory
+        }).then(function (state) { pushes = state; });
       });
       return running;
     }
@@ -374,6 +411,7 @@ var MHomeLocalReminders = (function () {
     if (push && support) {
       push.addListener("registration", function (event) {
         token = event && typeof event.value === "string" ? event.value : null;
+        if (token) memory.set(token);
         saveToken({ fetch: function (url, init) { return win.fetch(url, init); } }, token);
       });
       // A push received with the page open: already shown by the app
@@ -404,8 +442,9 @@ var MHomeLocalReminders = (function () {
         var go = function () { form.submit(); };
         within(PUSH_WAIT_MS, forgetToken({
           fetch: function (url, init) { return win.fetch(url, init); },
-          push: push
-        }, token)).then(go, go);
+          push: push,
+          memory: memory
+        }, token || memory.get())).then(go, go);
       });
     }
     if (plugins.App) plugins.App.addListener("resume", run);
