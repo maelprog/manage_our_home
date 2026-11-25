@@ -44,7 +44,7 @@ use crate::routes::account::allergies::long_date;
 use crate::state::{api_request_auth, AppState};
 
 use super::detail::{ingredient_html, source_html};
-use super::{family_context, forbidden_page, recipes_cookie};
+use super::{family_context, forbidden_page, reader_context, recipes_cookie};
 
 /// Publications per page: the API's default page, asked for explicitly.
 pub(crate) const PAGE_SIZE: i64 = 20;
@@ -239,10 +239,17 @@ pub(crate) fn results_html(
     q: &str,
     trail: &[String],
     copied: &HashMap<Uuid, Uuid>,
+    family: bool,
 ) -> String {
     let q = q.trim();
     if page.total == 0 && page.recipes.is_empty() {
         if q.is_empty() {
+            // Without a family, « Mes recettes » would only redirect (#990).
+            if !family {
+                return r#"<div class="card void"><h2>La bibliothèque est vide pour le moment</h2>
+<p class="muted">Aucune recette n'a encore été partagée. Revenez plus tard.</p></div>"#
+                    .to_string();
+            }
             return r#"<div class="card void"><h2>La bibliothèque est vide pour le moment</h2>
 <p class="muted">Aucune recette n'a encore été partagée. Revenez plus tard, ou ajoutez vos propres recettes depuis « Mes recettes ».</p>
 <a class="btn secondary" href="/recipes">Mes recettes</a></div>"#
@@ -285,18 +292,37 @@ pub(crate) fn results_html(
 }
 
 /// The list page: its header, the search, then `results` (or the refusal).
-pub(crate) fn list_body(q: &str, results: &str) -> String {
+/// Without a family, no « Mes recettes »: it would only redirect (#990).
+pub(crate) fn list_body(q: &str, results: &str, family: bool) -> String {
+    let mine = if family {
+        r#"<a class="btn secondary" href="/recipes">Mes recettes</a>"#
+    } else {
+        ""
+    };
     format!(
         r#"{segment}<div class="page-header">
 <h1>Bibliothèque</h1>
-<div class="actions"><a class="btn secondary" href="/recipes/library/mine">Mes publications</a><a class="btn secondary" href="/recipes">Mes recettes</a></div>
+<div class="actions"><a class="btn secondary" href="/recipes/library/mine">Mes publications</a>{mine}</div>
 </div>
 <p class="muted">Des recettes à copier dans les vôtres, pour les adapter à votre foyer.</p>
 {search}
 {results}"#,
-        segment = kitchen_segment("/recipes"),
+        segment = library_segment(family),
         search = search_form(q),
     )
+}
+
+/// The kitchen's segment over a library page. The library opens without a
+/// family (#990), the family's recipes do not: there, « Recettes » would
+/// only lead to `/groups/new`, so the tab is left out (arbitrage of
+/// 2026-11-25).
+pub(crate) fn library_segment(family: bool) -> String {
+    if family {
+        kitchen_segment("/recipes")
+    } else {
+        r#"<nav class="segment" aria-label="Cuisine"><a href="/stocks">Stocks</a></nav>"#
+            .to_string()
+    }
 }
 
 /// A refusal of the list or of a publication, with the way to ask again.
@@ -341,12 +367,16 @@ pub(crate) fn report_foot(id: Uuid, reported_at: Option<DateTime<Utc>>) -> Strin
 }
 
 /// A publication's page. `copy` is the family's copy of it, if any;
-/// `notice` and `error` the codes of the URL.
+/// `notice` and `error` the codes of the URL. Without a `family` (#990)
+/// there is nothing to copy into: the form gives way to a card that
+/// sends to `/groups/new`, the one way to have a group of one's own —
+/// joining one goes through an invitation.
 pub(crate) fn detail_body(
     recipe: &LibraryRecipe,
     copy: Option<Uuid>,
     notice: Option<&str>,
     error: Option<&str>,
+    family: bool,
 ) -> String {
     let id = recipe.id;
     let notice = match (notice, copy) {
@@ -386,6 +416,10 @@ pub(crate) fn detail_body(
         (false, true) => format!(r#"<p class="muted">{meta} {BADGE}</p>"#),
     };
     let action = match copy {
+        _ if !family => r#"<div class="card"><p><strong>Ajouter cette recette à un groupe</strong></p>
+<p class="muted">Pour en garder une copie à adapter, il faut un groupe : créez le vôtre, ou rejoignez celui de vos proches avec leur invitation.</p>
+<a class="btn" href="/groups/new">Ajouter à mon groupe</a></div>"#
+            .to_string(),
         Some(c) => format!(
             r#"<div class="card"><p>Cette recette est déjà dans vos recettes.</p>
 <a class="btn secondary" href="/recipes/{c}">Voir ma copie</a></div>"#
@@ -427,7 +461,7 @@ pub(crate) fn detail_body(
 {ingredients}
 {steps}
 {foot}"#,
-        segment = kitchen_segment("/recipes"),
+        segment = library_segment(family),
         name = html_escape(&recipe.name),
         source = source_html(recipe.source_url.as_deref()),
         steps = steps_html(recipe.instructions.as_deref()),
@@ -437,12 +471,12 @@ pub(crate) fn detail_body(
 
 /// A publication the API no longer knows: withdrawn, by its publisher or
 /// by moderation. Its content left with it.
-pub(super) fn withdrawn_body() -> String {
+pub(super) fn withdrawn_body(family: bool) -> String {
     format!(
         r#"{segment}<h1>Recette retirée</h1>
 <p class="notice warning" role="status">Cette recette a été retirée de la bibliothèque et ne peut plus être ajoutée.</p>
 <div class="actions"><a class="btn secondary" href="/recipes/library">Retour à la bibliothèque</a></div>"#,
-        segment = kitchen_segment("/recipes"),
+        segment = library_segment(family),
     )
 }
 
@@ -487,9 +521,9 @@ pub async fn list(
     headers: HeaderMap,
     LenientQuery(query): LenientQuery<ListQuery>,
 ) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, "/recipes/library").await else {
-        return Redirect::to("/groups/new").into_response();
-    };
+    // No family needed to read the library (#990): its copies are then
+    // none, and so are their badges.
+    let (fam, header) = reader_context(&state, &headers, &me, "/recipes/library").await;
     let q: String = query
         .q
         .as_deref()
@@ -513,8 +547,11 @@ pub async fn list(
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             match serde_json::from_value::<LibraryPage>(resp.body) {
                 Ok(page) => {
-                    let copied = family_copies(&state, fam.gid, cookie.as_deref()).await;
-                    results_html(&page, &q, &trail, &copied)
+                    let copied = match &fam {
+                        Some(fam) => family_copies(&state, fam.gid, cookie.as_deref()).await,
+                        None => HashMap::new(),
+                    };
+                    results_html(&page, &q, &trail, &copied, fam.is_some())
                 }
                 Err(_) => error_html("unavailable", &list_href(&q, &trail)),
             }
@@ -534,8 +571,8 @@ pub async fn list(
     Html(shell_with_header(
         Width::Read,
         "Bibliothèque",
-        &fam.header,
-        &list_body(&q, &results),
+        &header,
+        &list_body(&q, &results, fam.is_some()),
     ))
     .into_response()
 }
@@ -548,14 +585,15 @@ pub async fn detail(
     LenientQuery(query): LenientQuery<DetailQuery>,
 ) -> Response {
     let here = format!("/recipes/library/{id}");
-    let Some(fam) = family_context(&state, &headers, &me, &here).await else {
-        return Redirect::to("/groups/new").into_response();
-    };
+    // Read without a family too (#990): « Ajouter » then sends to
+    // `/groups/new`, and there is no copy to look for.
+    let (fam, header) = reader_context(&state, &headers, &me, &here).await;
+    let family = fam.is_some();
     let cookie = recipes_cookie(&headers);
     let page = |status: StatusCode, title: &str, body: &str| {
         (
             status,
-            Html(shell_with_header(Width::Read, title, &fam.header, body)),
+            Html(shell_with_header(Width::Read, title, &header, body)),
         )
             .into_response()
     };
@@ -572,15 +610,19 @@ pub async fn detail(
         Ok(resp) if resp.status == reqwest::StatusCode::OK => {
             match serde_json::from_value::<LibraryRecipe>(resp.body) {
                 Ok(recipe) => {
-                    let copy = family_copies(&state, fam.gid, cookie.as_deref())
-                        .await
-                        .get(&id)
-                        .copied();
+                    let copy = match &fam {
+                        Some(fam) => family_copies(&state, fam.gid, cookie.as_deref())
+                            .await
+                            .get(&id)
+                            .copied(),
+                        None => None,
+                    };
                     let body = detail_body(
                         &recipe,
                         copy,
                         query.notice.as_deref(),
                         query.error.as_deref(),
+                        family,
                     );
                     page(StatusCode::OK, &recipe.name, &body)
                 }
@@ -591,9 +633,11 @@ pub async fn detail(
                 ),
             }
         }
-        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            page(StatusCode::NOT_FOUND, "Recette retirée", &withdrawn_body())
-        }
+        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => page(
+            StatusCode::NOT_FOUND,
+            "Recette retirée",
+            &withdrawn_body(family),
+        ),
         Ok(resp) => {
             let code = refusal_code(resp.status, &resp.body);
             page(StatusCode::OK, "Bibliothèque", &error_html(&code, &here))
@@ -797,10 +841,10 @@ mod tests {
     #[test]
     fn an_empty_library_and_an_empty_search_say_different_things() {
         let none = HashMap::new();
-        let empty = results_html(&page(0, 0, None), "", &[], &none);
+        let empty = results_html(&page(0, 0, None), "", &[], &none, true);
         assert!(empty.contains("La bibliothèque est vide pour le moment"));
         assert!(!empty.contains("pager"));
-        let missed = results_html(&page(0, 0, None), "tatin", &[], &none);
+        let missed = results_html(&page(0, 0, None), "tatin", &[], &none, true);
         assert!(missed.contains(r#"<p class="muted" role="status">0 résultat pour « tatin ».</p>"#));
         assert!(missed.contains("Aucune recette ne correspond"));
         assert!(missed.contains(r#"href="/recipes/library">Effacer la recherche"#));
@@ -808,7 +852,7 @@ mod tests {
 
     #[test]
     fn the_first_page_links_forward_only() {
-        let html = results_html(&page(128, 20, Some("9.z")), "", &[], &HashMap::new());
+        let html = results_html(&page(128, 20, Some("9.z")), "", &[], &HashMap::new(), true);
         assert!(html.contains(r#"<p class="muted" role="status">128 recettes</p>"#));
         assert_eq!(html.matches(r#"<li><a class="list-row""#).count(), 20);
         assert!(html.contains("Page 1 sur 7"));
@@ -825,6 +869,7 @@ mod tests {
             "gratin",
             &trail(&["1.a", "2.b", "3.c"]),
             &HashMap::new(),
+            true,
         );
         assert!(html.contains("Page 4 sur 12"));
         assert!(html.contains("231 résultats pour « gratin »"));
@@ -833,7 +878,13 @@ mod tests {
             r#"href="/recipes/library?q=gratin&amp;apres=1.a%7E2.b%7E3.c%7E4.d" rel="next""#
         ));
         // The second page goes back to the first, which has no trail.
-        let second = results_html(&page(30, 10, None), "", &trail(&["1.a"]), &HashMap::new());
+        let second = results_html(
+            &page(30, 10, None),
+            "",
+            &trail(&["1.a"]),
+            &HashMap::new(),
+            true,
+        );
         assert!(second.contains(r#"href="/recipes/library" rel="prev""#));
         assert!(second.contains(
             r#"<a class="btn secondary" aria-disabled="true">Suivant <span aria-hidden="true">›</span></a>"#
@@ -844,7 +895,7 @@ mod tests {
     fn a_row_links_its_publication_and_marks_a_copy() {
         let mut copied = HashMap::new();
         copied.insert(Uuid::from_u128(2), Uuid::from_u128(99));
-        let html = results_html(&page(3, 3, None), "", &[], &copied);
+        let html = results_html(&page(3, 3, None), "", &[], &copied, true);
         let rows: Vec<&str> = html.split("<li>").skip(1).collect();
         assert_eq!(rows.len(), 3);
         assert!(rows[0].contains(&format!(
@@ -864,6 +915,7 @@ mod tests {
             "",
             &[],
             &HashMap::new(),
+            true,
         );
         assert!(escaped.contains("&lt;b&gt;Tarte&lt;/b&gt;"));
     }
@@ -889,7 +941,7 @@ mod tests {
 
     #[test]
     fn a_publication_not_copied_offers_to_add_it() {
-        let html = detail_body(&publication(), None, None, None);
+        let html = detail_body(&publication(), None, None, None, true);
         assert!(html.contains("<h1>Gratin dauphinois</h1>"));
         assert!(html.contains(r#"<p class="muted">Pour 4 personnes · Temps : 1 h 20</p>"#));
         assert!(html.contains(&format!(
@@ -913,29 +965,29 @@ mod tests {
     fn a_publication_names_the_site_it_was_imported_from() {
         let mut p = publication();
         p.source_url = Some("https://www.marmiton.org/recettes/gratin.aspx".into());
-        let html = detail_body(&p, None, None, None);
+        let html = detail_body(&p, None, None, None, true);
         assert!(html.contains(
             r#"<p class="muted">Source : <a href="https://www.marmiton.org/recettes/gratin.aspx" rel="noopener noreferrer nofollow">marmiton.org</a></p>"#
         ));
         // Not a web page: no link.
         p.source_url = Some("ftp://e.fr/gratin".into());
-        assert!(!detail_body(&p, None, None, None).contains("Source :"));
+        assert!(!detail_body(&p, None, None, None, true).contains("Source :"));
     }
 
     #[test]
     fn a_publication_ends_with_the_way_to_report_it_or_the_report_made() {
         let id = Uuid::from_u128(5);
-        let html = detail_body(&publication(), None, None, None);
+        let html = detail_body(&publication(), None, None, None, true);
         assert!(html.ends_with(&report_foot(id, None)));
         assert!(html.contains(&format!(
             r#"<a class="btn secondary" href="/recipes/library/{id}/report">Signaler cette recette</a>"#
         )));
         let mut reported = publication();
         reported.reported_at = Some("2026-11-20T10:00:00Z".parse().unwrap());
-        let html = detail_body(&reported, None, None, None);
+        let html = detail_body(&reported, None, None, None, true);
         assert!(html.contains("Vous avez signalé cette recette le 20 novembre 2026."));
         assert!(!html.contains("/report"));
-        let thanked = detail_body(&reported, None, Some("reported"), None);
+        let thanked = detail_body(&reported, None, Some("reported"), None, true);
         assert!(thanked.contains(
             r#"<p class="notice success" role="status">Merci, votre signalement a été transmis. Nous l'examinerons.</p>"#
         ));
@@ -943,7 +995,7 @@ mod tests {
 
     #[test]
     fn the_list_leads_to_my_publications() {
-        let html = list_body("", "");
+        let html = list_body("", "", true);
         assert!(html.contains(
             r#"<a class="btn secondary" href="/recipes/library/mine">Mes publications</a>"#
         ));
@@ -952,24 +1004,24 @@ mod tests {
     #[test]
     fn a_publication_copied_shows_the_copy_instead_of_adding_it_again() {
         let copy = Uuid::from_u128(42);
-        let html = detail_body(&publication(), Some(copy), None, None);
+        let html = detail_body(&publication(), Some(copy), None, None, true);
         assert!(!html.contains("Ajouter à mes recettes"));
         assert!(!html.contains("<form"));
         assert!(html.contains(&format!(
             r#"<a class="btn secondary" href="/recipes/{copy}">Voir ma copie</a>"#
         )));
         assert!(html.contains(&format!("Pour 4 personnes · Temps : 1 h 20 {BADGE}")));
-        let added = detail_body(&publication(), Some(copy), Some("added"), None);
+        let added = detail_body(&publication(), Some(copy), Some("added"), None, true);
         assert!(added.contains(&format!(
             r#"<p class="notice success" role="status">Recette ajoutée à vos recettes. <a href="/recipes/{copy}">Ouvrir ma copie</a></p>"#
         )));
-        let refused = detail_body(&publication(), None, None, Some("too_many"));
+        let refused = detail_body(&publication(), None, None, Some("too_many"), true);
         assert!(refused.contains(r#"<p class="notice error" role="alert">Trop de consultations"#));
     }
 
     #[test]
     fn a_publication_keeps_the_kitchen_segment() {
-        let html = detail_body(&publication(), None, None, None);
+        let html = detail_body(&publication(), None, None, None, true);
         assert!(html.starts_with(&kitchen_segment("/recipes")));
     }
 
@@ -995,10 +1047,83 @@ mod tests {
 
     #[test]
     fn a_withdrawn_publication_says_so_and_offers_nothing_to_add() {
-        let html = withdrawn_body();
+        let html = withdrawn_body(true);
         assert!(html.starts_with(&kitchen_segment("/recipes")));
         assert!(html.contains("retirée de la bibliothèque"));
         assert!(!html.contains("<form"));
         assert!(html.contains(r#"href="/recipes/library""#));
+    }
+
+    // -- without a family (#990) ----------------------------------------------
+
+    #[test]
+    fn without_a_family_the_segment_leaves_out_the_recipes_that_redirect() {
+        assert_eq!(library_segment(true), kitchen_segment("/recipes"));
+        assert_eq!(
+            library_segment(false),
+            r#"<nav class="segment" aria-label="Cuisine"><a href="/stocks">Stocks</a></nav>"#
+        );
+    }
+
+    #[test]
+    fn without_a_family_the_list_leads_nowhere_that_redirects() {
+        let html = list_body("", "", false);
+        assert!(html.starts_with(&library_segment(false)));
+        assert!(html.contains(
+            r#"<a class="btn secondary" href="/recipes/library/mine">Mes publications</a>"#
+        ));
+        assert!(!html.contains(r#"href="/recipes""#), "{html}");
+        assert!(!html.contains("Mes recettes"));
+        assert!(list_body("", "", true).contains(r#"href="/recipes">Mes recettes</a>"#));
+
+        let none = HashMap::new();
+        let empty = results_html(&page(0, 0, None), "", &[], &none, false);
+        assert!(empty.contains("La bibliothèque est vide pour le moment"));
+        assert!(empty.contains("Aucune recette n'a encore été partagée. Revenez plus tard."));
+        assert!(!empty.contains(r#"href="/recipes""#), "{empty}");
+        assert!(!empty.contains("Mes recettes"));
+        let with = results_html(&page(0, 0, None), "", &[], &none, true);
+        assert!(with.contains(r#"<a class="btn secondary" href="/recipes">Mes recettes</a>"#));
+        // A search, and the rows, are the same either way.
+        assert_eq!(
+            results_html(&page(0, 0, None), "tatin", &[], &none, false),
+            results_html(&page(0, 0, None), "tatin", &[], &none, true)
+        );
+        assert_eq!(
+            results_html(&page(3, 3, None), "", &[], &none, false),
+            results_html(&page(3, 3, None), "", &[], &none, true)
+        );
+    }
+
+    #[test]
+    fn without_a_family_a_publication_invites_to_make_or_join_a_group() {
+        let html = detail_body(&publication(), None, None, None, false);
+        assert!(html.starts_with(&library_segment(false)));
+        assert!(html.contains("<h1>Gratin dauphinois</h1>"));
+        assert!(!html.contains("<form"), "nothing to post without a family");
+        assert!(!html.contains("Ajouter à mes recettes"));
+        assert!(html.contains(
+            r#"<div class="card"><p><strong>Ajouter cette recette à un groupe</strong></p>"#
+        ));
+        assert!(html.contains("rejoignez celui de vos proches avec leur invitation"));
+        assert!(
+            html.contains(r#"<a class="btn" href="/groups/new">Ajouter à mon groupe</a></div>"#)
+        );
+        assert_eq!(html.matches("/groups/new").count(), 1, "one link only");
+        assert!(!html.contains("foyer"), "the app's words: groupe, famille");
+        assert!(!html.contains(r#"href="/recipes""#));
+        assert!(html.ends_with(&report_foot(Uuid::from_u128(5), None)));
+        // With a family, the same publication is added as before.
+        let with = detail_body(&publication(), None, None, None, true);
+        assert!(with.contains("Ajouter à mes recettes"));
+        assert!(!with.contains("/groups/new"));
+    }
+
+    #[test]
+    fn without_a_family_a_withdrawn_publication_drops_the_recipes_tab() {
+        let html = withdrawn_body(false);
+        assert!(html.starts_with(&library_segment(false)));
+        assert!(html.contains("retirée de la bibliothèque"));
+        assert!(!html.contains(r#"href="/recipes""#));
     }
 }
