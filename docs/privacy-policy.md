@@ -858,9 +858,11 @@ serveur envoie par Google (voir « Avec qui vos données sont-elles
 partagées ? »). Ces messages ne portent aucun texte : l'application
 affiche elle-même un texte fixe selon leur type, par exemple « Agenda de
 la famille modifié », jamais le titre d'un événement, un montant ou un
-nom. Quand vous vous déconnectez, l'application demande au serveur
-d'oublier ce jeton, puis à Google de le retirer ; quand vous changez de
-site, elle le retire chez Google. Vos rappels d'événements, eux, ne
+nom. L'application garde ce jeton sur le téléphone pour pouvoir le
+retirer. Quand vous vous déconnectez, elle demande au serveur d'oublier
+ce jeton, puis à Google de le retirer ; si vous retirez l'autorisation
+des notifications, elle fait de même à la page ouverte suivante ; quand
+vous changez de site, elle le retire chez Google. Vos rappels d'événements, eux, ne
 passent pas par Google : ils sont programmés sur le téléphone.
 
 Le second, à votre demande : si
