@@ -842,8 +842,8 @@ L'application Android de MHome est une fenêtre sur ce même site : elle
 ouvre ses pages à son adresse, et toutes vos données restent servies et
 conservées par le même serveur, aux conditions décrites sur cette page.
 Elle ne contient aucune logique du service, aucun outil de mesure
-d'audience, aucun SDK publicitaire ni de statistiques, et ne contacte
-d'autre serveur que celui du site que dans les deux cas qui suivent : les
+d'audience, aucun SDK publicitaire ni de statistiques. Elle ne contacte
+que le serveur du site, sauf dans les deux cas décrits ci-dessous. Les
 liens vers un autre site s'ouvrent dans le navigateur du téléphone.
 
 Le premier : pour recevoir les alertes de budget, le récapitulatif des
