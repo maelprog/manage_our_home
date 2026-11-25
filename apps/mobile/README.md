@@ -162,7 +162,8 @@ du site.
   rappels. Un toucher ouvre l'application, marque lues les entrées du
   centre (#862) et ouvre la page du type : l'agenda, le budget ou les
   stocks. La déconnexion fait oublier le jeton au site, puis le retire de
-  Firebase ; un changement de site le retire de Firebase (l'ancien site,
+  Firebase ; la permission retirée, la page suivante fait de même (la
+  page garde pour cela le jeton dans son `localStorage`) ; un changement de site le retire de Firebase (l'ancien site,
   à son envoi suivant, reçoit `UNREGISTERED` et oublie le téléphone). Un
   APK construit sans `google-services.json` fonctionne, sans notification
   poussée : le plugin `PushSupport` (`PushSupportPlugin.java`) le dit à la
@@ -484,6 +485,11 @@ des applications. À l'ouverture :
        /account/notifications/fcm-token` (`204`) avant `POST /logout`.
        Une nouvelle modification de l'agenda par l'autre compte n'arrive
        plus sur ce téléphone.
+    6. Se reconnecter (un `POST` du jeton), puis retirer la permission
+       des notifications de MHome dans les réglages d'Android, et ouvrir
+       une page : l'onglet Réseau montre un `DELETE
+       /account/notifications/fcm-token` (`204`), une seule fois. Une
+       modification de l'agenda par l'autre compte n'arrive plus.
 
     Sans `google-services.json`, rien de cela : aucun appel à
     `/account/notifications/fcm-token`, et l'application fonctionne.
