@@ -144,10 +144,17 @@ mod tests {
         );
         assert_eq!(
             servings(
-                r#"<meta itemprop="recipeYield" content="8 parts"><span itemprop="recipeYield">8 personnes</span>"#
+                r#"<meta itemprop="recipeYield" content="1 tarte"><span itemprop="recipeYield">8 personnes</span>"#
             ),
             Some(8),
             "the first one that counts people"
+        );
+        assert_eq!(
+            servings(
+                r#"<span itemprop="recipeYield">4 personnes</span><span itemprop="recipeYield">6</span>"#
+            ),
+            Some(4),
+            "a later one does not replace it"
         );
         assert_eq!(
             servings(r#"<span itemprop="recipeYield">1 tarte</span>"#),

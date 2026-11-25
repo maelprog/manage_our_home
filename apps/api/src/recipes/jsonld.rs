@@ -26,7 +26,8 @@ pub struct ExtractedRecipe {
 /// The number of people a `recipeYield` text gives (#1015): the first
 /// whole number from 1 to `SERVINGS_MAX` that stands alone (« 4 »,
 /// « Pour 6 ») or counts people (« 4 personnes », « 6 portions »,
-/// « 4 servings », « 4 à 6 personnes »). A number of anything else
+/// « 8 parts », « 4 adultes », « 4 servings », « 4 à 6 personnes »). A
+/// number of anything else
 /// (« 1 tarte », « 20 crêpes ») is not a number of people: `None`.
 pub(crate) fn servings_in(text: &str) -> Option<i32> {
     let text = text.to_lowercase();
@@ -92,9 +93,11 @@ fn first_word(text: &str) -> &str {
 
 /// A lowercased word that counts people, in French or English.
 fn names_people(word: &str) -> bool {
-    ["pers", "portion", "serving", "people", "couvert", "convive"]
-        .iter()
-        .any(|stem| word.starts_with(stem))
+    [
+        "pers", "portion", "serving", "people", "couvert", "convive", "part", "adult",
+    ]
+    .iter()
+    .any(|stem| word.starts_with(stem))
 }
 
 /// `recipeYield` as servings: a text (`servings_in`), a whole number, or
@@ -691,6 +694,10 @@ mod tests {
             ("4-6 personnes", 4),
             ("12 couverts", 12),
             ("4 portion(s)", 4),
+            ("8 parts", 8),
+            ("1 part", 1),
+            ("4 adultes", 4),
+            ("1 tarte (8 parts)", 8),
         ] {
             assert_eq!(servings_in(text), Some(servings), "{text:?}");
         }
@@ -718,7 +725,6 @@ mod tests {
             "quelques personnes",
             "1 tarte",
             "20 crêpes",
-            "1 tarte (8 parts)",
             "1,5 litre",
             "2.5 personnes",
             "portion",
@@ -746,6 +752,11 @@ mod tests {
         assert_eq!(servings_of_yield("51"), None);
         assert_eq!(servings_of_yield(r#"["4", "4 servings"]"#), Some(4));
         assert_eq!(servings_of_yield(r#"["1 tarte", "8 personnes"]"#), Some(8));
+        assert_eq!(
+            servings_of_yield(r#"["4 personnes", "6 personnes"]"#),
+            Some(4),
+            "the first one wins"
+        );
         assert_eq!(servings_of_yield(r#""&nbsp;4&nbsp;personnes""#), Some(4));
         assert_eq!(servings_of_yield(r#""1 tarte""#), None);
         assert_eq!(servings_of_yield("null"), None);
