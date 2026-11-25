@@ -237,11 +237,18 @@ test.describe("Recipes — à réaliser (#470)", () => {
 
     await page.goto("/recipes/new");
     await page.getByLabel("Nom").fill("Ratatouille");
-    await fillIngredients(page, "Courgette | 2 | pièce");
+    await fillIngredients(page, "Courgette | 2 | pièce\nLait | 1500 | ml");
+    // A new recipe is for 1 until told otherwise (#1016).
+    await expect(page.getByLabel("Personnes")).toHaveValue("1");
     await page.getByLabel("Personnes").fill("4");
     await page.getByRole("button", { name: "Créer la recette" }).click();
     await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
     await expect(page.getByText("Pour 4 personnes.")).toBeVisible();
+    // Not planned: the quantities as written, 1500 ml read in litres.
+    const ingredients = page.locator("section.card", {
+      has: page.getByRole("heading", { name: "Ingrédients" }),
+    });
+    await expect(ingredients.getByRole("listitem")).toHaveText(["Courgette — 2 pièce", "Lait — 1.5 l"]);
 
     // The form proposes the recipe's own base.
     await expect(page.getByLabel("Personnes")).toHaveValue("4");
@@ -249,6 +256,14 @@ test.describe("Recipes — à réaliser (#470)", () => {
     await page.getByRole("button", { name: "À réaliser" }).click();
     await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_selected$/);
     await expect(page.getByRole("spinbutton", { name: "Personnes, Ratatouille" })).toHaveValue("2");
+    // Planned for 2, the quantities are shown for 2 (#1016).
+    await expect(ingredients.getByText("Pour 2 personnes, comme prévu.")).toBeVisible();
+    await expect(ingredients.getByRole("listitem")).toHaveText(["Courgette — 1 pièce", "Lait — 750 ml"]);
+    await expect(
+      ingredients.getByText(
+        "La recette est écrite pour 4 personnes ; les quantités ont été multipliées par 0.5.",
+      ),
+    ).toBeVisible();
 
     // The list says so too.
     await page.goto("/recipes");
