@@ -1454,6 +1454,9 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 .report-foot { margin-top: var(--s6); padding-top: var(--s4); border-top: 1px solid var(--line); }
 .bib .actions { margin-bottom: 0; }
 .bib .links { margin-top: 0; }
+/* A recipe another member published (#991): its card right under the
+   notice, whose own margin spaces them, as the mockup draws it. */
+.already { margin-top: 0; }
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and

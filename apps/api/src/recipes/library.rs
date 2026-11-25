@@ -555,6 +555,16 @@ pub struct PublicationOfRecipe {
     pub updated_at: DateTime<Utc>,
 }
 
+/// When a recipe of the family was published, whoever of its members
+/// published it (#991): the dates the library shows every reader, nothing
+/// of the publisher.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RecipePublicationDates {
+    pub published_at: DateTime<Utc>,
+    /// When it was last published again; `published_at` on a first one.
+    pub updated_at: DateTime<Utc>,
+}
+
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct LibraryQuery {
@@ -885,6 +895,45 @@ pub async fn get_my_publication_of_recipe(
     .ok_or(AppError::NotFound)?;
     tx.commit().await?;
     Ok(Json(publication))
+}
+
+#[utoipa::path(
+    get,
+    path = "/groups/{id}/recipes/{recipe_id}/publication",
+    tag = "recipes",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Group id"),
+        ("recipe_id" = uuid::Uuid, Path, description = "Recipe id"),
+    ),
+    responses(
+        (status = 200, description = "When the recipe was published, whoever of the family's members published it", body = RecipePublicationDates),
+        (status = 404, description = "`not_found`: no such recipe in the family, or it is not published", body = manage_our_home_shared::dto::auth::ErrorResponse),
+        crate::api_docs::MemberErrors,
+    ),
+    security(("session_cookie" = [])),
+)]
+pub async fn get_recipe_publication_dates(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path((group_id, recipe_id)): Path<(Uuid, Uuid)>,
+) -> AppResult<impl IntoResponse> {
+    let mut tx = scoped_tx(&state.db, group_id, auth.user_id).await?;
+    require_role(&mut tx, group_id, auth.user_id).await?;
+    // Another member's publication is hidden from the caller by the
+    // publishers' policy: its dates alone come through the function of
+    // 0072, which checks the family and the membership again.
+    let dates = sqlx::query_as!(
+        RecipePublicationDates,
+        r#"SELECT published_at AS "published_at!", updated_at AS "updated_at!"
+           FROM group_recipe_publication_dates($1, $2)"#,
+        group_id,
+        recipe_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    tx.commit().await?;
+    Ok(Json(dates))
 }
 
 #[utoipa::path(

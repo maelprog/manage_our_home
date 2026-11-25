@@ -312,6 +312,15 @@ pub struct PublicationOfRecipe {
     pub updated_at: DateTime<Utc>,
 }
 
+/// `GET /groups/:id/recipes/:recipe_id/publication` (#991): when the recipe
+/// was published, whoever of the family published it. Mirrors
+/// `RecipePublicationDates`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecipePublicationDates {
+    pub published_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// `POST /groups/:id/recipes/:recipe_id/publish` request body (#906).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishRequest {

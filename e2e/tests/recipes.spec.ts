@@ -1123,6 +1123,79 @@ test.describe("Recipes — publier et signaler (#911)", () => {
     await readerContext.close();
   });
 
+  // A publication another member made (#991): the family's owner reads its
+  // card on the publish screen, « Retirer » with it; its publisher, made a
+  // standard member below the `recipes_edit` threshold, still sees it on
+  // the recipe and withdraws it, without being offered to publish again.
+  test("an owner meets another member's publication; its publisher, demoted, withdraws it", async ({
+    page,
+    browser,
+  }) => {
+    const family = `Famille Retrait ${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    await registerAndLogin(page, "e2e-rcpubowner", "Retrait Owner");
+    await createGroup(page, family);
+    const href = await createInvitationLink(page, family);
+    const name = `Quiche ${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    await createRecipe(page, { name, ingredients: "Oeuf | 3 | pièce" });
+    const recipeUrl = page.url().replace(/\?.*$/, "");
+
+    const context = await browser.newContext();
+    await skipMealStart(context);
+    const member = await context.newPage();
+    await registerAndLogin(member, "e2e-rcpubadmin", "Retrait Admin");
+    await member.goto(href);
+    await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
+
+    const setRole = async (role: string) => {
+      await page.goto("/groups");
+      await page.locator("li", { hasText: family }).getByRole("link", { name: "Membres" }).click();
+      const row = page.locator("li", { hasText: "Retrait Admin" });
+      await row.locator("select[name=role]").selectOption(role);
+      await row.getByRole("button", { name: "Changer le rôle" }).click();
+      await expect(page.getByText("Rôle mis à jour.")).toBeVisible();
+    };
+
+    // An admin, they publish the owner's recipe.
+    await setRole("admin");
+    await member.goto(`${recipeUrl}/publish`);
+    await member.getByRole("checkbox", { name: /Je confirme que cette recette/ }).check();
+    await member.getByRole("button", { name: "Publier", exact: true }).click();
+    await expect(member).toHaveURL(`${recipeUrl}?notice=published`);
+
+    // The owner tries too: the card of the publication, « Retirer » on it.
+    await page.goto(`${recipeUrl}/publish`);
+    await page.getByRole("checkbox", { name: /Je confirme que cette recette/ }).check();
+    const [already] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/publish") && r.request().method() === "POST"),
+      page.getByRole("button", { name: "Publier", exact: true }).click(),
+    ]);
+    expect(already.status()).toBe(409);
+    await expect(page.getByText("déjà publiée dans la bibliothèque par un autre membre")).toBeVisible();
+    const alreadyCard = page.locator("section.card.already");
+    await expect(alreadyCard.getByRole("heading", { name, level: 2 })).toBeVisible();
+    await expect(alreadyCard.getByText("Publiée", { exact: true })).toBeVisible();
+    // Dated, though another member published it (#991).
+    await expect(alreadyCard.locator("p .muted")).toHaveText(/^le \d{1,2} [a-zéû]+ \d{4}$/);
+    await expect(alreadyCard.getByRole("button", { name: "Retirer de la bibliothèque" })).toBeVisible();
+
+    // Made a standard member: the recipe is no longer theirs to edit, but
+    // their publication still shows, and goes in one click.
+    await setRole("standard");
+    await member.goto(recipeUrl);
+    const card = member.locator("#bibliotheque");
+    await expect(card.getByText("Publiée", { exact: true })).toBeVisible();
+    await expect(card.getByRole("link", { name: "Mettre à jour la publication" })).toHaveCount(0);
+    await expect(member.getByRole("link", { name: "Modifier la recette" })).toHaveCount(0);
+    await card.getByRole("button", { name: "Retirer de la bibliothèque" }).click();
+    await expect(member).toHaveURL(`${recipeUrl}?notice=unpublished`);
+    await expect(member.getByText("Recette retirée de la bibliothèque.")).toBeVisible();
+    await expect(card.getByText("Cette recette n'est plus dans la bibliothèque.")).toBeVisible();
+    await expect(card.getByRole("link", { name: "Publier à nouveau" })).toHaveCount(0);
+    await member.goto(`/recipes/library?q=${encodeURIComponent(name)}`);
+    await expect(member.getByRole("heading", { name: "Aucune recette ne correspond" })).toBeVisible();
+    await context.close();
+  });
+
   // A publication outlives its family: its publisher, in no family any
   // more, still reads « Mes publications » and the library (#990), and
   // withdraws it from there.

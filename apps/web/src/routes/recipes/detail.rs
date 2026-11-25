@@ -17,7 +17,9 @@
 //!
 //! The « Bibliothèque » card (#911, `publish.rs`), before « Modifier » and
 //! « Supprimer »: to publish the recipe, publish it again or withdraw it,
-//! for whoever may edit it; the others read why it offers them nothing.
+//! for whoever may edit it; the others read why it offers them nothing —
+//! except its publisher, who sees their publication and withdraws it even
+//! without the right to edit (#991).
 //!
 //! Error table: 404 (`get_recipe`/`delete_recipe`/`log_meal`) unknown/foreign
 //! recipe → introuvable page; 403 (`delete`/`log` permission bar) →
@@ -258,13 +260,11 @@ pub async fn get(
         &fam.edit_min_role,
         recipe.created_by == me.user_id,
     );
-    // The caller's own publication of it (#911), read only when they may
-    // publish it.
-    let publication = if can_edit {
-        super::publish::my_publication(&state, fam.gid, recipe_id, cookie.as_deref()).await
-    } else {
-        None
-    };
+    // The caller's own publication of it (#911), read whether or not they
+    // may still edit it: its publisher keeps seeing and withdrawing it
+    // (#991).
+    let publication =
+        super::publish::my_publication(&state, fam.gid, recipe_id, cookie.as_deref()).await;
     let library = super::publish::library_card(
         recipe_id,
         can_edit,
