@@ -52,7 +52,7 @@ pub(crate) fn error_text(code: &str) -> &'static str {
 
 /// The create form pre-filled from a draft: one line per ingredient
 /// (quantity, unit, name), one step per step of the page, and
-/// « Personnes » when the page says how many (#1015).
+/// « Personnes » when the page says how many (#1015), 1 otherwise (#1016).
 pub(crate) fn draft_form(draft: &RecipeDraft) -> RecipeForm {
     let ingredients = draft
         .ingredients
@@ -71,7 +71,10 @@ pub(crate) fn draft_form(draft: &RecipeDraft) -> RecipeForm {
         ingredients,
         steps: draft.steps.clone(),
         source_url: draft.source_url.clone(),
-        servings: draft.servings.map(|n| n.to_string()).unwrap_or_default(),
+        servings: draft
+            .servings
+            .map(|n| n.to_string())
+            .unwrap_or(RecipeForm::blank().servings),
         ..RecipeForm::default()
     }
 }
@@ -237,7 +240,7 @@ mod tests {
             servings: None,
             ..draft()
         });
-        assert_eq!(unsaid.servings, RecipeForm::default().servings);
+        assert_eq!(unsaid.servings, "1", "#1016: Personnes at 1");
     }
 
     /// A draft from an API that does not send `servings` still reads.
