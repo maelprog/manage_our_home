@@ -28,6 +28,12 @@ const MARMITON: &str = include_str!("fixtures/recipe_pages/marmiton_graph.html")
 const NO_RECIPE: &str = include_str!("fixtures/recipe_pages/no_recipe.html");
 const PROSE: &str = include_str!("fixtures/recipe_pages/woochiens_prose.html");
 
+/// A page whose recipe says how many people it is for (#1015).
+const PORTIONS: &str = r#"<html><head><script type="application/ld+json">
+{"@type": "Recipe", "name": "Velouté de potimarron", "recipeYield": "4 portions",
+ "recipeIngredient": ["1 potimarron"], "recipeInstructions": "Cuire."}
+</script></head><body></body></html>"#;
+
 /// The name the test client pins to the local server.
 const SITE: &str = "recettes.test";
 
@@ -56,6 +62,7 @@ async fn site() -> (SocketAddr, Arc<AtomicUsize>) {
                 "/marmiton" => html(MARMITON.into()),
                 "/no-recipe" => html(NO_RECIPE.into()),
                 "/prose" => html(PROSE.into()),
+                "/portions" => html(PORTIONS.into()),
                 "/json" => axum::Json(serde_json::json!({"@type": "Recipe"})).into_response(),
                 "/no-type" => Response::new(Body::from(MARMITON)),
                 "/broken" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -221,6 +228,21 @@ async fn a_recipe_page_gives_a_draft_and_creates_nothing(db: PgPool) {
         draft["steps"][2],
         "Laisser reposer 1 heure, votre pâte est prête."
     );
+    // « 20 crêpes » is not a number of people (#1015).
+    assert_eq!(draft["servings"], serde_json::Value::Null);
+    assert_eq!(recipe_count(&db).await, 0, "the import saves nothing");
+}
+
+/// A page whose `recipeYield` counts people gives them as `servings`
+/// (#1015).
+#[sqlx::test]
+async fn a_page_s_recipe_yield_gives_the_draft_s_servings(db: PgPool) {
+    let s = setup(db.clone(), true).await;
+    let res = import(&s, &format!("http://{SITE}:{}/portions", s.port)).await;
+    assert_status(&res, StatusCode::OK);
+    let draft = json_body(res).await;
+    assert_eq!(draft["name"], "Velouté de potimarron");
+    assert_eq!(draft["servings"], 4);
     assert_eq!(recipe_count(&db).await, 0, "the import saves nothing");
 }
 

@@ -3,17 +3,117 @@
 //! WordPress) put a `Recipe` node in a `<script type="application/ld+json">`
 //! block, which is what the recipe-scrapers library reads on 400+ sites.
 //! No HTML or JSON-LD library: the blocks are found by hand, read with
-//! `serde_json`, and only the three fields the import keeps are looked at.
+//! `serde_json`, and only the fields the import keeps are looked at: the
+//! name, the ingredients, the steps and how many people it serves
+//! (`recipeYield`, #1015).
 
 use serde_json::Value;
 
+use crate::recipes::selections::SERVINGS_MAX;
+
 /// What a page's `Recipe` node gives: its name, its ingredient lines as
-/// published, and its steps — all as plain text.
+/// published, and its steps — all as plain text — and the number of
+/// people it is written for, when its `recipeYield` says so
+/// (`servings_in`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractedRecipe {
     pub name: String,
     pub ingredients: Vec<String>,
     pub steps: Vec<String>,
+    pub servings: Option<i32>,
+}
+
+/// The number of people a `recipeYield` text gives (#1015): the first
+/// whole number from 1 to `SERVINGS_MAX` that stands alone (« 4 »,
+/// « Pour 6 ») or counts people (« 4 personnes », « 6 portions »,
+/// « 8 parts », « 4 adultes », « 4 servings », « 4 à 6 personnes »). A
+/// number of anything else
+/// (« 1 tarte », « 20 crêpes ») is not a number of people: `None`.
+pub(crate) fn servings_in(text: &str) -> Option<i32> {
+    let text = text.to_lowercase();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(|c: char| c.is_ascii_digit()) {
+        let (digits, after) = split_digits(&rest[at..]);
+        rest = after;
+        if starts_a_decimal(after) {
+            rest = split_digits(&after[1..]).1;
+            continue;
+        }
+        let next = skip_range(after).trim_start_matches(|c: char| !c.is_alphanumeric());
+        let counts_people = next.is_empty() || names_people(first_word(next));
+        let servings = digits
+            .parse::<i32>()
+            .ok()
+            .filter(|n| (1..=SERVINGS_MAX).contains(n));
+        if let Some(n) = servings.filter(|_| counts_people) {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// `text`'s leading ASCII digits, and what follows them.
+fn split_digits(text: &str) -> (&str, &str) {
+    text.split_at(
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len()),
+    )
+}
+
+/// Whether `after`, what follows a number, makes it a decimal: « ,5 »,
+/// « .5 ».
+fn starts_a_decimal(after: &str) -> bool {
+    let mut chars = after.chars();
+    matches!(chars.next(), Some('.' | ',')) && chars.next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// What follows a number past the second one of a range: « -6 »,
+/// « – 6 », « /8 », « à 6 », « to 6 », « ou 6 »; `after` itself when it
+/// starts no range.
+fn skip_range(after: &str) -> &str {
+    let trimmed = after.trim_start();
+    let bound = ["-", "–", "/", "à ", "a ", "to ", "ou ", "or "]
+        .iter()
+        .find_map(|word| trimmed.strip_prefix(word))
+        .map(str::trim_start)
+        .filter(|bound| bound.starts_with(|c: char| c.is_ascii_digit()));
+    match bound {
+        Some(bound) => split_digits(bound).1,
+        None => after,
+    }
+}
+
+/// The letters `text` starts with: « personnes) » gives « personnes »,
+/// « 6 parts » gives « ».
+fn first_word(text: &str) -> &str {
+    &text[..text
+        .find(|c: char| !c.is_alphabetic())
+        .unwrap_or(text.len())]
+}
+
+/// A lowercased word that counts people, in French or English: one of
+/// these, singular or plural. The whole word: « persil » is not « pers ».
+fn names_people(word: &str) -> bool {
+    const WORDS: [&str; 11] = [
+        "personne", "pers", "person", "people", "portion", "serving", "couvert", "convive", "part",
+        "adulte", "adult",
+    ];
+    let singular = word.strip_suffix('s').unwrap_or(word);
+    WORDS.contains(&word) || WORDS.contains(&singular)
+}
+
+/// `recipeYield` as servings: a text (`servings_in`), a whole number, or
+/// a list of either, whose first one that gives a number of people wins.
+fn servings_of(value: &Value) -> Option<i32> {
+    match value {
+        Value::String(text) => servings_in(&plain_text(text)),
+        Value::Number(n) => n
+            .as_f64()
+            .filter(|n| n.fract() == 0.0 && (1.0..=f64::from(SERVINGS_MAX)).contains(n))
+            .map(|n| n as i32),
+        Value::Array(items) => items.iter().find_map(servings_of),
+        _ => None,
+    }
 }
 
 /// The first `Recipe` node of the page's JSON-LD blocks that has a name,
@@ -164,6 +264,7 @@ fn read_recipe(node: &Value) -> Option<ExtractedRecipe> {
         name,
         ingredients,
         steps,
+        servings: node.get("recipeYield").and_then(servings_of),
     })
 }
 
@@ -574,6 +675,120 @@ mod tests {
                 assert_eq!(recipe.steps.len(), 1);
             });
         }
+    }
+
+    // -- recipeYield (#1015) -----------------------------------------------
+
+    #[test]
+    fn servings_are_a_bare_number_or_a_number_of_people() {
+        for (text, servings) in [
+            ("4", 4),
+            (" 4 ", 4),
+            ("4 personnes", 4),
+            ("1 personne", 1),
+            ("Pour 6 portions", 6),
+            ("Pour 6", 6),
+            ("4 servings", 4),
+            ("2 people", 2),
+            ("8 pers.", 8),
+            ("6 Personnes", 6),
+            ("4 à 6 personnes", 4),
+            ("4-6 personnes", 4),
+            ("12 couverts", 12),
+            ("4 portion(s)", 4),
+            ("8 parts", 8),
+            ("1 part", 1),
+            ("4 adultes", 4),
+            ("1 tarte (8 parts)", 8),
+            ("6/8 personnes", 6),
+            ("6 / 8 personnes", 6),
+            ("2 adults", 2),
+        ] {
+            assert_eq!(servings_in(text), Some(servings), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn servings_are_bounded_by_servings_max() {
+        use crate::recipes::selections::SERVINGS_MAX;
+        assert_eq!(SERVINGS_MAX, 50);
+        assert_eq!(servings_in("0"), None);
+        assert_eq!(servings_in("1"), Some(1));
+        assert_eq!(servings_in("50"), Some(50));
+        assert_eq!(servings_in("51"), None);
+        assert_eq!(servings_in("120"), None);
+        assert_eq!(servings_in("0 personne"), None);
+        assert_eq!(servings_in("120 personnes"), None);
+        assert_eq!(servings_in("99999999999999999999 personnes"), None);
+    }
+
+    #[test]
+    fn a_number_of_something_else_is_not_servings() {
+        for text in [
+            "",
+            "  ",
+            "quelques personnes",
+            "1 tarte",
+            "20 crêpes",
+            "4 persil",
+            "2 partenaires",
+            "3 personnages",
+            "1,5 litre",
+            "2.5 personnes",
+            "portion",
+        ] {
+            assert_eq!(servings_in(text), None, "{text:?}");
+        }
+        // A number of people further on still counts.
+        assert_eq!(servings_in("120 g, soit 4 personnes"), Some(4));
+    }
+
+    fn servings_of_yield(recipe_yield: &str) -> Option<i32> {
+        let html = page(&[&format!(
+            r#"{{"@type": "Recipe", "name": "Soupe", "recipeYield": {recipe_yield}}}"#
+        )]);
+        extract_recipe(&html).unwrap().servings
+    }
+
+    #[test]
+    fn recipe_yield_as_a_text_a_number_or_an_array() {
+        assert_eq!(servings_of_yield(r#""4 portions""#), Some(4));
+        assert_eq!(servings_of_yield("6"), Some(6));
+        assert_eq!(servings_of_yield("6.0"), Some(6));
+        assert_eq!(servings_of_yield("2.5"), None);
+        assert_eq!(servings_of_yield("0"), None);
+        assert_eq!(servings_of_yield("51"), None);
+        assert_eq!(servings_of_yield(r#"["4", "4 servings"]"#), Some(4));
+        assert_eq!(servings_of_yield(r#"["1 tarte", "8 personnes"]"#), Some(8));
+        assert_eq!(
+            servings_of_yield(r#"["4 personnes", "6 personnes"]"#),
+            Some(4),
+            "the first one wins"
+        );
+        assert_eq!(servings_of_yield(r#""&nbsp;4&nbsp;personnes""#), Some(4));
+        assert_eq!(servings_of_yield(r#""1 tarte""#), None);
+        assert_eq!(servings_of_yield("null"), None);
+        assert_eq!(servings_of_yield(r#"{"value": 4}"#), None);
+        let html = page(&[r#"{"@type": "Recipe", "name": "Soupe"}"#]);
+        assert_eq!(extract_recipe(&html).unwrap().servings, None, "absent");
+    }
+
+    #[test]
+    fn real_pages_give_their_servings() {
+        let servings = |html: &str| extract_recipe(html).unwrap().servings;
+        assert_eq!(servings(fixture!("cuisineaz_steps_named.html")), Some(4));
+        assert_eq!(servings(fixture!("jdf_array_two_blocks.html")), Some(4));
+        assert_eq!(servings(fixture!("750g_entities.html")), Some(2));
+        // `["1", "portion"]`.
+        assert_eq!(servings(fixture!("jow_enchiladas.html")), Some(1));
+        // « 20 crêpes » counts crêpes, not people.
+        assert_eq!(servings(fixture!("marmiton_graph.html")), None);
+    }
+
+    #[test]
+    fn servings_alone_do_not_make_a_recipe() {
+        let html = page(&[r#"{"@type": "Recipe", "recipeYield": "4"}"#]);
+        assert_eq!(extract_recipe(&html), None);
     }
 
     #[test]

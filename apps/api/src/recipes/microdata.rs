@@ -2,10 +2,10 @@
 //! `itemscope itemtype=".../Recipe"` whose descendants carry `itemprop`
 //! — what recipe plugins emitted before JSON-LD took over, and what some
 //! sites still publish alone. The import reads it when the page has no
-//! JSON-LD recipe (`jsonld`), and keeps the same three fields.
+//! JSON-LD recipe (`jsonld`), and keeps the same fields.
 
 use crate::recipes::html::{attribute, Document, Token};
-use crate::recipes::jsonld::{names_recipe, ExtractedRecipe};
+use crate::recipes::jsonld::{names_recipe, servings_in, ExtractedRecipe};
 
 /// The first `Recipe` item of the page that has a name, an ingredient or a
 /// step, or `None` when there is none. An item inside another one is not
@@ -37,7 +37,8 @@ fn is_recipe_item(token: &Token) -> bool {
             .is_some_and(|types| types.split_whitespace().any(names_recipe))
 }
 
-/// The recipe's name, ingredients and steps: the properties of the item
+/// The recipe's name, ingredients, steps and servings (its first
+/// `recipeYield` that counts people, `jsonld::servings_in`): the properties of the item
 /// started at `item`. A property's value is its `content` attribute, else
 /// its text. What a property element holds is not looked into further,
 /// nor what a nested item holds (an author's `name` is not the recipe's).
@@ -45,6 +46,7 @@ fn read_item(document: &Document, item: usize) -> Option<ExtractedRecipe> {
     let mut name = String::new();
     let mut ingredients = Vec::new();
     let mut steps = Vec::new();
+    let mut servings = None;
     let inside = document.inside(item);
     let mut at = inside.start;
     while at < inside.end {
@@ -73,6 +75,9 @@ fn read_item(document: &Document, item: usize) -> Option<ExtractedRecipe> {
                     Some(text) if !text.is_empty() => steps.push(text.clone()),
                     _ => steps.extend(document.lines(at)),
                 },
+                "recipeYield" if servings.is_none() => {
+                    servings = servings_in(&content.clone().unwrap_or_else(|| document.text(at)));
+                }
                 _ => {}
             }
         }
@@ -85,6 +90,7 @@ fn read_item(document: &Document, item: usize) -> Option<ExtractedRecipe> {
         name,
         ingredients,
         steps,
+        servings,
     })
 }
 
@@ -120,6 +126,47 @@ mod tests {
                 "Battre les oeufs avec le sucre, puis ajouter le lait.",
                 "Verser sur les cerises et cuire 35 minutes.",
             ]
+        );
+    }
+
+    #[test]
+    fn recipe_yield_gives_the_servings() {
+        assert_eq!(extract_recipe(FIXTURE).unwrap().servings, Some(6));
+        let html = |yields: &str| {
+            format!(
+                r#"<div itemscope itemtype="https://schema.org/Recipe"><h1 itemprop="name">Flan</h1>{yields}</div>"#
+            )
+        };
+        let servings = |yields: &str| extract_recipe(&html(yields)).unwrap().servings;
+        assert_eq!(
+            servings(r#"<span itemprop="recipeYield">Pour 4 personnes</span>"#),
+            Some(4)
+        );
+        assert_eq!(
+            servings(
+                r#"<meta itemprop="recipeYield" content="1 tarte"><span itemprop="recipeYield">8 personnes</span>"#
+            ),
+            Some(8),
+            "the first one that counts people"
+        );
+        assert_eq!(
+            servings(
+                r#"<span itemprop="recipeYield">4 personnes</span><span itemprop="recipeYield">6</span>"#
+            ),
+            Some(4),
+            "a later one does not replace it"
+        );
+        assert_eq!(
+            servings(r#"<span itemprop="recipeYield">1 tarte</span>"#),
+            None
+        );
+        assert_eq!(servings(""), None);
+        // A nested item's `recipeYield` is not the recipe's.
+        assert_eq!(
+            servings(
+                r#"<div itemscope itemtype="https://schema.org/Thing"><span itemprop="recipeYield">3</span></div>"#
+            ),
+            None
         );
     }
 

@@ -86,6 +86,7 @@ pub fn extract_recipe(html: &str) -> Option<ExtractedRecipe> {
         name: name(&document),
         ingredients,
         steps,
+        servings: None,
     })
 }
 
