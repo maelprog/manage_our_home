@@ -18,7 +18,10 @@
 //!   (`unpublish_too_many` when refused 429, #989).
 //!
 //! Who may: whoever may edit the recipe (`can_modify`, the API's
-//! `publish_bar`); the others read why the card offers them nothing.
+//! `publish_bar`); the others read why the card offers them nothing. Its
+//! publisher withdraws their publication without that right too (#991),
+//! and the family's owner one another member made, from the screen that
+//! says the recipe is published already.
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -130,11 +133,23 @@ pub(crate) fn dates_text(published_at: DateTime<Utc>, updated_at: DateTime<Utc>)
 
 // -- rendering ----------------------------------------------------------------
 
+/// The form of « Retirer de la bibliothèque », to `unpublish`.
+fn unpublish_form(id: Uuid) -> String {
+    format!(
+        r#"<form method="post" action="/recipes/{id}/unpublish"><button type="submit" class="secondary danger" data-busy-label="Retrait…">Retirer de la bibliothèque</button></form>"#
+    )
+}
+
 /// The « Bibliothèque » card of a recipe's page (`detail.rs`), before
 /// « Modifier » and « Supprimer ». `publication` is the caller's own
 /// publication of it; `withdrawn` says the page follows a withdrawal.
 /// `edit_min_role`, the family's `recipes_edit` threshold, says who may
 /// publish to a reader who may not (#962).
+///
+/// Its publisher sees their publication and withdraws it even once they
+/// may no longer edit the recipe — threshold raised, role lowered (#991):
+/// the API serves it to them and lets them withdraw it. Publishing again
+/// stays with whoever may edit it.
 pub(crate) fn library_card(
     id: Uuid,
     can_edit: bool,
@@ -144,26 +159,45 @@ pub(crate) fn library_card(
 ) -> String {
     const MINE: &str =
         r#"<div class="links"><a href="/recipes/library/mine">Mes publications</a></div>"#;
-    let body = if !can_edit {
+    let who = || {
         format!(
             r#"<p class="muted">{}</p>"#,
             who_may(edit_min_role, Guarded::Publication)
         )
-    } else if let Some(p) = publication {
+    };
+    let body = if let Some(p) = publication {
+        let (update_text, update_link) = if can_edit {
+            (
+                " Si vous l'avez modifiée depuis, « Mettre à jour la publication » remplace la version publiée.",
+                format!(r#"<a class="btn" href="/recipes/{id}/publish">Mettre à jour la publication</a>
+"#),
+            )
+        } else {
+            ("", String::new())
+        };
         format!(
             r#"<p><span class="badge ok">Publiée</span> <span class="muted">{dates}</span></p>
-<p class="muted">Cette recette est visible par tous les foyers, dans l'état où vous l'avez publiée. Si vous l'avez modifiée depuis, « Mettre à jour la publication » remplace la version publiée. Si vous la retirez, les foyers ne pourront plus la copier ; ceux qui l'ont déjà copiée la gardent.</p>
-<div class="actions"><a class="btn" href="/recipes/{id}/publish">Mettre à jour la publication</a>
-<form method="post" action="/recipes/{id}/unpublish"><button type="submit" class="secondary danger" data-busy-label="Retrait…">Retirer de la bibliothèque</button></form></div>
+<p class="muted">Cette recette est visible par tous les foyers, dans l'état où vous l'avez publiée.{update_text} Si vous la retirez, les foyers ne pourront plus la copier ; ceux qui l'ont déjà copiée la gardent.</p>
+<div class="actions">{update_link}{form}</div>
 {MINE}"#,
             dates = html_escape(&dates_text(p.published_at, p.updated_at)),
+            form = unpublish_form(id),
         )
     } else if withdrawn {
+        let again = if can_edit {
+            format!(
+                r#"<div class="actions"><a class="btn secondary" href="/recipes/{id}/publish">Publier à nouveau</a></div>"#
+            )
+        } else {
+            who()
+        };
         format!(
             r#"<p>Cette recette n'est plus dans la bibliothèque.</p>
-<div class="actions"><a class="btn secondary" href="/recipes/{id}/publish">Publier à nouveau</a></div>
+{again}
 {MINE}"#
         )
+    } else if !can_edit {
+        who()
     } else {
         format!(
             r#"<p>Partagez cette recette avec les autres foyers de MHome. Seul son contenu devient visible : ni vous, ni votre famille.</p>
@@ -183,7 +217,11 @@ pub(crate) fn library_card(
 pub(crate) enum Mode<'a> {
     Publish,
     Update(&'a PublicationOfRecipe),
-    Already,
+    /// Another member's publication: `owner`, the visitor is the family's
+    /// owner, who may withdraw it (the API's `unpublish_recipe`).
+    Already {
+        owner: bool,
+    },
 }
 
 /// The screen's title, its tab's as well as its heading: the update's in
@@ -209,11 +247,22 @@ pub(crate) fn screen_body(
         r#"<div class="links"><a href="/recipes/{id}"><span aria-hidden="true">‹</span> Retour à la recette</a></div>"#
     );
     let title = mode_title(mode);
-    if matches!(mode, Mode::Already) {
+    if let Mode::Already { owner } = mode {
+        // Its card (#991): the family's owner withdraws it, whoever
+        // published it; the others read who may. Its date is another
+        // member's, which the API does not serve.
+        let withdraw = if owner {
+            unpublish_form(id)
+        } else {
+            r#"<p class="muted">Seul le propriétaire du foyer ou le membre qui l'a publiée peut la retirer de la bibliothèque.</p>"#.to_string()
+        };
         return format!(
             r#"{segment}{back}
 <h1>{title}</h1>
-<p class="notice warning" role="status">Cette recette est déjà publiée dans la bibliothèque par un autre membre de votre foyer. <a href="/recipes/{id}">Retour à la recette</a></p>"#,
+<p class="notice warning" role="status">Cette recette est déjà publiée dans la bibliothèque par un autre membre de votre foyer. <a href="/recipes/{id}">Retour à la recette</a></p>
+<section class="card already" aria-labelledby="already-h"><h2 id="already-h">{name}</h2>
+<p><span class="badge ok">Publiée</span></p>
+{withdraw}</section>"#,
             segment = kitchen_segment("/recipes"),
         );
     }
@@ -450,7 +499,9 @@ pub async fn post(
     };
     let publication = my_publication(&state, fam.gid, id, cookie.as_deref()).await;
     let mode = if already {
-        Mode::Already
+        Mode::Already {
+            owner: fam.role == "owner",
+        }
     } else {
         publication.as_ref().map_or(Mode::Publish, Mode::Update)
     };
@@ -656,12 +707,12 @@ mod tests {
         assert!(gone.contains("Cette recette n'est plus dans la bibliothèque."));
         assert!(gone.contains("Publier à nouveau"));
 
-        let reader = library_card(id, false, "admin", Some(&p), false);
+        let reader = library_card(id, false, "admin", None, false);
         assert!(reader.contains(
             r#"<p class="muted">Seuls le créateur, les administrateurs et le propriétaire peuvent publier cette recette dans la bibliothèque.</p>"#
         ));
         // Under an `owner` threshold, an admin is not among them (#962).
-        let admin_under_owner = library_card(id, false, "owner", Some(&p), false);
+        let admin_under_owner = library_card(id, false, "owner", None, false);
         assert!(admin_under_owner.contains(
             "Seul le propriétaire ou le créateur peut publier cette recette dans la bibliothèque."
         ));
@@ -670,6 +721,36 @@ mod tests {
         for html in [&none, &published, &gone, &reader] {
             assert!(html.starts_with(r#"<section class="card bib" id="bibliotheque""#));
         }
+    }
+
+    #[test]
+    fn a_publisher_without_the_edit_right_still_sees_and_withdraws_their_publication() {
+        let id = Uuid::from_u128(7);
+        let p = publication("2026-11-18T09:00:00Z", "2026-11-20T09:00:00Z");
+        let html = library_card(id, false, "admin", Some(&p), false);
+        assert!(html.starts_with(r#"<section class="card bib" id="bibliotheque""#));
+        assert!(html.contains(
+            r#"<span class="badge ok">Publiée</span> <span class="muted">le 18 novembre 2026 · mise à jour le 20 novembre 2026</span>"#
+        ));
+        assert!(html.contains(&format!(
+            r#"<form method="post" action="/recipes/{id}/unpublish">"#
+        )));
+        assert!(html.contains("Retirer de la bibliothèque"));
+        assert!(html.contains(r#"href="/recipes/library/mine">Mes publications</a>"#));
+        // Publishing again stays with whoever may edit the recipe.
+        assert!(!html.contains("Mettre à jour la publication"));
+        assert!(!html.contains(&format!(r#"href="/recipes/{id}/publish""#)));
+        assert!(!html.contains("Seuls le créateur"));
+
+        // Withdrawn, it is not offered again.
+        let gone = library_card(id, false, "admin", None, true);
+        assert!(gone.contains("Cette recette n'est plus dans la bibliothèque."));
+        assert!(!gone.contains("Publier à nouveau"));
+        assert!(!gone.contains("/publish"));
+        assert!(gone.contains(
+            "Seuls le créateur, les administrateurs et le propriétaire peuvent publier cette recette dans la bibliothèque."
+        ));
+        assert!(gone.contains(r#"href="/recipes/library/mine">Mes publications</a>"#));
     }
 
     #[test]
@@ -723,10 +804,34 @@ mod tests {
     }
 
     #[test]
-    fn a_recipe_another_member_published_offers_no_form() {
-        let html = screen_body(&recipe(None), Mode::Already, false, None);
+    fn a_recipe_another_member_published_shows_its_card() {
+        let id = Uuid::from_u128(7);
+        let html = screen_body(&recipe(None), Mode::Already { owner: false }, false, None);
+        assert!(html.contains("<h1>Publier dans la bibliothèque</h1>"));
         assert!(html.contains("déjà publiée dans la bibliothèque par un autre membre"));
+        assert!(html.contains(
+            r#"<section class="card already" aria-labelledby="already-h"><h2 id="already-h">Gratin &lt;dauphinois&gt;</h2>"#
+        ));
+        assert!(html.contains(r#"<p><span class="badge ok">Publiée</span></p>"#));
+        // Not the family's owner: nothing to send, and why.
         assert!(!html.contains("<form"));
+        assert!(html.contains(
+            "Seul le propriétaire du foyer ou le membre qui l'a publiée peut la retirer de la bibliothèque."
+        ));
+        assert!(!html.contains("Ce qui devient visible"));
+
+        // The owner withdraws whoever's publication it is.
+        let owner = screen_body(&recipe(None), Mode::Already { owner: true }, false, None);
+        assert!(owner.contains(r#"<section class="card already""#));
+        assert!(owner.contains(&format!(
+            r#"<form method="post" action="/recipes/{id}/unpublish"><button type="submit" class="secondary danger" data-busy-label="Retrait…">Retirer de la bibliothèque</button></form>"#
+        )));
+        assert!(!owner.contains("Seul le propriétaire du foyer"));
+        assert!(!owner.contains(r#"name="consent""#));
+    }
+
+    #[test]
+    fn a_refused_publication_says_why() {
         let refused = screen_body(&recipe(None), Mode::Publish, false, Some("Échec <b>"));
         assert!(refused.contains(r#"<p class="notice error" role="alert">Échec &lt;b&gt;</p>"#));
     }
@@ -736,6 +841,9 @@ mod tests {
         let p = publication("2026-11-02T10:00:00Z", "2026-11-02T10:00:00Z");
         assert_eq!(mode_title(Mode::Update(&p)), "Mettre à jour la publication");
         assert_eq!(mode_title(Mode::Publish), "Publier dans la bibliothèque");
-        assert_eq!(mode_title(Mode::Already), "Publier dans la bibliothèque");
+        assert_eq!(
+            mode_title(Mode::Already { owner: true }),
+            "Publier dans la bibliothèque"
+        );
     }
 }
