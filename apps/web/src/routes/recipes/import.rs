@@ -51,7 +51,8 @@ pub(crate) fn error_text(code: &str) -> &'static str {
 }
 
 /// The create form pre-filled from a draft: one line per ingredient
-/// (quantity, unit, name), one step per step of the page.
+/// (quantity, unit, name), one step per step of the page, and
+/// « Personnes » when the page says how many (#1015).
 pub(crate) fn draft_form(draft: &RecipeDraft) -> RecipeForm {
     let ingredients = draft
         .ingredients
@@ -70,6 +71,7 @@ pub(crate) fn draft_form(draft: &RecipeDraft) -> RecipeForm {
         ingredients,
         steps: draft.steps.clone(),
         source_url: draft.source_url.clone(),
+        servings: draft.servings.map(|n| n.to_string()).unwrap_or_default(),
         ..RecipeForm::default()
     }
 }
@@ -181,6 +183,7 @@ mod tests {
             ],
             steps: vec!["Mélanger.".into(), "Laisser reposer 1 heure.".into()],
             source_url: "https://www.marmiton.org/recettes/crepes.aspx".into(),
+            servings: Some(4),
         }
     }
 
@@ -214,6 +217,40 @@ mod tests {
             form.source_url,
             "https://www.marmiton.org/recettes/crepes.aspx"
         );
+    }
+
+    /// The page's number of people fills « Personnes » (#1015); a page
+    /// that does not say leaves it to the form.
+    #[test]
+    fn the_draft_s_servings_fill_personnes() {
+        let form = draft_form(&draft());
+        assert_eq!(form.servings, "4");
+        assert_eq!(form.servings_was, None, "a new recipe: nothing to rescale");
+        let html = super::super::new::page("", &form, None);
+        let field = html
+            .split("<input")
+            .find(|tag| tag.contains(r#"name="servings""#))
+            .unwrap_or_else(|| panic!("{html}"));
+        assert!(field.contains(r#"value="4""#), "{field}");
+
+        let unsaid = draft_form(&RecipeDraft {
+            servings: None,
+            ..draft()
+        });
+        assert_eq!(unsaid.servings, RecipeForm::default().servings);
+    }
+
+    /// A draft from an API that does not send `servings` still reads.
+    #[test]
+    fn a_draft_without_servings_reads() {
+        let draft: RecipeDraft = serde_json::from_value(serde_json::json!({
+            "name": "Soupe",
+            "ingredients": [],
+            "steps": [],
+            "source_url": "https://e.fr/r",
+        }))
+        .unwrap();
+        assert_eq!(draft.servings, None);
     }
 
     #[test]

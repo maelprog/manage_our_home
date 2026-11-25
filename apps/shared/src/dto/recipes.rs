@@ -230,6 +230,13 @@ pub struct RecipeDraft {
     pub ingredients: Vec<DraftIngredient>,
     pub steps: Vec<String>,
     pub source_url: String,
+    /// The number of people the page says the recipe is for (#1015): its
+    /// schema.org `recipeYield` when it gives a whole number from 1 to
+    /// `validation::recipes::SERVINGS_MAX` that stands alone or counts
+    /// people (« 4 », « 4 personnes », « 6 portions »); `null` otherwise
+    /// (absent, out of range, « 1 tarte »).
+    #[serde(default)]
+    pub servings: Option<i32>,
 }
 
 /// A publication of the recipe library in a list (#906, #910). Mirrors

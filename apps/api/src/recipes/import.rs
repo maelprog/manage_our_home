@@ -152,6 +152,7 @@ fn draft_of(page: &str, source_url: String) -> Option<RecipeDraft> {
             .collect(),
         steps: recipe.steps,
         source_url,
+        servings: recipe.servings,
     })
 }
 
@@ -615,6 +616,26 @@ mod tests {
             (Some(250.0), Some("ml"))
         );
         assert!(!draft.steps.is_empty());
+    }
+
+    /// The draft says how many people the page's recipe is for (#1015),
+    /// whichever extractor read it; prose says nothing.
+    #[test]
+    fn the_draft_carries_the_page_s_servings() {
+        let servings = |page: &str| draft(page).unwrap().servings;
+        assert_eq!(
+            servings(
+                r#"<script type="application/ld+json">{"@type": "Recipe", "name": "Soupe", "recipeYield": "4 portions"}</script>"#
+            ),
+            Some(4)
+        );
+        assert_eq!(
+            servings(
+                r#"<div itemscope itemtype="https://schema.org/Recipe"><h2 itemprop="name">Flan</h2><meta itemprop="recipeYield" content="6 personnes"></div>"#
+            ),
+            Some(6)
+        );
+        assert_eq!(servings(WOOCHIENS), None);
     }
 
     /// JSON-LD first, then microdata, then prose: a page carrying the three

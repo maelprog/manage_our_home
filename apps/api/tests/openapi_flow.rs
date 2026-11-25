@@ -164,6 +164,30 @@ fn the_notification_settings_document_the_agenda_switches() {
     assert!(gone.is_null(), "{gone}");
 }
 
+/// The import's draft documents the number of people the page gives
+/// (#1015): an optional integer, `null` when the page does not say.
+#[test]
+fn the_recipe_draft_documents_its_servings() {
+    let json = serde_json::to_value(openapi(false)).unwrap();
+    let draft = &json["components"]["schemas"]["RecipeDraft"];
+    let servings = &draft["properties"]["servings"];
+    assert!(
+        servings["type"]
+            .as_array()
+            .is_some_and(|t| t.contains(&"integer".into()) && t.contains(&"null".into())),
+        "{servings}"
+    );
+    assert!(
+        servings["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("recipeYield")),
+        "{servings}"
+    );
+    let required: Vec<String> =
+        serde_json::from_value(draft["required"].clone()).unwrap_or_default();
+    assert!(!required.contains(&"servings".to_string()), "{required:?}");
+}
+
 #[sqlx::test]
 async fn on_swagger_ui_is_served_from_the_binary_with_relative_urls(db: PgPool) {
     let router = docs_router(db);
