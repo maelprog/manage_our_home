@@ -677,3 +677,125 @@ test('google-services.json is never versioned, and the APK builds without it', (
   const onCreate = activity.slice(activity.indexOf('protected void onCreate('), activity.indexOf('super.onCreate(savedInstanceState);'));
   assert.match(onCreate, /\n {8}registerPlugin\(PushSupportPlugin\.class\);/);
 });
+
+// -- the cooking timers' alarm (#1017) -----------------------------------------
+
+const timers = () => pushJava('CookTimers');
+const timerMethod = (name) => {
+  const body = timers().match(new RegExp(`static \\w+ ${name}\\([^)]*\\) \\{([\\s\\S]*?)\\n {4}\\}`));
+  assert.ok(body, `CookTimers.${name}`);
+  return body[1];
+};
+
+test('a cooking timer rings on the alarm stream, on a channel of its own', () => {
+  // The ringing's audio: an alarm, heard at the alarm volume.
+  assert.match(timerMethod('alarmAudio'), /\.setUsage\(AudioAttributes\.USAGE_ALARM\)/);
+  // Its channel: neither the reminders' ("default") nor the pushes'.
+  const id = timers().match(/static final String CHANNEL = "([\w-]+)";/);
+  assert.equal(id?.[1], 'minuteurs');
+  assert.notEqual(id[1], pushJava('PushNotices').match(/static final String CHANNEL = "([\w-]+)";/)[1]);
+  const channel = timerMethod('createChannel');
+  assert.match(
+    channel,
+    /new NotificationChannel\(\s*CHANNEL,\s*context\.getString\(R\.string\.cook_timer_channel_name\),\s*NotificationManager\.IMPORTANCE_HIGH\s*\)/,
+  );
+  assert.match(channel, /channel\.setSound\(Settings\.System\.DEFAULT_ALARM_ALERT_URI, alarmAudio\(\)\);/);
+  assert.match(channel, /channel\.enableVibration\(true\);/);
+  assert.match(channel, /manager\.createNotificationChannel\(channel\);/);
+  // The channel exists before the notification; below Android 8, the
+  // notification carries the sound itself, on the alarm stream.
+  const ring = timerMethod('ring');
+  assert.ok(ring.indexOf('createChannel(context, manager);') < ring.indexOf('manager.notify('));
+  assert.match(ring, /new NotificationCompat\.Builder\(context, CHANNEL\)/);
+  assert.match(ring, /\.setCategory\(NotificationCompat\.CATEGORY_ALARM\)/);
+  assert.match(ring, /\.setSound\(Settings\.System\.DEFAULT_ALARM_ALERT_URI, AudioManager\.STREAM_ALARM\)/);
+  // In a loop until it goes.
+  assert.match(ring, /notification\.flags \|= Notification\.FLAG_INSISTENT;/);
+  assert.match(ring, /\.setOngoing\(true\)/);
+  assert.match(ring, /\.setAutoCancel\(false\)/);
+  // The recipe's name and « Minuteur terminé » (CookTimerPlanTest).
+  assert.match(ring, /\.setContentTitle\(CookTimerPlan\.title\(title\)\)/);
+  assert.match(ring, /\.setContentText\(CookTimerPlan\.text\(text\)\)/);
+  assert.match(pushJava('CookTimerPlan'), /static final String OVER = "Minuteur terminé";/);
+  const strings = Object.fromEntries(
+    [...uncommented(read(`${res}/values/strings.xml`)).matchAll(/<string name="(\w+)">([^<]*)<\/string>/g)].map(
+      ([, name, text]) => [name, text],
+    ),
+  );
+  assert.equal(strings.cook_timer_channel_name, 'Minuteurs de cuisine');
+  assert.ok(strings.cook_timer_channel_description, 'a description of the channel');
+  assert.equal(strings.cook_timer_stop, 'Arrêter');
+});
+
+test('« Arrêter » stops the ringing without opening the app', () => {
+  const ring = timerMethod('ring');
+  // A broadcast to the app's receiver, not an activity.
+  assert.match(
+    ring,
+    /PendingIntent stop = PendingIntent\.getBroadcast\(\s*context,\s*0,\s*new Intent\(context, CookTimerReceiver\.class\)\.setAction\(ACTION_STOP\)\.setData\(timer\(id\)\)/,
+  );
+  assert.match(ring, /\.addAction\(0, context\.getString\(R\.string\.cook_timer_stop\), stop\)/);
+  const receiver = pushJava('CookTimerReceiver');
+  assert.match(receiver, /if \(CookTimers\.ACTION_STOP\.equals\(intent\.getAction\(\)\)\) \{\s*CookTimers\.stop\(context, id\);/);
+  assert.doesNotMatch(receiver, /startActivity/);
+  // Stopping removes the very notification that rings: no ringing is left.
+  assert.match(ring, /manager\.notify\(TAG_PREFIX \+ id, NOTIFICATION_ID, notification\);/);
+  assert.match(timerMethod('stop'), /manager\.cancel\(TAG_PREFIX \+ id, NOTIFICATION_ID\);/);
+});
+
+test('a cooking timer opens full screen when Android allows it, and a notification to touch otherwise', () => {
+  const ring = timerMethod('ring');
+  assert.match(
+    ring,
+    /CookTimerPlan\.fullScreen\(\s*Build\.VERSION\.SDK_INT,\s*Build\.VERSION\.SDK_INT >= Build\.VERSION_CODES\.UPSIDE_DOWN_CAKE && manager\.canUseFullScreenIntent\(\)\s*\)/,
+  );
+  assert.match(ring, /if \(fullScreen\) \{\s*builder\.setFullScreenIntent\(open, true\);\s*\}/);
+  assert.match(ring, /\.setContentIntent\(open\)/);
+  assert.match(ring, /\.setPriority\(NotificationCompat\.PRIORITY_MAX\)/);
+});
+
+test('a cooking timer is an exact alarm when Android gives one, an inexact one otherwise', () => {
+  const schedule = timerMethod('schedule');
+  assert.match(
+    schedule,
+    /CookTimerPlan\.exact\(\s*Build\.VERSION\.SDK_INT,\s*Build\.VERSION\.SDK_INT >= Build\.VERSION_CODES\.S && alarms\.canScheduleExactAlarms\(\)\s*\)/,
+  );
+  assert.match(schedule, /if \(exact\) \{\s*AlarmManagerCompat\.setAlarmClock\(/);
+  assert.match(schedule, /\} else \{\s*AlarmManagerCompat\.setAndAllowWhileIdle\(alarms, AlarmManager\.RTC_WAKEUP, at, operation\);/);
+});
+
+test('the CookTimers plugin is registered on every page', () => {
+  const plugin = pushJava('CookTimersPlugin');
+  assert.match(plugin, /@CapacitorPlugin\(name = "CookTimers"\)/);
+  for (const method of ['schedule', 'cancel', 'stop']) {
+    assert.match(plugin, new RegExp(`@PluginMethod\\s+public void ${method}\\(PluginCall call\\)`), method);
+  }
+  const activity = pushJava('MainActivity');
+  const onCreate = activity.slice(activity.indexOf('protected void onCreate('), activity.indexOf('super.onCreate(savedInstanceState);'));
+  assert.match(onCreate, /\n {8}registerPlugin\(CookTimersPlugin\.class\);/);
+  // A touch opens a page of the site open, checked again: the activity is exported.
+  assert.match(activity, /CookTimerPlan\.sitePath\(intent\.getStringExtra\(CookTimers\.EXTRA_PATH\), origin\)/);
+});
+
+test('the manifest lets a timer open full screen, and only the app reach its receiver', () => {
+  const manifest = read('android/app/src/main/AndroidManifest.xml');
+  const permissions = elements(manifest, 'uses-permission').map((p) => p['android:name']);
+  assert.ok(permissions.includes('android.permission.USE_FULL_SCREEN_INTENT'));
+  assert.ok(permissions.includes('android.permission.VIBRATE'));
+  // Lost at a restart of the phone, as the README says: nothing listens to it.
+  assert.ok(!permissions.includes('android.permission.RECEIVE_BOOT_COMPLETED'));
+  assert.deepEqual(
+    elements(manifest, 'receiver').filter((r) => r['android:name'] === '.CookTimerReceiver'),
+    [{ 'android:name': '.CookTimerReceiver', 'android:exported': 'false' }],
+  );
+});
+
+test('the JUnit tests of the timers run with every debug build, the CI one included', () => {
+  const gradle = read('android/app/build.gradle');
+  assert.match(gradle, /testImplementation "junit:junit:\$junitVersion"/);
+  assert.match(
+    gradle,
+    /if \(buildType == 'debug'\) \{\s*variant\.assembleProvider\.configure \{ dependsOn "test\$\{variant\.name\.capitalize\(\)\}UnitTest" \}/,
+  );
+  assert.ok(existsSync(`${mobile}/android/app/src/test/java/fr/watallo/mhome/CookTimerPlanTest.java`));
+});

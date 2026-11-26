@@ -71,6 +71,15 @@
         <meta-data
             android:name="firebase_messaging_auto_init_enabled"
             android:value="false" />
+
+        <!--
+          The cooking timers' alarm (#1017): the end of a timer, and its
+          « Arrêter », with no page and the app killed (CookTimers). Not
+          exported: only the app's own pending intents reach it.
+        -->
+        <receiver
+            android:name=".CookTimerReceiver"
+            android:exported="false" />
     </application>
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -107,6 +116,17 @@
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!--
+      The cooking timers (#1017, CookTimers), whose alarms use the two
+      permissions above: a timer that ends opens full screen, granted at
+      install below Android 14; from it on, Android may refuse it
+      (NotificationManager.canUseFullScreenIntent()), and the timer is a
+      high-priority notification to touch. The Play Store reserves it to
+      alarm and calling apps: publishing there may ask why. VIBRATE: the
+      timer's notification vibrates, below Android 8 too.
+    -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!--
       Declared by the Social Login plugin's own manifest (#670):
       AccountManager's permission, which Android stopped using at API 23,

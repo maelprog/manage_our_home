@@ -13,6 +13,10 @@
     <!-- The channel of the server's pushes (#1004, PushNotices), apart from the reminders'. -->
     <string name="push_channel_name">Agenda, budget et stocks</string>
     <string name="push_channel_description">Les changements de l\'agenda faits par un autre membre, les alertes de budget et les produits bientôt périmés.</string>
+    <!-- The channel of the cooking timers' alarm (#1017, CookTimers), and its button. -->
+    <string name="cook_timer_channel_name">Minuteurs de cuisine</string>
+    <string name="cook_timer_channel_description">La sonnerie d\'un minuteur de cuisine à son terme, sur le volume des alarmes, jusqu\'à « Arrêter ».</string>
+    <string name="cook_timer_stop">Arrêter</string>
     <!-- The camera refused to the photo of a barcode (#802, MainActivity.CameraChromeClient). -->
     <string name="camera_refused">L\'appareil photo n\'est pas autorisé. Pour photographier le code, autorisez-le dans les réglages d\'Android, ou tapez les chiffres du code-barres.</string>
 </resources>

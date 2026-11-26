@@ -44,7 +44,7 @@ import org.json.JSONObject;
 /**
  * The app's one screen: Capacitor's WebView on the site's origin.
  *
- * <p>What it changes in Capacitor's behaviour, seven times.
+ * <p>What it changes in Capacitor's behaviour, eight times.
  *
  * <p>At the first launch (#737), while no choice is stored, it opens no
  * site but the APK's own {@code www/choix-du-site.html}, served by
@@ -106,6 +106,9 @@ import org.json.JSONObject;
  * <p>A field that asks for a photo while the camera is refused says so
  * ({@link CameraChromeClient}, #802), where Capacitor leaves the page as it
  * was.
+ *
+ * <p>A cooking timer's notification (#1017, {@link CookTimers}) opens the
+ * page the timer names, on the site open ({@link #openTimerPage}).
  */
 public class MainActivity extends BridgeActivity {
 
@@ -173,8 +176,31 @@ public class MainActivity extends BridgeActivity {
         // Whether Firebase is there (#1004), for the site's pages and the
         // choice page alike.
         registerPlugin(PushSupportPlugin.class);
+        // The cooking timers' alarm (#1017), for the site's pages.
+        registerPlugin(CookTimersPlugin.class);
         super.onCreate(savedInstanceState);
         addChangeSiteShortcut();
+        if (savedInstanceState == null) {
+            openTimerPage(getIntent());
+        }
+    }
+
+    /**
+     * A cooking timer's notification, touched or full screen (#1017):
+     * the page it names ({@link CookTimers#EXTRA_PATH}), on the site open.
+     * Checked again here, the activity being exported: a path of that
+     * site, as a link of its own would open, and nothing else; without
+     * one, or on the choice page, the page stays as it is.
+     */
+    private void openTimerPage(Intent intent) {
+        if (choice != null || intent == null || !CookTimers.ACTION_OPEN.equals(intent.getAction())) {
+            return;
+        }
+        String origin = CookTimers.origin(bridge.getAppUrl());
+        String path = CookTimerPlan.sitePath(intent.getStringExtra(CookTimers.EXTRA_PATH), origin);
+        if (path != null) {
+            bridge.getWebView().loadUrl(origin + path);
+        }
     }
 
     /** Lets the launch screen go, at the first page or at the time limit. */
@@ -195,6 +221,7 @@ public class MainActivity extends BridgeActivity {
         if (intent != null && ACTION_CHANGE_SITE.equals(intent.getAction())) {
             changeSite();
         }
+        openTimerPage(intent);
     }
 
     /** Restarts the activity on {@link #CHOICE_PAGE}, unless it is shown already. */
