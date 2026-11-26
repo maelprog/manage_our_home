@@ -915,6 +915,12 @@ mod tests {
         assert!(!list_follows(&["Pâtés"], &["pâtes"]));
     }
 
+    #[test]
+    fn the_list_follows_a_recipe_by_another_name_of_the_same_tag() {
+        // Both are the taxonomy's en:parmigiano-reggiano.
+        assert!(list_follows(&["Parmigiano Reggiano"], &["parmesan"]));
+    }
+
     // -- grocery_lines_to_drop (#815) ---------------------------------------
 
     #[test]
@@ -954,6 +960,17 @@ mod tests {
                 &["tomme fermiere", "pâtes"]
             ),
             [b]
+        );
+    }
+
+    #[test]
+    fn keeps_a_line_of_another_name_of_the_same_tag() {
+        // Both are the taxonomy's en:parmigiano-reggiano, as the generation
+        // merges them (#902).
+        let a = Uuid::from_u128(1);
+        assert_eq!(
+            grocery_lines_to_drop(&[(a, "Parmigiano Reggiano")], &["parmesan"]),
+            Vec::<Uuid>::new()
         );
     }
 
