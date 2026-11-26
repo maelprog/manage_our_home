@@ -467,12 +467,13 @@ mod tests {
         assert_eq!(
             ingredients,
             [
-                (Some(2.0), None, "Tortilla (maïs)"),
-                (Some(1.0), None, "Poulet (escalope)"),
+                // The bracket after the name is a note, left out (#1022).
+                (Some(2.0), None, "Tortilla"),
+                (Some(1.0), None, "Poulet"),
                 (Some(0.5), None, "Oignon jaune"),
                 (Some(1.0), None, "Fromage triangle"),
-                (Some(65.0), Some("g"), "Sauce tomate (basilic)"),
-                (Some(20.0), Some("g"), "Mozzarella (râpée)"),
+                (Some(65.0), Some("g"), "Sauce tomate"),
+                (Some(20.0), Some("g"), "Mozzarella"),
                 (Some(0.25), Some("c. à café"), "Mélange épices mexicaines"),
             ]
         );

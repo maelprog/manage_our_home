@@ -11,7 +11,9 @@ use manage_our_home_shared::dto::recipes::DraftIngredient;
 /// `line` as quantity, unit and name: a quantity first (`200`, `1,5`,
 /// `0.5`, `1/2`, `1 1/2`, `½`, `1½`, `un`, `une`), then an optional unit
 /// from `UNITS` or a spoon (`c. à soupe`, `c. à café`), then an optional
-/// `de` / `d'`, then the name. Anything else — no quantity, `un peu`, a range
+/// `de` / `d'`, then the name — without the note that may follow it
+/// after a comma, a semicolon or a bracket (`2 gousses d'ail (hachées)`
+/// names `ail`, #1022). Anything else — no quantity, `un peu`, a range
 /// (`2 à 3`, `2-3`), a duration (`45 minutes`, `2 h`), nothing left for
 /// the name — is kept whole as the name.
 ///
@@ -48,8 +50,8 @@ fn understood(line: &str) -> Option<DraftIngredient> {
     let name = ["de ", "d'", "d’"]
         .iter()
         .find_map(|of| strip_prefix_ci(rest, of))
-        .unwrap_or(rest)
-        .trim();
+        .unwrap_or(rest);
+    let name = without_note(name).trim();
     if name.is_empty() {
         return None;
     }
@@ -58,6 +60,20 @@ fn understood(line: &str) -> Option<DraftIngredient> {
         unit,
         name: name.to_string(),
     })
+}
+
+/// `name` without the note that follows it (#1022): from a comma, a
+/// semicolon or an opening bracket that starts a word — a bracket glued to
+/// a word marks a plural (`Saucisse(s) fumée(s)`), not a note.
+fn without_note(name: &str) -> &str {
+    let mut previous = ' ';
+    for (at, c) in name.char_indices() {
+        if c == ',' || c == ';' || (c == '(' && previous.is_whitespace()) {
+            return &name[..at];
+        }
+        previous = c;
+    }
+    name
 }
 
 /// `nom : mesure [note]`, or `None` (see `parse_line`).
@@ -575,6 +591,46 @@ mod tests {
         ] {
             is(line, None, None, line.trim());
         }
+    }
+
+    /// #1022: in a line that starts with its quantity, the note after the
+    /// name is left out of it, as in `name_first`.
+    #[test]
+    fn a_note_after_the_name_is_left_out_of_it() {
+        is(
+            "400 g de saucisses fumées, coupées en rondelles",
+            Some(400.0),
+            Some("g"),
+            "saucisses fumées",
+        );
+        is(
+            "2 gousses d'ail (hachées)",
+            Some(2.0),
+            Some("gousse"),
+            "ail",
+        );
+        is(
+            "1 boîte de tomates (400 g)",
+            Some(1.0),
+            Some("boîte"),
+            "tomates",
+        );
+        is("3 oignons ; émincés", Some(3.0), None, "oignons");
+        is("3 oignons; émincés", Some(3.0), None, "oignons");
+        is("200 g de beurre,mou", Some(200.0), Some("g"), "beurre");
+        // A bracket glued to a word marks a plural, not a note.
+        is(
+            "6 Saucisse(s) fumée(s), coupées",
+            Some(6.0),
+            None,
+            "Saucisse(s) fumée(s)",
+        );
+        // Nothing left for the name once the note is out: kept whole.
+        for line in ["200 g (environ)", "200 g, environ", "3 ; émincés"] {
+            is(line, None, None, line);
+        }
+        // No quantity: nothing changes.
+        is("sel, poivre", None, None, "sel, poivre");
     }
 
     #[test]
