@@ -17,10 +17,13 @@
 //! Two names are one ingredient (#902) when they read the same once
 //! trimmed, whatever the case, or when the taxonomy maps both to one tag
 //! (`Taxonomy::canonical_ingredient`: « parmesan » and « Parmigiano
-//! Reggiano »). Names without a tag are never matched by a word they share.
-//! Two different names of one tag are still two lines when both carry a
-//! quantity and their units differ: there is no conversion, so neither
-//! line's quantity would stand for the other's.
+//! Reggiano »), or, when one of them has no tag, when they read the same
+//! once normalized without accents (`same_ingredient_name`, #1023:
+//! « tomme fermiere » and « Tommes fermières »). Names without a tag are
+//! never matched by a word they share. Two different names of one tag, or
+//! of one normalized name, are still two lines when both carry a quantity
+//! and their units differ: there is no conversion, so neither line's
+//! quantity would stand for the other's.
 
 use manage_our_home_shared::validation::grocery_list::normalize_unit;
 // Shared with the recipe edit form (#845), which scales the quantities of a
@@ -110,7 +113,8 @@ fn units_conflict(a: (Option<f64>, Option<&str>), b: (Option<f64>, Option<&str>)
 
 /// Whether a line already made and an ingredient of the two keys make one
 /// line (#902): the same name always does, as before, whatever the units;
-/// two names of one tag do when their units do not conflict.
+/// two names of one tag, or of one normalized name when one has no tag
+/// (#1023), do when their units do not conflict.
 fn one_line(
     a: &IngredientKey,
     a_qty: (Option<f64>, Option<&str>),
@@ -122,7 +126,8 @@ fn one_line(
 
 /// The lines the planned ingredients make, in the order of their first
 /// appearance. Names are matched trimmed and case-insensitively, as
-/// everywhere else in the generation, or by their tag (#902): an
+/// everywhere else in the generation, by their tag (#902), or normalized
+/// when one has no tag (#1023): an
 /// ingredient goes to the first line it makes one line with
 /// (`one_line`), preferring one whose units do not conflict with its own,
 /// so that its quantity can add up.

@@ -482,8 +482,9 @@ struct LowStockRow {
 /// selection's number of people, and an ingredient several planned recipes
 /// share makes one line (`planned::plan_lines`). Each recipe line names the
 /// first recipe that calls for it in `source_recipe_id`. A recipe line is
-/// matched against existing rows by name (case-insensitive, trimmed) or by
-/// the tag the taxonomy maps its name to (#902); a low-stock line by name
+/// matched against existing rows by name (case-insensitive, trimmed), by
+/// the tag the taxonomy maps its name to (#902), or, when one side has no
+/// tag, by the name normalized without accents (#1023); a low-stock line by name
 /// only — an item already present and unchecked is not duplicated; a
 /// recipe line of the same unit that
 /// counts less than the planned recipes now call for is raised to it, never
