@@ -1,6 +1,6 @@
 //! Recipes screens (front epic F5, issue #20): the family recipe list with a
-//! ranked suggestion view, manual create, per-recipe detail with a
-//! log-a-meal action, and edit/delete behind a permission bar. Same SSR
+//! ranked suggestion view, manual create, per-recipe detail, and
+//! edit/delete behind a permission bar. Same SSR
 //! pattern as `routes/stocks/*` and `routes/agenda/*` — plain
 //! `<form method=post>` submissions, per-page error tables mapping
 //! `apps/api/src/recipes/`'s exact status/error codes to French copy, PRG
@@ -9,11 +9,12 @@
 //! grocery-list-hook decisions) in `docs/front-epic-5-recipes.md`.
 //!
 //! Permission bar (mirrors `apps/api/src/recipes/mod.rs::can_modify`): any
-//! family member may create/read a recipe or log a meal, so those controls
-//! render for everyone; the edit link and delete button render only for the
-//! recipe's creator or a member whose role meets the family's `recipes_edit`
-//! threshold (#866, admin/owner by default). The backend stays the authority
-//! (a forged edit/delete/log is still 403'd, mapped defensively here).
+//! family member may create/read a recipe or mark a planned one done, so
+//! those controls render for everyone; the edit link and delete button
+//! render only for the recipe's creator or a member whose role meets the
+//! family's `recipes_edit` threshold (#866, admin/owner by default). The
+//! backend stays the authority (a forged edit/delete is still 403'd, mapped
+//! defensively here).
 
 pub mod allergy;
 pub mod cook;
@@ -107,7 +108,7 @@ pub(crate) async fn reader_context(
 /// `recipes_edit` threshold (#866, `admin` by default), may edit or delete
 /// it. Used to decide
 /// whether to render the edit/delete controls (the backend still 403s a
-/// forged request). Create/read/log-a-meal are *not* gated by this — they're
+/// forged request). Create/read/« Faite » are *not* gated by this — they're
 /// open to any member.
 pub(crate) fn can_modify(role: &str, min_role: &str, is_creator: bool) -> bool {
     is_creator || role_meets(role, min_role)

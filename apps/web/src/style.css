@@ -1457,6 +1457,17 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 /* A recipe another member published (#991): its card right under the
    notice, whose own margin spaces them, as the mockup draws it. */
 .already { margin-top: 0; }
+/* « Faite » again at the foot of a planned recipe (#1021), under « Dernier
+   repas cuisiné »: a card ringed in the accent, its question in 600, then
+   « Faite » and « Abandonner », the width of the card one under the other
+   on a phone, sharing the line on a PC. */
+.done-foot { border: 2px solid var(--accent); }
+.done-foot > p { margin: 0 0 var(--s3); font-weight: 600; }
+.done-foot .actions { flex-direction: column; align-items: stretch; margin: 0; }
+@media (min-width: 861px) {
+  .done-foot .actions { flex-direction: row; }
+  .done-foot .btn { flex: 1; }
+}
 /* -- The budget (#533) -------------------------------------------------------
    A category's colour is a named key (`validation::budget::CATEGORY_COLORS`)
    that lands on `color`: the fill of its bar (`progress`, currentColor) and
