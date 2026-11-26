@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,6 +15,7 @@ import android.webkit.ValueCallback;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.view.WindowManager;
 import android.webkit.WebView;
 import android.widget.Toast;
 import androidx.activity.OnBackPressedCallback;
@@ -44,7 +46,7 @@ import org.json.JSONObject;
 /**
  * The app's one screen: Capacitor's WebView on the site's origin.
  *
- * <p>What it changes in Capacitor's behaviour, seven times.
+ * <p>What it changes in Capacitor's behaviour, eight times.
  *
  * <p>At the first launch (#737), while no choice is stored, it opens no
  * site but the APK's own {@code www/choix-du-site.html}, served by
@@ -106,6 +108,10 @@ import org.json.JSONObject;
  * <p>A field that asks for a photo while the camera is refused says so
  * ({@link CameraChromeClient}, #802), where Capacitor leaves the page as it
  * was.
+ *
+ * <p>A cooking timer's notification (#1017, {@link CookTimers}) opens the
+ * page the timer names, on the site open ({@link #openTimerPage}), over
+ * the lock screen while a timer rings.
  */
 public class MainActivity extends BridgeActivity {
 
@@ -173,8 +179,59 @@ public class MainActivity extends BridgeActivity {
         // Whether Firebase is there (#1004), for the site's pages and the
         // choice page alike.
         registerPlugin(PushSupportPlugin.class);
+        // The cooking timers' alarm (#1017), for the site's pages.
+        registerPlugin(CookTimersPlugin.class);
         super.onCreate(savedInstanceState);
         addChangeSiteShortcut();
+        if (savedInstanceState == null) {
+            openTimerPage(getIntent());
+        }
+    }
+
+    /**
+     * A cooking timer's notification, touched or full screen (#1017):
+     * the page it names ({@link CookTimers#EXTRA_PATH}), on the site open.
+     * Checked again here, the activity being exported: a path of that
+     * site, as a link of its own would open, and nothing else; without
+     * one, or on the choice page, the page stays as it is.
+     *
+     * <p>While a timer rings ({@link CookTimers#ringing}), the activity
+     * shows over the lock screen and turns the screen on (decision of
+     * 2026-11-26): the recipe is read without unlocking. Only then, as any
+     * app may send this intent; and until the activity stops
+     * ({@link #onStop}): the phone locked again, the site stays behind the
+     * lock.
+     */
+    private void openTimerPage(Intent intent) {
+        if (choice != null || intent == null || !CookTimers.ACTION_OPEN.equals(intent.getAction())) {
+            return;
+        }
+        if (CookTimers.ringing(this)) {
+            showOverLockScreen(true);
+        }
+        String origin = CookTimers.origin(bridge.getAppUrl());
+        String path = CookTimerPlan.sitePath(intent.getStringExtra(CookTimers.EXTRA_PATH), origin);
+        if (path != null) {
+            bridge.getWebView().loadUrl(origin + path);
+        }
+    }
+
+    @Override
+    public void onStop() {
+        showOverLockScreen(false);
+        super.onStop();
+    }
+
+    /** Whether the activity shows over the lock screen, and turns the screen on. */
+    private void showOverLockScreen(boolean show) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(show);
+            setTurnScreenOn(show);
+        } else if (show) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
     }
 
     /** Lets the launch screen go, at the first page or at the time limit. */
@@ -195,6 +252,7 @@ public class MainActivity extends BridgeActivity {
         if (intent != null && ACTION_CHANGE_SITE.equals(intent.getAction())) {
             changeSite();
         }
+        openTimerPage(intent);
     }
 
     /** Restarts the activity on {@link #CHOICE_PAGE}, unless it is shown already. */

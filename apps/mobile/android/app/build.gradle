@@ -185,6 +185,12 @@ android.applicationVariants.all { variant ->
         }
         variant.preBuildProvider.configure { dependsOn releaseCheck }
     }
+    // The JUnit tests of src/test (#1017, CookTimerPlanTest) run with
+    // every debug build, the CI's `assembleStagingDebug` among them: a
+    // failure fails the build.
+    if (buildType == 'debug') {
+        variant.assembleProvider.configure { dependsOn "test${variant.name.capitalize()}UnitTest" }
+    }
 }
 
 repositories {
@@ -204,6 +210,9 @@ dependencies {
     // Push Notifications plugin's Firebase, at the version it takes
     // (variables.gradle).
     implementation "com.google.firebase:firebase-messaging:$firebaseMessagingVersion"
+    // The plain JUnit tests of src/test (#1017), at Capacitor's template
+    // version (variables.gradle).
+    testImplementation "junit:junit:$junitVersion"
 }
 
 apply from: 'capacitor.build.gradle'

@@ -19,6 +19,12 @@ du site.
 | `scripts/app-pushes.test.mjs` | les tests de la partie de ce script qui enregistre le téléphone pour les notifications poussées (#1004) |
 | `android/app/google-services.json` | le projet Firebase des notifications poussées : **jamais versionné** (« Notifications poussées : le projet Firebase ») |
 | `scripts/site-address.test.mjs`, `scripts/site-choice.test.mjs` | les tests de `www/site-address.js` et de `www/site-choice.js` (`npm test`) |
+| `android/app/src/main/java/fr/watallo/mhome/CookTimersPlugin.java` | le plugin `CookTimers` des minuteurs de cuisine : `schedule`, `cancel`, `stop` (#1017, « Minuteurs de cuisine ») |
+| `android/app/src/main/java/fr/watallo/mhome/CookTimers.java` | l'alarme d'un minuteur, ses canaux `minuteurs` et `minuteurs-repli`, sa notification et la sonnerie de repli |
+| `android/app/src/main/java/fr/watallo/mhome/CookTimerReceiver.java` | ce qui reçoit la fin d'un minuteur et son « Arrêter », l'application tuée |
+| `android/app/src/main/java/fr/watallo/mhome/CookTimerRinging.java` | la sonnerie en boucle jusqu'à « Arrêter », un service au premier plan |
+| `android/app/src/main/java/fr/watallo/mhome/CookTimerPlan.java` | les décisions sans Android : l'heure de la sonnerie, alarme exacte ou non, plein écran ou non, les textes, la page ouverte |
+| `android/app/src/test/java/fr/watallo/mhome/CookTimerPlanTest.java` | ses tests JUnit, lancés par chaque build de débogage (`./gradlew assembleStagingDebug`, le job `mobile` de la CI compris) |
 
 ## Ce que fait l'application
 
@@ -136,8 +142,9 @@ du site.
   l'agenda. La déconnexion les retire tous. La permission des
   notifications (Android 13+) et les alarmes exactes (Android 14+) se
   demandent sur « Mon compte › Notifications de rappel » ; sans alarmes
-  exactes, les rappels partent quand même, avec quelques minutes de retard
-  possibles. Un événement modifié pendant que le téléphone est hors ligne
+  exactes, les rappels partent quand même, mais Android peut les retarder
+  des trois quarts du délai qui reste, une heure au plus (Android 12 et
+  suivants), et davantage en veille profonde. Un événement modifié pendant que le téléphone est hors ligne
   garde son rappel à l'ancienne heure jusqu'à la prochaine ouverture.
 - **Les notifications poussées par le serveur** (#1004) : les changements
   de l'agenda faits par un autre membre, les alertes de budget et le
@@ -173,6 +180,8 @@ du site.
   page, qui n'appelle alors pas le plugin Push Notifications (il fermerait
   l'application). La configuration : « Notifications poussées : le
   projet Firebase » plus bas.
+- **Les minuteurs de cuisine, en alarme** (#1017) : « Minuteurs de
+  cuisine » plus bas.
 
 L'APK signé que les familles installent est publié en release GitHub
 (#666) : « Publier un APK signé » et « Installer l'application
@@ -249,7 +258,7 @@ cd android
 À voir :
 
 - `npm ci` finit par `found 0 vulnerabilities` ;
-- `npm test` affiche `ℹ pass 125` et `ℹ fail 0` ;
+- `npm test` affiche `ℹ pass 142` et `ℹ fail 0` ;
 - `npx cap sync android` finit par `✔ update android` et `[info] Sync
   finished` ; il écrit la configuration du staging dans
   `android/app/src/main/assets/capacitor.config.json` (`"url":
@@ -496,6 +505,135 @@ des applications. À l'ouverture :
 
     Sans `google-services.json`, rien de cela : aucun appel à
     `/account/notifications/fcm-token`, et l'application fonctionne.
+
+## Minuteurs de cuisine (#1017)
+
+Dans un navigateur, le minuteur de la fiche recette sonne par un bip de la
+page (`apps/web/src/enhance.js`), sur le volume des médias, et seulement
+tant que la page est ouverte. L'application confie le minuteur à Android :
+il sonne à son heure, l'application fermée ou tuée, sur le volume des
+**alarmes**, jusqu'à « Arrêter ». Le branchement côté page (appeler le
+plugin au lancement d'un minuteur) est une autre issue : ce paquet n'en
+fournit que le plugin.
+
+- **Le plugin `CookTimers`** (`CookTimersPlugin.java`), enregistré sur
+  toutes les pages, appelé par `window.Capacitor.Plugins.CookTimers` :
+  - `schedule({ id, endAt, title, text, url })` : le minuteur `id` (1 à
+    64 lettres, chiffres, `_` ou `-`) sonne à `endAt` (millisecondes
+    depuis l'époque), à la place d'un précédent de même `id`. `title` :
+    le nom de la recette ; `text` : facultatif, ajouté après « Minuteur
+    terminé » ; `url` : la page qu'ouvre un toucher, un chemin ou une
+    adresse du site ouvert (une autre est refusée). Rend `{ scheduled,
+    exact, notifications }` : `scheduled` faux pour un minuteur terminé
+    depuis plus d'une minute (rien ne sonne ; un minuteur terminé depuis
+    moins sonne aussitôt) ; `exact` faux sans alarmes exactes (la
+    sonnerie est alors celle de repli, plus bas) ; `notifications` faux
+    quand les notifications sont refusées à l'application : rien ne sonne
+    alors, une sonnerie sans sa notification ni son « Arrêter » ne
+    s'arrêterait pas.
+  - `cancel({ id })` : le minuteur ne sonnera pas, ou cesse de sonner.
+  - `stop()` : tous les minuteurs qui sonnent se taisent.
+- **L'alarme.** Une alarme exacte (« réveil » d'Android, que la barre
+  d'état signale) quand Android la donne : toujours avant Android 12,
+  ensuite si « Alarmes et rappels » est accordé (« Mon compte ›
+  Notifications de rappel », comme pour les rappels). Sinon une alarme
+  inexacte : Android peut la retarder des trois quarts du délai qui
+  reste, une heure au plus (Android 12 et suivants), et davantage en
+  veille profonde ; un minuteur de 20 minutes peut sonner jusqu'à
+  15 minutes après son terme.
+- **La sonnerie** (`CookTimerRinging.java`, `CookTimerReceiver.java`) :
+  à l'échéance, un service au premier plan joue la sonnerie d'alarme du
+  téléphone **en boucle** sur le flux **alarme**
+  (`AudioAttributes.USAGE_ALARM` : au volume des alarmes, entendue média
+  coupé), et vibre, **jusqu'à « Arrêter »** : ni l'ouverture du volet des
+  notifications ni un toucher ne la coupent. Elle sonne l'application
+  tuée. Sa notification est sur un canal à part, « Minuteurs de cuisine »
+  (`minuteurs`, importance haute, sans son propre : c'est le service qui
+  sonne), catégorie alarme. Plusieurs minuteurs terminés sonnent d'une
+  seule sonnerie, chacun avec sa notification ; la sonnerie cesse au
+  dernier « Arrêter ». Balayée (Android 14 le permet), une notification
+  revient tant que son minuteur sonne.
+- **La sonnerie de repli, sans alarmes exactes.** À partir d'Android 12,
+  Android ne lance un service au premier plan depuis l'arrière-plan que
+  pour une alarme exacte. Pour une alarme inexacte, l'application en
+  arrière-plan, le minuteur sonne donc par sa seule notification, sur un
+  second canal, « Minuteurs de cuisine (sans alarme exacte) »
+  (`minuteurs-repli`) : même sonnerie d'alarme et même vibration,
+  répétées tant que la notification est là (notification « insistante »),
+  mais **Android la fait taire dès qu'on ouvre le volet des
+  notifications**, téléphone déverrouillé, et, à partir d'Android 14, un
+  balayage la retire. La notification et son « Arrêter » restent après
+  l'ouverture du volet. Pour une sonnerie continue, accorder « Alarmes
+  et rappels » (« Mon compte › Notifications de rappel »). Le son et la
+  vibration des deux canaux se changent dans les réglages d'Android, comme
+  ceux de tout canal.
+- **Ce qu'elle montre** : le nom de la recette et « Minuteur terminé »,
+  **écran verrouillé compris** (décision du 2026-11-25). Elle s'ouvre en
+  plein écran quand Android le permet (permission
+  `USE_FULL_SCREEN_INTENT`, que le Play Store réserve aux applications
+  d'alarme et d'appel : une publication là-bas peut demander pourquoi) ;
+  à partir d'Android 14, si elle n'est pas accordée, c'est une
+  notification prioritaire à toucher, sans erreur. Le plein écran et le
+  toucher ouvrent l'application sur la page du minuteur, sur le site
+  ouvert, **par-dessus l'écran verrouillé** et en allumant l'écran tant
+  qu'un minuteur sonne (décision du 2026-11-26) : la recette se lit sans
+  déverrouiller. Pendant ce temps, le site et sa session sont accessibles
+  sans déverrouillage ; dès que l'application passe à l'arrière-plan ou
+  que l'écran s'éteint, elle repasse derrière le verrouillage.
+- **L'arrêt** : « Arrêter » coupe la sonnerie sans ouvrir l'application,
+  et retire la notification ; rien ne sonne de nouveau sans nouvelle
+  alarme. Un toucher ne la retire pas.
+- **Un redémarrage du téléphone perd les minuteurs en attente**, comme un
+  arrêt forcé de l'application (Réglages › Applications › Forcer
+  l'arrêt) : l'application ne garde rien sur le téléphone, ni recette ni
+  heure, et ne se relance pas au démarrage. Un minuteur de cuisine dure
+  quelques minutes ; le reprogrammer revient à la page, qui connaît son
+  échéance.
+
+Les décisions sans Android (heure de sonnerie, alarme exacte ou non, plein
+écran ou non, textes, page ouverte) sont dans `CookTimerPlan.java` et
+testées par JUnit (`src/test`), que chaque build de débogage lance :
+`./gradlew assembleStagingDebug` échoue si un test échoue. `npm test`
+contrôle le reste dans les sources : flux alarme, canaux, service au
+premier plan, repli, plein écran, écran verrouillé, « Arrêter », plugin
+enregistré, permissions déclarées.
+
+### Contrôler sur le téléphone
+
+APK de débogage installé, connecté au site, notifications de MHome
+autorisées. Dans `chrome://inspect` (étape 7 du guide) :
+
+```js
+await Capacitor.Plugins.CookTimers.schedule({ id: 'essai', endAt: Date.now() + 60_000, title: 'Pâtes à la carbonara', url: '/' })
+// { scheduled: true, exact: true|false, notifications: true }
+```
+
+1. « Alarmes et rappels » accordé (`exact: true`). Fermer l'application
+   (balayer depuis les applications récentes), puis la tuer :
+   `adb shell am kill fr.watallo.mhome.staging` (pas `force-stop`, qui
+   annule les alarmes). Couper le son des médias, laisser le volume des
+   alarmes, et verrouiller le téléphone.
+2. Une minute après : l'écran s'allume, la page du minuteur (`/`)
+   s'affiche par-dessus l'écran verrouillé si Android permet le plein
+   écran, sinon la notification « Pâtes à la carbonara » / « Minuteur
+   terminé » avec « Arrêter » ; la sonnerie d'alarme et la vibration, en
+   boucle. Réglages › Applications › MHome › Notifications : son canal
+   est « Minuteurs de cuisine ».
+3. Déverrouiller, ouvrir le volet des notifications, attendre : la
+   sonnerie continue. Toucher la notification : l'application s'ouvre sur
+   `/`, la sonnerie continue.
+4. « Arrêter » : le son et la vibration cessent, la notification part,
+   l'application ne s'ouvre pas, et rien ne sonne ensuite. Verrouiller
+   puis rallumer l'écran : l'écran verrouillé revient devant
+   l'application.
+5. Recommencer avec deux minuteurs (`id` différents, à quelques
+   secondes) : deux notifications, une seule sonnerie, qui cesse au
+   second « Arrêter » ; ou à `await Capacitor.Plugins.CookTimers.stop()`
+   dans la console.
+6. Repli : retirer « Alarmes et rappels » (`exact: false`), recommencer
+   1 et 2, l'application en arrière-plan : la notification sonne, sur
+   « Minuteurs de cuisine (sans alarme exacte) », éventuellement en
+   retard ; ouvrir le volet la fait taire, « Arrêter » la retire.
 
 ## Notifications poussées : le projet Firebase (#1004)
 

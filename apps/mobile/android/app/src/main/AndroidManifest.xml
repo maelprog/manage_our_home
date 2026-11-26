@@ -71,6 +71,26 @@
         <meta-data
             android:name="firebase_messaging_auto_init_enabled"
             android:value="false" />
+
+        <!--
+          The cooking timers' alarm (#1017): the end of a timer, and its
+          « Arrêter », with no page and the app killed (CookTimers). Not
+          exported: only the app's own pending intents reach it.
+        -->
+        <receiver
+            android:name=".CookTimerReceiver"
+            android:exported="false" />
+        <!--
+          Its ringing (#1017, CookTimerRinging): the alarm ringtone in a
+          loop until « Arrêter ». A foreground service of type
+          mediaPlayback, which Android starts from the background for an
+          exact alarm, not for an inexact one (CookTimers.ring falls back
+          on a notification that rings itself).
+        -->
+        <service
+            android:name=".CookTimerRinging"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -107,6 +127,23 @@
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!--
+      The cooking timers (#1017, CookTimers), whose alarms use the two
+      permissions above: a timer that ends opens full screen, granted at
+      install below Android 14; from it on, Android may refuse it
+      (NotificationManager.canUseFullScreenIntent()), and the timer is a
+      high-priority notification to touch. The Play Store reserves it to
+      alarm and calling apps: publishing there may ask why. VIBRATE: the
+      timer vibrates. FOREGROUND_SERVICE and its mediaPlayback type: the
+      ringing service (CookTimerRinging), whose type the Play Store asks
+      to justify too. WAKE_LOCK: the CPU stays awake from the alarm to the
+      sound, and while it plays.
+    -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!--
       Declared by the Social Login plugin's own manifest (#670):
       AccountManager's permission, which Android stopped using at API 23,
