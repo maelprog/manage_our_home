@@ -80,6 +80,17 @@
         <receiver
             android:name=".CookTimerReceiver"
             android:exported="false" />
+        <!--
+          Its ringing (#1017, CookTimerRinging): the alarm ringtone in a
+          loop until « Arrêter ». A foreground service of type
+          mediaPlayback, which Android starts from the background for an
+          exact alarm, not for an inexact one (CookTimers.ring falls back
+          on a notification that rings itself).
+        -->
+        <service
+            android:name=".CookTimerRinging"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -123,10 +134,16 @@
       (NotificationManager.canUseFullScreenIntent()), and the timer is a
       high-priority notification to touch. The Play Store reserves it to
       alarm and calling apps: publishing there may ask why. VIBRATE: the
-      timer's notification vibrates, below Android 8 too.
+      timer vibrates. FOREGROUND_SERVICE and its mediaPlayback type: the
+      ringing service (CookTimerRinging), whose type the Play Store asks
+      to justify too. WAKE_LOCK: the CPU stays awake from the alarm to the
+      sound, and while it plays.
     -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!--
       Declared by the Social Login plugin's own manifest (#670):
       AccountManager's permission, which Android stopped using at API 23,

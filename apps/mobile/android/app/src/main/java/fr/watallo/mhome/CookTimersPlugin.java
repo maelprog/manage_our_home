@@ -22,9 +22,13 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  *       {@code { scheduled, exact, notifications }}: {@code scheduled}
  *       false for a timer over by more than a minute (nothing rings, an
  *       earlier alarm of the id is cancelled), {@code exact} false when
- *       Android gives no exact alarm (a few minutes late at worst),
+ *       Android gives no exact alarm (« Alarmes et rappels » not granted):
+ *       the timer may then ring late, by up to three quarters of the time
+ *       left and an hour at most, and rings by its notification, which
+ *       the notification shade silences ({@link CookTimers});
  *       {@code notifications} false when notifications are refused to the
- *       app (the timer then rings nothing: the ringing is its notification).
+ *       app (the timer then rings nothing: without its notification, and
+ *       its « Arrêter », no sound is played).
  *   <li>{@code cancel({ id })}: the timer neither rings later nor goes on
  *       ringing.
  *   <li>{@code stop()}: every timer that rings stops.
