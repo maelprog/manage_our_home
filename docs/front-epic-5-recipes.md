@@ -95,10 +95,9 @@ recipe's **time** in minutes (`duration_minutes`, 1 to 1440, `invalid_duration`)
 | POST | `/recipes/new` | `recipes::new::post` | Create a recipe (with `source_url` when imported, #405) | `POST /groups/:id/recipes` |
 | GET | `/recipes/import` | `recipes::import::get` | Import form: the address of a recipe page (#405) | — |
 | POST | `/recipes/import` | `recipes::import::post` | Read the page's recipe, render the create form pre-filled with it; nothing is saved | `POST /groups/:id/recipes/import` |
-| GET | `/recipes/:id` | `recipes::detail::get` | Detail: ingredients, instructions, last-cooked, log-meal form, edit/delete controls | `GET /groups/:id/recipes/:rid`, `GET /groups/:id/recipes/meal-history` |
+| GET | `/recipes/:id` | `recipes::detail::get` | Detail: ingredients, instructions, last-cooked, « Faite » / « Abandonner » for a planned recipe (at the top, and again in a card below the last-cooked line, #1021), edit/delete controls | `GET /groups/:id/recipes/:rid`, `GET /groups/:id/recipes/meal-history` |
 | GET | `/recipes/:id/edit` | `recipes::edit::get` | Edit form (creator, or a role meeting `recipes_edit`) | `GET /groups/:id/recipes/:rid` |
 | POST | `/recipes/:id/edit` | `recipes::edit::post` | Update a recipe | `PATCH /groups/:id/recipes/:rid` |
-| POST | `/recipes/:id/log` | `recipes::detail::log` | Log this meal (feeds the variety penalty) | `POST /groups/:id/recipes/:rid/meal-history` |
 | GET | `/recipes/:id/done` | `recipes::outcome::done_get` | « Faite » confirmation (#474): one line per stock line proposed, quantity editable, « Retirer du stock » checked | `GET /groups/:id/recipes/:rid/selection/done` |
 | POST | `/recipes/:id/done` | `recipes::outcome::done_post` | Checked against a fresh preview (a line in error re-renders as typed, 422), then PRG → `?notice=recipe_done`; a change since the page was shown re-renders the updated preview (409) | `GET`, `POST /groups/:id/recipes/:rid/selection/done` |
 | GET | `/recipes/:id/abandon` | `recipes::outcome::abandon_get` | « Abandonner » confirmation (#474): the unchecked grocery items generated for the recipe, « Retirer » checked | `GET /groups/:id/recipes/:rid/selection/abandoned` |
@@ -155,7 +154,8 @@ the backend 400s are the defensive fallback.
 | 404 | `not_found` | "Recette introuvable" page |
 | — | transport / parse | service-unavailable page |
 
-`?notice=` (`recipe_created`, `recipe_updated`, `meal_logged`) and
+`?notice=` (`recipe_created`, `recipe_updated`, `recipe_selected`,
+`recipe_deselected`, `recipe_done`, `recipe_abandoned`) and
 `?error=` (`forbidden`, `unavailable`) banners rendered on load.
 
 ### `/recipes/:id/edit` — `update_recipe`
@@ -170,15 +170,6 @@ the backend 400s are the defensive fallback.
 
 GET renders the form only for `can_modify` (the creator, or a role meeting
 the `recipes_edit` threshold); a non-permitted user GETting it gets the forbidden page.
-
-### `/recipes/:id/log` (log a meal) — `log_meal`
-
-| Status | Code | UI |
-|---|---|---|
-| 201 | — | PRG → `/recipes/:id?notice=meal_logged` |
-| 404 | `not_found` | "Recette introuvable" page |
-| 403 | `forbidden` | PRG → `/recipes/:id?error=forbidden` (defensive — any member may log) |
-| — | transport / other | PRG → `/recipes/:id?error=unavailable` |
 
 ### `/recipes/:id/delete` — `delete_recipe`
 
@@ -195,17 +186,18 @@ Backend bar (`apps/api/src/recipes/mod.rs::can_modify`): the recipe's
 creator, or a member whose role meets the family's `recipes_edit`
 threshold (#866; **admin/owner** by default, which the owner may lower to
 `standard` or raise to `owner`), may update or delete it; **any** member
-may create, read, or log a meal. The front mirrors it
+may create or read it, and mark a planned recipe « Faite ». The front mirrors it
 (`routes/recipes::can_modify`, unit-tested, with the threshold
 `GET /groups` hands apps/web):
 
-- Create, read, and the **log-a-meal** form render for every member.
+- Create, read, and « Faite » / « Abandonner » on a planned recipe render
+  for every member.
 - The **edit link** and **delete button** render only when
   `can_modify(role, min_role, is_creator)`; a member below the threshold
   viewing another member's recipe sees instead a muted note saying who may,
   worded after the threshold (`edit_rule::who_may`, #962).
 
-The backend stays the authority: a forged edit/delete/log is still
+The backend stays the authority: a forged edit/delete is still
 `403`'d and mapped defensively per the tables above.
 
 ## Acceptance criteria
@@ -220,15 +212,15 @@ The backend stays the authority: a forged edit/delete/log is still
    all in stock ranks above / is summarised as fully stocked; one whose
    ingredients are missing lists them.
 3. The recipe detail shows ingredients (with optional/seasonal markers),
-   instructions, and the last-cooked state; "logger ce repas" records a
-   meal and the detail then reflects it (feeding the future variety
-   penalty).
+   instructions, and the last-cooked state; on a planned recipe, « Faite »
+   (top of the page, or the card below the last-cooked line) records the
+   meal and the detail then reflects it (feeding the variety penalty).
 4. The creator (or a member meeting the `recipes_edit` threshold) can edit
    and delete a recipe; edits
    round-trip through the ingredient textarea; delete returns to the list
    with a banner.
 5. A standard member viewing another member's recipe gets no edit/delete
-   controls (only the muted note) but **can** log a meal against it.
+   controls (only the muted note) but **can** mark it « Faite » once planned.
 6. Documented error states render their exact French copy: server-side
    empty-name rejection on create, unknown-recipe 404, and the permission
    bar. Pure ingredient parsing/formatting and the permission mirror are
