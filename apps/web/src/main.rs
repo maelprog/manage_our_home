@@ -431,7 +431,6 @@ fn build_router(state: AppState) -> Router {
             "/recipes/{id}/edit",
             get(routes::recipes::edit::get).post(routes::recipes::edit::post),
         )
-        .route("/recipes/{id}/log", post(routes::recipes::detail::log))
         .route("/recipes/{id}/select", post(routes::recipes::select))
         .route("/recipes/{id}/deselect", post(routes::recipes::deselect))
         .route("/recipes/{id}/planning", post(routes::recipes::plan))

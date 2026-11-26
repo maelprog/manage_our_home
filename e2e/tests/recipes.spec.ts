@@ -13,8 +13,8 @@ test.beforeEach(async ({ context }) => {
 // Front epic F5 — Recipes (issue #20): every user journey the epic
 // introduces, happy paths plus the documented error states from
 // apps/api/src/recipes/'s error tables (see docs/front-epic-5-recipes.md).
-// Permission bar mirrors Stocks: any member may create/read a recipe or log a
-// meal, so every member sees the log-a-meal form; the edit link and delete
+// Permission bar mirrors Stocks: any member may create/read a recipe or mark
+// a planned one done (« Faite », which records the meal); the edit link and delete
 // button stay behind can_modify (the creator, or a role meeting the family's
 // `recipes_edit` threshold, #866 — admin/owner by default). The suggestion view
 // renders the ranked order + derived signals (stock summary, missing
@@ -177,19 +177,75 @@ test.describe("Recipes — suggestions", () => {
   });
 });
 
+/** On a recipe's page, plans it from its « À réaliser » form. */
+async function planOnDetail(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "À réaliser" }).click();
+  await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_selected$/);
+}
+
+/** Marks the recipe done from the « Faite » at the foot of its page
+ * (#1021), then lands back on it with its last-cooked state. */
+async function doneFromFoot(page: Page): Promise<void> {
+  const foot = page.locator(".done-foot");
+  await expect(foot.getByText("Vous avez cuisiné ce plat ?")).toBeVisible();
+  await foot.getByRole("link", { name: "Faite", exact: true }).click();
+  await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\/done\?back=detail$/);
+  await page.getByRole("button", { name: "Marquer comme faite" }).click();
+  await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_done$/);
+  await expect(
+    page.getByText("Recette faite : le stock est mis à jour et le repas enregistré."),
+  ).toBeVisible();
+  await expect(page.getByText(/Dernier repas cuisiné : le/)).toBeVisible();
+}
+
+// #1021: « Logger ce repas » is gone; a meal is recorded by « Faite », which
+// a planned recipe offers at the top of its page and again at its foot.
 test.describe("Recipes — log a meal", () => {
-  test("logging a meal records it and the detail reflects the last-cooked state", async ({
-    page,
-  }) => {
+  test("« Faite » at the foot of a planned recipe records the meal", async ({ page }) => {
     await registerAndLogin(page, "e2e-rclog", "Log User");
     await createGroup(page, "Famille Repas");
     await createRecipe(page, { name: "Curry", ingredients: "Riz | 1 | tasse" });
 
-    // We're on the detail after create. Log a meal for today.
-    await page.getByRole("button", { name: "Logger ce repas" }).click();
-    await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=meal_logged$/);
-    await expect(page.getByText("Repas enregistré.")).toBeVisible();
-    await expect(page.getByText(/Dernier repas cuisiné : le/)).toBeVisible();
+    // Not planned: neither « Faite » nor the old log form.
+    await expect(page.getByText("Ce plat n'a pas encore été cuisiné.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Faite", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Abandonner", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Logger ce repas" })).toHaveCount(0);
+    // Its route is gone too.
+    const id = new URL(page.url()).pathname.split("/")[2];
+    const log = await page.request.post(`/recipes/${id}/log`, { form: { eaten_on: "" } });
+    expect([404, 405]).toContain(log.status());
+
+    // Planned: « Faite » at the top, and again at the foot, primary there,
+    // the two leading to the same page.
+    await planOnDetail(page);
+    const faite = page.getByRole("link", { name: "Faite", exact: true });
+    await expect(faite).toHaveCount(2);
+    for (const link of await faite.all()) {
+      await expect(link).toHaveAttribute("href", `/recipes/${id}/done?back=detail`);
+    }
+    const foot = page.locator(".done-foot");
+    await expect(foot.getByRole("link", { name: "Abandonner", exact: true })).toHaveAttribute(
+      "href",
+      `/recipes/${id}/abandon?back=detail`,
+    );
+    // Phone: one under the other, the width of the card; PC: side by side.
+    for (const [size, stacked] of [
+      [{ width: 390, height: 844 }, true],
+      [{ width: 1280, height: 800 }, false],
+    ] as const) {
+      await page.setViewportSize(size);
+      const done = (await foot.getByRole("link", { name: "Faite", exact: true }).boundingBox())!;
+      const abandon = (await foot.getByRole("link", { name: "Abandonner", exact: true }).boundingBox())!;
+      if (stacked) {
+        expect(abandon.y).toBeGreaterThan(done.y + done.height - 1);
+        expect(Math.abs(abandon.width - done.width)).toBeLessThanOrEqual(1);
+      } else {
+        expect(Math.abs(abandon.y - done.y)).toBeLessThanOrEqual(1);
+      }
+    }
+
+    await doneFromFoot(page);
   });
 });
 
@@ -706,7 +762,7 @@ test.describe("Recipes — Prévues : manquants et priorité (#560)", () => {
 });
 
 test.describe("Recipes — permission bar", () => {
-  test("a standard member cannot edit or delete another member's recipe but can log a meal", async ({
+  test("a standard member cannot edit or delete another member's recipe but can mark it done", async ({
     page,
     browser,
   }) => {
@@ -714,8 +770,9 @@ test.describe("Recipes — permission bar", () => {
     await createGroup(page, "Famille Droits Recette");
     const href = await createInvitationLink(page, "Famille Droits Recette");
 
-    // Owner creates the recipe.
+    // Owner creates the recipe and plans it.
     await createRecipe(page, { name: "Gratin du proprio", ingredients: "Pomme de terre | 4 | pièce" });
+    await planOnDetail(page);
 
     const context = await browser.newContext();
     await skipMealStart(context);
@@ -724,7 +781,7 @@ test.describe("Recipes — permission bar", () => {
     await member.goto(href);
     await member.getByRole("button", { name: "Rejoindre le groupe" }).click();
 
-    // The member sees the log form but no edit/delete controls.
+    // The member sees « Faite » but no edit/delete controls.
     await openRecipeDetail(member, "Gratin du proprio");
     await expect(
       member.getByText("Seuls le créateur, les administrateurs et le propriétaire peuvent modifier ou supprimer"),
@@ -732,10 +789,8 @@ test.describe("Recipes — permission bar", () => {
     await expect(member.getByRole("link", { name: "Modifier la recette" })).toHaveCount(0);
     await expect(member.getByRole("button", { name: "Supprimer" })).toHaveCount(0);
 
-    // ...and can actually log a meal against the owner's recipe → 201.
-    await member.getByRole("button", { name: "Logger ce repas" }).click();
-    await expect(member.getByText("Repas enregistré.")).toBeVisible();
-    await expect(member.getByText(/Dernier repas cuisiné : le/)).toBeVisible();
+    // ...and can actually mark the owner's recipe done, recording the meal.
+    await doneFromFoot(member);
     await context.close();
   });
 });

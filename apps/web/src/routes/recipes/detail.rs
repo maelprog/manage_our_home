@@ -1,19 +1,20 @@
 //! `/recipes/:id` — recipe detail: ingredients (with optional/seasonal
-//! markers), its time and numbered steps (#539), the last-cooked state, plus the log-a-meal action
-//! and the delete action; full edit lives in `edit.rs`. The « À réaliser » /
+//! markers), its time and numbered steps (#539), the last-cooked state, and
+//! the delete action; full edit lives in `edit.rs`. The « À réaliser » /
 //! « Retirer » forms (#470) plan the recipe for the next grocery list, open
 //! to any member like the selection API; a planned recipe's day and meal
 //! (#812) are set, changed and removed there too, by any member as well,
-//! and so is its number of people (#846).
+//! and so is its number of people (#846). A planned recipe's « Faite » and
+//! « Abandonner » (#474) come at the top of the page and again at its foot,
+//! under the last-cooked state (#1021): « Faite » is how a meal is recorded
+//! from here, and it takes the ingredients from the stock.
 //!
-//! Permission bar: the log-a-meal form renders for **any** family member
-//! (feeding the shared variety history); the edit link and delete button
-//! render only for the recipe's creator or a member whose role meets the
-//! family's `recipes_edit` threshold (`can_modify`, #866). A member below it
-//! viewing another member's recipe still
-//! gets the log form, plus a muted note that editing/deleting is reserved.
-//! The backend stays the authority — a forged edit/DELETE/log is 403'd and
-//! mapped defensively here.
+//! Permission bar: the edit link and delete button render only for the
+//! recipe's creator or a member whose role meets the family's
+//! `recipes_edit` threshold (`can_modify`, #866). A member below it viewing
+//! another member's recipe gets a muted note that editing/deleting is
+//! reserved. The backend stays the authority — a forged edit/DELETE is
+//! 403'd and mapped defensively here.
 //!
 //! The « Bibliothèque » card (#911, `publish.rs`), before « Modifier » and
 //! « Supprimer »: to publish the recipe, publish it again or withdraw it,
@@ -21,17 +22,15 @@
 //! except its publisher, who sees their publication and withdraws it even
 //! without the right to edit (#991).
 //!
-//! Error table: 404 (`get_recipe`/`delete_recipe`/`log_meal`) unknown/foreign
-//! recipe → introuvable page; 403 (`delete`/`log` permission bar) →
-//! `?error=forbidden` / forbidden page.
+//! Error table: 404 (`get_recipe`/`delete_recipe`) unknown/foreign recipe →
+//! introuvable page; 403 (`delete` permission bar) → forbidden page.
 
 use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::Form;
 use chrono::NaiveDate;
 use manage_our_home_shared::dto::recipes::{
-    IngredientResponse, LogMealRequest, MealHistoryList, RecipeResponse, RecipeSelectionResponse,
+    IngredientResponse, MealHistoryList, RecipeResponse, RecipeSelectionResponse,
 };
 use uuid::Uuid;
 
@@ -103,7 +102,6 @@ pub(super) fn notice_text(code: &str) -> Option<&'static str> {
     match code {
         "recipe_created" => Some("Recette créée."),
         "recipe_updated" => Some("Recette mise à jour."),
-        "meal_logged" => Some("Repas enregistré."),
         "recipe_selected" => Some("Recette à réaliser pour les prochaines courses."),
         "recipe_deselected" => Some("Recette retirée des recettes à réaliser."),
         "recipe_done" => Some(super::outcome::DONE_NOTICE),
@@ -395,6 +393,19 @@ fn selection_html(id: Uuid, name: &str, base: Option<i32>, planned: Option<Optio
     }
 }
 
+/// « Faite » and « Abandonner » again at the foot of a planned recipe's
+/// page (#1021), under « Dernier repas cuisiné »: the pages of the ones at
+/// its top, « Faite » the primary button here, where the cooking ends.
+fn done_foot(id: Uuid) -> String {
+    format!(
+        r#"<div class="card done-foot">
+<p>Vous avez cuisiné ce plat ?</p>
+<div class="actions"><a class="btn" href="/recipes/{id}/done?back=detail">Faite</a>
+<a class="btn secondary" href="/recipes/{id}/abandon?back=detail">Abandonner</a></div>
+</div>"#
+    )
+}
+
 /// When a dated recipe is to be cooked (#812), as its « Quand ? » block
 /// says it: "jeudi 19 novembre, au dîner".
 pub(super) fn plan_sentence(planned_on: NaiveDate, meal_slot: Option<&str>) -> String {
@@ -529,19 +540,14 @@ fn page(
         None => r#"<p class="muted">Ce plat n'a pas encore été cuisiné.</p>"#.to_string(),
     };
 
-    // Log-a-meal is open to any member (feeds the shared variety history);
-    // the date defaults to today in Paris, the day the pages judge dates
-    // in, and can be backdated. A field left empty is dated by apps/api,
-    // on the same Paris day (#608).
+    // « Faite » again at the foot of a planned recipe (#1021), where its
+    // cooking ends; nothing for one that is not planned.
+    let done_foot = if planned.is_some() {
+        done_foot(id)
+    } else {
+        String::new()
+    };
     let today_paris = crate::routes::agenda::today_paris();
-    let today = today_paris.format("%Y-%m-%d").to_string();
-    let log_form = format!(
-        r#"<form method="post" action="/recipes/{id}/log" class="card inline">
-<label>Date du repas
-<input type="date" name="eaten_on" value="{today}"/></label>
-<button type="submit">Logger ce repas</button>
-</form>"#,
-    );
 
     let edit_delete_html = if can_edit {
         format!(
@@ -585,7 +591,7 @@ fn page(
 {ingredients_html}
 {instructions_html}
 {last_eaten_html}
-{log_form}
+{done_foot}
 {library}
 {edit_delete_html}
 <div class="links"><a href="/recipes">Retour aux recettes</a></div>"#,
@@ -642,55 +648,6 @@ fn ingredients_section(
 }
 
 // -- mutations --------------------------------------------------------------
-
-#[derive(serde::Deserialize)]
-pub struct LogForm {
-    #[serde(default)]
-    eaten_on: String,
-}
-
-pub async fn log(
-    CurrentUser(me): CurrentUser,
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(recipe_id): Path<Uuid>,
-    Form(form): Form<LogForm>,
-) -> Response {
-    let Some(fam) = family_context(&state, &headers, &me, &format!("/recipes/{recipe_id}")).await
-    else {
-        return Redirect::to("/groups/new").into_response();
-    };
-    let detail = format!("/recipes/{recipe_id}");
-
-    // Empty date → omit it (backend defaults to today); an unparseable value
-    // is treated as "today" too rather than erroring the family out.
-    let eaten_on = NaiveDate::parse_from_str(form.eaten_on.trim(), "%Y-%m-%d").ok();
-    let body = LogMealRequest { eaten_on };
-
-    let cookie = recipes_cookie(&headers);
-    let result = api_request_auth(
-        &state,
-        reqwest::Method::POST,
-        &format!("/groups/{}/recipes/{}/meal-history", fam.gid, recipe_id),
-        cookie.as_deref(),
-        Some(serde_json::to_value(&body).unwrap()),
-    )
-    .await;
-
-    let target = match result {
-        Ok(resp) if resp.status == reqwest::StatusCode::CREATED => {
-            format!("{detail}?notice=meal_logged")
-        }
-        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {
-            return recipe_not_found_page().into_response()
-        }
-        Ok(resp) if resp.status == reqwest::StatusCode::FORBIDDEN => {
-            format!("{detail}?error=forbidden")
-        }
-        Ok(_) | Err(_) => format!("{detail}?error=unavailable"),
-    };
-    Redirect::to(&target).into_response()
-}
 
 pub async fn delete(
     CurrentUser(me): CurrentUser,
@@ -1151,7 +1108,7 @@ pub(super) mod tests {
         assert!(html.contains(&link), "{html}");
     }
 
-    /// The « Bibliothèque » card (#911) after the meal log, before
+    /// The « Bibliothèque » card (#911) after the last-cooked line, before
     /// « Modifier » and « Supprimer », as the mockup places it; its
     /// banners have their words.
     #[test]
@@ -1162,7 +1119,7 @@ pub(super) mod tests {
             "", &recipe, None, None, None, None, false, true, "admin", "", &card,
         );
         let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
-        assert!(at("Logger ce repas") < at(r#"id="bibliotheque""#));
+        assert!(at("Ce plat n'a pas encore été cuisiné.") < at(r#"id="bibliotheque""#));
         assert!(at(r#"id="bibliotheque""#) < at("Modifier la recette"));
         for code in ["published", "publication_updated", "unpublished"] {
             assert!(notice_text(code).is_some(), "{code}");
@@ -1176,6 +1133,78 @@ pub(super) mod tests {
             "{too_many}"
         );
         assert!(too_many.contains("une minute"), "{too_many}");
+    }
+
+    /// The page of `recipe`, last cooked on 8 November 2026, planned by
+    /// `selection`, with the « Bibliothèque » card.
+    fn render_cooked(
+        recipe: &RecipeResponse,
+        selection: Option<&RecipeSelectionResponse>,
+    ) -> String {
+        let card = super::super::publish::library_card(recipe.id, true, "admin", None, false);
+        page(
+            "",
+            recipe,
+            None,
+            None,
+            Some(day(2026, 11, 8)),
+            selection,
+            false,
+            true,
+            "admin",
+            "",
+            &card,
+        )
+    }
+
+    #[test]
+    fn a_planned_recipe_offers_faite_again_after_the_last_meal() {
+        // #1021: « Faite » and « Abandonner » again at the foot of the page,
+        // under « Dernier repas cuisiné », before the « Bibliothèque » card.
+        let recipe = recipe_with(serde_json::json!({}));
+        let selection = planned(None, None);
+        let html = render_cooked(&recipe, Some(&selection));
+        let id = recipe.id;
+        let done = format!(r#"href="/recipes/{id}/done?back=detail""#);
+        let abandon = format!(r#"href="/recipes/{id}/abandon?back=detail""#);
+        assert_eq!(html.matches(&done).count(), 2, "{html}");
+        assert_eq!(html.matches(&abandon).count(), 2, "{html}");
+        let second = html.rfind(&done).unwrap();
+        let last = html
+            .find("Dernier repas cuisiné : le 08/11/2026.")
+            .expect(&html);
+        assert!(last < second, "{html}");
+        assert!(
+            second < html.find(r#"id="bibliotheque""#).unwrap(),
+            "{html}"
+        );
+        // « Faite » the primary button there, « Abandonner » the secondary.
+        let foot = &html[html.find(r#"<div class="card done-foot">"#).expect(&html)..];
+        assert!(
+            foot.contains(&format!(r#"<a class="btn" {done}>Faite</a>"#)),
+            "{html}"
+        );
+        assert!(
+            foot.contains(&format!(
+                r#"<a class="btn secondary" {abandon}>Abandonner</a>"#
+            )),
+            "{html}"
+        );
+        assert!(foot.contains("Vous avez cuisiné ce plat ?"), "{html}");
+        assert!(!html.contains("Logger ce repas"), "{html}");
+    }
+
+    #[test]
+    fn an_unplanned_recipe_offers_neither_faite_nor_a_meal_log() {
+        // #1021: « Logger ce repas » is gone, and nothing takes its place.
+        let recipe = recipe_with(serde_json::json!({}));
+        let html = render_cooked(&recipe, None);
+        assert!(!html.contains("Faite"), "{html}");
+        assert!(!html.contains("Abandonner"), "{html}");
+        assert!(!html.contains("done-foot"), "{html}");
+        assert!(!html.contains("Logger ce repas"), "{html}");
+        assert!(!html.contains("/log"), "{html}");
+        assert_eq!(notice_text("meal_logged"), None);
     }
 
     #[test]
