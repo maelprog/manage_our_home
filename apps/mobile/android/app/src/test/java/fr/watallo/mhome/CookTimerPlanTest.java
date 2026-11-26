@@ -140,6 +140,8 @@ public class CookTimerPlanTest {
         assertEquals("/recettes/12/cuisine", CookTimerPlan.sitePath(SITE + "/recettes/12/cuisine", SITE));
         assertEquals("/recettes/12?mode=cuisine", CookTimerPlan.sitePath(SITE + "/recettes/12?mode=cuisine", SITE));
         assertEquals("/", CookTimerPlan.sitePath(SITE, SITE));
+        assertEquals("/recettes/12#etape-3", CookTimerPlan.sitePath(SITE + "/recettes/12#etape-3", SITE));
+        assertEquals("/recettes/12?mode=cuisine#etape-3", CookTimerPlan.sitePath(SITE + "/recettes/12?mode=cuisine#etape-3", SITE));
     }
 
     @Test
