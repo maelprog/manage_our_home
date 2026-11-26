@@ -155,18 +155,12 @@ pub fn normalize(name: &str, fold_accents: bool) -> String {
 /// An empty name, or one that normalizes to nothing (`de`), designates
 /// nothing.
 pub fn same_ingredient_name(a: &str, b: &str, both_categorised: bool) -> bool {
-    let (a, b) = (a.trim().to_lowercase(), b.trim().to_lowercase());
-    if a.is_empty() || b.is_empty() {
+    let (folded_a, folded_b) = (normalize(a, true), normalize(b, true));
+    if folded_a.is_empty() || folded_b.is_empty() {
         return false;
     }
-    if a == b {
-        return true;
-    }
-    if both_categorised {
-        return false;
-    }
-    let a = normalize(&a, true);
-    !a.is_empty() && a == normalize(&b, true)
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+        || (!both_categorised && folded_a == folded_b)
 }
 
 fn fold_accent(c: char) -> char {
@@ -534,6 +528,9 @@ en:potatoes\t\tPommes de terre
         // nothing: it is no name either.
         assert!(!same_ingredient_name("de", "du", false));
         assert!(!same_ingredient_name("les", "la", false));
+        // Even against itself, as it is or once trimmed and lowercased.
+        assert!(!same_ingredient_name("de", "de", false));
+        assert!(!same_ingredient_name("les", " LES ", true));
     }
 
     #[test]
