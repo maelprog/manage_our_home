@@ -1,8 +1,8 @@
 # Conditions générales d'utilisation — Manage Our Home
 
-Dernière mise à jour : 2026-10-06.
+Dernière mise à jour : 2026-11-20.
 
-Version en vigueur : 2026-10-04.
+Version en vigueur : 2026-11-20.
 
 ## Objet
 
@@ -78,7 +78,9 @@ administrateur peut renommer le groupe, inviter, nommer administrateur un
 membre ordinaire, et retirer un membre ordinaire.
 
 Tout ce qui est déposé dans un groupe est visible par l'ensemble de ses
-membres, et par eux seuls. Inviter quelqu'un, c'est donc lui donner accès à
+membres, et par eux seuls, à une exception près, que seul décide le membre
+qui publie : une recette publiée dans la bibliothèque (voir « Vos
+contenus »). Inviter quelqu'un, c'est donc lui donner accès à
 tout le contenu du groupe, y compris à ce qui y a été déposé avant son
 arrivée. Supprimer un groupe supprime son contenu. Des groupes, l'éditeur ne
 voit dans le service, pour l'assistance, que le nom, la date de création et
@@ -88,9 +90,18 @@ le nombre de membres — jamais ce qui y est déposé.
 
 Vous gardez vos droits sur les contenus que vous déposez : messages,
 événements, recettes, articles de stock, dépenses, pièces jointes.
-L'éditeur ne les exploite pas, ne les publie pas et ne les cède à personne.
-Il les héberge pour vous et les rend accessibles aux autres membres de votre
-groupe, ce qui est la finalité même du service.
+L'éditeur ne les exploite pas et ne les cède à personne. Il les héberge
+pour vous et les rend accessibles aux autres membres de votre groupe, ce qui
+est la finalité même du service ; il ne les rend accessibles au-delà que
+pour une recette qu'un membre du groupe qui peut la modifier publie dans la
+bibliothèque.
+
+Si vous publiez une recette dans la bibliothèque, elle devient lisible par
+tous les utilisateurs du service, sans votre nom, et chacun peut la copier
+dans sa famille ; ces copies restent après son retrait. N'y mettez aucune
+donnée personnelle, la vôtre ou celle d'un tiers, ni aucun contenu dont vous
+n'avez pas le droit de disposer. L'éditeur peut retirer une recette publiée
+qui enfreint les présentes conditions.
 
 Vous vous engagez à ne déposer que des contenus dont vous avez le droit de
 disposer, et à ne rien déposer d'illicite.
@@ -106,7 +117,9 @@ vous avez créés. Sont en revanche supprimés, notamment, vos appartenances
 aux groupes, les invitations que vous avez envoyées et les imports
 calendrier que vous avez configurés — et un groupe dont vous étiez le
 dernier membre, supprimé avec tout son contenu, puisque plus personne ne
-pourrait le voir. Subsistent un temps les entrées du
+pourrait le voir. Les recettes que vous avez publiées sont retirées de la
+bibliothèque ; les copies qu'en ont faites d'autres familles restent les
+leurs. Subsistent un temps les entrées du
 journal d'audit qui concernent votre compte sans être de votre fait (celle
 qui date la suppression, les transferts de propriété, les actions d'un
 autre membre ou de l'éditeur sur votre compte), jusqu'au premier passage de

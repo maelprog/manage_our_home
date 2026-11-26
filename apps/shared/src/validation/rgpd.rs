@@ -1604,6 +1604,39 @@ mod tests {
         }
     }
 
+    /// #992: copying a published recipe into another household is a use of
+    /// its author's content, so the latest CGU — announced, or else in force
+    /// — grant the other users a licence for it, and name each of its
+    /// terms: what it allows (reading and copying), that it is free and not
+    /// exclusive, its reach and its duration, and what becomes of the copies
+    /// once the recipe is withdrawn.
+    #[test]
+    fn the_latest_cgu_license_a_published_recipe() {
+        let md = match crate::validation::auth::TERMS_ANNOUNCED {
+            Some(announced) => announced.markdown,
+            None => include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../docs/terms-of-service.md"
+            )),
+        };
+        let (_, contents) = md
+            .split_once("\n## Vos contenus\n")
+            .expect("the CGU have no « Vos contenus » section");
+        let contents = flatten(contents.split("\n## ").next().unwrap());
+        for stated in [
+            "licence gratuite et non exclusive",
+            "pour le monde entier et pour le temps de sa publication",
+            "de la consulter et de la copier dans leur foyer",
+            "Son retrait met fin à la licence pour l'avenir",
+            "les copies déjà faites restent à leurs foyers",
+        ] {
+            assert!(
+                contents.contains(stated),
+                "« Vos contenus » does not state: {stated}"
+            );
+        }
+    }
+
     /// Every age `md` states as the service's minimum, in reading order: the
     /// number in `N ans ou plus`, `N ans et plus`, `moins de N ans` or
     /// `au moins N ans` — the four phrasings the RGPD documents use for the

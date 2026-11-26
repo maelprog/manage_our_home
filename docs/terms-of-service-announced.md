@@ -1,8 +1,8 @@
 # Conditions générales d'utilisation — Manage Our Home
 
-Dernière mise à jour : 2026-11-20.
+Dernière mise à jour : 2026-11-26.
 
-Version en vigueur : 2026-11-20.
+Version en vigueur : 2026-12-26.
 
 ## Objet
 
@@ -97,8 +97,11 @@ pour une recette qu'un membre du groupe qui peut la modifier publie dans la
 bibliothèque.
 
 Si vous publiez une recette dans la bibliothèque, elle devient lisible par
-tous les utilisateurs du service, sans votre nom, et chacun peut la copier
-dans sa famille ; ces copies restent après son retrait. N'y mettez aucune
+tous les utilisateurs du service, sans votre nom. En la publiant, vous
+accordez aux autres utilisateurs du service une licence gratuite et non
+exclusive, pour le monde entier et pour le temps de sa publication, de la
+consulter et de la copier dans leur foyer. Son retrait met fin à la licence
+pour l'avenir ; les copies déjà faites restent à leurs foyers. N'y mettez aucune
 donnée personnelle, la vôtre ou celle d'un tiers, ni aucun contenu dont vous
 n'avez pas le droit de disposer. L'éditeur peut retirer une recette publiée
 qui enfreint les présentes conditions.

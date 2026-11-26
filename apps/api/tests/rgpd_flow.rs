@@ -885,6 +885,64 @@ async fn the_terms_are_never_reused_from_a_cache(db: PgPool) {
     }
 }
 
+/// #992: `/terms-of-service` serves the text of the version in force today,
+/// and `/terms-of-service/announced` the one announced after it — each
+/// recognised by its own `Version en vigueur` line. Read against the day, so
+/// the test holds on either side of the announced date.
+#[sqlx::test]
+async fn each_terms_route_serves_its_own_version(db: PgPool) {
+    use manage_our_home_shared::validation::auth::{
+        paris_day, terms_announced_on, terms_in_force_on, TERMS_ANNOUNCED, TERMS_VERSION,
+    };
+    let router = test_router(db.clone());
+    let today = paris_day(chrono::Utc::now());
+
+    let body_of = |response: axum::response::Response| async move {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    };
+
+    let in_force = terms_in_force_on(today);
+    assert!(
+        in_force == TERMS_VERSION || Some(in_force) == TERMS_ANNOUNCED.map(|a| a.version),
+        "the version in force is neither the current nor the announced one"
+    );
+    let response = call(&router, Method::GET, "/terms-of-service", None, None).await;
+    assert_status(&response, StatusCode::OK);
+    let text = body_of(response).await;
+    assert!(
+        text.contains(&format!("\nVersion en vigueur : {in_force}.\n")),
+        "/terms-of-service does not serve the version {in_force}"
+    );
+
+    let response = call(
+        &router,
+        Method::GET,
+        "/terms-of-service/announced",
+        None,
+        None,
+    )
+    .await;
+    match terms_announced_on(today) {
+        Some(announced) => {
+            assert_status(&response, StatusCode::OK);
+            let text = body_of(response).await;
+            assert!(
+                text.contains(&format!("\nVersion en vigueur : {}.\n", announced.version)),
+                "/terms-of-service/announced does not serve the version {}",
+                announced.version
+            );
+            assert!(
+                announced.version > in_force,
+                "the announced version does not come after the one in force"
+            );
+        }
+        None => assert_status(&response, StatusCode::NOT_FOUND),
+    }
+}
+
 /// Issue #140: a recipe is exported with its ingredients, nested under it.
 #[sqlx::test]
 async fn export_nests_the_ingredients_under_their_recipe(db: PgPool) {
