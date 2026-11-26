@@ -130,12 +130,23 @@ final class CookTimerPlan {
         return true;
     }
 
-    /** {@code words} on one line, single-spaced, cut to {@link #MAX_LENGTH}; "" for none. */
+    /**
+     * {@code words} on one line, single-spaced (no-break spaces count as
+     * spaces), cut to {@link #MAX_LENGTH} without splitting a character
+     * written on two chars (an emoji); "" for none.
+     */
     private static String clean(String words) {
         if (words == null) {
             return "";
         }
-        String line = words.trim().replaceAll("\\s+", " ");
-        return line.length() <= MAX_LENGTH ? line : line.substring(0, MAX_LENGTH - 1) + "…";
+        String line = words.replaceAll("[\\s\\p{Z}]+", " ").trim();
+        if (line.length() <= MAX_LENGTH) {
+            return line;
+        }
+        int end = MAX_LENGTH - 1;
+        if (Character.isHighSurrogate(line.charAt(end - 1))) {
+            end--;
+        }
+        return line.substring(0, end) + "…";
     }
 }

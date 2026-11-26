@@ -95,6 +95,24 @@ public class CookTimerPlanTest {
     }
 
     @Test
+    public void aCutNeverSplitsACharacter() {
+        // An emoji is two chars: cut between them, it would show a broken one.
+        String name = "a".repeat(CookTimerPlan.MAX_LENGTH - 2) + "🍝" + "b".repeat(20);
+        String title = CookTimerPlan.title(name);
+        assertEquals("a".repeat(CookTimerPlan.MAX_LENGTH - 2) + "…", title);
+        String fits = "a".repeat(CookTimerPlan.MAX_LENGTH - 3) + "🍝" + "b".repeat(20);
+        assertEquals("a".repeat(CookTimerPlan.MAX_LENGTH - 3) + "🍝…", CookTimerPlan.title(fits));
+    }
+
+    @Test
+    public void noBreakSpacesAreSpacesToo() {
+        assertEquals("Minuteur de cuisine", CookTimerPlan.title(" "));
+        assertEquals("Minuteur de cuisine", CookTimerPlan.title("     "));
+        assertEquals("Pâtes à la carbonara", CookTimerPlan.title(" Pâtes  à la carbonara "));
+        assertEquals("Minuteur terminé", CookTimerPlan.text(" "));
+    }
+
+    @Test
     public void theTextAlwaysSaysTheTimerIsOver() {
         assertEquals("Minuteur terminé", CookTimerPlan.text(null));
         assertEquals("Minuteur terminé", CookTimerPlan.text("  "));
