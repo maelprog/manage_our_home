@@ -232,17 +232,18 @@ final class CookTimers {
     /**
      * What a touch, or the full screen, opens: {@link MainActivity} on
      * {@code path}, or on the page it shows when there is none. No data
-     * (Capacitor would read it as an address to open): the request code
-     * tells two timers apart.
+     * (Capacitor would read it as an address to open): a category of the
+     * timer's own tells two timers apart, as {@code id.hashCode()} would
+     * not ("Aa" and "BB" share one), and an explicit intent ignores it.
      */
     private static PendingIntent open(Context context, String id, String path) {
-        Intent open = new Intent(context, MainActivity.class).setAction(ACTION_OPEN);
+        Intent open = new Intent(context, MainActivity.class).setAction(ACTION_OPEN).addCategory(TAG_PREFIX + id);
         if (path != null) {
             open.putExtra(EXTRA_PATH, path);
         }
         return PendingIntent.getActivity(
             context,
-            id.hashCode(),
+            0,
             open,
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
