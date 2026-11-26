@@ -592,6 +592,53 @@ async fn generate_takes_only_the_planned_recipes(db: PgPool) {
     }
 }
 
+/// #1023: the generation leaves out what the stock covers by the name
+/// normalized when the ingredient or the article has no category
+/// (« tomme fermiere » by « Tommes fermières »), and by category alone when
+/// both have one (« pâtes », en:pastas, is not « Pâtés », en:pate).
+#[sqlx::test]
+async fn generate_leaves_out_what_the_stock_covers_by_normalized_name(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "grocery-normalized@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    for item in [
+        serde_json::json!({"name": "Tommes fermières", "quantity": 1.0}),
+        serde_json::json!({"name": "Pâtés", "quantity": 2.0}),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&cookie),
+            Some(item),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+    let recipe = create_recipe(
+        &router,
+        &cookie,
+        &group_id,
+        serde_json::json!({
+            "name": "Tartiflette",
+            "ingredients": [{"name": "tomme fermiere"}, {"name": "pâtes"}]
+        }),
+    )
+    .await;
+    select(&router, &cookie, &group_id, &recipe, None).await;
+
+    let items = generate(&router, &cookie, &group_id).await;
+    let names: Vec<&str> = items.iter().map(|i| i["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["pâtes"], "{items:?}");
+}
+
 /// #470: without any planned recipe, no recipe ingredient is added; the
 /// stock items under their threshold still are.
 #[sqlx::test]

@@ -11,7 +11,8 @@
 //! The recipe's required ingredients are first brought to the selection's
 //! number of people and merged by name or by tag as the grocery list does
 //! (`grocery_list::planned::plan_lines`, #902). An ingredient is then matched to
-//! the stock lines holding more than 0 of its name (`article_key`) or of its
+//! the stock lines holding more than 0 of its name (`same_ingredient_name`,
+//! normalized when one side has no category, #1023) or of its
 //! category (#900): a line whose categories — its scanned product's, else
 //! its name's (`suggestions::stock_entry`) — are the one the ingredient's
 //! name maps to or descend from it, as the suggestions match the stock. When
@@ -29,7 +30,7 @@ use crate::grocery_list::planned::{
 };
 use crate::recipes::outcome::StockLine;
 use crate::recipes::suggestions::{tagged_stock, StockArticle};
-use crate::recipes::taxonomy::{taxonomy, TagId};
+use crate::recipes::taxonomy::{same_ingredient_name, taxonomy, TagId};
 
 /// One ingredient of a planned recipe, as written.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +73,10 @@ pub(crate) trait Matched {
     /// Whether the line's categories are `tag` or descend from it
     /// (`Taxonomy::satisfies`, never the reverse).
     fn satisfies(&self, tag: TagId) -> bool;
+    /// Whether the line has a category at all: when both the line and the
+    /// need have one, the category alone decides beyond the identical name
+    /// (`same_ingredient_name`, #1023).
+    fn categorised(&self) -> bool;
 }
 
 /// A line without categories: matched by its name only.
@@ -81,6 +86,10 @@ impl Matched for StockLine<'_> {
     }
 
     fn satisfies(&self, _: TagId) -> bool {
+        false
+    }
+
+    fn categorised(&self) -> bool {
         false
     }
 }
@@ -101,13 +110,20 @@ impl Matched for StockArticle {
         // `entry.tags` holds each category with all its ancestors.
         self.entry.tags.contains(&tag)
     }
+
+    fn categorised(&self) -> bool {
+        !self.entry.tags.is_empty()
+    }
 }
 
 /// The stock lines a need is matched to: those holding more than 0, of its
 /// name or whose categories reach the one its name maps to
 /// (`canonical_ingredient`, #900), and, when it has a quantity, of its unit.
+/// The name matches trimmed and case-insensitive, or, when the need or the
+/// line has no category, normalized without its accents
+/// (`same_ingredient_name`, #1023).
 fn lines_for<'a, S: Matched>(need: &PlannedLine, stock: &'a [S]) -> impl Iterator<Item = &'a S> {
-    let name = article_key(&need.name);
+    let name = need.name.clone();
     let tag = taxonomy().canonical_ingredient(&need.name);
     let unit = need
         .quantity
@@ -115,7 +131,8 @@ fn lines_for<'a, S: Matched>(need: &PlannedLine, stock: &'a [S]) -> impl Iterato
     stock.iter().filter(move |s| {
         let l = s.line();
         l.quantity > 0.0
-            && (article_key(l.name) == name || tag.is_some_and(|t| s.satisfies(t)))
+            && (tag.is_some_and(|t| s.satisfies(t))
+                || same_ingredient_name(&name, l.name, tag.is_some() && s.categorised()))
             && unit.as_ref().is_none_or(|u| article_key(l.unit) == *u)
     })
 }
@@ -591,6 +608,31 @@ mod tests {
         );
         assert_eq!(
             missing(&[need("Lait demi-écrémé", None, None)], &stock),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn a_name_the_taxonomy_lacks_finds_its_accent_and_plural_variant() {
+        // #1023: no category for `tomme fermiere`, so the names compare
+        // normalized; `pâtes` and `Pâtés` have one each, and differ.
+        let stock = [
+            article(1, "Tommes fermières", 200.0, "g", None, &[]),
+            article(2, "Pâtés", 2.0, "unité", None, &[]),
+        ];
+        assert_eq!(
+            missing(
+                &[
+                    need("tomme fermiere", Some(150.0), Some("g")),
+                    need("pâtes", Some(2.0), Some("unité")),
+                ],
+                &stock
+            ),
+            vec![need("pâtes", Some(2.0), Some("unité"))]
+        );
+        let plain = [line(1, "Tommes fermières", 200.0, "g", None)];
+        assert_eq!(
+            missing(&[need("tomme fermiere", Some(150.0), Some("g"))], &plain),
             vec![]
         );
     }

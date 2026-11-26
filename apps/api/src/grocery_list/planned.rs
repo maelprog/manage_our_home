@@ -17,10 +17,13 @@
 //! Two names are one ingredient (#902) when they read the same once
 //! trimmed, whatever the case, or when the taxonomy maps both to one tag
 //! (`Taxonomy::canonical_ingredient`: « parmesan » and « Parmigiano
-//! Reggiano »). Names without a tag are never matched by a word they share.
-//! Two different names of one tag are still two lines when both carry a
-//! quantity and their units differ: there is no conversion, so neither
-//! line's quantity would stand for the other's.
+//! Reggiano »), or, when one of them has no tag, when they read the same
+//! once normalized without accents (`same_ingredient_name`, #1023:
+//! « tomme fermiere » and « Tommes fermières »). Names without a tag are
+//! never matched by a word they share. Two different names of one tag, or
+//! of one normalized name, are still two lines when both carry a quantity
+//! and their units differ: there is no conversion, so neither line's
+//! quantity would stand for the other's.
 
 use manage_our_home_shared::validation::grocery_list::normalize_unit;
 // Shared with the recipe edit form (#845), which scales the quantities of a
@@ -30,7 +33,7 @@ pub(crate) use manage_our_home_shared::validation::recipes::{
 };
 use uuid::Uuid;
 
-use crate::recipes::taxonomy::{taxonomy, TagId};
+use crate::recipes::taxonomy::{same_ingredient_name, taxonomy, TagId};
 
 /// One required ingredient of a planned recipe, with the two numbers of
 /// people its quantity is scaled between.
@@ -76,23 +79,29 @@ fn same_unit(a: Option<&str>, b: Option<&str>) -> bool {
 /// What an ingredient's name is matched by (#902): the name trimmed and
 /// lowercased, and the tag the taxonomy maps it to, if any.
 #[derive(Debug, Clone, PartialEq)]
-struct IngredientKey {
+pub(crate) struct IngredientKey {
     name: String,
     tag: Option<TagId>,
 }
 
 impl IngredientKey {
-    fn of(name: &str) -> Self {
+    pub(crate) fn of(name: &str) -> Self {
         Self {
             name: name.trim().to_lowercase(),
             tag: taxonomy().canonical_ingredient(name),
         }
     }
 
-    /// Whether the two names are one ingredient: the same name, or the
-    /// same tag.
-    fn same_ingredient(&self, other: &Self) -> bool {
-        self.name == other.name || self.tag.is_some_and(|t| other.tag == Some(t))
+    /// Whether the two names are one ingredient: the same tag; the same
+    /// name; or, when one of them has no tag, the same name normalized
+    /// without its accents (#1023, `same_ingredient_name`).
+    pub(crate) fn same_ingredient(&self, other: &Self) -> bool {
+        self.tag.is_some_and(|t| other.tag == Some(t))
+            || same_ingredient_name(
+                &self.name,
+                &other.name,
+                self.tag.is_some() && other.tag.is_some(),
+            )
     }
 }
 
@@ -104,7 +113,8 @@ fn units_conflict(a: (Option<f64>, Option<&str>), b: (Option<f64>, Option<&str>)
 
 /// Whether a line already made and an ingredient of the two keys make one
 /// line (#902): the same name always does, as before, whatever the units;
-/// two names of one tag do when their units do not conflict.
+/// two names of one tag, or of one normalized name when one has no tag
+/// (#1023), do when their units do not conflict.
 fn one_line(
     a: &IngredientKey,
     a_qty: (Option<f64>, Option<&str>),
@@ -116,7 +126,8 @@ fn one_line(
 
 /// The lines the planned ingredients make, in the order of their first
 /// appearance. Names are matched trimmed and case-insensitively, as
-/// everywhere else in the generation, or by their tag (#902): an
+/// everywhere else in the generation, by their tag (#902), or normalized
+/// when one has no tag (#1023): an
 /// ingredient goes to the first line it makes one line with
 /// (`one_line`), preferring one whose units do not conflict with its own,
 /// so that its quantity can add up.
@@ -476,6 +487,23 @@ mod tests {
             &[listed(9, "Sucre", Some(1.0), Some("kg"), "recipe")],
         );
         assert_eq!(changes, vec![ListChange::Add(need)]);
+    }
+
+    #[test]
+    fn a_line_of_the_normalized_name_counts_without_a_category() {
+        // #1023: `tomme fermiere` has no category, so a line « Tommes
+        // fermières » is its line; `pâtes` (en:pastas) is not « Pâtés »
+        // (en:pate).
+        let tomme = line(1, "tomme fermiere", Some(200.0), Some("g"));
+        let changes = count_against_list(
+            [tomme],
+            &[listed(9, "Tommes fermières", None, None, "manual")],
+        );
+        assert_eq!(changes, vec![]);
+        let pates = line(1, "pâtes", Some(500.0), Some("g"));
+        let changes =
+            count_against_list([pates.clone()], &[listed(9, "Pâtés", None, None, "manual")]);
+        assert_eq!(changes, vec![ListChange::Add(pates)]);
     }
 
     #[test]

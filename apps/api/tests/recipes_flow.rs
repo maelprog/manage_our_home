@@ -707,6 +707,75 @@ async fn suggestions_match_stock_through_the_category_taxonomy(db: PgPool) {
     assert_eq!(missing, ["Lait de coco"]);
 }
 
+/// #1023: a name the taxonomy lacks finds its accent and plural variant in
+/// stock (« tomme fermiere » is covered by « Tommes fermières »); two names
+/// that each have a category are matched by category alone (« pâtes »,
+/// en:pastas, is not covered by « Pâtés », en:pate).
+#[sqlx::test]
+async fn suggestions_match_a_name_without_category_normalized(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "recipe-normalized-name@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+
+    for item in [
+        serde_json::json!({"name": "Tommes fermières", "quantity": 1.0}),
+        serde_json::json!({"name": "Pâtés", "quantity": 2.0}),
+    ] {
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/stock-items"),
+            Some(&cookie),
+            Some(item),
+        )
+        .await;
+        assert_status(&res, StatusCode::CREATED);
+    }
+
+    let recipe = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/recipes"),
+        Some(&cookie),
+        Some(serde_json::json!({
+            "name": "Tartiflette du dimanche",
+            "ingredients": [
+                {"name": "tomme fermiere", "quantity": 200.0, "unit": "g"},
+                {"name": "pâtes", "quantity": 500.0, "unit": "g"}
+            ]
+        })),
+    )
+    .await;
+    assert_status(&recipe, StatusCode::CREATED);
+
+    let res = call(
+        &router,
+        Method::GET,
+        &format!("/groups/{group_id}/recipes/suggestions"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&res, StatusCode::OK);
+    let body = json_body(res).await;
+    let suggestion = &body["suggestions"][0];
+    assert_eq!(suggestion["matched_ingredients"], 1);
+    assert_eq!(suggestion["total_required_ingredients"], 2);
+    let missing: Vec<&str> = suggestion["missing_ingredients"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(missing, ["pâtes"]);
+}
+
 /// #539: `?possible=true` keeps the recipes whose every required
 /// ingredient is in stock, by the same matching as the suggestions. A
 /// missing optional ingredient does not exclude a recipe; a missing
