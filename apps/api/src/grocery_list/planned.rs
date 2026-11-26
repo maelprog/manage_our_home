@@ -30,7 +30,7 @@ pub(crate) use manage_our_home_shared::validation::recipes::{
 };
 use uuid::Uuid;
 
-use crate::recipes::taxonomy::{taxonomy, TagId};
+use crate::recipes::taxonomy::{same_ingredient_name, taxonomy, TagId};
 
 /// One required ingredient of a planned recipe, with the two numbers of
 /// people its quantity is scaled between.
@@ -76,23 +76,29 @@ fn same_unit(a: Option<&str>, b: Option<&str>) -> bool {
 /// What an ingredient's name is matched by (#902): the name trimmed and
 /// lowercased, and the tag the taxonomy maps it to, if any.
 #[derive(Debug, Clone, PartialEq)]
-struct IngredientKey {
+pub(crate) struct IngredientKey {
     name: String,
     tag: Option<TagId>,
 }
 
 impl IngredientKey {
-    fn of(name: &str) -> Self {
+    pub(crate) fn of(name: &str) -> Self {
         Self {
             name: name.trim().to_lowercase(),
             tag: taxonomy().canonical_ingredient(name),
         }
     }
 
-    /// Whether the two names are one ingredient: the same name, or the
-    /// same tag.
-    fn same_ingredient(&self, other: &Self) -> bool {
-        self.name == other.name || self.tag.is_some_and(|t| other.tag == Some(t))
+    /// Whether the two names are one ingredient: the same tag; the same
+    /// name; or, when one of them has no tag, the same name normalized
+    /// without its accents (#1023, `same_ingredient_name`).
+    pub(crate) fn same_ingredient(&self, other: &Self) -> bool {
+        self.tag.is_some_and(|t| other.tag == Some(t))
+            || same_ingredient_name(
+                &self.name,
+                &other.name,
+                self.tag.is_some() && other.tag.is_some(),
+            )
     }
 }
 
@@ -476,6 +482,23 @@ mod tests {
             &[listed(9, "Sucre", Some(1.0), Some("kg"), "recipe")],
         );
         assert_eq!(changes, vec![ListChange::Add(need)]);
+    }
+
+    #[test]
+    fn a_line_of_the_normalized_name_counts_without_a_category() {
+        // #1023: `tomme fermiere` has no category, so a line « Tommes
+        // fermières » is its line; `pâtes` (en:pastas) is not « Pâtés »
+        // (en:pate).
+        let tomme = line(1, "tomme fermiere", Some(200.0), Some("g"));
+        let changes = count_against_list(
+            [tomme],
+            &[listed(9, "Tommes fermières", None, None, "manual")],
+        );
+        assert_eq!(changes, vec![]);
+        let pates = line(1, "pâtes", Some(500.0), Some("g"));
+        let changes =
+            count_against_list([pates.clone()], &[listed(9, "Pâtés", None, None, "manual")]);
+        assert_eq!(changes, vec![ListChange::Add(pates)]);
     }
 
     #[test]

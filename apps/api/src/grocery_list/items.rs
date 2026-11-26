@@ -541,11 +541,8 @@ pub async fn generate_grocery_items(
     .await?
     .into_iter()
     .filter(|i| {
-        let name = i.name.trim().to_lowercase();
         let tag = taxonomy.canonical_ingredient(&i.name);
-        !stock
-            .iter()
-            .any(|s| s.name == name || tag.is_some_and(|t| s.tags.contains(&t)))
+        !stock.iter().any(|s| s.covers(&i.name, tag))
     });
     let missing_lines = plan_lines(planned_ingredients);
 

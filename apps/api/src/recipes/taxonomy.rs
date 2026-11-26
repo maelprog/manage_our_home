@@ -25,6 +25,12 @@
 //! - [`Taxonomy::satisfies`]: an article in stock satisfies a recipe's
 //!   ingredient when its tag is the recipe's, or descends from it
 //!   (`en:semi-skimmed-milks` satisfies `en:milks`), never the reverse.
+//!
+//! A name the taxonomy does not know is still matched by its name
+//! ([`same_ingredient_name`], #1023): normalized as above, without its
+//! accents, so `tomme fermiere` finds `Tommes fermières`. When both sides
+//! have a category, the category alone decides, so `pâtes` (`en:pastas`)
+//! never finds `Pâtés` (`en:pate`) by their name without accents.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -139,6 +145,28 @@ pub fn normalize(name: &str, fold_accents: bool) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Whether two ingredient names designate one ingredient by their name
+/// (#1023): the same name trimmed and lowercased, as always; or, when one
+/// side at least has no category (`both_categorised` false), the same name
+/// once normalized without its accents ([`normalize`]). When both sides
+/// have a category, the category alone decides beyond the identical name.
+/// An empty name, or one that normalizes to nothing (`de`), designates
+/// nothing.
+pub fn same_ingredient_name(a: &str, b: &str, both_categorised: bool) -> bool {
+    let (a, b) = (a.trim().to_lowercase(), b.trim().to_lowercase());
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if a == b {
+        return true;
+    }
+    if both_categorised {
+        return false;
+    }
+    let a = normalize(&a, true);
+    !a.is_empty() && a == normalize(&b, true)
 }
 
 fn fold_accent(c: char) -> char {
@@ -457,6 +485,55 @@ en:potatoes\t\tPommes de terre
         assert_eq!(normalize("Crème fraîche", true), "creme fraiche");
         assert_eq!(normalize("", false), "");
         assert_eq!(normalize("de", false), "");
+    }
+
+    // -- same_ingredient_name (#1023) --------------------------------------
+
+    #[test]
+    fn without_a_category_a_name_finds_its_accent_and_plural_variant() {
+        assert!(same_ingredient_name(
+            "tomme fermiere",
+            "Tommes fermières",
+            false
+        ));
+        assert!(same_ingredient_name(
+            "Tommes fermières",
+            "tomme fermiere",
+            false
+        ));
+        assert!(same_ingredient_name("l'échalote", "Échalotes", false));
+    }
+
+    #[test]
+    fn with_both_categories_the_name_without_accents_matches_nothing() {
+        // `pâtes` is en:pastas, `Pâtés` en:pate: the category decides.
+        assert!(!same_ingredient_name("pâtes", "Pâtés", true));
+        assert!(same_ingredient_name("pâtes", "Pâtés", false));
+    }
+
+    #[test]
+    fn the_same_name_lowercased_still_matches_as_before() {
+        assert!(same_ingredient_name("Lait", " lait ", true));
+        assert!(same_ingredient_name("Lait", " lait ", false));
+        assert!(same_ingredient_name("Crème fraîche", "CRÈME FRAÎCHE", true));
+    }
+
+    #[test]
+    fn different_names_do_not_match() {
+        assert!(!same_ingredient_name("tomme", "comté", false));
+        assert!(!same_ingredient_name("tomme fermiere", "tomme", false));
+    }
+
+    #[test]
+    fn an_empty_name_matches_nothing() {
+        assert!(!same_ingredient_name("", "", false));
+        assert!(!same_ingredient_name("  ", "", true));
+        assert!(!same_ingredient_name("", "lait", false));
+        assert!(!same_ingredient_name("lait", " ", false));
+        // A name of nothing but `de`/`du`/`des` or an article normalizes to
+        // nothing: it is no name either.
+        assert!(!same_ingredient_name("de", "du", false));
+        assert!(!same_ingredient_name("les", "la", false));
     }
 
     #[test]

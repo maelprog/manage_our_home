@@ -28,6 +28,7 @@ use uuid::Uuid;
 use crate::auth::session::{scoped_tx, AuthUser};
 use crate::error::{AppError, AppResult};
 use crate::grocery_list::items::add_missing_lines;
+use crate::grocery_list::planned::IngredientKey;
 use crate::groups::require_role;
 use crate::recipes::availability::{by_priority, planned_availability, MissingResponse};
 use crate::recipes::dietary_filter::{warnings_for, AllergyWarning};
@@ -856,34 +857,35 @@ pub async fn list_selections(
 
 /// The grocery lines a replacement removes (#815): of the unchecked lines
 /// generated for the replaced recipe, those no other planned recipe needs.
-/// A line is still needed when its name, trimmed and case-insensitive (as
-/// the generation matches names), is a required ingredient of a recipe
-/// that stays planned; the generation attributes a line several recipes
+/// A line is still needed when its name is one of a required ingredient of
+/// a recipe that stays planned, as the generation matches names
+/// (`IngredientKey::same_ingredient`: the same tag, the same name trimmed
+/// and case-insensitive, or, without a tag on one side, the same name
+/// normalized, #1023); the generation attributes a line several recipes
 /// share to the first one only, so removing it would leave the others
 /// without it.
 pub(crate) fn grocery_lines_to_drop(lines: &[(Uuid, &str)], still_needed: &[&str]) -> Vec<Uuid> {
-    let needed: HashSet<String> = still_needed
-        .iter()
-        .map(|name| name.trim().to_lowercase())
-        .collect();
+    let needed: Vec<IngredientKey> = still_needed.iter().map(|n| IngredientKey::of(n)).collect();
     lines
         .iter()
-        .filter(|(_, name)| !needed.contains(&name.trim().to_lowercase()))
+        .filter(|(_, name)| {
+            let key = IngredientKey::of(name);
+            !needed.iter().any(|n| n.same_ingredient(&key))
+        })
         .map(|(id, _)| *id)
         .collect()
 }
 
 /// Whether the grocery list follows a recipe (#815): one of its unchecked
-/// items bears the name, trimmed and case-insensitive, of a required
-/// ingredient of the recipe, whichever recipe the item is attributed to.
+/// items bears the name of a required ingredient of the recipe, as the
+/// generation matches names (`IngredientKey::same_ingredient`, #1023),
+/// whichever recipe the item is attributed to.
 pub(crate) fn list_follows(unchecked: &[&str], required: &[&str]) -> bool {
-    let required: HashSet<String> = required
-        .iter()
-        .map(|name| name.trim().to_lowercase())
-        .collect();
-    unchecked
-        .iter()
-        .any(|name| required.contains(&name.trim().to_lowercase()))
+    let required: Vec<IngredientKey> = required.iter().map(|n| IngredientKey::of(n)).collect();
+    unchecked.iter().any(|name| {
+        let key = IngredientKey::of(name);
+        required.iter().any(|r| r.same_ingredient(&key))
+    })
 }
 
 #[cfg(test)]
@@ -903,6 +905,14 @@ mod tests {
         assert!(!list_follows(&["Pain"], &["Crème", "Lardons"]));
         assert!(!list_follows(&[], &["Crème"]));
         assert!(!list_follows(&["Crème"], &[]));
+    }
+
+    #[test]
+    fn the_list_follows_a_recipe_by_the_normalized_name_without_a_category() {
+        // #1023: `tomme fermiere` has no category; `pâtes` and `Pâtés` have
+        // one each, and differ.
+        assert!(list_follows(&["Tommes fermières"], &["tomme fermiere"]));
+        assert!(!list_follows(&["Pâtés"], &["pâtes"]));
     }
 
     // -- grocery_lines_to_drop (#815) ---------------------------------------
@@ -930,6 +940,20 @@ mod tests {
         assert_eq!(
             grocery_lines_to_drop(&[(a, "crème"), (b, "LARDONS")], &[" Lardons", "Crème"]),
             Vec::<Uuid>::new()
+        );
+    }
+
+    #[test]
+    fn keeps_a_line_of_the_normalized_name_without_a_category() {
+        // #1023: `tomme fermiere` has no category; `pâtes` (en:pastas) is
+        // not `Pâtés` (en:pate).
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert_eq!(
+            grocery_lines_to_drop(
+                &[(a, "Tommes fermières"), (b, "Pâtés")],
+                &["tomme fermiere", "pâtes"]
+            ),
+            [b]
         );
     }
 

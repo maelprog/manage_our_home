@@ -15,7 +15,7 @@ use crate::recipes::dietary_filter::{
     AllergyWarning, HardFilter, Ingredient,
 };
 use crate::recipes::taste::{taste_score, Rated, Taste};
-use crate::recipes::taxonomy::{taxonomy, TagId, Taxonomy};
+use crate::recipes::taxonomy::{same_ingredient_name, taxonomy, TagId, Taxonomy};
 use crate::stocks::ingredient_links::{family_links, link_key};
 use crate::stocks::items::today;
 use crate::AppState;
@@ -448,14 +448,28 @@ pub(crate) async fn tagged_stock(
     .collect())
 }
 
-/// Whether some article in stock covers a recipe's ingredient: by name
-/// (trimmed, case-insensitive) always, and also by category when both sides
-/// have one ([`Taxonomy::satisfies`]).
+impl StockEntry {
+    /// Whether the article covers a recipe's ingredient of this name and
+    /// tag: by category when both sides have one ([`Taxonomy::satisfies`]);
+    /// by the same name, trimmed and case-insensitive, always; and, when
+    /// one side has no category, by the same name normalized without its
+    /// accents (#1023, [`same_ingredient_name`]).
+    pub(crate) fn covers(&self, ingredient_name: &str, ingredient_tag: Option<TagId>) -> bool {
+        ingredient_tag.is_some_and(|tag| self.tags.contains(&tag))
+            || same_ingredient_name(
+                ingredient_name,
+                &self.name,
+                ingredient_tag.is_some() && !self.tags.is_empty(),
+            )
+    }
+}
+
+/// Whether some article in stock covers a recipe's ingredient
+/// ([`StockEntry::covers`]).
 fn in_stock(ingredient_name: &str, ingredient_tag: Option<TagId>, stock: &[StockEntry]) -> bool {
-    let name = ingredient_name.trim().to_lowercase();
     stock
         .iter()
-        .any(|item| item.name == name || ingredient_tag.is_some_and(|tag| item.tags.contains(&tag)))
+        .any(|item| item.covers(ingredient_name, ingredient_tag))
 }
 
 /// Whether a recipe can be cooked from the stock (#539): it names at least
@@ -642,6 +656,28 @@ mod tests {
             taxonomy().canonical_ingredient(ingredient),
             stock,
         )
+    }
+
+    // -- by name, normalized (#1023) -----------------------------------------
+
+    #[test]
+    fn a_name_the_taxonomy_lacks_finds_its_accent_and_plural_variant() {
+        assert_eq!(taxonomy().canonical_ingredient("tomme fermiere"), None);
+        assert!(covered("tomme fermiere", &[entry("Tommes fermières", &[])]));
+        assert!(!covered("tomme fermiere", &[entry("Tommes", &[])]));
+    }
+
+    #[test]
+    fn two_categories_decide_over_the_name_without_accents() {
+        // `pâtes` is en:pastas, `Pâtés` en:pate.
+        assert!(taxonomy().canonical_ingredient("pâtes").is_some());
+        assert!(!entry("Pâtés", &[]).tags.is_empty());
+        assert!(!covered("pâtes", &[entry("Pâtés", &[])]));
+    }
+
+    #[test]
+    fn the_same_name_lowercased_still_covers() {
+        assert!(covered("Tomme fermière", &[entry(" tomme FERMIÈRE ", &[])]));
     }
 
     #[test]
