@@ -164,7 +164,7 @@ pub fn validate_age_declaration(declares_minimum_age: bool) -> Result<(), &'stat
 ///
 /// What is kept per account is the version accepted and when
 /// (`users.terms_accepted_version` / `terms_accepted_at`).
-pub const TERMS_VERSION: &str = "2026-10-04";
+pub const TERMS_VERSION: &str = "2026-11-20";
 
 /// A version of the CGU published before it applies (#367). The CGU promise
 /// that a substantial modification is announced before it takes effect:
@@ -191,8 +191,8 @@ pub struct AnnouncedTerms {
 
 /// The version announced and its text, if any — see [`AnnouncedTerms`].
 pub const TERMS_ANNOUNCED: Option<AnnouncedTerms> = Some(AnnouncedTerms {
-    // #909: the recipe library, readable by every user of the service.
-    version: "2026-11-20",
+    // #992: the licence a published recipe grants the other users.
+    version: "2026-12-26",
     markdown: include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../docs/terms-of-service-announced.md"
