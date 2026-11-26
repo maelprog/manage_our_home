@@ -90,11 +90,20 @@ const NOT_REACHED: [(&str, &str); 7] = [
     ),
     ("/groups/{id}/members/{user_id}/avatar", "no profile photo"),
     ("/me/avatar", "no profile photo"),
-    // No version of the CGU is announced and not yet in force.
+    // Only while a version of the CGU is announced and not yet in force:
+    // reached then, whatever this list says (`announced_terms_reached`).
     ("/terms-of-service/announced", "nothing announced"),
     // Only a deactivated account's restricted session opens it.
     ("/account/deactivated", "a full session"),
 ];
+
+/// Whether `/terms-of-service/announced` answers 2xx today: only while a
+/// version is announced and its date not come (#367), which a release
+/// announcing one makes true until that date (#992).
+fn announced_terms_reached() -> bool {
+    use manage_our_home_shared::validation::auth::{paris_day, terms_announced_on};
+    terms_announced_on(paris_day(chrono::Utc::now())).is_some()
+}
 
 /// The query string a route needs to answer 2xx.
 fn query_of(route: &str) -> String {
@@ -467,7 +476,11 @@ async fn no_get_route_outside_the_admitted_list_changes_anything(db: PgPool) {
             set_cookie.is_none(),
             "GET {route} ({status}) sets a cookie: {set_cookie:?}"
         );
-        let reached = !NOT_REACHED.iter().any(|(r, _)| r == route);
+        let reached = if route == "/terms-of-service/announced" {
+            announced_terms_reached()
+        } else {
+            !NOT_REACHED.iter().any(|(r, _)| r == route)
+        };
         assert_eq!(
             status.is_success(),
             reached,
