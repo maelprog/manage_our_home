@@ -22,9 +22,10 @@ use crate::icons::{icon, Icon};
 use crate::layout::CurrentUser;
 use crate::state::{api_request_auth, AppState};
 
-use super::detail::ingredient_html;
+use super::detail::{scaled_ingredient_html, Portions};
 use super::{
-    can_modify, family_context, recipe_not_found_page, recipes_cookie, service_unavailable_page,
+    can_modify, family_context, planned_selections, recipe_not_found_page, recipes_cookie,
+    service_unavailable_page,
 };
 
 pub async fn get(
@@ -64,12 +65,18 @@ pub async fn get(
         &fam.edit_min_role,
         recipe.created_by == me.user_id,
     );
-    Html(page(&fam.header, &recipe, can_edit)).into_response()
+    // Planned for a number of people, the quantities are shown for them
+    // (#1016); the selections unread, as written.
+    let planned = planned_selections(&state, fam.gid, cookie.as_deref())
+        .await
+        .unwrap_or_default();
+    let portions = Portions::of(&recipe, planned.iter().find(|s| s.recipe_id == recipe_id));
+    Html(page(&fam.header, &recipe, portions, can_edit)).into_response()
 }
 
 /// The page: the step-by-step view when the recipe has steps, a card saying
 /// it has none otherwise — with « Modifier la recette » for whoever may.
-fn page(header: &str, recipe: &RecipeResponse, can_edit: bool) -> String {
+fn page(header: &str, recipe: &RecipeResponse, portions: Portions, can_edit: bool) -> String {
     let id = recipe.id;
     let name = html_escape(&recipe.name);
     let steps = steps_of(recipe.instructions.as_deref().unwrap_or_default());
@@ -91,8 +98,8 @@ fn page(header: &str, recipe: &RecipeResponse, can_edit: bool) -> String {
     } else {
         format!(
             r#"<div data-cook="{id}">{plain}{ui}</div>"#,
-            plain = plain_html(recipe, &steps),
-            ui = stepper_html(recipe, &steps, &quit),
+            plain = plain_html(recipe, portions, &steps),
+            ui = stepper_html(recipe, portions, &steps, &quit),
         )
     };
     shell_with_header(
@@ -103,37 +110,50 @@ fn page(header: &str, recipe: &RecipeResponse, can_edit: bool) -> String {
     )
 }
 
-/// « Temps : 1 h 30. Pour 6 personnes. », as much of it as the recipe says
-/// — the time only `with_time`: the ingredients' dialog leaves it out, as
-/// the mock-up does.
-fn facts(recipe: &RecipeResponse, with_time: bool) -> String {
+/// « Temps : 1 h 30. Pour 6 personnes. » — the time only `with_time`: the
+/// ingredients' dialog leaves it out, as the mock-up does. Planned for a
+/// number of people (#1016), « Pour 4 personnes, comme prévu. Recette
+/// écrite pour 1. » in place of the people; a recipe that does not say
+/// how many it is written for is for 1 (#1014).
+fn facts(recipe: &RecipeResponse, portions: Portions, with_time: bool) -> String {
     let time = recipe
         .duration_minutes
         .filter(|_| with_time)
         .map(|m| format!("Temps : {}.", duration_label(m)));
-    let servings = recipe
-        .servings
-        .map(|s| format!("Pour {}.", servings_label(s)));
-    let said: Vec<String> = time.into_iter().chain(servings).collect();
-    if said.is_empty() {
-        String::new()
-    } else {
-        format!(r#"<p class="muted">{}</p>"#, said.join(" "))
+    match portions.planned {
+        Some(n) => format!(
+            r#"{time}<p><strong>Pour {n}</strong>, comme prévu. <span class="muted">Recette écrite pour {b}.</span></p>"#,
+            time = time
+                .map(|t| format!(r#"<p class="muted">{t}</p>"#))
+                .unwrap_or_default(),
+            n = servings_label(n),
+            b = portions.base(),
+        ),
+        None => {
+            let servings = format!("Pour {}.", servings_label(portions.base()));
+            let said: Vec<String> = time.into_iter().chain([servings]).collect();
+            format!(r#"<p class="muted">{}</p>"#, said.join(" "))
+        }
     }
 }
 
-/// The ingredients' `<li>`s, as on the recipe's page.
-fn ingredient_items(recipe: &RecipeResponse) -> String {
+/// The ingredients' `<li>`s, as on the recipe's page: for the people
+/// planned (#1016).
+fn ingredient_items(recipe: &RecipeResponse, portions: Portions) -> String {
     if recipe.ingredients.is_empty() {
         r#"<li class="muted">Aucun ingrédient renseigné.</li>"#.to_string()
     } else {
-        recipe.ingredients.iter().map(ingredient_html).collect()
+        recipe
+            .ingredients
+            .iter()
+            .map(|i| scaled_ingredient_html(i, portions))
+            .collect()
     }
 }
 
 /// What the page is without JavaScript, and until the script has run: the
 /// recipe's ingredients and steps, readable from the hob.
-fn plain_html(recipe: &RecipeResponse, steps: &[String]) -> String {
+fn plain_html(recipe: &RecipeResponse, portions: Portions, steps: &[String]) -> String {
     let id = recipe.id;
     let items: String = steps
         .iter()
@@ -150,8 +170,8 @@ fn plain_html(recipe: &RecipeResponse, steps: &[String]) -> String {
 </div>"#,
         back = icon(Icon::Previous),
         name = html_escape(&recipe.name),
-        facts = facts(recipe, true),
-        ingredients = ingredient_items(recipe),
+        facts = facts(recipe, portions, true),
+        ingredients = ingredient_items(recipe, portions),
     )
 }
 
@@ -159,7 +179,12 @@ fn plain_html(recipe: &RecipeResponse, steps: &[String]) -> String {
 /// [`plain_html`]: the head (« Étape 1 sur N », its gauge, the screen kept
 /// on), the timers, « Ingrédients », every step (the first one shown), the
 /// buttons to move, the ingredients' dialog and the row of a timer.
-fn stepper_html(recipe: &RecipeResponse, steps: &[String], quit: &str) -> String {
+fn stepper_html(
+    recipe: &RecipeResponse,
+    portions: Portions,
+    steps: &[String],
+    quit: &str,
+) -> String {
     let id = recipe.id;
     let n = steps.len();
     let cards: String = steps
@@ -188,8 +213,8 @@ fn stepper_html(recipe: &RecipeResponse, steps: &[String], quit: &str) -> String
         prev = icon(Icon::Previous),
         next = icon(Icon::Next),
         close = icon(Icon::Close),
-        facts = facts(recipe, false),
-        ingredients = ingredient_items(recipe),
+        facts = facts(recipe, portions, false),
+        ingredients = ingredient_items(recipe, portions),
     )
 }
 
@@ -677,7 +702,7 @@ mod tests {
     fn the_page_is_a_readable_list_and_a_hidden_stepper() {
         let r = recipe(Some("Tailler.\nCuire 10 min.\nServir."));
         let id = r.id;
-        let html = page("", &r, false);
+        let html = page("", &r, unplanned(&r), false);
         let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
         // Without JavaScript: the ingredients and every step, numbered.
         assert!(at(&format!(r#"<div data-cook="{id}"><div data-cook-plain>"#)) > 0);
@@ -725,7 +750,7 @@ mod tests {
     fn a_recipe_without_steps_says_so_and_offers_its_edit_to_whoever_may() {
         let r = recipe(Some(" \n "));
         let id = r.id;
-        let html = page("", &r, true);
+        let html = page("", &r, unplanned(&r), true);
         assert!(html.contains("Pas d'étapes pour cette recette"), "{html}");
         assert!(!html.contains("data-cook"), "{html}");
         assert!(
@@ -734,9 +759,48 @@ mod tests {
             )),
             "{html}"
         );
-        let html = page("", &recipe(None), false);
+        let html = page("", &recipe(None), unplanned(&recipe(None)), false);
         assert!(html.contains("Pas d'étapes pour cette recette"), "{html}");
         assert!(!html.contains("/edit"), "{html}");
         assert!(html.contains(&format!(r#"href="/recipes/{id}">Retour à la recette</a>"#)));
+    }
+    fn unplanned(recipe: &RecipeResponse) -> Portions {
+        Portions::of(recipe, None)
+    }
+
+    #[test]
+    fn a_planned_recipe_cooks_its_quantities_for_the_people_planned() {
+        // #1016: written for 1, planned for 4, 250 g reads 1 kg, in the
+        // list without JavaScript and in the ingredients' dialog.
+        let r = super::super::detail::tests::gratin(Some(1));
+        let portions = Portions {
+            written: Some(1),
+            planned: Some(4),
+        };
+        let html = page("", &r, portions, false);
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        let plain = &html[at("data-cook-plain")..at("data-cook-ui")];
+        let dialog = &html[at("<dialog")..at("</dialog>")];
+        let line = r#"<p><strong>Pour 4 personnes</strong>, comme prévu. <span class="muted">Recette écrite pour 1.</span></p>"#;
+        for part in [plain, dialog] {
+            assert!(
+                part.contains("<strong>Pommes de terre</strong> — 1 kg"),
+                "{part}"
+            );
+            assert!(!part.contains("250 g"), "{part}");
+            assert!(part.contains(line), "{part}");
+        }
+        // Unplanned, as written, for 1 when the recipe does not say.
+        let r = super::super::detail::tests::gratin(None);
+        let html = page("", &r, unplanned(&r), false);
+        assert!(
+            html.contains("<strong>Pommes de terre</strong> — 250 g"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="muted">Pour 1 personne.</p><ul>"#),
+            "{html}"
+        );
+        assert!(!html.contains("comme prévu"), "{html}");
     }
 }

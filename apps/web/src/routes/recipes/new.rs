@@ -68,6 +68,15 @@ pub struct RecipeForm {
 }
 
 impl RecipeForm {
+    /// A new recipe's form: « Personnes » at 1 (#1016), the quantities
+    /// being typed for someone.
+    pub(crate) fn blank() -> Self {
+        Self {
+            servings: "1".to_string(),
+            ..Self::default()
+        }
+    }
+
     /// Leaves out the ingredient lines and steps nothing was typed in.
     pub(crate) fn drop_blanks(&mut self) {
         self.ingredients.retain(|l| !l.is_blank());
@@ -281,14 +290,15 @@ fn fields_with(form: &RecipeForm, blank_lines: usize, blank_steps: usize) -> Str
     format!(
         r#"<label>Nom <input type="text" name="name" required value="{name}"/></label>
 <div class="pair">
-<label>Personnes
-<input type="number" name="servings" min="1" max="{SERVINGS_MAX}" step="1" value="{servings}" placeholder="Optionnel"/>
-</label>{servings_was}
+<div class="field"><label for="servings">Personnes</label>
+<input type="number" id="servings" name="servings" min="1" max="{SERVINGS_MAX}" step="1" value="{servings}" placeholder="Optionnel" aria-describedby="servings-help"/>
+<span class="muted" id="servings-help">Les quantités saisies sont pour ce nombre de personnes.</span>
+</div>{servings_was}
 <label>Temps (minutes)
 <input type="number" name="duration" min="1" max="{DURATION_MAX}" step="1" value="{duration}" placeholder="Optionnel"/>
 </label>
 </div>
-<p class="muted">Personnes : pour combien les quantités sont écrites. La liste de courses les recalcule pour les personnes indiquées en mettant la recette « À réaliser ».{rescales}</p>
+<p class="muted">La liste de courses recalcule les quantités pour les personnes indiquées en mettant la recette « À réaliser ».{rescales}</p>
 {equipment}
 <fieldset class="card">
 <legend>Ingrédients</legend>
@@ -402,7 +412,7 @@ pub async fn get(
     let Some(fam) = family_context(&state, &headers, &me, "/recipes/new").await else {
         return Redirect::to("/groups/new").into_response();
     };
-    let mut form = RecipeForm::default();
+    let mut form = RecipeForm::blank();
     for_family(&mut form, &state, fam.gid, &headers).await;
     Html(page(&fam.header, &form, None)).into_response()
 }
@@ -641,6 +651,24 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains(r#"name="step.3""#), "{html}");
+    }
+
+    #[test]
+    fn a_new_recipe_is_for_one_person_by_default() {
+        // #1016: « Personnes » at 1, with what it means under it.
+        let html = page("", &RecipeForm::blank(), None);
+        let field = html
+            .split("<input")
+            .find(|tag| tag.contains(r#"name="servings""#))
+            .unwrap_or_else(|| panic!("{html}"));
+        assert!(field.contains(r#"value="1""#), "{field}");
+        assert!(
+            html.contains(r#"<span class="muted" id="servings-help">Les quantités saisies sont pour ce nombre de personnes.</span>"#),
+            "{html}"
+        );
+        // A form sent back keeps what was typed, blank included.
+        let (sent, _) = read_form(&[("servings".into(), String::new())]);
+        assert_eq!(sent.servings, "");
     }
 
     #[test]

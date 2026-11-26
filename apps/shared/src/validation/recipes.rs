@@ -18,6 +18,10 @@
 //!   and the cooked recipe (`apps/api`) as for the edit form, whose
 //!   `rescale_untouched` scales the quantities left as they were when the
 //!   recipe's number of people changes (#845).
+//! - `quantity_display` writes a quantity and its unit for the recipe's page
+//!   and the cooking mode (#1016): grams to kilograms, millilitres and
+//!   centilitres to litres, two decimals at most; `scale_factor_label` says
+//!   what the quantities were multiplied by.
 //! - `stock_summary` turns a suggestion's matched/total required-ingredient
 //!   counts into the human badge the suggestion view shows *instead of* the
 //!   raw internal `score` (which the UI never renders).
@@ -386,6 +390,55 @@ pub fn scale_to_recipe(
     recipe: Option<i32>,
 ) -> Option<f64> {
     scale_quantity(quantity, selection, recipe_base(recipe, selection))
+}
+
+/// A quantity and its unit as the recipe's page and the cooking mode show
+/// them (#1016), display only: `g` reads `kg` from 1000, `ml` reads `l`
+/// from 1000 and `cl` from 100 (units read without case or blanks), two
+/// decimals at most, trailing zeros dropped, the decimal point of
+/// `fmt_num`. Any other unit (`pincée`, `gousse`) stays as written.
+/// `None` when there is neither a quantity nor a unit.
+pub fn quantity_display(quantity: Option<f64>, unit: Option<&str>) -> Option<String> {
+    let unit = unit.map(str::trim).filter(|u| !u.is_empty());
+    let Some(q) = quantity else {
+        return unit.map(str::to_string);
+    };
+    let Some(unit) = unit else {
+        return Some(fmt_qty(two_decimals(q)));
+    };
+    let read: String = unit
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let (q, unit) = match read.as_str() {
+        "g" if two_decimals(q) >= 1000.0 => (q / 1000.0, "kg"),
+        "ml" if two_decimals(q) >= 1000.0 => (q / 1000.0, "l"),
+        "cl" if two_decimals(q) >= 100.0 => (q / 100.0, "l"),
+        _ => (q, unit),
+    };
+    Some(format!("{} {unit}", fmt_qty(two_decimals(q))))
+}
+
+/// `q` rounded to two decimals, half away from zero once its binary noise
+/// is gone (`2.675` → `2.68`, not `2.67`).
+fn two_decimals(q: f64) -> f64 {
+    without_binary_noise(q * 100.0).round() / 100.0
+}
+
+/// What the quantities written for `base` people were multiplied by to
+/// serve `target` (#1016): `4`, `1.5`, or `5/3` when two decimals would
+/// not say it exactly.
+pub fn scale_factor_label(base: i32, target: i32) -> String {
+    if base > 0 && (i64::from(target) * 100) % i64::from(base) == 0 {
+        return fmt_qty(f64::from(target) / f64::from(base));
+    }
+    let (mut a, mut b) = (target.abs(), base.abs());
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let d = a.max(1);
+    format!("{}/{}", target / d, base / d)
 }
 
 #[cfg(test)]
@@ -932,5 +985,88 @@ mod tests {
         assert_eq!(stock_summary(0, 0), "Aucun ingrédient requis");
         assert_eq!(stock_summary(3, 3), "Tous les ingrédients en stock");
         assert_eq!(stock_summary(2, 4), "2/4 ingrédients en stock");
+    }
+    // -- quantity_display (#1016) --------------------------------------------
+
+    fn shown(quantity: f64, unit: &str) -> String {
+        quantity_display(Some(quantity), Some(unit)).unwrap()
+    }
+
+    #[test]
+    fn grams_read_kilograms_from_a_thousand() {
+        assert_eq!(shown(1000.0, "g"), "1 kg");
+        assert_eq!(shown(999.0, "g"), "999 g");
+        assert_eq!(shown(1500.0, "g"), "1.5 kg");
+    }
+
+    #[test]
+    fn millilitres_and_centilitres_read_litres() {
+        assert_eq!(shown(1200.0, "ml"), "1.2 l");
+        assert_eq!(shown(999.0, "ml"), "999 ml");
+        assert_eq!(shown(50.0, "cl"), "50 cl");
+        assert_eq!(shown(100.0, "cl"), "1 l");
+        assert_eq!(shown(250.0, "cl"), "2.5 l");
+    }
+
+    #[test]
+    fn units_are_read_without_case_or_blanks() {
+        assert_eq!(shown(1000.0, "G"), "1 kg");
+        assert_eq!(shown(2000.0, " ml "), "2 l");
+        assert_eq!(shown(150.0, " C L"), "1.5 l");
+        // Not converted: the unit as written, trimmed.
+        assert_eq!(shown(250.0, " G "), "250 G");
+    }
+
+    #[test]
+    fn two_decimals_at_most_without_trailing_zeros() {
+        assert_eq!(shown(133.3333, "g"), "133.33 g");
+        assert_eq!(shown(0.5, "kg"), "0.5 kg");
+        assert_eq!(shown(2.10, "kg"), "2.1 kg");
+        assert_eq!(shown(0.0, "g"), "0 g");
+        assert_eq!(shown(2.675, "l"), "2.68 l");
+        assert_eq!(quantity_display(Some(4.0 / 3.0), None), Some("1.33".into()));
+    }
+
+    #[test]
+    fn the_threshold_is_judged_on_the_rounded_quantity() {
+        // 999.999 g shows as 1000 g once rounded: it reads 1 kg.
+        assert_eq!(shown(999.999, "g"), "1 kg");
+        assert_eq!(shown(999.994, "g"), "999.99 g");
+    }
+
+    #[test]
+    fn an_unknown_unit_stays_as_written() {
+        assert_eq!(shown(4.0, "pincée"), "4 pincée");
+        assert_eq!(shown(2000.0, "gousse"), "2000 gousse");
+        assert_eq!(shown(3.0, "unité"), "3 unité");
+        assert_eq!(shown(1500.0, "kg"), "1500 kg");
+    }
+
+    #[test]
+    fn a_missing_quantity_or_unit() {
+        assert_eq!(quantity_display(Some(2.0), None), Some("2".into()));
+        assert_eq!(quantity_display(Some(2.0), Some("  ")), Some("2".into()));
+        assert_eq!(quantity_display(Some(1000.0), None), Some("1000".into()));
+        assert_eq!(quantity_display(None, Some("g")), Some("g".into()));
+        assert_eq!(quantity_display(None, None), None);
+        assert_eq!(quantity_display(None, Some(" ")), None);
+    }
+
+    // -- scale_factor_label (#1016) ------------------------------------------
+
+    #[test]
+    fn the_factor_is_a_number_when_two_decimals_say_it() {
+        assert_eq!(scale_factor_label(1, 4), "4");
+        assert_eq!(scale_factor_label(4, 6), "1.5");
+        assert_eq!(scale_factor_label(4, 2), "0.5");
+        assert_eq!(scale_factor_label(4, 1), "0.25");
+        assert_eq!(scale_factor_label(4, 4), "1");
+    }
+
+    #[test]
+    fn the_factor_is_a_reduced_fraction_otherwise() {
+        assert_eq!(scale_factor_label(3, 5), "5/3");
+        assert_eq!(scale_factor_label(6, 10), "5/3");
+        assert_eq!(scale_factor_label(3, 1), "1/3");
     }
 }
