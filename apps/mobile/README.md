@@ -142,8 +142,9 @@ du site.
   l'agenda. La déconnexion les retire tous. La permission des
   notifications (Android 13+) et les alarmes exactes (Android 14+) se
   demandent sur « Mon compte › Notifications de rappel » ; sans alarmes
-  exactes, les rappels partent quand même, avec quelques minutes de retard
-  possibles. Un événement modifié pendant que le téléphone est hors ligne
+  exactes, les rappels partent quand même, mais Android peut les retarder
+  des trois quarts du délai qui reste, une heure au plus (Android 12 et
+  suivants), et davantage en veille profonde. Un événement modifié pendant que le téléphone est hors ligne
   garde son rappel à l'ancienne heure jusqu'à la prochaine ouverture.
 - **Les notifications poussées par le serveur** (#1004) : les changements
   de l'agenda faits par un autre membre, les alertes de budget et le
