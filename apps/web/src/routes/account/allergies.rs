@@ -157,6 +157,12 @@ pub(crate) fn add_body(kind: Kind, tag: &str, consent: bool) -> serde_json::Valu
     }
 }
 
+/// Whether apps/api refused an allergy for want of consent (#958): a 422
+/// whose code is `consent_required`. Another 422 is not that refusal.
+pub(crate) fn consent_refused(status: reqwest::StatusCode, body: &serde_json::Value) -> bool {
+    status == reqwest::StatusCode::UNPROCESSABLE_ENTITY && body["error"] == "consent_required"
+}
+
 /// The levels a « Enregistrer le partage » form sets: one per family,
 /// `share.<family id>` = `public`, `anonymous` or `private`. A key or a
 /// value that does not read refuses the whole form (`invalid_share`):
@@ -726,9 +732,7 @@ pub async fn add(
             back_given("error", "unknown_tag", given)
         }
         // apps/api's own check (#958): the list emptied since it was read.
-        Ok(resp) if resp.status == reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
-            back("error", "consent_required")
-        }
+        Ok(resp) if consent_refused(resp.status, &resp.body) => back("error", "consent_required"),
         _ => back_given("error", "unavailable", given),
     }
 }
@@ -1032,6 +1036,24 @@ mod tests {
             add_body(Kind::Dislike, "en:mushrooms", true),
             json!({"tag": "en:mushrooms"})
         );
+    }
+
+    #[test]
+    fn only_a_422_coded_consent_required_is_a_refusal_for_consent() {
+        use reqwest::StatusCode;
+        use serde_json::json;
+        let consent = json!({"error": "consent_required"});
+        assert!(consent_refused(StatusCode::UNPROCESSABLE_ENTITY, &consent));
+        // Another 422: a body the API could not read, say.
+        assert!(!consent_refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!({"error": "invalid_body"})
+        ));
+        assert!(!consent_refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!(null)
+        ));
+        assert!(!consent_refused(StatusCode::BAD_REQUEST, &consent));
     }
 
     #[test]

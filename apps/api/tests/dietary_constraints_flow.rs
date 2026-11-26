@@ -72,7 +72,7 @@ async fn a_member_lists_adds_and_removes_their_allergies_and_dislikes(db: PgPool
             Method::POST,
             "/me/allergies",
             &f.holder,
-            Some(json!({"tag": tag})),
+            Some(json!({ "tag": tag })),
         )
         .await;
         assert_eq!((got, body["error"].as_str()), (status, Some(code)), "{tag}");
@@ -1090,17 +1090,42 @@ async fn the_first_allergy_needs_consent_and_is_asked_again_once_none_is_left(db
     assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
 }
 
+/// A first allergy, consented, and another without consent, at the same
+/// time: the second waits for the first under the member's lock, then
+/// finds the consent it gave in force. Without the lock it reads the list
+/// before the first is committed, finds it empty, and is refused.
 #[sqlx::test]
-async fn two_first_allergies_at_once_without_consent_are_both_refused(db: PgPool) {
+async fn an_allergy_without_consent_waits_for_a_consented_first_one_in_flight(db: PgPool) {
     let router = test_router(db.clone());
     let f = family(&router, &db, "consent-twice").await;
-    let (one, two) = tokio::join!(
-        add_allergy(&router, &f.holder, json!({"tag": TAG})),
-        add_allergy(&router, &f.holder, json!({"tag": "en:eggs"})),
+
+    // The consented first one in flight, as `add_allergy` holds it: the
+    // lock taken, the allergy written, not yet committed.
+    let mut first = holding_allergies_lock(&db, f.holder_id).await;
+    sqlx::query("INSERT INTO user_allergies (user_id, tag) VALUES ($1, $2)")
+        .bind(f.holder_id)
+        .bind(TAG)
+        .execute(&mut *first)
+        .await
+        .unwrap();
+
+    let second = {
+        let router = router.clone();
+        let cookie = f.holder.clone();
+        tokio::spawn(async move { add_allergy(&router, &cookie, json!({"tag": "en:eggs"})).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !second.is_finished(),
+        "the second allergy did not wait for the first: {:?}",
+        // Only reached when it is finished: what it answered.
+        second.await.unwrap()
     );
-    assert!(consent_required(&one), "{one:?}");
-    assert!(consent_required(&two), "{two:?}");
-    assert_eq!(allergy_rows(&db, f.holder_id).await, 0);
+
+    first.commit().await.unwrap();
+    let (status, body) = second.await.unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(allergy_rows(&db, f.holder_id).await, 2);
 }
 
 /// A transaction of the harness holding the member's `ALLERGIES_LOCK`, as
