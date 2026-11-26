@@ -50,55 +50,91 @@ async fn no_log_audit_or_notification_carries_an_allergy(db: PgPool) {
         .with_writer(move || writer.clone())
         .init();
     {
-        let steps: Vec<(Method, &str, Option<Value>)> = vec![
+        // Each step with the answer it gets: a step refused for another
+        // reason would not run the path it is there to watch.
+        let steps: Vec<(Method, &str, Option<Value>, StatusCode)> = vec![
             // Refused: the first, without consent.
-            (Method::POST, "/me/allergies", Some(json!({ "tag": TAG }))),
+            (
+                Method::POST,
+                "/me/allergies",
+                Some(json!({ "tag": TAG })),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
             (
                 Method::POST,
                 "/me/allergies",
                 Some(json!({"tag": TAG, "consent": true})),
+                StatusCode::CREATED,
             ),
             // Refused: already there.
-            (Method::POST, "/me/allergies", Some(json!({ "tag": TAG }))),
+            (
+                Method::POST,
+                "/me/allergies",
+                Some(json!({ "tag": TAG })),
+                StatusCode::CONFLICT,
+            ),
             (
                 Method::PUT,
                 "/me/allergies/sharing",
                 Some(json!({"tag": TAG, "group_id": f.group, "share": "public"})),
+                StatusCode::OK,
             ),
             (
                 Method::PUT,
                 "/me/allergies/sharing",
                 Some(json!({"tag": TAG, "group_id": f.group, "share": "anonymous"})),
+                StatusCode::OK,
             ),
             // Refused: no such level, no such family.
             (
                 Method::PUT,
                 "/me/allergies/sharing",
                 Some(json!({"tag": TAG, "group_id": f.group, "share": "secret"})),
+                StatusCode::BAD_REQUEST,
             ),
             (
                 Method::PUT,
                 "/me/allergies/sharing",
                 Some(json!({"tag": TAG, "group_id": Uuid::nil(), "share": "public"})),
+                StatusCode::NOT_FOUND,
             ),
-            (Method::GET, "/me/allergies", None),
+            (Method::GET, "/me/allergies", None, StatusCode::OK),
             (
                 Method::POST,
                 "/me/dislikes",
                 Some(json!({"tag": "en:mushrooms"})),
+                StatusCode::CREATED,
             ),
-            (Method::DELETE, "/me/allergies", Some(json!({ "tag": TAG }))),
+            (
+                Method::DELETE,
+                "/me/allergies",
+                Some(json!({ "tag": TAG })),
+                StatusCode::NO_CONTENT,
+            ),
             // Refused: already gone.
-            (Method::DELETE, "/me/allergies", Some(json!({ "tag": TAG }))),
+            (
+                Method::DELETE,
+                "/me/allergies",
+                Some(json!({ "tag": TAG })),
+                StatusCode::NOT_FOUND,
+            ),
             (
                 Method::POST,
                 "/me/allergies",
                 Some(json!({"tag": TAG, "consent": true})),
+                StatusCode::CREATED,
             ),
-            (Method::DELETE, "/me/dietary-constraints", None),
+            (
+                Method::DELETE,
+                "/me/dietary-constraints",
+                None,
+                StatusCode::NO_CONTENT,
+            ),
         ];
-        for (method, uri, body) in steps {
-            call(&router, method, uri, Some(&f.holder), body).await;
+        for (method, uri, body, expected) in steps {
+            let step = format!("{method} {uri}");
+            let response = call(&router, method, uri, Some(&f.holder), body).await;
+            assert_eq!(response.status(), expected, "{step}");
         }
         let (status, _) = send(
             &router,
