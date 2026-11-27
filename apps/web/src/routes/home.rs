@@ -1096,7 +1096,7 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         r#"{greeting}
 {terms}{ownership}{week}
 <div class="dash">
-{tonight}{agenda}
+{timers}{tonight}{agenda}
 {grocery}
 {expiry}
 {budget}
@@ -1112,6 +1112,7 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         // they acknowledge it — from the same `GET /groups` the header uses.
         ownership = ownership_notices(&groups),
         week = week_block(occurrences.as_deref(), today),
+        timers = timers_card(),
         tonight = tonight_block(&picks, meal, &durations),
         agenda = agenda_block(
             occurrences.as_deref(),
@@ -1134,6 +1135,19 @@ async fn dashboard(me: MeResponse, state: AppState, headers: HeaderMap) -> Respo
         &body,
     ))
     .into_response()
+}
+
+/// « Minuteurs en cours » (#1018), at the head of the grid: the timers the
+/// Cuisiner pages keep in this browser, which the server does not know.
+/// Empty and `hidden`, no skeleton: `cook::WATCH_SCRIPT` writes a row per
+/// timer from the `<template>` and shows the card while one runs or waits
+/// in pause; without JavaScript, storage or a timer, the page is as it was.
+fn timers_card() -> String {
+    format!(
+        r#"<section class="card timers-live" aria-labelledby="tl-h" data-home-timers hidden><h2 id="tl-h">Minuteurs en cours</h2><ul class="list"></ul>{notify}<template data-tl-row><li><a class="list-row tl" href=""><span class="tl-what"><strong></strong><span></span></span><span class="tl-time"><span class="left" role="timer"></span><span class="tl-state" hidden>En pause</span></span>{next}</a></li></template></section>"#,
+        notify = crate::routes::recipes::cook::notify_html(),
+        next = icon(Icon::Next),
+    )
 }
 
 /// `POST /logout` on apps/web itself: forwards to `POST /auth/logout` on
@@ -2860,6 +2874,45 @@ mod pure_logic_tests {
         assert!(
             html.contains(r#"aria-label="1 autre recette ce midi, voir le planning">…</a>"#),
             "{html}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod timers_card_tests {
+    use super::*;
+
+    #[test]
+    fn the_timers_card_waits_hidden_and_empty_for_the_script() {
+        // #1018: no skeleton — without JavaScript, storage or a timer, the
+        // page is the one it was.
+        let html = timers_card();
+        assert!(
+            html.starts_with(
+                r#"<section class="card timers-live" aria-labelledby="tl-h" data-home-timers hidden><h2 id="tl-h">Minuteurs en cours</h2><ul class="list"></ul>"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains(&crate::routes::recipes::cook::notify_html()),
+            "{html}"
+        );
+        assert!(html.ends_with("</section>"), "{html}");
+    }
+
+    #[test]
+    fn a_timer_row_links_to_cooking_with_its_time_left_and_its_pause() {
+        let html = timers_card();
+        let row = &html[html
+            .find("<template data-tl-row>")
+            .unwrap_or_else(|| panic!("{html}"))..];
+        let row = &row[..row.find("</template>").unwrap()];
+        assert_eq!(
+            row,
+            format!(
+                r#"<template data-tl-row><li><a class="list-row tl" href=""><span class="tl-what"><strong></strong><span></span></span><span class="tl-time"><span class="left" role="timer"></span><span class="tl-state" hidden>En pause</span></span>{}</a></li>"#,
+                icon(Icon::Next)
+            )
         );
     }
 }

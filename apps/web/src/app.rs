@@ -140,7 +140,9 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// The `<head>` also loads `ENHANCE_SCRIPT` (#325) the same way, and
 /// without `defer`: a `data-confirm` form must not be submittable before
 /// its question is in place. It is one more blocking request on a cold
-/// cache, made alongside the sheet's, and none after that.
+/// cache, made alongside the sheet's, and none after that. After it, the
+/// watch over the cooking timers (#1018, `recipes::cook::WATCH_SCRIPT`),
+/// which rings a timer's end on whatever page is open.
 ///
 /// Between the two, the favicons, the home-screen icon and the manifest
 /// (#542, `crate::brand::head_links`). None of them blocks the rendering.
@@ -162,7 +164,8 @@ fn document(title: &str, body: &str) -> String {
 <title>{title} — MHome</title>
 <link rel="stylesheet" href="{css}"/>
 {brand}
-{enhance}{local_reminders}
+{enhance}
+{cook_watch}{local_reminders}
 </head>
 <body>
 <a class="skip-link" href="#main">Aller au contenu</a>
@@ -175,6 +178,7 @@ fn document(title: &str, body: &str) -> String {
         css = crate::assets::stylesheet_href(),
         brand = crate::brand::head_links(),
         enhance = crate::assets::Script::Enhance.tag(),
+        cook_watch = crate::assets::Script::CookWatch.tag(),
         local_reminders = local_reminders_tag(),
         body = body,
     )
@@ -3323,6 +3327,8 @@ mod tests {
         let mut worn = class_mentions(ENHANCE_SCRIPT);
         // The live scan's `ok` (#807) is put on by its script alone.
         worn.extend(class_mentions(crate::routes::stocks::new::LIVE_SCAN_SCRIPT));
+        // The window at a timer's end (#1018) is built by its script alone.
+        worn.extend(class_mentions(crate::routes::recipes::cook::WATCH_SCRIPT));
         for (_, body) in rust_sources() {
             worn.extend(class_mentions(&body));
         }

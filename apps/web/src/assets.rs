@@ -211,10 +211,11 @@ pub enum Script {
     GoogleSignIn,
     LiveScan,
     AvatarCrop,
+    CookWatch,
 }
 
 impl Script {
-    pub const ALL: [Script; 8] = [
+    pub const ALL: [Script; 9] = [
         Script::Enhance,
         Script::ResetPassword,
         Script::MessagerieLive,
@@ -223,6 +224,7 @@ impl Script {
         Script::GoogleSignIn,
         Script::LiveScan,
         Script::AvatarCrop,
+        Script::CookWatch,
     ];
 
     fn stem(self) -> &'static str {
@@ -235,6 +237,7 @@ impl Script {
             Script::GoogleSignIn => "google-sign-in",
             Script::LiveScan => "live-scan",
             Script::AvatarCrop => "avatar-crop",
+            Script::CookWatch => "cook-watch",
         }
     }
 
@@ -249,6 +252,7 @@ impl Script {
             Script::GoogleSignIn => crate::routes::auth::GOOGLE_SIGN_IN_SCRIPT,
             Script::LiveScan => crate::routes::stocks::new::LIVE_SCAN_SCRIPT,
             Script::AvatarCrop => crate::routes::account::avatar::CROP_SCRIPT,
+            Script::CookWatch => crate::routes::recipes::cook::WATCH_SCRIPT,
         }
     }
 
@@ -702,6 +706,19 @@ mod tests {
         let html = crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
         let head = &html[..html.find("</head>").expect("a head")];
         assert!(head.contains(&Script::Enhance.tag()), "{html}");
+    }
+
+    #[test]
+    fn every_page_loads_the_cook_timers_watch_after_enhance_in_its_head() {
+        // #1018: a timer that ends rings on any page, not only on its
+        // recipe's Cuisiner.
+        let html = crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
+        let head = &html[..html.find("</head>").expect("a head")];
+        let watch = head
+            .find(&Script::CookWatch.tag())
+            .unwrap_or_else(|| panic!("{html}"));
+        assert!(head.find(&Script::Enhance.tag()).unwrap() < watch, "{html}");
+        assert_eq!(html.matches(&Script::CookWatch.tag()).count(), 1, "{html}");
     }
 
     #[test]
