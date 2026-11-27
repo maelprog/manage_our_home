@@ -354,4 +354,70 @@ END:VCALENDAR
     fn rejects_garbage_input() {
         assert_eq!(parse_ics("not an ics file"), Err(ParseError::InvalidIcs));
     }
+
+    /// #918, constat 4 (rouge sur `main`, branche jetable) : le parseur
+    /// d'`icalendar` descend d'un cadre de pile par `BEGIN:` imbriqué. Un
+    /// flux de 3 000 `BEGIN:VEVENT` (42 Ko) déborde la pile de 2 MiB d'un
+    /// travailleur tokio, où `trigger_calendar_import` appelle `parse_ics`,
+    /// et un débordement de pile arrête le processus entier (pas de
+    /// panique à rattraper). Le test se relance donc lui-même dans un
+    /// processus fils, et exige que ce fils termine normalement.
+    #[test]
+    fn pentest_918_a_nested_feed_does_not_abort_the_process() {
+        const CHILD: &str = "PENTEST_918_NESTED_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let feed = format!("BEGIN:VCALENDAR\r\n{}", "BEGIN:VEVENT\r\n".repeat(3000));
+            std::thread::Builder::new()
+                .stack_size(2 * 1024 * 1024)
+                .spawn(move || {
+                    let _ = parse_ics(&feed);
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "google_calendar::parse::tests::pentest_918_a_nested_feed_does_not_abort_the_process",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "3 000 nested BEGIN lines (42 KB) aborted the process: {status}"
+        );
+    }
+
+    /// #918, constat 5 (rouge sur `main`, branche jetable) : chaque
+    /// événement lu est cherché dans tous ceux déjà gardés
+    /// (`events.iter_mut().find`), et `parse_ics` tourne sur un travailleur
+    /// async. Un flux de 5 MiB porte 83 394 UID distincts : 9,4 s de calcul
+    /// en release. Attendu : un coût linéaire — doubler le nombre
+    /// d'événements double le temps, à du bruit près (ratio < 3 ; il vaut
+    /// environ 4 quand le coût est quadratique).
+    #[test]
+    fn pentest_918_parsing_twice_the_events_costs_about_twice_the_time() {
+        let feed = |n: usize| {
+            let mut s = String::from("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n");
+            for i in 0..n {
+                s.push_str(&format!(
+                    "BEGIN:VEVENT\r\nUID:{i}\r\nDTSTART:20261127T090000Z\r\nEND:VEVENT\r\n"
+                ));
+            }
+            s.push_str("END:VCALENDAR\r\n");
+            s
+        };
+        let time = |body: &str| {
+            let t = std::time::Instant::now();
+            assert!(parse_ics(body).is_ok());
+            t.elapsed().as_secs_f64()
+        };
+        let (small, large) = (feed(20_000), feed(40_000));
+        let ratio = time(&large) / time(&small);
+        assert!(ratio < 3.0, "40 000 events cost {ratio:.1} times 20 000");
+    }
 }

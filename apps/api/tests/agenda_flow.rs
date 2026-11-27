@@ -6277,3 +6277,46 @@ async fn a_series_cut_into_the_other_kind_keeps_its_exclusions_and_completions(d
         assert_eq!(listed, expected, "all_day {was_all_day}: listed");
     }
 }
+
+/// #918, constat 3 (rouge sur `main`, branche jetable) : ni le titre, ni
+/// la description, ni le lieu d'un événement n'ont de borne de longueur ;
+/// seul le corps de 2 MiB (`DefaultBodyLimit`) les arrête. Une description
+/// de 512 KiB sur une règle quotidienne fait répondre à
+/// `GET /groups/{id}/events` 1 004 occurrences qui la recopient chacune
+/// (525 Mo de JSON sur le banc). Attendu : un texte d'un million de
+/// caractères est refusé (400), comme un message au-delà de 4 000.
+#[sqlx::test]
+async fn pentest_918_an_event_text_of_a_million_characters_is_refused(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "pentest-918-amp@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let long = "d".repeat(1_000_000);
+    for field in ["title", "description", "location"] {
+        let mut body = serde_json::json!({
+            "title": "Amplification",
+            "starts_at": "2026-01-01T09:00:00Z",
+            "ends_at": "2026-01-01T10:00:00Z",
+            "rrule": "FREQ=DAILY",
+        });
+        body[field] = serde_json::Value::String(long.clone());
+        let res = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/events"),
+            Some(&cookie),
+            Some(body),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "{field} of 1 000 000 characters"
+        );
+    }
+}

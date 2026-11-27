@@ -2004,3 +2004,142 @@ async fn connections_follow_the_family_s_threshold(db: PgPool) {
         }
     }
 }
+
+/// #918, constat 1 (rouge sur `main`, branche jetable) : l'adresse d'un
+/// flux iCal est demandée par `outbound_http::client()`, sans le filtre
+/// des adresses publiques que l'import de recette applique
+/// (`public_destination`). Un compte quelconque, propriétaire du foyer
+/// qu'il vient de créer, fait atteindre au serveur une adresse de boucle
+/// locale (ou tout service du réseau interne). Attendu : la demande est
+/// refusée avant tout appel, comme pour l'import de recette.
+#[sqlx::test]
+async fn pentest_918_a_feed_on_a_loopback_address_is_never_requested(db: PgPool) {
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "pentest-918-ssrf@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = hits.clone();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                ICS_BODY.len(),
+                ICS_BODY
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.shutdown().await;
+        }
+    });
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&cookie),
+        Some(
+            serde_json::json!({"label": "interne", "feed_url": format!("http://{addr}/basic.ics")}),
+        ),
+    )
+    .await;
+    if create.status() == StatusCode::CREATED {
+        let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+        let run = call(
+            &router,
+            Method::POST,
+            &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_ne!(
+            run.status(),
+            StatusCode::OK,
+            "the loopback feed was imported"
+        );
+    }
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the server requested a loopback address on a member's behalf"
+    );
+}
+
+/// #918, constat 2 (rouge sur `main`, branche jetable) : le flux est lu
+/// en entier (`Response::text`) avant que sa taille soit comparée à
+/// `MAX_FEED_BYTES` (5 MiB). Un pair qui envoie 64 MiB les voit tous lus,
+/// et tenus en mémoire, avant le `feed_too_large`. Attendu : la lecture
+/// s'arrête au plafond, comme `recipes::import::fetch_page` le fait.
+#[sqlx::test]
+async fn pentest_918_a_feed_past_the_cap_is_not_read_to_its_end(db: PgPool) {
+    const SENT_MIB: usize = 64;
+    let router = test_router(db.clone());
+    let cookie = register_verify_login(
+        &router,
+        &db,
+        "pentest-918-big@example.test",
+        "owner-password1",
+    )
+    .await;
+    let group_id = create_group(&router, &cookie, "Foyer").await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let written = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = written.clone();
+    tokio::spawn(async move {
+        if let Ok((mut socket, _)) = listener.accept().await {
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let head =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/calendar\r\nConnection: close\r\n\r\n";
+            if socket.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            let chunk = vec![b'A'; 1024 * 1024];
+            for _ in 0..SENT_MIB {
+                if socket.write_all(&chunk).await.is_err() {
+                    return;
+                }
+                count.fetch_add(chunk.len(), std::sync::atomic::Ordering::SeqCst);
+            }
+            let _ = socket.shutdown().await;
+        }
+    });
+
+    let create = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports"),
+        Some(&cookie),
+        Some(serde_json::json!({"label": "gros", "feed_url": format!("http://{addr}/big.ics")})),
+    )
+    .await;
+    assert_status(&create, StatusCode::CREATED);
+    let import_id = json_body(create).await["id"].as_str().unwrap().to_string();
+    let run = call(
+        &router,
+        Method::POST,
+        &format!("/groups/{group_id}/calendar-imports/{import_id}/import"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_status(&run, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_body(run).await["error"], "feed_too_large");
+    let read = written.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        read < 16 * 1024 * 1024,
+        "{} MiB of a feed capped at 5 MiB were read",
+        read / (1024 * 1024)
+    );
+}
