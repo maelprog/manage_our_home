@@ -235,51 +235,6 @@ var MHomeCookWatch = (function () {
     return { title: "Minuteur terminé", body: item.title + " · " + item.what };
   }
 
-  // Dans l'application (#1019), le bouton demande la permission des
-  // notifications d'Android, sans laquelle l'alarme native ne sonne rien ;
-  // les lignes d'état restent cachées. Le plugin Local Notifications la
-  // lit et la demande, comme le bloc de « Mon compte › Notifications de
-  // rappel » (`account::notifications::local_block`).
-  function appPermissions() {
-    try {
-      var plugins = window.Capacitor && window.Capacitor.Plugins;
-      return W.alarmPlugin(window) && plugins.LocalNotifications ? plugins.LocalNotifications : null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function showNotify(state) {
-    Array.prototype.forEach.call(document.querySelectorAll("[data-notify]"), function (el) {
-      el.hidden = state !== "ask";
-    });
-    Array.prototype.forEach.call(document.querySelectorAll("[data-notify-on]"), function (el) {
-      el.hidden = state !== "on";
-    });
-    Array.prototype.forEach.call(document.querySelectorAll("[data-notify-off]"), function (el) {
-      el.hidden = state !== "blocked";
-    });
-  }
-
-  function appNotifyUi(local) {
-    Promise.resolve()
-      .then(function () {
-        return local.checkPermissions();
-      })
-      .then(
-        function (permission) {
-          var display = permission && permission.display;
-          showNotify(W.appNotifyState(display));
-          // Accordée depuis, l'alarme native sonne : plus de bip ; retirée,
-          // elle ne sonne rien : le bip.
-          if (display) keepNotifications(display === "granted");
-        },
-        function () {
-          showNotify("none");
-        }
-      );
-  }
-
   // « ask » : le bouton ; « on » et « blocked » : une ligne d'état ;
   // « none » (pas d'API) : ni l'un ni l'autre.
   function notifyState(api, permission) {
@@ -613,6 +568,51 @@ var MHomeCookWatch = (function () {
   }
 
   // -- « Prévenir à la fin » ------------------------------------------------
+
+  // Dans l'application (#1019), le bouton demande la permission des
+  // notifications d'Android, sans laquelle l'alarme native ne sonne rien ;
+  // les lignes d'état restent cachées. Le plugin Local Notifications la
+  // lit et la demande, comme le bloc de « Mon compte › Notifications de
+  // rappel » (`account::notifications::local_block`).
+  function appPermissions() {
+    try {
+      var plugins = window.Capacitor && window.Capacitor.Plugins;
+      return W.alarmPlugin(window) && plugins.LocalNotifications ? plugins.LocalNotifications : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function showNotify(state) {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-notify]"), function (el) {
+      el.hidden = state !== "ask";
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-notify-on]"), function (el) {
+      el.hidden = state !== "on";
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-notify-off]"), function (el) {
+      el.hidden = state !== "blocked";
+    });
+  }
+
+  function appNotifyUi(local) {
+    Promise.resolve()
+      .then(function () {
+        return local.checkPermissions();
+      })
+      .then(
+        function (permission) {
+          var display = permission && permission.display;
+          showNotify(W.appNotifyState(display));
+          // Accordée depuis, l'alarme native sonne : plus de bip ; retirée,
+          // elle ne sonne rien : le bip.
+          if (display) keepNotifications(display === "granted");
+        },
+        function () {
+          showNotify("none");
+        }
+      );
+  }
 
   function notifyUi() {
     var local = appPermissions();
