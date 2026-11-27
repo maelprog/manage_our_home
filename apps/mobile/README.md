@@ -526,9 +526,16 @@ ou tuée, sur le volume des **alarmes**, jusqu'à « Arrêter ».
   minuteur arrivé à sa fin n'est pas annulé : sa sonnerie dure jusqu'à
   « Arrêter ». L'identifiant de l'alarme est celui de la recette suivi de
   celui du minuteur ; un toucher ouvre la page Cuisiner de la recette
-  (`url`). « Arrêter » sur un minuteur terminé de la page Cuisiner, et
-  « Arrêter » de la fenêtre « Minuteur terminé » des autres pages,
-  appellent aussi `stop()`.
+  (`url`). « Arrêter » de la page Cuisiner, et « Arrêter » de la fenêtre
+  « Minuteur terminé » des autres pages, annulent aussitôt l'alarme de
+  leurs minuteurs (`cancel({ id })`) : un autre minuteur qui sonne
+  continue. La page n'appelle jamais `stop()`.
+- **Après un redémarrage ou un arrêt forcé** (Android oublie alors ses
+  alarmes, et la page ne peut pas lui demander lesquelles restent) : au
+  premier passage depuis le lancement de l'application (sessionStorage,
+  que l'application tuée ne garde pas), la page reprogramme chaque
+  minuteur encore à venir, même déjà confié. Jamais un minuteur arrivé à
+  sa fin : sa sonnerie serait coupée.
 - **Une seule sonnerie** : le plugin là, la page ne bipe jamais (ni ne
   vibre), sauf quand il a répondu que les notifications sont refusées à
   l'application, puisqu'il ne sonne alors rien. Un APK construit avant
@@ -537,10 +544,14 @@ ou tuée, sur le volume des **alarmes**, jusqu'à « Arrêter ».
   l'ouverture : « Prévenir à la fin » de la page Cuisiner (dans
   l'application, il ouvre la demande d'Android, par le plugin Local
   Notifications ; il disparaît une fois qu'Android a répondu), ou
-  « Mon compte › Notifications de rappel ». Les alarmes exactes
-  (« Alarmes et rappels ») se demandent sur le bouton de cette dernière
-  page. Le plein écran (Android 14 et suivants) n'a pas de bouton : la
-  notification prioritaire le remplace.
+  « Mon compte › Notifications de rappel ». Les notifications accordées,
+  si les alarmes exactes ne le sont pas (le réglage lu par Local
+  Notifications, sinon le dernier `exact` rendu par `schedule`), un
+  second bouton de la page Cuisiner, « Autoriser les alarmes à l'heure
+  exacte », ouvre « Alarmes et rappels » ; au retour, les minuteurs à
+  venir sont reprogrammés, pour devenir exacts. Le plein écran (Android
+  14 et suivants) n'a pas de bouton : le plugin n'expose pas son
+  réglage, et la notification prioritaire le remplace.
 
 - **Le plugin `CookTimers`** (`CookTimersPlugin.java`), enregistré sur
   toutes les pages, appelé par `window.Capacitor.Plugins.CookTimers` :
@@ -668,8 +679,10 @@ await Capacitor.Plugins.CookTimers.schedule({ id: 'essai', endAt: Date.now() + 6
    recette. Rouvrir l'application pendant que le minuteur court : aucun
    bip à la fin, la seule sonnerie d'alarme ; « Arrêter » sur la page la
    coupe. « Pause » avant la fin : rien ne sonne ; « Reprendre » : la
-   sonnerie à la nouvelle fin. Sur un APK d'avant #1017 : le bip de la
-   page, comme dans un navigateur.
+   sonnerie à la nouvelle fin. Lancer un minuteur de 5 minutes,
+   redémarrer le téléphone, rouvrir l'application : il sonne à son
+   heure. Sur un APK d'avant #1017 : le bip de la page, comme dans un
+   navigateur.
 
 ## Notifications poussées : le projet Firebase (#1004)
 

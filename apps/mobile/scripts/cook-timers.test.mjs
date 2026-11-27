@@ -146,6 +146,28 @@ test('a timer resumed is scheduled again, at its new end', () => {
   assert.deepEqual(plain(W.alarmPlan(resumed, { [id]: RUNNING.end })), { schedule: [plain(resumed[id])], cancel: [] });
 });
 
+// -- an alarm lost by the phone (restart, forced stop) -----------------------
+
+test('at a new launch, every timer still to end is scheduled again, kept or not', () => {
+  const alarms = W.alarms([entry(A, 'Pâtes', [RUNNING, DUE, DONE])]);
+  const kept = { [`${A}_${RUNNING.id}`]: RUNNING.end, [`${A}_${DUE.id}`]: DUE.end, [`${A}_${DONE.id}`]: DONE.end };
+  // Android forgets its alarms on a restart or a forced stop: the page
+  // cannot ask which are left, so it schedules again what is still to come.
+  assert.deepEqual(plain(W.alarmPlan(alarms, kept, { fresh: true, now: NOW })), {
+    schedule: [plain(alarms[`${A}_${RUNNING.id}`])],
+    cancel: [],
+  });
+  // Not a new launch: what is kept stands.
+  assert.deepEqual(plain(W.alarmPlan(alarms, kept, { fresh: false, now: NOW })), { schedule: [], cancel: [] });
+  assert.deepEqual(plain(W.alarmPlan(alarms, kept)), { schedule: [], cancel: [] });
+});
+
+test('a timer that rings is never scheduled again at a new launch: that would cut it', () => {
+  const alarms = W.alarms([entry(A, 'Pâtes', [{ ...RUNNING, end: NOW }])]);
+  const kept = { [`${A}_${RUNNING.id}`]: NOW };
+  assert.deepEqual(plain(W.alarmPlan(alarms, kept, { fresh: true, now: NOW })), { schedule: [], cancel: [] });
+});
+
 // -- one synchronisation -----------------------------------------------------
 
 test('a synchronisation calls the plugin by the plan and keeps what it scheduled', async () => {
@@ -157,11 +179,28 @@ test('a synchronisation calls the plugin by the plan and keeps what it scheduled
     ['cancel', { id: gone }],
     ['schedule', { id, endAt: RUNNING.end, title: 'Pâtes', text: 'Cuisson des pâtes', url: `/recipes/${A}/cook` }],
   ]);
-  assert.deepEqual(plain(record), { ids: { [id]: RUNNING.end }, notifications: true });
+  assert.deepEqual(plain(record), { ids: { [id]: RUNNING.end }, notifications: true, exact: true });
   // Nothing changed: nothing called.
   const again = plugin();
   assert.deepEqual(plain(await W.syncAlarms(again, W.alarms([entry(A, 'Pâtes', [RUNNING])]), record)), plain(record));
   assert.deepEqual(again.calls, []);
+});
+
+test('a new launch schedules again through the plugin', async () => {
+  const id = `${A}_${RUNNING.id}`;
+  const timers = plugin();
+  await W.syncAlarms(timers, W.alarms([entry(A, 'Pâtes', [RUNNING])]), { ids: { [id]: RUNNING.end } }, { fresh: true, now: NOW });
+  assert.deepEqual(timers.calls.map((c) => c[0]), ['schedule']);
+});
+
+test("the plugin's « exact » is kept: false, the timer may ring late", async () => {
+  const timers = plugin({ scheduled: true, exact: false, notifications: true });
+  const record = await W.syncAlarms(timers, W.alarms([entry(A, 'Pâtes', [RUNNING])]), {});
+  assert.equal(record.exact, false);
+  // A timer over (scheduled false) says nothing of the alarms.
+  const over = plugin({ scheduled: false, notifications: true });
+  const after = await W.syncAlarms(over, W.alarms([entry(A, 'Pâtes', [RUNNING])]), { ids: {}, exact: false });
+  assert.equal(after.exact, false);
 });
 
 test('notifications refused to the app are kept: the native alarm then rings nothing', async () => {
@@ -184,6 +223,22 @@ test('what was kept unreadable is read as nothing scheduled', async () => {
     assert.equal(timers.calls[0][0], 'schedule');
     assert.equal(Object.keys(record.ids).length, 1);
   }
+});
+
+// -- what is kept, by two writers ---------------------------------------------
+
+test("a synchronisation and the permission each write their own fields, not the other's", () => {
+  const before = { ids: { a: 1 }, notifications: false, exact: false };
+  // The permission read since: notifications granted.
+  const current = { ids: { a: 1 }, notifications: true, exact: false };
+  // A synchronisation that started before it, and got no answer on them.
+  assert.deepEqual(plain(W.keepRecord(current, { ids: { a: 1, b: 2 } })), { ids: { a: 1, b: 2 }, notifications: true, exact: false });
+  // The plugin answered: its word stands.
+  assert.deepEqual(plain(W.keepRecord(current, { ids: {}, notifications: false, exact: true })), { ids: {}, notifications: false, exact: true });
+  // The permission alone.
+  assert.deepEqual(plain(W.keepRecord(before, { notifications: true })), { ids: { a: 1 }, notifications: true, exact: false });
+  // Nothing readable kept.
+  assert.deepEqual(plain(W.keepRecord(null, { exact: true })), { ids: {}, exact: true });
 });
 
 // -- one ringing at a time ---------------------------------------------------
@@ -225,4 +280,17 @@ test("the app's « Prévenir à la fin »: a button until Android answers, then 
   // Refused, Android no longer asks: the button would do nothing.
   assert.equal(W.appNotifyState('denied'), 'none');
   assert.equal(W.appNotifyState(undefined), 'none');
+});
+
+test('« Alarmes et rappels » refused: a button on Cuisiner, once notifications are allowed', () => {
+  // Android's setting, as Local Notifications reads it, comes first.
+  assert.equal(W.appExactState('granted', 'denied', undefined), 'ask');
+  assert.equal(W.appExactState('granted', 'granted', false), 'none');
+  // Not read: the plugin's last « exact ».
+  assert.equal(W.appExactState('granted', undefined, false), 'ask');
+  assert.equal(W.appExactState('granted', undefined, true), 'none');
+  assert.equal(W.appExactState('granted', undefined, undefined), 'none');
+  // Without notifications nothing rings: that button comes first.
+  assert.equal(W.appExactState('prompt', 'denied', false), 'none');
+  assert.equal(W.appExactState('denied', 'denied', false), 'none');
 });
