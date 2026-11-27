@@ -1384,10 +1384,10 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
 .trow.ended, .trow.ended .what { color: var(--warning); }
 .trow.ended { background: var(--warning-soft); box-shadow: none; }
 .trow.ended .left { font-family: "Fraunces", Georgia, serif; }
-.trow.paused .left { color: var(--muted); }
+.trow.paused .left, .tl.paused .left { color: var(--muted); }
 .cook-nav { position: sticky; bottom: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2x); padding: var(--s3) 0; border-top: 1px solid var(--line); background: var(--bg); }
-.cook-link, .ing-btn, .timers-start button, .cook-nav > * { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2x); }
-.cook-nav > * { min-height: calc(var(--s12) + var(--s2x)); font-size: var(--t-lg); }
+.cook-link, .ing-btn, .timers-start button, .cook-nav > *, .fin-btns > * { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2x); }
+.cook-nav > *, .fin-btns > * { min-height: calc(var(--s12) + var(--s2x)); font-size: var(--t-lg); }
 .cook-nav button:disabled { border-color: var(--line); background: var(--surface); color: var(--muted); cursor: default; }
 .nojs-list, .cook-ing ul { font-size: var(--t-lg); }
 .nojs-list li { margin-bottom: var(--s3); }
@@ -1398,7 +1398,38 @@ kbd { padding: 0 var(--s2x); border: 1px solid var(--border); border-radius: var
   .cook-layout > .timers { grid-column: 2; grid-row: 1; }
   .cook-layout > div { grid-column: 1; grid-row: 1; }
   .cook-nav { grid-template-columns: 1fr 2fr; padding-right: calc(20rem + var(--s8)); }
+  .fin-btns { grid-template-columns: 1fr 1fr; }
 }
+/* -- The timers away from Cuisiner (#1018, `cook::WATCH_SCRIPT`) -------------
+   `.timers-live`, the home's card: a `.list-row` per timer, a link to its
+   Cuisiner — the recipe and the step, the time left, « En pause », the
+   chevron. `.notify`, « Prévenir à la fin », and `.notify-state`, the line
+   that takes its place once the browser has answered. `dialog.fin`, the
+   window at a timer's end: the pair of .notice.warning on its eyebrow, the
+   recipe in --t-2xl, the two buttons of .cook-nav's size. */
+.timers-live h2 { margin-bottom: var(--s2x); }
+.tl { display: grid; grid-template-columns: minmax(0, 1fr) auto var(--s6); align-items: center; gap: var(--s3); }
+.tl > .icon { color: var(--muted); }
+.tl-what { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.tl-what strong { overflow-wrap: anywhere; }
+.tl-what > span { color: var(--muted); font-size: var(--t-sm); }
+.tl-time { display: flex; flex-direction: column; align-items: flex-end; }
+.tl-state { color: var(--muted); font-size: var(--t-xs); font-weight: 600; }
+.notify { margin-top: var(--s3); display: inline-flex; align-items: center; gap: var(--s2x); }
+.notify-wrap { margin-top: var(--s3); }
+.notify-state { display: flex; align-items: flex-start; gap: var(--s2x); margin: var(--s3) 0 0; color: var(--muted); font-size: var(--t-sm); }
+.notify-wrap > * { margin-top: 0; }
+.notify-state.ok { color: var(--success); }
+.notify-state .icon { flex: none; }
+dialog.fin { width: min(var(--w-form), 100% - 2 * var(--s4)); padding: var(--s6) var(--s4) var(--s4); }
+dialog.fin::backdrop { background: color-mix(in srgb, var(--fg) 55%, transparent); }
+.fin-head { display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s2x); }
+.fin-head .eyebrow { color: var(--warning); }
+.fin-ic { display: inline-flex; padding: var(--s2x); border-radius: var(--r-sm); background: var(--warning-soft); color: var(--warning); }
+.fin h2 { margin: 0; font-size: var(--t-2xl); }
+.fin-what { margin: var(--s1) 0 var(--s3); font-size: var(--t-lg); }
+.fin-list { margin: var(--s3) 0; }
+.fin-btns { display: grid; gap: var(--s2x); margin-top: var(--s4); }
 .avoid { flex-flow: row wrap; align-items: center; gap: var(--s2x) var(--s3); margin: var(--s2x) 0; }
 /* -- The recipe library (#910, `routes::recipes::library`) ------------------
    `.find`, its search: a `.card.inline` whose field takes the row, and whose

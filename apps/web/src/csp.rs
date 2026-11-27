@@ -1055,7 +1055,8 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
             Script::LocalReminders,
             Script::GoogleSignIn,
             Script::LiveScan,
-            Script::AvatarCrop
+            Script::AvatarCrop,
+            Script::CookWatch
         ]
     );
     // A call commented out at the end of a line or inside a block comment
@@ -1072,7 +1073,8 @@ fn scripts_not_loaded_counts_tag_calls_in_production_code_only() {
             Script::LocalReminders,
             Script::GoogleSignIn,
             Script::LiveScan,
-            Script::AvatarCrop
+            Script::AvatarCrop,
+            Script::CookWatch
         ]
     );
     // A block comment spanning lines, nested block comments (Rust's nest)
@@ -1095,7 +1097,7 @@ fn f<'a>(x: &'a str) { Script::ResetPassword.tag(); }
 let e = '\''; let u = "https://x"; Script::MessagerieLive.tag();
 let b = b"/*"; Script::Push.tag(); let c = "*/";
 Script::LocalReminders.tag(); Script::GoogleSignIn.tag(); Script::LiveScan.tag();
-Script::AvatarCrop.tag();
+Script::AvatarCrop.tag(); Script::CookWatch.tag();
 "###;
     assert_eq!(
         scripts_not_loaded(&[("src/page.rs".to_string(), page.to_string())]),

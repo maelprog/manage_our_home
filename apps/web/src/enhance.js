@@ -1252,10 +1252,13 @@
   // (`data-cook-ui`): Précédent and Suivant, ← and →, a swipe on the step;
   // « Minuteur 8 min » starts a timer (`data-cook-start`, its seconds),
   // several may run at once. A timer that ends rings — a beep made by Web
-  // Audio, no file, and a vibration where there is one — until « Arrêter »;
-  // never a notification. The step shown and the timers, by the time they
-  // end, are kept per recipe in localStorage (`mhome.cuisine.<id>`) so that
-  // leaving the page and coming back finds them; « Terminer » forgets them.
+  // Audio, no file, and a vibration where there is one — until « Arrêter ».
+  // The step shown and the timers, by the time they end, are kept per
+  // recipe in localStorage (`mhome.cuisine.<id>`) so that leaving the page
+  // and coming back finds them; « Terminer » forgets them. With them, the
+  // recipe's title (`data-cook-title`) and this page's address: the other
+  // pages watch the timers too (#1018, `cook-watch.js`), and that script
+  // sends the browser's notification, here as anywhere.
   // So does half a day counted from the later of the last change (`at`,
   // written on a step moved or a timer started, paused, stopped or ended —
   // not on a visit) and the end of the last timer; a timer still running or
@@ -1273,7 +1276,10 @@
   function cookSave() {
     if (cooking.over) return;
     try {
-      localStorage.setItem(COOK + cooking.id, JSON.stringify({ at: Date.now(), step: cooking.step, timers: cooking.timers }));
+      localStorage.setItem(
+        COOK + cooking.id,
+        JSON.stringify({ at: Date.now(), step: cooking.step, timers: cooking.timers, title: cooking.title, url: "/recipes/" + cooking.id + "/cook" })
+      );
     } catch (e) {}
   }
 
@@ -1566,6 +1572,7 @@
     var kept = cookKept(id);
     cooking = {
       id: id,
+      title: root.getAttribute("data-cook-title") || "",
       steps: Array.prototype.slice.call(ui.querySelectorAll("[data-step]")),
       at: ui.querySelector("[data-cook-at]"),
       gauge: ui.querySelector("progress"),

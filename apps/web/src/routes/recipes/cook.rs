@@ -97,7 +97,9 @@ fn page(header: &str, recipe: &RecipeResponse, portions: Portions, can_edit: boo
         )
     } else {
         format!(
-            r#"<div data-cook="{id}">{plain}{ui}</div>"#,
+            // The title goes with the timers kept (#1018): the other pages
+            // name the recipe whose timer runs or ends.
+            r#"<div data-cook="{id}" data-cook-title="{name}">{plain}{ui}</div>"#,
             plain = plain_html(recipe, portions, &steps),
             ui = stepper_html(recipe, portions, &steps, &quit),
         )
@@ -199,7 +201,7 @@ fn stepper_html(
 <progress max="{n}" value="1" aria-hidden="true"></progress>
 <p class="wake" role="status" hidden>{check}Écran maintenu allumé</p></div>
 <div class="cook-layout">
-<section class="timers" aria-label="Minuteurs" hidden><h2>Minuteurs</h2><div data-cook-timers></div></section>
+<section class="timers" aria-label="Minuteurs" hidden><h2>Minuteurs</h2><div data-cook-timers></div><div class="notify-wrap">{notify}</div></section>
 <div><a class="btn secondary ing-btn" href="#ingredients" data-dialog="cook-ingredients" aria-haspopup="dialog">{list}Ingrédients</a>
 {cards}</div>
 </div>
@@ -215,6 +217,25 @@ fn stepper_html(
         close = icon(Icon::Close),
         facts = facts(recipe, portions, false),
         ingredients = ingredient_items(recipe, portions),
+        notify = notify_html(),
+    )
+}
+
+/// The watch over the timers kept by this page, on every page (#1018,
+/// `assets::Script::CookWatch`): the home's card, the window at a timer's
+/// end away from here, the browser's notification.
+pub(crate) const WATCH_SCRIPT: &str = include_str!("../../cook-watch.js");
+
+/// « Prévenir à la fin » (#1018), under the timers here and on the home's
+/// card: the button that asks for the browser's notifications, and the two
+/// lines that say how they stand once asked. All `hidden`: `WATCH_SCRIPT`
+/// shows the one that applies, nothing without the Notification API, and
+/// the permission is only ever asked by a press on the button.
+pub(crate) fn notify_html() -> String {
+    format!(
+        r#"<button type="button" class="secondary notify" data-notify hidden>{bell}Prévenir à la fin</button><p class="notify-state ok" role="status" data-notify-on hidden>{check}Vous serez prévenu à la fin, tant que cet onglet reste ouvert.</p><p class="notify-state" role="status" data-notify-off hidden>{bell}Notifications bloquées par le navigateur. La fenêtre et le bip restent actifs.</p>"#,
+        bell = icon(Icon::Bell),
+        check = icon(Icon::Check),
     )
 }
 
@@ -705,7 +726,12 @@ mod tests {
         let html = page("", &r, unplanned(&r), false);
         let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
         // Without JavaScript: the ingredients and every step, numbered.
-        assert!(at(&format!(r#"<div data-cook="{id}"><div data-cook-plain>"#)) > 0);
+        // #1018: the title, for the timers kept outside this page.
+        assert!(
+            at(&format!(
+                r#"<div data-cook="{id}" data-cook-title="Ratatouille"><div data-cook-plain>"#
+            )) > 0
+        );
         assert!(html.contains("<h1>Cuisiner : Ratatouille</h1>"), "{html}");
         assert!(html.contains("Temps : 1 h 30. Pour 6 personnes."), "{html}");
         assert!(
@@ -802,5 +828,68 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("comme prévu"), "{html}");
+    }
+
+    #[test]
+    fn the_title_kept_with_the_timers_is_escaped() {
+        // #1018: what the other pages show of the recipe comes from here.
+        let mut r = recipe(Some("Cuire 10 min."));
+        r.name = r#"Gratin "maison" & <crème>"#.to_string();
+        let html = page("", &r, unplanned(&r), false);
+        assert!(
+            html.contains(r#"data-cook-title="Gratin &quot;maison&quot; &amp; &lt;crème&gt;">"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn the_timers_offer_to_be_told_at_the_end_never_asking_unprompted() {
+        // #1018: « Prévenir à la fin » under the timers, after their rows.
+        // Everything hidden: the script shows the button while the
+        // permission was never asked, or the line that says how it stands.
+        let r = recipe(Some("Cuire 10 min."));
+        let html = page("", &r, unplanned(&r), false);
+        let at = |s: &str| html.find(s).unwrap_or_else(|| panic!("{s} in {html}"));
+        let timers = &html[at(r#"<section class="timers""#)..];
+        let timers = &timers[..timers.find("</section>").unwrap()];
+        assert!(
+            timers.contains(&format!(
+                r#"<div data-cook-timers></div><div class="notify-wrap">{}</div>"#,
+                notify_html()
+            )),
+            "{timers}"
+        );
+    }
+
+    #[test]
+    fn the_notify_controls_wait_hidden_for_the_script() {
+        let html = notify_html();
+        assert!(
+            html.starts_with(
+                r#"<button type="button" class="secondary notify" data-notify hidden><svg"#
+            ),
+            "{html}"
+        );
+        assert!(html.contains("Prévenir à la fin</button>"), "{html}");
+        assert!(
+            html.contains(r#"<p class="notify-state ok" role="status" data-notify-on hidden><svg"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("Vous serez prévenu à la fin, tant que cet onglet reste ouvert.</p>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<p class="notify-state" role="status" data-notify-off hidden><svg"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(
+                "Notifications bloquées par le navigateur. La fenêtre et le bip restent actifs.</p>"
+            ),
+            "{html}"
+        );
+        // Nothing asks for the permission unprompted: no script here.
+        assert!(!html.contains("<script"), "{html}");
     }
 }

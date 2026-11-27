@@ -88,6 +88,7 @@ fn footer() -> String {
 pub fn shell(width: Width, title: &str, body_html: &str) -> String {
     document(
         title,
+        Session::Without,
         &format!(
             r#"<main id="main" class="content{width}">
 {body_html}
@@ -110,6 +111,7 @@ pub fn shell(width: Width, title: &str, body_html: &str) -> String {
 pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html: &str) -> String {
     document(
         title,
+        Session::With,
         &format!(
             r#"<div class="app">
 {header_html}
@@ -140,7 +142,11 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// The `<head>` also loads `ENHANCE_SCRIPT` (#325) the same way, and
 /// without `defer`: a `data-confirm` form must not be submittable before
 /// its question is in place. It is one more blocking request on a cold
-/// cache, made alongside the sheet's, and none after that.
+/// cache, made alongside the sheet's, and none after that. After it, on a
+/// page of the application proper only, the watch over the cooking timers
+/// (#1018, `recipes::cook::WATCH_SCRIPT`), which rings a timer's end on
+/// whatever page is open: a page without navigation — the login page, a
+/// public legal document — shows no recipe's name and opens no window.
 ///
 /// Between the two, the favicons, the home-screen icon and the manifest
 /// (#542, `crate::brand::head_links`). None of them blocks the rendering.
@@ -152,7 +158,7 @@ pub fn shell_with_header(width: Width, title: &str, header_html: &str, body_html
 /// It carries `data-accent` too, the active family's colour (#538), which
 /// the shared header records (`crate::family::record_active_accent`) — so
 /// the header is built before the shell, as every route already does.
-fn document(title: &str, body: &str) -> String {
+fn document(title: &str, session: Session, body: &str) -> String {
     format!(
         r##"<!DOCTYPE html>
 <html lang="fr"{theme}{accent}>
@@ -162,7 +168,8 @@ fn document(title: &str, body: &str) -> String {
 <title>{title} — MHome</title>
 <link rel="stylesheet" href="{css}"/>
 {brand}
-{enhance}{local_reminders}
+{enhance}
+{cook_watch}{local_reminders}
 </head>
 <body>
 <a class="skip-link" href="#main">Aller au contenu</a>
@@ -175,9 +182,21 @@ fn document(title: &str, body: &str) -> String {
         css = crate::assets::stylesheet_href(),
         brand = crate::brand::head_links(),
         enhance = crate::assets::Script::Enhance.tag(),
+        cook_watch = match session {
+            Session::With => crate::assets::Script::CookWatch.tag(),
+            Session::Without => String::new(),
+        },
         local_reminders = local_reminders_tag(),
         body = body,
     )
+}
+
+/// Which shell a page is in: `shell_with_header`'s pages are the
+/// application's, behind a session; `shell`'s are not, or not all.
+#[derive(Clone, Copy)]
+enum Session {
+    With,
+    Without,
 }
 
 /// The local reminders' script (#668), on a new line, in the app's pages
@@ -2647,6 +2666,11 @@ mod tests {
             ".clash, in the choice's dialog (#795)",
         ),
         ("--success", "--bg", ".pw-meter (correct, solide)"),
+        (
+            "--success",
+            "--surface",
+            ".notify-state.ok in a card (#1018)",
+        ),
         ("--error", "--surface", ".field-error in a card"),
         (
             "--error",
@@ -3323,6 +3347,8 @@ mod tests {
         let mut worn = class_mentions(ENHANCE_SCRIPT);
         // The live scan's `ok` (#807) is put on by its script alone.
         worn.extend(class_mentions(crate::routes::stocks::new::LIVE_SCAN_SCRIPT));
+        // The window at a timer's end (#1018) is built by its script alone.
+        worn.extend(class_mentions(crate::routes::recipes::cook::WATCH_SCRIPT));
         for (_, body) in rust_sources() {
             worn.extend(class_mentions(&body));
         }
