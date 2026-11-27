@@ -162,6 +162,18 @@ test("réclamer un minuteur échu le marque fini, au nom de l'onglet", () => {
   assert.equal(W.claim(out.timers, NOW, "onglet-2").claimed, false);
 });
 
+test("réclamer nomme les seuls minuteurs qu'il vient de marquer, pas ceux déjà finis à l'onglet", () => {
+  // Un second minuteur de la même recette finit, fenêtre ouverte sur le
+  // premier : le premier n'est pas « réclamé à ce passage », il reste montré.
+  const timers = [
+    { id: "a1", what: "x", end: NOW - MIN, left: 0, done: true, owner: "onglet-1" },
+    { id: "a2", what: "y", end: NOW - 1, left: 0, done: false },
+    { id: "a3", what: "z", end: NOW + MIN, left: 0, done: false },
+  ];
+  assert.deepEqual(plain(W.claim(timers, NOW, "onglet-1").ids), ["a2"]);
+  assert.deepEqual(plain(W.claim([timers[0]], NOW, "onglet-1").ids), []);
+});
+
 // -- une page Cuisiner ouverte ailleurs --------------------------------------
 
 test("une page Cuisiner ouverte se signale sous sa propre clé, hors des clés de cuisine", () => {

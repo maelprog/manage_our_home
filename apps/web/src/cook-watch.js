@@ -113,12 +113,15 @@ var MHomeCookWatch = (function () {
   }
 
   // Marque finis, au nom de `owner`, les minuteurs échus de `timers` (tels
-  // que gardés, avec tous leurs champs).
+  // que gardés, avec tous leurs champs) ; `ids` nomme ceux-là seuls, pas
+  // ceux que l'onglet avait déjà.
   function claim(timers, now, owner) {
     var claimed = false;
+    var ids = [];
     var out = (Array.isArray(timers) ? timers : []).map(function (timer) {
       if (!valid(timer) || !isDue(timer, now)) return timer;
       claimed = true;
+      ids.push(timer.id);
       var copy = {};
       Object.keys(timer).forEach(function (k) {
         copy[k] = timer[k];
@@ -127,7 +130,7 @@ var MHomeCookWatch = (function () {
       copy.owner = owner;
       return copy;
     });
-    return { timers: out, claimed: claimed };
+    return { timers: out, claimed: claimed, ids: ids };
   }
 
   // Les minuteurs finis que cet onglet sonne, le plus ancien d'abord, hors
@@ -587,8 +590,8 @@ var MHomeCookWatch = (function () {
       rewrite(e.id, function (timers) {
         var out = W.claim(timers, now, owner);
         if (!out.claimed) return null;
-        out.timers.forEach(function (timer) {
-          if (timer && timer.owner === owner && timer.done) claimedKeys[e.id + ":" + timer.id] = pass;
+        out.ids.forEach(function (id) {
+          claimedKeys[e.id + ":" + id] = pass;
         });
         claimed = true;
         return out.timers;
