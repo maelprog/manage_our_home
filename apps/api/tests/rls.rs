@@ -553,6 +553,194 @@ async fn ingredient_links_isolated_without_scoping(db: PgPool) {
         .unwrap();
 }
 
+/// Issue #1036: a family's receipts (migration 0073) hold against a query
+/// that forgets `WHERE group_id = ...` — nothing without a family scope,
+/// only the scoped family's receipts with one, no receipt of another
+/// family rewritten, deleted or written.
+#[sqlx::test]
+async fn receipts_isolated_without_scoping(db: PgPool) {
+    let ((owner_a, group_a), (owner_b, group_b)) = two_owned_groups(&db).await;
+    for (group, owner, key) in [
+        (group_a, owner_a, "receipts/a.jpg"),
+        (group_b, owner_b, "receipts/b.jpg"),
+    ] {
+        sqlx::query(
+            "INSERT INTO receipts (group_id, uploaded_by, storage_key, mime_type, size_bytes) \
+             VALUES ($1, $2, $3, 'image/jpeg', 1000)",
+        )
+        .bind(group)
+        .bind(owner)
+        .bind(key)
+        .execute(&db)
+        .await
+        .unwrap();
+    }
+
+    let role = format!("app_test_role_{}", Uuid::new_v4().simple());
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON receipts TO {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+
+    #[allow(clippy::disallowed_methods)]
+    let mut tx = db.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("SET LOCAL ROLE {role}")))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let unscoped: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM receipts")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        unscoped.is_empty(),
+        "no family scope must see no receipt at all"
+    );
+
+    sqlx::query("SELECT set_config('app.group_id', $1, true)")
+        .bind(group_a.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let visible: Vec<Uuid> = sqlx::query_scalar("SELECT group_id FROM receipts")
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        visible,
+        vec![group_a],
+        "group A's scope sees its own receipt and never group B's"
+    );
+
+    let touched = sqlx::query("UPDATE receipts SET imported_at = now() WHERE group_id = $1")
+        .bind(group_b)
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(
+        touched, 0,
+        "group A's scope must not rewrite group B's receipt"
+    );
+    let deleted = sqlx::query("DELETE FROM receipts WHERE group_id = $1")
+        .bind(group_b)
+        .execute(&mut *tx)
+        .await
+        .unwrap()
+        .rows_affected();
+    assert_eq!(
+        deleted, 0,
+        "group A's scope must not delete group B's receipt"
+    );
+
+    let cross = sqlx::query(
+        "INSERT INTO receipts (group_id, uploaded_by, storage_key, mime_type, size_bytes) \
+         VALUES ($1, $2, 'receipts/x.jpg', 'image/jpeg', 1000)",
+    )
+    .bind(group_b)
+    .bind(owner_b)
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        cross.is_err(),
+        "group A's scope must not write a receipt into group B"
+    );
+
+    tx.rollback().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "REVOKE ALL ON receipts FROM {role}"
+    )))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
+        .execute(&db)
+        .await
+        .unwrap();
+}
+
+/// Issue #1036: an expense names a receipt of its own family only — the
+/// composite key refuses one of another family whatever the API checks —
+/// several expenses share one receipt, and deleting the receipt keeps the
+/// expenses, with `receipt_id` cleared and their family untouched.
+#[sqlx::test]
+async fn budget_entries_name_a_receipt_of_their_own_family_only(db: PgPool) {
+    let ((owner_a, group_a), (owner_b, group_b)) = two_owned_groups(&db).await;
+    let mut receipts = Vec::new();
+    for (group, owner, key) in [
+        (group_a, owner_a, "receipts/a.pdf"),
+        (group_b, owner_b, "receipts/b.pdf"),
+    ] {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO receipts (group_id, uploaded_by, storage_key, mime_type, size_bytes) \
+             VALUES ($1, $2, $3, 'application/pdf', 2000) RETURNING id",
+        )
+        .bind(group)
+        .bind(owner)
+        .bind(key)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        receipts.push(id);
+    }
+    let (receipt_a, receipt_b) = (receipts[0], receipts[1]);
+
+    let insert_entry =
+        "INSERT INTO budget_entries (group_id, created_by, name, amount_cents, receipt_id) \
+         VALUES ($1, $2, $3, 150, $4) RETURNING id";
+    let mut entries = Vec::new();
+    for name in ["lait", "pain"] {
+        let id: Uuid = sqlx::query_scalar(insert_entry)
+            .bind(group_a)
+            .bind(owner_a)
+            .bind(name)
+            .bind(receipt_a)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        entries.push(id);
+    }
+
+    let cross = sqlx::query_scalar::<_, Uuid>(insert_entry)
+        .bind(group_a)
+        .bind(owner_a)
+        .bind("beurre")
+        .bind(receipt_b)
+        .fetch_one(&db)
+        .await;
+    assert!(
+        cross.is_err(),
+        "an expense of group A must not name group B's receipt"
+    );
+
+    sqlx::query("DELETE FROM receipts WHERE id = $1")
+        .bind(receipt_a)
+        .execute(&db)
+        .await
+        .unwrap();
+    let left: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT group_id, receipt_id FROM budget_entries WHERE id = ANY($1) ORDER BY name",
+    )
+    .bind(&entries)
+    .fetch_all(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        left,
+        vec![(group_a, None), (group_a, None)],
+        "deleting the receipt keeps its expenses, unlinked, in their family"
+    );
+}
+
 /// AC #15 analog for the Recipes epic: `recipes` isolation must hold even
 /// against a bug that forgets `WHERE group_id = ...` in application code.
 #[sqlx::test]
