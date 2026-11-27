@@ -244,8 +244,182 @@ var MHomeCookWatch = (function () {
     return "ask";
   }
 
+  // -- l'alarme native de l'application Android (#1019) ----------------------
+  //
+  // Dans l'application, le plugin CookTimers (#1017, apps/mobile/README.md
+  // « Minuteurs de cuisine ») sonne le minuteur à son heure, sur le flux
+  // alarme, l'application fermée. La page lui confie chaque minuteur gardé
+  // qui court ou a sonné sans être arrêté (`alarms`) ; ce qu'elle lui a
+  // confié, avec l'heure de fin, est gardé sous `NATIVE_KEY` d'une page à
+  // l'autre, et chaque passage ne demande que la différence (`alarmPlan`) :
+  // un minuteur lancé ou repris est programmé à sa fin, un minuteur mis en
+  // pause, arrêté ou oublié (« Terminer », la demi-journée) est annulé. Un
+  // minuteur échu n'est pas annulé : ce serait taire sa sonnerie, qui ne
+  // cesse qu'à « Arrêter » (`stop`). Le plugin là, la page ne bipe pas,
+  // sauf quand il a dit les notifications refusées à l'application : il ne
+  // sonne alors rien (`ringsNatively`). Un navigateur, ou un APK d'avant le
+  // plugin, n'a pas de plugin : le bip, comme avant.
+  var NATIVE_KEY = "mhome.minuteurs-natifs";
+  var NATIVE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+  function alarmPlugin(win) {
+    try {
+      var plugins = win && win.Capacitor && win.Capacitor.Plugins;
+      return (plugins && plugins.CookTimers) || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // L'identifiant de l'alarme d'un minuteur, tel que le plugin l'accepte ;
+  // `null` sinon.
+  function nativeId(recipe, timer) {
+    if (typeof recipe !== "string" || typeof timer !== "string" || !recipe || !timer) return null;
+    var id = recipe + "_" + timer;
+    return NATIVE_ID.test(id) ? id : null;
+  }
+
+  // Les alarmes voulues, par identifiant : `{id, endAt, title, text, url}`.
+  function alarms(entries) {
+    var out = {};
+    (Array.isArray(entries) ? entries : []).forEach(function (e) {
+      if (!e) return;
+      e.timers.forEach(function (timer) {
+        var id = nativeId(e.id, timer.id);
+        if (!id || !(timer.end > 0)) return;
+        out[id] = { id: id, endAt: timer.end, title: e.title, text: timer.what, url: e.url };
+      });
+    });
+    return out;
+  }
+
+  // Ce qu'il faut demander au plugin : `kept` donne, par identifiant,
+  // l'heure de fin déjà programmée. `options.fresh` : le premier passage
+  // depuis le lancement de l'application. Android oublie ses alarmes à un
+  // redémarrage du téléphone ou à un arrêt forcé, et la page ne peut pas
+  // lui demander lesquelles restent : elle reprogramme alors chaque
+  // minuteur encore à venir (`endAt` après `options.now`), jamais un
+  // minuteur échu, dont la sonnerie serait coupée.
+  function alarmPlan(wanted, kept, options) {
+    var fresh = !!(options && options.fresh);
+    var now = options && options.now;
+    var plan = { schedule: [], cancel: [] };
+    Object.keys(kept).forEach(function (id) {
+      if (!Object.prototype.hasOwnProperty.call(wanted, id)) plan.cancel.push(id);
+    });
+    Object.keys(wanted).forEach(function (id) {
+      if (kept[id] !== wanted[id].endAt || (fresh && wanted[id].endAt > now)) plan.schedule.push(wanted[id]);
+    });
+    return plan;
+  }
+
+  // Ce qui est gardé sous `NATIVE_KEY` : `{ids, notifications?, exact?}`,
+  // les deux derniers tels que le plugin (ou la permission lue) les a dits.
+  function nativeRecord(raw) {
+    var ids = {};
+    if (raw && typeof raw === "object" && raw.ids && typeof raw.ids === "object") {
+      Object.keys(raw.ids).forEach(function (id) {
+        if (typeof raw.ids[id] === "number") ids[id] = raw.ids[id];
+      });
+    }
+    var record = { ids: ids };
+    if (raw && typeof raw.notifications === "boolean") record.notifications = raw.notifications;
+    if (raw && typeof raw.exact === "boolean") record.exact = raw.exact;
+    return record;
+  }
+
+  // Deux écrivains : la synchronisation (les `ids`, et ce que le plugin a
+  // répondu) et la lecture de la permission (`notifications`). Chacun relit
+  // ce qui est gardé et n'y change que ses champs, dans le même tour : une
+  // synchronisation commencée avant une permission accordée ne la défait
+  // pas.
+  function keepRecord(current, update) {
+    var record = nativeRecord(current);
+    if (update && update.ids && typeof update.ids === "object") record.ids = nativeRecord({ ids: update.ids }).ids;
+    if (update && typeof update.notifications === "boolean") record.notifications = update.notifications;
+    if (update && typeof update.exact === "boolean") record.exact = update.exact;
+    return record;
+  }
+
+  // Une synchronisation : rend ce qui est désormais programmé, à garder,
+  // avec ce que le plugin a répondu (`notifications`, `exact`). Un refus du
+  // plugin compte pour fait : redemandé deux fois par seconde, il serait
+  // refusé autant.
+  function syncAlarms(plugin, wanted, raw, options) {
+    var record = nativeRecord(raw);
+    var plan = alarmPlan(wanted, record.ids, options);
+    var done = Promise.resolve();
+    plan.cancel.forEach(function (id) {
+      done = done
+        .then(function () {
+          return plugin.cancel({ id: id });
+        })
+        .catch(function () {})
+        .then(function () {
+          delete record.ids[id];
+        });
+    });
+    plan.schedule.forEach(function (alarm) {
+      done = done
+        .then(function () {
+          return plugin.schedule({ id: alarm.id, endAt: alarm.endAt, title: alarm.title, text: alarm.text, url: alarm.url });
+        })
+        .then(
+          function (result) {
+            if (result && typeof result.notifications === "boolean") record.notifications = result.notifications;
+            if (result && result.scheduled && typeof result.exact === "boolean") record.exact = result.exact;
+          },
+          function () {}
+        )
+        .then(function () {
+          record.ids[alarm.id] = alarm.endAt;
+        });
+    });
+    return done.then(function () {
+      return record;
+    });
+  }
+
+  // Le plugin sonne-t-il les minuteurs de cette page ? Sinon, le bip.
+  function ringsNatively(win) {
+    if (!alarmPlugin(win)) return false;
+    try {
+      return nativeRecord(JSON.parse(win.localStorage.getItem(NATIVE_KEY))).notifications !== false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  // « Prévenir à la fin » dans l'application : la permission des
+  // notifications d'Android (`display` du plugin Local Notifications),
+  // demandée sur ce bouton seulement. Accordée ou refusée, plus de bouton :
+  // refusée, Android ne la redemande plus.
+  function appNotifyState(display) {
+    return display === "prompt" || display === "prompt-with-rationale" ? "ask" : "none";
+  }
+
+  // Le bouton « Alarmes et rappels » de la page Cuisiner : les
+  // notifications accordées (sans elles rien ne sonne, leur bouton passe
+  // d'abord), et les alarmes exactes refusées — le réglage d'Android lu par
+  // Local Notifications (`exact_alarm`), sinon le dernier `exact` du plugin.
+  function appExactState(display, setting, exact) {
+    if (display !== "granted") return "none";
+    if (setting) return setting === "granted" ? "none" : "ask";
+    return exact === false ? "ask" : "none";
+  }
+
   return {
     PREFIX: PREFIX,
+    NATIVE_KEY: NATIVE_KEY,
+    keepRecord: keepRecord,
+    appExactState: appExactState,
+    alarmPlugin: alarmPlugin,
+    nativeId: nativeId,
+    alarms: alarms,
+    alarmPlan: alarmPlan,
+    syncAlarms: syncAlarms,
+    ringsNatively: ringsNatively,
+    appNotifyState: appNotifyState,
     recipeOf: recipeOf,
     entry: entry,
     isDue: isDue,
@@ -346,8 +520,10 @@ var MHomeCookWatch = (function () {
     return audio;
   }
 
-  // Le bip de la page Cuisiner (`beep`, enhance.js).
+  // Le bip de la page Cuisiner (`beep`, enhance.js) ; aucun quand
+  // l'alarme native sonne (#1019) : jamais les deux.
   function beep() {
+    if (W.ringsNatively(window)) return;
     try {
       var ctx = context();
       if (!ctx) return;
@@ -430,9 +606,30 @@ var MHomeCookWatch = (function () {
 
   // -- « Prévenir à la fin » ------------------------------------------------
 
-  function notifyUi() {
-    var api = typeof Notification !== "undefined";
-    var state = W.notifyState(api, api ? Notification.permission : "");
+  // Dans l'application (#1019), le bouton demande la permission des
+  // notifications d'Android, sans laquelle l'alarme native ne sonne rien ;
+  // les lignes d'état restent cachées. Une fois accordée, si les alarmes
+  // exactes ne le sont pas, un second bouton (`data-notify-exact`) ouvre
+  // « Alarmes et rappels » : sans elles, Android peut retarder le minuteur.
+  // Le plugin Local Notifications lit et demande l'une et l'autre, comme le
+  // bloc de « Mon compte › Notifications de rappel »
+  // (`account::notifications::local_block`).
+  function appPermissions() {
+    try {
+      var plugins = window.Capacitor && window.Capacitor.Plugins;
+      return W.alarmPlugin(window) && plugins.LocalNotifications ? plugins.LocalNotifications : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function showExact(state) {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-notify-exact]"), function (el) {
+      el.hidden = state !== "ask";
+    });
+  }
+
+  function showNotify(state) {
     Array.prototype.forEach.call(document.querySelectorAll("[data-notify]"), function (el) {
       el.hidden = state !== "ask";
     });
@@ -444,9 +641,79 @@ var MHomeCookWatch = (function () {
     });
   }
 
+  function appNotifyUi(local) {
+    Promise.resolve()
+      .then(function () {
+        return local.checkPermissions();
+      })
+      .then(
+        function (permission) {
+          var display = permission && permission.display;
+          showNotify(W.appNotifyState(display));
+          // Accordée depuis, l'alarme native sonne : plus de bip ; retirée,
+          // elle ne sonne rien : le bip.
+          if (display) keep({ notifications: display === "granted" });
+          if (display !== "granted") return showExact("none");
+          return Promise.resolve()
+            .then(function () {
+              return local.checkExactNotificationSetting();
+            })
+            .catch(function () {
+              return null;
+            })
+            .then(function (setting) {
+              showExact(W.appExactState(display, setting && setting.exact_alarm, kept().exact));
+            });
+        },
+        function () {
+          showNotify("none");
+          showExact("none");
+        }
+      );
+  }
+
+  function notifyUi() {
+    var local = appPermissions();
+    if (local) return appNotifyUi(local);
+    var api = typeof Notification !== "undefined";
+    showNotify(W.notifyState(api, api ? Notification.permission : ""));
+  }
+
   document.addEventListener("click", function (event) {
+    var exact = event.target && event.target.closest && event.target.closest("[data-notify-exact]");
+    var local = appPermissions();
+    if (exact && local) {
+      exact.disabled = true;
+      Promise.resolve()
+        .then(function () {
+          return local.changeExactNotificationSetting();
+        })
+        .catch(function () {})
+        .then(function () {
+          exact.disabled = false;
+          // Accordées, les alarmes déjà programmées ne le deviennent qu'en
+          // l'étant de nouveau.
+          relaunch();
+          notifyUi();
+        });
+      return;
+    }
     var button = event.target && event.target.closest && event.target.closest("[data-notify]");
-    if (!button || typeof Notification === "undefined") return;
+    if (!button) return;
+    if (local) {
+      button.disabled = true;
+      Promise.resolve()
+        .then(function () {
+          return local.requestPermissions();
+        })
+        .catch(function () {})
+        .then(function () {
+          button.disabled = false;
+          notifyUi();
+        });
+      return;
+    }
+    if (typeof Notification === "undefined") return;
     try {
       var asked = Notification.requestPermission(notifyUi);
       if (asked && asked.then) asked.then(notifyUi, notifyUi);
@@ -522,10 +789,12 @@ var MHomeCookWatch = (function () {
   }
 
   // « Arrêter » : les minuteurs de la fenêtre sont oubliés, comme par
-  // l'« Arrêter » de la page Cuisiner ; ni bip ni redirection.
+  // l'« Arrêter » de la page Cuisiner ; ni bip, ni redirection, et leur
+  // alarme native se tait — la leur seule.
   function stop() {
     var byRecipe = W.toStop(finishedNow(), shownKeys);
     Object.keys(byRecipe).forEach(function (id) {
+      cancelNative(id, byRecipe[id]);
       rewrite(id, function (timers) {
         return W.without(timers, byRecipe[id]);
       });
@@ -565,6 +834,107 @@ var MHomeCookWatch = (function () {
       leaving = true;
       location.assign(W.redirectTo(list));
     }
+  }
+
+  // -- l'alarme native (#1019) ---------------------------------------------
+
+  // L'alarme des minuteurs `timers` de la recette `recipe` : ne sonnera
+  // pas, ou cesse de sonner. Les autres sonnent toujours.
+  function cancelNative(recipe, timers) {
+    var plugin = W.alarmPlugin(window);
+    if (!plugin) return;
+    var record = kept();
+    timers.forEach(function (timer) {
+      var id = W.nativeId(recipe, timer);
+      if (!id) return;
+      delete record.ids[id];
+      try {
+        Promise.resolve(plugin.cancel({ id: id })).catch(function () {});
+      } catch (e) {}
+    });
+    // Annulée ici, le passage suivant n'a pas à la redemander.
+    keep({ ids: record.ids });
+  }
+  // La page Cuisiner (`enhance.js`) en a besoin pour son « Arrêter ».
+  W.cancelNative = cancelNative;
+
+  // Ce qui est gardé sous `NATIVE_KEY`, lisible.
+  function kept() {
+    try {
+      return W.keepRecord(JSON.parse(localStorage.getItem(W.NATIVE_KEY)), {});
+    } catch (e) {
+      return W.keepRecord(null, {});
+    }
+  }
+
+  // Relit et n'écrit que les champs d'`update`, dans le même tour.
+  function keep(update) {
+    try {
+      var before = localStorage.getItem(W.NATIVE_KEY);
+      var after = JSON.stringify(W.keepRecord(JSON.parse(before), update));
+      if (after !== before) localStorage.setItem(W.NATIVE_KEY, after);
+    } catch (e) {}
+  }
+
+  // Le premier passage depuis le lancement de l'application reprogramme
+  // les minuteurs à venir (`alarmPlan`, `fresh`) : sessionStorage ne
+  // survit pas à l'application tuée, ni au téléphone redémarré. Sans
+  // sessionStorage, à chaque page.
+  var FRESH_KEY = "mhome.minuteurs-relances";
+  var relaunched = false;
+
+  function fresh() {
+    try {
+      return !sessionStorage.getItem(FRESH_KEY);
+    } catch (e) {
+      return !relaunched;
+    }
+  }
+
+  function launched() {
+    relaunched = true;
+    try {
+      sessionStorage.setItem(FRESH_KEY, "1");
+    } catch (e) {}
+  }
+
+  function relaunch() {
+    relaunched = false;
+    try {
+      sessionStorage.removeItem(FRESH_KEY);
+    } catch (e) {}
+  }
+
+  // Une synchronisation à la fois ; la suivante part du passage d'après.
+  var syncing = false;
+
+  function syncNative(all, now) {
+    var plugin = W.alarmPlugin(window);
+    if (!plugin || syncing) return;
+    var before = kept();
+    var options = { fresh: fresh(), now: now };
+    var wanted = W.alarms(all);
+    var plan = W.alarmPlan(wanted, before.ids, options);
+    if (!plan.schedule.length && !plan.cancel.length) {
+      if (options.fresh) launched();
+      return;
+    }
+    syncing = true;
+    W.syncAlarms(plugin, wanted, before, options)
+      .then(function (record) {
+        // Ce que le plugin a répondu, s'il a changé : une permission lue
+        // pendant la synchronisation reste.
+        var update = { ids: record.ids };
+        if (record.notifications !== before.notifications) update.notifications = record.notifications;
+        if (record.exact !== before.exact) update.exact = record.exact;
+        keep(update);
+        if (options.fresh) launched();
+        if (record.exact !== before.exact) notifyUi();
+      })
+      .catch(function () {})
+      .then(function () {
+        syncing = false;
+      });
   }
 
   // -- le passage -----------------------------------------------------------
@@ -619,6 +989,7 @@ var MHomeCookWatch = (function () {
         }
       });
     });
+    syncNative(all, now);
     showCard(W.live(all, now));
     popup(W.settled(W.finished(all, owner, own), claimedKeys, pass), now);
   }

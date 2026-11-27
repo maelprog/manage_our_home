@@ -230,10 +230,13 @@ pub(crate) const WATCH_SCRIPT: &str = include_str!("../../cook-watch.js");
 /// card: the button that asks for the browser's notifications, and the two
 /// lines that say how they stand once asked. All `hidden`: `WATCH_SCRIPT`
 /// shows the one that applies, nothing without the Notification API, and
-/// the permission is only ever asked by a press on the button.
+/// the permission is only ever asked by a press on the button. In the
+/// Android app (#1019), the button asks for Android's notifications, and
+/// a second one (`data-notify-exact`) opens « Alarmes et rappels » once
+/// they are granted and exact alarms are not.
 pub(crate) fn notify_html() -> String {
     format!(
-        r#"<button type="button" class="secondary notify" data-notify hidden>{bell}Prévenir à la fin</button><p class="notify-state ok" role="status" data-notify-on hidden>{check}Vous serez prévenu à la fin, tant que cet onglet reste ouvert.</p><p class="notify-state" role="status" data-notify-off hidden>{bell}Notifications bloquées par le navigateur. La fenêtre et le bip restent actifs.</p>"#,
+        r#"<button type="button" class="secondary notify" data-notify hidden>{bell}Prévenir à la fin</button><button type="button" class="secondary notify" data-notify-exact hidden>{bell}Autoriser les alarmes à l'heure exacte</button><p class="notify-state ok" role="status" data-notify-on hidden>{check}Vous serez prévenu à la fin, tant que cet onglet reste ouvert.</p><p class="notify-state" role="status" data-notify-off hidden>{bell}Notifications bloquées par le navigateur. La fenêtre et le bip restent actifs.</p>"#,
         bell = icon(Icon::Bell),
         check = icon(Icon::Check),
     )
@@ -887,6 +890,18 @@ mod tests {
             html.contains(
                 "Notifications bloquées par le navigateur. La fenêtre et le bip restent actifs.</p>"
             ),
+            "{html}"
+        );
+        // In the app (#1019): « Alarmes et rappels », hidden until the
+        // script reads them refused, opened on a press only.
+        assert!(
+            html.contains(
+                r#"<button type="button" class="secondary notify" data-notify-exact hidden><svg"#
+            ),
+            "{html}"
+        );
+        assert!(
+            html.contains("Autoriser les alarmes à l'heure exacte</button>"),
             "{html}"
         );
         // Nothing asks for the permission unprompted: no script here.
