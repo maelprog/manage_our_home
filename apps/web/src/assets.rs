@@ -709,16 +709,31 @@ mod tests {
     }
 
     #[test]
-    fn every_page_loads_the_cook_timers_watch_after_enhance_in_its_head() {
-        // #1018: a timer that ends rings on any page, not only on its
-        // recipe's Cuisiner.
-        let html = crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
+    fn every_page_of_the_app_loads_the_cook_timers_watch_after_enhance_in_its_head() {
+        // #1018: a timer that ends rings on any page of the app, not only on
+        // its recipe's Cuisiner.
+        let html = crate::app::shell_with_header(
+            crate::app::Width::Form,
+            "Titre",
+            "<header></header>",
+            "<h1>x</h1>",
+        );
         let head = &html[..html.find("</head>").expect("a head")];
         let watch = head
             .find(&Script::CookWatch.tag())
             .unwrap_or_else(|| panic!("{html}"));
         assert!(head.find(&Script::Enhance.tag()).unwrap() < watch, "{html}");
         assert_eq!(html.matches(&Script::CookWatch.tag()).count(), 1, "{html}");
+    }
+
+    #[test]
+    fn a_page_without_navigation_never_loads_the_cook_timers_watch() {
+        // #1018: the login page, the public legal documents and the bare
+        // error pages show no recipe's name and open no window at a
+        // timer's end — what a browser keeps is not shown outside a session.
+        let html = crate::app::shell(crate::app::Width::Form, "Titre", "<h1>x</h1>");
+        assert!(!html.contains(&Script::CookWatch.tag()), "{html}");
+        assert!(html.contains(&Script::Enhance.tag()), "{html}");
     }
 
     #[test]

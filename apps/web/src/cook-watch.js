@@ -1,6 +1,7 @@
 // Les minuteurs de cuisine hors de la page Cuisiner (#1018,
-// `assets::Script::CookWatch`), chargé par toutes les pages, dans le <head>
-// après `enhance.js`. La page Cuisiner (`enhance.js`, `data-cook`) garde ses
+// `assets::Script::CookWatch`), chargé par toutes les pages de l'application
+// (`app::shell_with_header` : jamais sur la connexion ni une page publique),
+// dans le <head> après `enhance.js`. La page Cuisiner (`enhance.js`, `data-cook`) garde ses
 // minuteurs par recette dans localStorage (`mhome.cuisine.<id>` :
 // `{at, step, timers, title, url}`) ; ce script les relit deux fois par
 // seconde, et :
@@ -8,17 +9,19 @@
 // - remplit la carte « Minuteurs en cours » de l'accueil
 //   (`data-home-timers`, `hidden` sans JavaScript ni minuteur) ;
 // - à la fin d'un minuteur, sur toute page qui n'est pas la page Cuisiner de
-//   sa recette, ouvre une fenêtre modale (« Minuteur terminé »), bipe
+//   sa recette, tant que celle-ci n'est ouverte dans aucun onglet, ouvre une fenêtre modale (« Minuteur terminé »), bipe
 //   jusqu'à « Arrêter », et ouvre la page Cuisiner de la recette 20 s
 //   après (arbitrage du 2026-11-27), sauf « Arrêter » ;
 // - prévient par une notification du navigateur, si elle a été accordée
 //   par « Prévenir à la fin » (`data-notify`) — jamais d'invite sans appui.
 //
 // Un seul propriétaire par minuteur : la page Cuisiner de sa recette le
-// sonne elle-même, ce script s'en tient alors à la notification. Ailleurs,
-// l'onglet qui le voit échu le marque fini à son nom (`owner`, gardé en
-// sessionStorage) et lui seul le sonne ; si deux onglets le marquent à la
-// fois, le dernier écrit l'emporte au passage suivant.
+// sonne elle-même, ce script s'en tient alors à la notification ; ouverte
+// dans un autre onglet, même caché, elle le dit sous `mhome.cuisine-ouverte.
+// <id>` et personne ne le réclame. Sinon, l'onglet qui le voit échu le
+// marque fini à son nom (`owner`, gardé en sessionStorage) ; il ne le montre
+// qu'au passage suivant, s'il est encore à son nom : de deux onglets qui le
+// marquent à la fois, seul le dernier écrit le sonne et notifie.
 //
 // `MHomeCookWatch` porte les décisions, sans DOM ;
 // `e2e/lib/cook-watch.test.ts` les lit dans un contexte sans `window`.
@@ -151,6 +154,32 @@ var MHomeCookWatch = (function () {
     });
   }
 
+  // La page Cuisiner ouverte d'une recette le dit sous sa propre clé, hors
+  // de celles que lit `entry` : l'heure de son dernier passage. Tant qu'elle
+  // a moins de `OPEN_FOR`, cette page sonne elle-même ses minuteurs, même
+  // cachée : un onglet en arrière-plan peut ne passer qu'une fois par
+  // minute, et personne d'autre ne les réclame.
+  var OPEN_PREFIX = "mhome.cuisine-ouverte.";
+  var OPEN_FOR = 90 * 1000;
+
+  function openKey(id) {
+    return OPEN_PREFIX + id;
+  }
+
+  function cookOpen(raw, now) {
+    var at = Number(raw);
+    return raw != null && raw !== "" && at > 0 && now - at < OPEN_FOR;
+  }
+
+  // Les minuteurs finis qui ne viennent pas d'être réclamés à ce passage
+  // (`claimedOn[key] === pass`) : deux onglets qui réclament ensemble, le
+  // dernier écrit l'emporte, et seul celui-là les montre, au passage d'après.
+  function settled(list, claimedOn, pass) {
+    return list.filter(function (item) {
+      return claimedOn[item.key] !== pass;
+    });
+  }
+
   function redirectTo(list) {
     return list.length ? list[0].url : null;
   }
@@ -211,6 +240,9 @@ var MHomeCookWatch = (function () {
     claim: claim,
     finished: finished,
     redirectTo: redirectTo,
+    openKey: openKey,
+    cookOpen: cookOpen,
+    settled: settled,
     without: without,
     clock: clock,
     ago: ago,
@@ -258,7 +290,8 @@ var MHomeCookWatch = (function () {
   var deadline = 0;
   var leaving = false;
   var shownKeys = [];
-  var claimedKeys = {};
+  var claimedKeys = {}; // clé du minuteur → le passage qui l'a réclamé
+  var pass = 0;
   var ownRunning = {};
 
   function entries(now) {
@@ -524,12 +557,27 @@ var MHomeCookWatch = (function () {
 
   // -- le passage -----------------------------------------------------------
 
+  // Ouverte ailleurs, la page Cuisiner de la recette sonne elle-même.
+  function openElsewhere(id, now) {
+    try {
+      return W.cookOpen(localStorage.getItem(W.openKey(id)), now);
+    } catch (e) {
+      return false;
+    }
+  }
+
   function tick() {
     var now = Date.now();
+    pass += 1;
+    if (own) {
+      try {
+        localStorage.setItem(W.openKey(own), String(now));
+      } catch (e) {}
+    }
     var all = entries(now);
     var claimed = false;
     all.forEach(function (e) {
-      if (e.id === own) return;
+      if (e.id === own || openElsewhere(e.id, now)) return;
       if (
         !e.timers.some(function (timer) {
           return W.isDue(timer, now);
@@ -540,7 +588,7 @@ var MHomeCookWatch = (function () {
         var out = W.claim(timers, now, owner);
         if (!out.claimed) return null;
         out.timers.forEach(function (timer) {
-          if (timer && timer.owner === owner && timer.done) claimedKeys[e.id + ":" + timer.id] = true;
+          if (timer && timer.owner === owner && timer.done) claimedKeys[e.id + ":" + timer.id] = pass;
         });
         claimed = true;
         return out.timers;
@@ -560,7 +608,7 @@ var MHomeCookWatch = (function () {
       });
     });
     showCard(W.live(all, now));
-    popup(W.finished(all, owner, own), now);
+    popup(W.settled(W.finished(all, owner, own), claimedKeys, pass), now);
   }
 
   // Un appui est ce qui permet à une page de faire un son : le contexte
@@ -579,6 +627,14 @@ var MHomeCookWatch = (function () {
     card = document.querySelector("[data-home-timers]");
     notifyUi();
     document.addEventListener("visibilitychange", notifyUi);
+    // Quittée, la page Cuisiner rend ses minuteurs aux autres pages tout de
+    // suite ; revenue de l'historique, le passage suivant la redit ouverte.
+    window.addEventListener("pagehide", function () {
+      if (!own) return;
+      try {
+        localStorage.removeItem(W.openKey(own));
+      } catch (e) {}
+    });
     try {
       tick();
     } catch (e) {}

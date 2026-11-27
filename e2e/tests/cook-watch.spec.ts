@@ -4,8 +4,8 @@ import { fillIngredients, fillSteps } from "../lib/recipe-form";
 import { skipMealStart } from "../lib/meal-start";
 
 // The cooking timers away from Cuisiner (#1018): the home's card « Minuteurs
-// en cours », and at a timer's end, on any other page, the window that rings
-// until « Arrêter » and opens the recipe's Cuisiner 20 s later.
+// en cours », and at a timer's end, on any other page of the app, the window
+// that rings until « Arrêter » and opens the recipe's Cuisiner 20 s later.
 
 test.beforeEach(async ({ context }) => {
   await skipMealStart(context);
@@ -134,13 +134,30 @@ const GRATIN = "ef5a0c8e-b6d9-4c62-9051-0ebbcd646b24";
 const RATATOUILLE = "7b1c2d44-5a0e-4f1b-9c3a-0d6e8f21a977";
 
 test("several ended timers are listed oldest first; « Arrêter » forgets them and stays", async ({ page }) => {
-  // Any page that is not Cuisiner watches: the login page will do.
-  await page.goto("/login");
-  await keepEnded(page, [
+  const ended = [
     { recipe: RATATOUILLE, title: "Ratatouille", what: "Étape 3 · 45 min", agoMs: 1_000 },
     { recipe: GRATIN, title: "Gratin dauphinois", what: "Étape 4 · 1 h", agoMs: 2 * 60_000 + 5_000 },
-  ]);
+  ];
   const done = page.getByRole("dialog", { name: "Minuteurs terminés" });
+
+  // Outside a session, nothing watches: no window, no recipe's name, and
+  // what is kept stays as it was.
+  await page.goto("/login");
+  await keepEnded(page, ended);
+  await page.reload();
+  await page.waitForTimeout(1_500);
+  await expect(done).toBeHidden();
+  const untouched = await page.evaluate(
+    (ids) => ids.map((id) => JSON.parse(localStorage.getItem(`mhome.cuisine.${id}`)!).timers[0].done),
+    [RATATOUILLE, GRATIN]
+  );
+  expect(untouched).toEqual([false, false]);
+  await page.evaluate(() => localStorage.clear());
+
+  // Any page of the app that is not Cuisiner watches: the home will do.
+  await registerAndLogin(page);
+  await keepEnded(page, ended);
+  await page.goto("/");
   await expect(done).toBeVisible();
   await expect(done).toContainText("2 minuteurs terminés");
   const rows = done.getByRole("listitem");
@@ -162,7 +179,64 @@ test("several ended timers are listed oldest first; « Arrêter » forgets them 
   // Nothing comes back, nothing leaves.
   await page.waitForTimeout(1_500);
   await expect(done).toBeHidden();
-  await expect(page).toHaveURL(/\/login$/);
+  await expect(page).toHaveURL(/\/$/);
+});
+
+test("a timer whose Cuisiner is open in another tab rings there only", async ({ page, context }) => {
+  // The Cuisiner page rings its own timers, even from the background: no
+  // other tab claims them, opens a window or leads to a second Cuisiner.
+  test.setTimeout(90_000);
+  await registerAndLogin(page);
+  await page.goto("/recipes/new");
+  await page.getByLabel("Nom").fill("Ratatouille");
+  await fillSteps(page, "Laisser reposer 8 secondes.\nServir.");
+  await fillIngredients(page, "Aubergine | 2");
+  await page.getByRole("button", { name: "Créer la recette" }).click();
+  await expect(page).toHaveURL(/\/recipes\/[0-9a-f-]+\?notice=recipe_created$/);
+  // A background tab may pass once a minute only: the Cuisiner tab's
+  // intervals are held until `frozen` is lifted.
+  const cooking = await context.newPage();
+  await cooking.addInitScript(() => {
+    const w = window as unknown as { frozen: boolean };
+    w.frozen = false;
+    const real = window.setInterval.bind(window);
+    window.setInterval = ((fn: () => void, ms?: number) =>
+      real(() => {
+        if (!w.frozen) fn();
+      }, ms)) as typeof window.setInterval;
+  });
+  await cooking.goto(new URL(page.url()).pathname + "/cook");
+  await cooking.getByRole("button", { name: "Lancer un minuteur de 8 secondes" }).click();
+  await expect(cooking.getByRole("timer", { name: "Étape 1 · 8 s" })).toBeVisible();
+  await cooking.evaluate(() => {
+    (window as unknown as { frozen: boolean }).frozen = true;
+  });
+
+  await page.goto("/");
+  const card = page.getByRole("region", { name: "Minuteurs en cours" });
+  await expect(card).toBeVisible();
+  // Its end comes and goes here; Cuisiner has not passed since.
+  await expect(card).toBeHidden({ timeout: 15_000 });
+  await page.waitForTimeout(3_000);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const kept = () =>
+    page.evaluate(() => {
+      const key = Object.keys(localStorage).find((k) => k.startsWith("mhome.cuisine."))!;
+      const timer = JSON.parse(localStorage.getItem(key)!).timers[0];
+      return { done: timer.done, owner: timer.owner ?? null };
+    });
+  expect(await kept()).toEqual({ done: false, owner: null });
+  await expect(page).toHaveURL(/\/$/);
+
+  // Cuisiner passes again: it rings its own timer, and nothing here does.
+  await cooking.evaluate(() => {
+    (window as unknown as { frozen: boolean }).frozen = false;
+  });
+  const ended = cooking.getByRole("alert").filter({ hasText: "Étape 1 · 8 s" });
+  await expect(ended).toContainText("Terminé !");
+  await page.waitForTimeout(1_500);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(await kept()).toEqual({ done: true, owner: null });
 });
 
 test("the notification is never asked for without a press on « Prévenir à la fin »", async ({ page }) => {

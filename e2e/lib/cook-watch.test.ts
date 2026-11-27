@@ -162,6 +162,37 @@ test("réclamer un minuteur échu le marque fini, au nom de l'onglet", () => {
   assert.equal(W.claim(out.timers, NOW, "onglet-2").claimed, false);
 });
 
+// -- une page Cuisiner ouverte ailleurs --------------------------------------
+
+test("une page Cuisiner ouverte se signale sous sa propre clé, hors des clés de cuisine", () => {
+  assert.equal(W.openKey(A), `mhome.cuisine-ouverte.${A}`);
+  assert.equal(W.recipeOf(W.openKey(A)), null);
+});
+
+test("une page Cuisiner est ouverte tant que son signal a moins de 90 s, même ralentie en arrière-plan", () => {
+  // Un onglet caché ne passe plus qu'une fois par minute : 60 s de silence
+  // ne disent pas qu'il est fermé.
+  assert.equal(W.cookOpen(String(NOW - 60_000), NOW), true);
+  assert.equal(W.cookOpen(String(NOW - 89_999), NOW), true);
+  assert.equal(W.cookOpen(String(NOW - 90_000), NOW), false);
+  // Pas de signal, ou illisible : personne ne la tient.
+  assert.equal(W.cookOpen(null, NOW), false);
+  assert.equal(W.cookOpen("", NOW), false);
+  assert.equal(W.cookOpen("pas un nombre", NOW), false);
+});
+
+test("un minuteur réclamé à ce passage n'est montré qu'au suivant, s'il est encore à l'onglet", () => {
+  // Deux onglets qui réclament au même passage : le dernier écrit
+  // l'emporte, et seul celui-là sonne et notifie, au passage d'après.
+  const list = [{ key: `${A}:a1` }, { key: `${B}:b1` }, { key: `${B}:b2` }];
+  const claimedOn = { [`${A}:a1`]: 7, [`${B}:b1`]: 6 };
+  assert.deepEqual(
+    (plain(W.settled(list, claimedOn, 7)) as { key: string }[]).map((i) => i.key),
+    [`${B}:b1`, `${B}:b2`]
+  );
+  assert.equal(W.settled(list, claimedOn, 8).length, 3);
+});
+
 // -- les minuteurs finis, et où rediriger -----------------------------------
 
 test("la fenêtre liste les minuteurs finis de l'onglet, le plus ancien d'abord, hors de la recette ouverte", () => {
