@@ -1259,6 +1259,11 @@
   // recipe's title (`data-cook-title`) and this page's address: the other
   // pages watch the timers too (#1018, `cook-watch.js`), and that script
   // sends the browser's notification, here as anywhere.
+  // In the Android app with its CookTimers plugin (#1019), that script also
+  // hands every timer to the phone's alarm, which rings on the alarm stream,
+  // the app closed: the page then never beeps (`nativeAlarm`), and « Arrêter »
+  // on an ended timer stops the alarm too. A browser, or an APK without the
+  // plugin, beeps as before.
   // So does half a day counted from the later of the last change (`at`,
   // written on a step moved or a timer started, paused, stopped or ended —
   // not on a visit) and the end of the last timer; a timer still running or
@@ -1387,7 +1392,18 @@
     else if (keepRow) (cooking.next.hidden ? cooking.end : cooking.next).focus();
   }
 
+  // The phone's alarm rings the timers (cook-watch.js, `ringsNatively`):
+  // one ringing at a time, never the beep with it.
+  function nativeAlarm() {
+    try {
+      return typeof MHomeCookWatch !== "undefined" && MHomeCookWatch.ringsNatively(window);
+    } catch (e) {
+      return false;
+    }
+  }
+
   function beep() {
+    if (nativeAlarm()) return;
     try {
       if (!audio) {
         var Context = window.AudioContext || window.webkitAudioContext;
@@ -1518,6 +1534,12 @@
           timer.end = Date.now() + timer.left;
         }
       } else {
+        if (button.hasAttribute("data-cook-ring")) {
+          try {
+            var alarm = MHomeCookWatch.alarmPlugin(window);
+            if (alarm) Promise.resolve(alarm.stop()).catch(function () {});
+          } catch (e) {}
+        }
         cooking.timers.splice(cooking.timers.indexOf(timer), 1);
       }
       cookRows();

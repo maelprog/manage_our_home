@@ -25,6 +25,7 @@ du site.
 | `android/app/src/main/java/fr/watallo/mhome/CookTimerRinging.java` | la sonnerie en boucle jusqu'à « Arrêter », un service au premier plan |
 | `android/app/src/main/java/fr/watallo/mhome/CookTimerPlan.java` | les décisions sans Android : l'heure de la sonnerie, alarme exacte ou non, plein écran ou non, les textes, la page ouverte |
 | `android/app/src/test/java/fr/watallo/mhome/CookTimerPlanTest.java` | ses tests JUnit, lancés par chaque build de débogage (`./gradlew assembleStagingDebug`, le job `mobile` de la CI compris) |
+| `scripts/cook-timers.test.mjs` | les tests de la partie de `apps/web/src/cook-watch.js` qui confie les minuteurs de la page au plugin `CookTimers` (#1019, `npm test`) |
 
 ## Ce que fait l'application
 
@@ -180,7 +181,7 @@ du site.
   page, qui n'appelle alors pas le plugin Push Notifications (il fermerait
   l'application). La configuration : « Notifications poussées : le
   projet Firebase » plus bas.
-- **Les minuteurs de cuisine, en alarme** (#1017) : « Minuteurs de
+- **Les minuteurs de cuisine, en alarme** (#1017, #1019) : « Minuteurs de
   cuisine » plus bas.
 
 L'APK signé que les familles installent est publié en release GitHub
@@ -506,15 +507,40 @@ des applications. À l'ouverture :
     Sans `google-services.json`, rien de cela : aucun appel à
     `/account/notifications/fcm-token`, et l'application fonctionne.
 
-## Minuteurs de cuisine (#1017)
+## Minuteurs de cuisine (#1017, #1019)
 
 Dans un navigateur, le minuteur de la fiche recette sonne par un bip de la
-page (`apps/web/src/enhance.js`), sur le volume des médias, et seulement
-tant que la page est ouverte. L'application confie le minuteur à Android :
-il sonne à son heure, l'application fermée ou tuée, sur le volume des
-**alarmes**, jusqu'à « Arrêter ». Le branchement côté page (appeler le
-plugin au lancement d'un minuteur) est une autre issue : ce paquet n'en
-fournit que le plugin.
+page (`apps/web/src/enhance.js`, `apps/web/src/cook-watch.js`), sur le
+volume des médias, et seulement tant que la page est ouverte. L'application
+confie le minuteur à Android : il sonne à son heure, l'application fermée
+ou tuée, sur le volume des **alarmes**, jusqu'à « Arrêter ».
+
+- **Le branchement côté page** (#1019, `apps/web/src/cook-watch.js`,
+  chargé par toutes les pages de l'application) : deux fois par seconde,
+  la page compare les minuteurs que garde la page Cuisiner
+  (`mhome.cuisine.<id>`) à ce qu'elle a confié au plugin (gardé sous
+  `mhome.minuteurs-natifs`) et ne demande que la différence. Un minuteur
+  lancé, ou repris après une pause, est programmé (`schedule`, à sa
+  nouvelle fin) ; un minuteur mis en pause, arrêté, ou oublié
+  (« Terminer », la demi-journée passée) est annulé (`cancel`). Un
+  minuteur arrivé à sa fin n'est pas annulé : sa sonnerie dure jusqu'à
+  « Arrêter ». L'identifiant de l'alarme est celui de la recette suivi de
+  celui du minuteur ; un toucher ouvre la page Cuisiner de la recette
+  (`url`). « Arrêter » sur un minuteur terminé de la page Cuisiner, et
+  « Arrêter » de la fenêtre « Minuteur terminé » des autres pages,
+  appellent aussi `stop()`.
+- **Une seule sonnerie** : le plugin là, la page ne bipe jamais (ni ne
+  vibre), sauf quand il a répondu que les notifications sont refusées à
+  l'application, puisqu'il ne sonne alors rien. Un APK construit avant
+  #1017, sans le plugin, bipe comme un navigateur, sans erreur.
+- **La permission des notifications** se demande sur un bouton, jamais à
+  l'ouverture : « Prévenir à la fin » de la page Cuisiner (dans
+  l'application, il ouvre la demande d'Android, par le plugin Local
+  Notifications ; il disparaît une fois qu'Android a répondu), ou
+  « Mon compte › Notifications de rappel ». Les alarmes exactes
+  (« Alarmes et rappels ») se demandent sur le bouton de cette dernière
+  page. Le plein écran (Android 14 et suivants) n'a pas de bouton : la
+  notification prioritaire le remplace.
 
 - **Le plugin `CookTimers`** (`CookTimersPlugin.java`), enregistré sur
   toutes les pages, appelé par `window.Capacitor.Plugins.CookTimers` :
@@ -603,6 +629,8 @@ enregistré, permissions déclarées.
 APK de débogage installé, connecté au site, notifications de MHome
 autorisées. Dans `chrome://inspect` (étape 7 du guide) :
 
+Le plugin seul :
+
 ```js
 await Capacitor.Plugins.CookTimers.schedule({ id: 'essai', endAt: Date.now() + 60_000, title: 'Pâtes à la carbonara', url: '/' })
 // { scheduled: true, exact: true|false, notifications: true }
@@ -634,6 +662,14 @@ await Capacitor.Plugins.CookTimers.schedule({ id: 'essai', endAt: Date.now() + 6
    1 et 2, l'application en arrière-plan : la notification sonne, sur
    « Minuteurs de cuisine (sans alarme exacte) », éventuellement en
    retard ; ouvrir le volet la fait taire, « Arrêter » la retire.
+7. Par la page (#1019) : ouvrir une recette, « Cuisiner », lancer un
+   minuteur, fermer puis tuer l'application comme en 1 : à la fin, la
+   sonnerie d'alarme, et le toucher ouvre la page Cuisiner de la
+   recette. Rouvrir l'application pendant que le minuteur court : aucun
+   bip à la fin, la seule sonnerie d'alarme ; « Arrêter » sur la page la
+   coupe. « Pause » avant la fin : rien ne sonne ; « Reprendre » : la
+   sonnerie à la nouvelle fin. Sur un APK d'avant #1017 : le bip de la
+   page, comme dans un navigateur.
 
 ## Notifications poussées : le projet Firebase (#1004)
 
