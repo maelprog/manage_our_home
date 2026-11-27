@@ -57,8 +57,8 @@ var MHomeCookWatch = (function () {
   }
 
   // Ce qu'une clé garde, lisible : `{id, title, url, timers}`, ou `null`.
-  // L'adresse gardée n'est suivie que si c'est la page Cuisiner de la
-  // recette de la clé : rien d'autre ne mène hors du site.
+  // L'adresse gardée n'est jamais lue : elle se déduit de la clé, la page
+  // Cuisiner de sa recette, et rien d'autre ne mène hors du site.
   function entry(key, raw, now) {
     var id = recipeOf(key);
     if (!id) return null;

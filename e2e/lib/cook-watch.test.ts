@@ -97,6 +97,14 @@ test("la demi-journée de la page Cuisiner vaut ici : une cuisine oubliée n'a p
   assert.equal(W.entry("mhome.cuisine." + A, paused, NOW).timers.length, 1);
 });
 
+test("la demi-journée se compte comme sur la page Cuisiner : 12 h pile, c'est oublié", () => {
+  // enhance.js garde ce qui a moins de `COOK_KEPT` : une milliseconde
+  // avant les 12 h, c'est encore là ; à 12 h pile, non.
+  const at = (age: number) => JSON.stringify({ at: NOW - age, timers: [] });
+  assert.notEqual(W.entry("mhome.cuisine." + A, at(12 * H - 1), NOW), null);
+  assert.equal(W.entry("mhome.cuisine." + A, at(12 * H), NOW), null);
+});
+
 // -- la carte « Minuteurs en cours » ----------------------------------------
 
 function entryOf(id: string, title: string, timers: unknown[]) {
