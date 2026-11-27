@@ -133,6 +133,17 @@ var MHomeCookWatch = (function () {
     return { timers: out, claimed: claimed, ids: ids };
   }
 
+  // Ce qu'« Arrêter » retire, par recette : les minuteurs finis que la
+  // fenêtre montrait (`shownKeys`), pas un réclamé depuis et jamais montré.
+  function toStop(finished, shownKeys) {
+    var byRecipe = {};
+    finished.forEach(function (item) {
+      if (shownKeys.indexOf(item.key) === -1) return;
+      (byRecipe[item.recipe] = byRecipe[item.recipe] || []).push(item.id);
+    });
+    return byRecipe;
+  }
+
   // Les minuteurs finis que cet onglet sonne, le plus ancien d'abord, hors
   // de la recette dont la page est ouverte (`skip`).
   function finished(entries, owner, skip) {
@@ -241,6 +252,7 @@ var MHomeCookWatch = (function () {
     live: live,
     rowLabel: rowLabel,
     claim: claim,
+    toStop: toStop,
     finished: finished,
     redirectTo: redirectTo,
     openKey: openKey,
@@ -512,10 +524,7 @@ var MHomeCookWatch = (function () {
   // « Arrêter » : les minuteurs de la fenêtre sont oubliés, comme par
   // l'« Arrêter » de la page Cuisiner ; ni bip ni redirection.
   function stop() {
-    var byRecipe = {};
-    finishedNow().forEach(function (item) {
-      (byRecipe[item.recipe] = byRecipe[item.recipe] || []).push(item.id);
-    });
+    var byRecipe = W.toStop(finishedNow(), shownKeys);
     Object.keys(byRecipe).forEach(function (id) {
       rewrite(id, function (timers) {
         return W.without(timers, byRecipe[id]);

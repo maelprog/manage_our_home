@@ -174,6 +174,18 @@ test("réclamer nomme les seuls minuteurs qu'il vient de marquer, pas ceux déj�
   assert.deepEqual(plain(W.claim([timers[0]], NOW, "onglet-1").ids), []);
 });
 
+test("« Arrêter » ne vise que les minuteurs que la fenêtre montrait", () => {
+  // Un minuteur réclamé dans la demi-seconde n'a été ni montré ni sonné :
+  // il reste, et ouvrira la fenêtre au passage suivant.
+  const finished = [
+    { key: `${A}:a1`, recipe: A, id: "a1" },
+    { key: `${A}:a2`, recipe: A, id: "a2" },
+    { key: `${B}:b1`, recipe: B, id: "b1" },
+  ];
+  assert.deepEqual(plain(W.toStop(finished, [`${A}:a1`, `${B}:b1`])), { [A]: ["a1"], [B]: ["b1"] });
+  assert.deepEqual(plain(W.toStop(finished, [])), {});
+});
+
 // -- une page Cuisiner ouverte ailleurs --------------------------------------
 
 test("une page Cuisiner ouverte se signale sous sa propre clé, hors des clés de cuisine", () => {
