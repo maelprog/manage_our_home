@@ -2651,6 +2651,11 @@ mod tests {
             ".clash, in the choice's dialog (#795)",
         ),
         ("--success", "--bg", ".pw-meter (correct, solide)"),
+        (
+            "--success",
+            "--surface",
+            ".notify-state.ok in a card (#1018)",
+        ),
         ("--error", "--surface", ".field-error in a card"),
         (
             "--error",
