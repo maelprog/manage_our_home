@@ -557,6 +557,11 @@ async fn ingredient_links_isolated_without_scoping(db: PgPool) {
 /// that forgets `WHERE group_id = ...` — nothing without a family scope,
 /// only the scoped family's receipts with one, no receipt of another
 /// family rewritten, deleted or written.
+///
+/// Checked as a role that **owns** the table (#1048), as
+/// `group_access_policies` below (#864): only `FORCE ROW LEVEL SECURITY`
+/// subjects an owner to its own policy, so without it the checks below
+/// fail, whereas a role holding mere grants would pass them either way.
 #[sqlx::test]
 async fn receipts_isolated_without_scoping(db: PgPool) {
     let ((owner_a, group_a), (owner_b, group_b)) = two_owned_groups(&db).await;
@@ -576,19 +581,22 @@ async fn receipts_isolated_without_scoping(db: PgPool) {
         .unwrap();
     }
 
+    let harness_role: String = sqlx::query_scalar("SELECT current_user::text")
+        .fetch_one(&db)
+        .await
+        .unwrap();
     let role = format!("app_test_role_{}", Uuid::new_v4().simple());
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"
-    )))
-    .execute(&db)
-    .await
-    .unwrap();
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON receipts TO {role}"
-    )))
-    .execute(&db)
-    .await
-    .unwrap();
+    for statement in [
+        format!("CREATE ROLE {role} NOSUPERUSER NOBYPASSRLS"),
+        // A new table owner must hold CREATE on the schema.
+        format!("GRANT USAGE, CREATE ON SCHEMA public TO {role}"),
+        format!("ALTER TABLE receipts OWNER TO {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
 
     #[allow(clippy::disallowed_methods)]
     let mut tx = db.begin().await.unwrap();
@@ -656,16 +664,16 @@ async fn receipts_isolated_without_scoping(db: PgPool) {
     );
 
     tx.rollback().await.unwrap();
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "REVOKE ALL ON receipts FROM {role}"
-    )))
-    .execute(&db)
-    .await
-    .unwrap();
-    sqlx::query(sqlx::AssertSqlSafe(format!("DROP ROLE {role}")))
-        .execute(&db)
-        .await
-        .unwrap();
+    for statement in [
+        format!("ALTER TABLE receipts OWNER TO {harness_role}"),
+        format!("REVOKE ALL ON SCHEMA public FROM {role}"),
+        format!("DROP ROLE {role}"),
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&db)
+            .await
+            .unwrap();
+    }
 }
 
 /// Issue #1036: an expense names a receipt of its own family only — the
