@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT u.id, u.created_at, u.email_verified,\n               EXISTS (SELECT 1 FROM oauth_identities o WHERE o.user_id = u.id)\n                   AS \"google_identity!\",\n               EXISTS (SELECT 1 FROM group_members m WHERE m.user_id = u.id)\n                   AS \"group_member!\",\n               EXISTS (SELECT 1 FROM invitations i WHERE i.consumed_by = u.id)\n                   AS \"accepted_invitation!\",\n               u.deactivated_at IS NOT NULL AS \"deactivated!\",\n               u.deleted_at IS NOT NULL AS \"deleted!\"\n        FROM users u\n        WHERE NOT u.email_verified AND u.created_at < $1\n        FOR UPDATE OF u\n        ",
+  "query": "\n        SELECT u.id, u.created_at, u.email_verified,\n               EXISTS (SELECT 1 FROM oauth_identities o WHERE o.user_id = u.id)\n                   AS \"google_identity!\",\n               EXISTS (SELECT 1 FROM group_members m WHERE m.user_id = u.id)\n                   AS \"group_member!\",\n               EXISTS (SELECT 1 FROM invitations i WHERE i.consumed_by = u.id)\n                   AS \"accepted_invitation!\",\n               EXISTS (SELECT 1 FROM receipts r WHERE r.uploaded_by = u.id)\n                   AS \"receipt_uploader!\",\n               u.deactivated_at IS NOT NULL AS \"deactivated!\",\n               u.deleted_at IS NOT NULL AS \"deleted!\"\n        FROM users u\n        WHERE NOT u.email_verified AND u.created_at < $1\n        FOR UPDATE OF u\n        ",
   "describe": {
     "columns": [
       {
@@ -56,12 +56,18 @@
       },
       {
         "ordinal": 6,
-        "name": "deactivated!",
+        "name": "receipt_uploader!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
         "ordinal": 7,
+        "name": "deactivated!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
         "name": "deleted!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -80,8 +86,9 @@
       null,
       null,
       null,
+      null,
       null
     ]
   },
-  "hash": "dd0a55d87586327725ccffb7ffcb27d12d2a57cf93475db4017c5f82a254dbda"
+  "hash": "a1a141b83d570e9aa9c285b4dd3daa329d15c5c71ccf23aa588325cc37f25a90"
 }

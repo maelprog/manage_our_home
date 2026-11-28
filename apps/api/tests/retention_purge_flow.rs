@@ -532,6 +532,56 @@ async fn an_unverified_account_goes_a_week_after_its_creation(db: PgPool) {
     assert!(fresh.1 > now - minute, "a new account, not the old row");
 }
 
+/// #1048: `receipts.uploaded_by` has no `ON DELETE` (0073), so deleting
+/// an account that uploaded a receipt fails, and with it the whole pass,
+/// every hour. Such an account has been used: it is kept, its receipt
+/// with it, and the pass goes on with the rest.
+#[sqlx::test]
+async fn an_unverified_account_that_uploaded_a_receipt_is_kept(db: PgPool) {
+    let now = Utc::now();
+    let long_ago = now - Duration::days(400);
+    let owner = insert_user(&db, "owner@example.test", false).await;
+    let uploader = insert_user(&db, "uploader@example.test", false).await;
+    insert_user(&db, "gone@example.test", false).await;
+    sqlx::query("UPDATE users SET email_verified = (id = $1), created_at = $2")
+        .bind(owner)
+        .bind(long_ago)
+        .execute(&db)
+        .await
+        .unwrap();
+    let group: Uuid =
+        sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ('G', $1) RETURNING id")
+            .bind(owner)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    // Uploaded while a member, the membership since gone.
+    sqlx::query(
+        "INSERT INTO receipts (group_id, uploaded_by, storage_key, mime_type, size_bytes) \
+         VALUES ($1, $2, 'receipts/kept.jpg', 'image/jpeg', 1000)",
+    )
+    .bind(group)
+    .bind(uploader)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let counts = purge(&db, RetentionCutoffs::at(now)).await.unwrap();
+    assert_eq!(counts.unverified_accounts, 1);
+    assert!(user_ids(&db, "gone@example.test").await.is_empty());
+    let mut left = ids(&db, "SELECT id FROM users").await;
+    left.sort();
+    let mut expected = vec![owner, uploader];
+    expected.sort();
+    assert_eq!(left, expected);
+    let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM receipts WHERE uploaded_by = $1")
+        .bind(uploader)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(receipts, 1);
+}
+
 /// `invitations` is under a forced RLS policy: on a role that does not
 /// bypass it, its `DELETE` would see no row and the pass would report
 /// success. It refuses instead, before deleting anything anywhere.

@@ -4,7 +4,8 @@
 //! that no `event_attachments` row points at, so nothing can clean one up.
 //! The profile photos (#467) share that bucket, under `avatars/`, each named
 //! by a `users.avatar_key`: a replaced photo whose deletion failed is an
-//! orphan of the same kind, and is found the same way.
+//! orphan of the same kind, and is found the same way. So are the receipts
+//! (#1036), each named by a `receipts.storage_key`.
 //! This module lists the bucket, diffs it against the table, and deletes
 //! the difference — driven by the `reconcile-attachments` binary
 //! (`src/bin/reconcile_attachments.rs`), dry-run by default, and daily
@@ -61,7 +62,7 @@ pub const DEFAULT_MIN_AGE_HOURS: i64 = 24;
 const MAX_MIN_AGE_HOURS: i64 = 876_000;
 
 pub const HELP: &str = "\
-reconcile-attachments — delete objects no event_attachments row nor users.avatar_key points at (#58, #467)
+reconcile-attachments — delete objects no event_attachments row, users.avatar_key nor receipts.storage_key points at (#58, #467, #1036)
 
 USAGE:
     reconcile-attachments [OPTIONS]
@@ -254,17 +255,20 @@ pub async fn ensure_bypasses_rls(conn: &mut sqlx::PgConnection) -> anyhow::Resul
 }
 
 /// Every storage key the database knows about: the attachments', their
-/// thumbnails' (`thumbnail_key`, #774), and the profile photos'
-/// (`users.avatar_key`, #467), which share the bucket under `avatars/`.
-/// Leaving either of the last two out would classify every thumbnail or
-/// photo older than the window as an orphan, and delete it.
+/// thumbnails' (`thumbnail_key`, #774), the profile photos'
+/// (`users.avatar_key`, #467), which share the bucket under `avatars/`,
+/// and the receipts' (`receipts.storage_key`, #1036). Leaving any of the
+/// last three out would classify every thumbnail, photo or receipt older
+/// than the window as an orphan, and delete it.
 pub async fn known_storage_keys(conn: &mut sqlx::PgConnection) -> anyhow::Result<HashSet<String>> {
     let keys = sqlx::query_scalar!(
         r#"SELECT storage_key AS "key!" FROM event_attachments
            UNION ALL
            SELECT thumbnail_key AS "key!" FROM event_attachments WHERE thumbnail_key IS NOT NULL
            UNION ALL
-           SELECT avatar_key AS "key!" FROM users WHERE avatar_key IS NOT NULL"#
+           SELECT avatar_key AS "key!" FROM users WHERE avatar_key IS NOT NULL
+           UNION ALL
+           SELECT storage_key AS "key!" FROM receipts"#
     )
     .fetch_all(&mut *conn)
     .await?;
