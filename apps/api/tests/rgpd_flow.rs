@@ -1399,6 +1399,11 @@ async fn export_accounts_for_every_table(db: PgPool) {
              and the link goes with the membership (0064)",
         ),
         (
+            "receipts",
+            "a family's receipts (#1036): schema only, nothing writes a row before the \
+             upload of #1040; their export comes with #1042",
+        ),
+        (
             "off_products",
             "Open Food Facts' public product records, keyed by code: no family, no account",
         ),
@@ -1531,6 +1536,13 @@ async fn export_accounts_for_every_column_referencing_users(db: PgPool) {
             "ingredient_links",
             "created_by",
             "who set a family's ingredient link; deleted with the membership",
+        ),
+        // #1036: who uploaded a receipt. Nothing writes a row before the
+        // upload of #1040; #1042 brings it into the export and the purge.
+        (
+            "receipts",
+            "uploaded_by",
+            "schema only: no row before #1040, exported with #1042",
         ),
     ];
 
