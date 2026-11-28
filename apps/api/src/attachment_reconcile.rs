@@ -62,7 +62,7 @@ pub const DEFAULT_MIN_AGE_HOURS: i64 = 24;
 const MAX_MIN_AGE_HOURS: i64 = 876_000;
 
 pub const HELP: &str = "\
-reconcile-attachments — delete objects no event_attachments row nor users.avatar_key points at (#58, #467)
+reconcile-attachments — delete objects no event_attachments row, users.avatar_key nor receipts.storage_key points at (#58, #467, #1036)
 
 USAGE:
     reconcile-attachments [OPTIONS]
