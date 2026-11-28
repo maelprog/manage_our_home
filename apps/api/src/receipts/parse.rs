@@ -332,18 +332,17 @@ const NOT_THE_TOTAL: &[&str] = &[
     "ARTICLES",
 ];
 
-/// The phrases that open a discount line.
+/// The phrases that open a discount line, whatever the sign of its amount.
+/// A word that may also open a name (`PROMO LESSIVE`, `RED BULL`, a
+/// `COUPON` or an `AVANTAGE` range) makes a discount only with a negative
+/// amount, like any other line; `RED` counts written `RED.` (see
+/// `classify`).
 const DISCOUNTS: &[&[&str]] = &[
     &["REMISE"],
     &["REMISES"],
     &["REM"],
-    &["PROMO"],
-    &["PROMOTION"],
     &["REDUCTION"],
-    &["RED"],
     &["RABAIS"],
-    &["COUPON"],
-    &["AVANTAGE"],
     &["BON", "DE", "REDUCTION"],
     &["BON", "REDUCTION"],
 ];
@@ -415,7 +414,10 @@ fn classify(line: &str) -> Kind {
         }
         return Kind::Total(trailing_price(&tokens).map(|(price, _)| price));
     }
-    if opens(DISCOUNTS) {
+    let abbreviated = tokens
+        .first()
+        .is_some_and(|t| t.eq_ignore_ascii_case("red."));
+    if opens(DISCOUNTS) || abbreviated {
         return Kind::Discount(trailing_price(&tokens).map(|(price, _)| -price.abs()));
     }
     let tva = tokens.iter().any(|t| {
@@ -915,6 +917,24 @@ RENDU                       4,33
         let r = parse_receipt("ENSEIGNE\nZone artisanale\n2 x 0,89\nCOMPOTE 1,78\nTOTAL 1,78\n");
         assert_eq!(r.items, vec![item("COMPOTE", 2.0, None, 178)]);
         assert!(r.unreadable.is_empty(), "{:?}", r.unreadable);
+    }
+
+    #[test]
+    fn a_name_that_opens_like_a_discount_is_an_article() {
+        // `RED` opens a discount only written `RED.`; `PROMO` only with a
+        // negative amount.
+        let r = parse_receipt(
+            "ENSEIGNE\nPAIN 1,00\nRED BULL 25CL 1,35\nPROMO LESSIVE 5,99\nRED. FIDELITE 0,50\nTOTAL 7,84\n",
+        );
+        assert_eq!(
+            r.items,
+            vec![
+                item("PAIN", 1.0, None, 100),
+                item("RED BULL 25CL", 1.0, None, 135),
+                item("PROMO LESSIVE", 1.0, None, 549),
+            ]
+        );
+        assert_eq!(r.total_mismatch, None);
     }
 
     #[test]
