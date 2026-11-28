@@ -106,6 +106,10 @@ pub struct AccountForRetention {
     pub group_member: bool,
     /// An invitation `consumed_by` it.
     pub accepted_invitation: bool,
+    /// A receipt `uploaded_by` it (#1036). That key has no `ON DELETE`
+    /// (0073): deleting the account would fail, and the whole pass with it
+    /// (#1048).
+    pub receipt_uploader: bool,
     /// Deactivated by the superadmin: `account_purge` owns it, two years
     /// with a notice, and the address stays refused to `register`.
     pub deactivated: bool,
@@ -124,6 +128,7 @@ impl AccountForRetention {
             && !self.google_identity
             && !self.group_member
             && !self.accepted_invitation
+            && !self.receipt_uploader
             && !self.deactivated
             && !self.deleted
     }
@@ -254,6 +259,8 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
                    AS "group_member!",
                EXISTS (SELECT 1 FROM invitations i WHERE i.consumed_by = u.id)
                    AS "accepted_invitation!",
+               EXISTS (SELECT 1 FROM receipts r WHERE r.uploaded_by = u.id)
+                   AS "receipt_uploader!",
                u.deactivated_at IS NOT NULL AS "deactivated!",
                u.deleted_at IS NOT NULL AS "deleted!"
         FROM users u
@@ -273,6 +280,7 @@ pub async fn purge(pool: &PgPool, cutoffs: RetentionCutoffs) -> anyhow::Result<P
                 google_identity: u.google_identity,
                 group_member: u.group_member,
                 accepted_invitation: u.accepted_invitation,
+                receipt_uploader: u.receipt_uploader,
                 deactivated: u.deactivated,
                 deleted: u.deleted,
             }
@@ -503,6 +511,7 @@ mod tests {
             google_identity: false,
             group_member: false,
             accepted_invitation: false,
+            receipt_uploader: false,
             deactivated: false,
             deleted: false,
         }
@@ -575,6 +584,13 @@ mod tests {
                 "invitation",
                 AccountForRetention {
                     accepted_invitation: true,
+                    ..old
+                },
+            ),
+            (
+                "receipt",
+                AccountForRetention {
+                    receipt_uploader: true,
                     ..old
                 },
             ),
