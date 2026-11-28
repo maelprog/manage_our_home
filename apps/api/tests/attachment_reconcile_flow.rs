@@ -20,7 +20,9 @@ use common::{
     assert_status, call, call_upload, json_body, real_minio_from_env, set_cookie,
     test_router_with_storage, test_state,
 };
-use manage_our_home::attachment_reconcile::{reconcile, Options, DEFAULT_MIN_AGE_HOURS};
+use manage_our_home::attachment_reconcile::{
+    known_storage_keys, reconcile, Options, DEFAULT_MIN_AGE_HOURS,
+};
 use manage_our_home::jobs::attachment_reconcile::{scheduled_options, sweep};
 use manage_our_home::storage::Storage;
 use sqlx::PgPool;
@@ -417,6 +419,46 @@ async fn a_connection_that_does_not_bypass_rls_aborts_before_listing(db: PgPool)
         .execute(&db)
         .await
         .unwrap();
+}
+
+/// #1048: the receipts (#1036) share the bucket, each named by a
+/// `receipts.storage_key`. A key the pass does not read back from the
+/// database is an orphan to it, so every receipt older than the window
+/// would be deleted. Shown on the set of known keys itself, without MinIO,
+/// so it holds on every checkout rather than skipping without a bucket.
+#[sqlx::test]
+async fn a_receipt_key_is_known_to_the_pass(db: PgPool) {
+    let owner: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (email, password_hash, display_name) \
+         VALUES ('receipt-owner@example.test', 'not-a-real-hash', 'R') RETURNING id",
+    )
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let group: Uuid =
+        sqlx::query_scalar("INSERT INTO groups (name, created_by) VALUES ('G', $1) RETURNING id")
+            .bind(owner)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    let key = format!("{group}/receipts/{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO receipts (group_id, uploaded_by, storage_key, mime_type, size_bytes) \
+         VALUES ($1, $2, $3, 'image/jpeg', 1000)",
+    )
+    .bind(group)
+    .bind(owner)
+    .bind(&key)
+    .execute(&db)
+    .await
+    .unwrap();
+
+    let mut conn = db.acquire().await.unwrap();
+    let known = known_storage_keys(&mut conn).await.unwrap();
+    assert!(
+        known.contains(&key),
+        "the receipt's object would be classified as an orphan: {known:?}"
+    );
 }
 
 /// The scheduled job's options, scoped to this test's group the same way
