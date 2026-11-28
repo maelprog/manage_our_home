@@ -24,6 +24,7 @@ pub mod notifications;
 pub mod outbound_http;
 pub mod public_destination;
 pub mod rate_limit;
+pub mod receipts;
 pub mod recipes;
 pub mod rgpd;
 pub mod stocks;
