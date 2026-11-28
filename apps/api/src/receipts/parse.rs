@@ -153,7 +153,14 @@ impl<'a> State<'a> {
 
     fn read(&mut self, line: &'a str, kind: Kind, next: Option<&str>) {
         match kind {
-            Kind::Skip | Kind::Total(None) | Kind::Discount(None) => {}
+            Kind::Skip | Kind::Total(None) => {}
+            // A discount whose amount the OCR misread: its article's price
+            // is no longer sure.
+            Kind::Discount(None) => {
+                if self.in_articles() {
+                    self.report(line);
+                }
+            }
             Kind::Total(Some(total)) => {
                 self.flush_label();
                 self.flush_detail();
@@ -954,6 +961,14 @@ RENDU                       4,33
             ]
         );
         assert!(r.unreadable.is_empty(), "{:?}", r.unreadable);
+    }
+
+    #[test]
+    fn a_discount_whose_amount_is_misread_is_reported() {
+        let r = parse_receipt("ENSEIGNE\nPAIN 1,00\nREMISE IMMEDIATE -O,50\nTOTAL 0,50\n");
+        assert_eq!(r.items, vec![item("PAIN", 1.0, None, 100)]);
+        assert_eq!(r.unreadable, vec!["REMISE IMMEDIATE -O,50"]);
+        assert_eq!(r.total_mismatch, Some(-50));
     }
 
     #[test]
