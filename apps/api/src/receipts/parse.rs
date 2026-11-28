@@ -424,7 +424,10 @@ fn classify(line: &str) -> Kind {
         t.trim_matches(|c: char| !c.is_alphanumeric())
             .eq_ignore_ascii_case("tva")
     });
-    if opens(SKIPPED) || tva || line.contains('%') {
+    // A row of the VAT table: a code, a rate, amounts — no name. A `%` in
+    // a name (`YAOURT 0% MG`) leaves the line to be read.
+    let rate_row = line.contains('%') && letters(&tokens) < 2;
+    if opens(SKIPPED) || tva || rate_row {
         return Kind::Skip;
     }
 
@@ -935,6 +938,22 @@ RENDU                       4,33
             ]
         );
         assert_eq!(r.total_mismatch, None);
+    }
+
+    #[test]
+    fn a_percent_sign_in_a_name_keeps_the_article() {
+        // Only a VAT row (`A 5,50% …`, a rate) is left out for its `%`.
+        let r = parse_receipt(
+            "ENSEIGNE\nYAOURT 0% MG 1,50\nCHOCOLAT NOIR 70% 2,10\nA 5,50% 3,41 0,19\nTOTAL 3,60\n",
+        );
+        assert_eq!(
+            r.items,
+            vec![
+                item("YAOURT 0% MG", 1.0, None, 150),
+                item("CHOCOLAT NOIR 70%", 1.0, None, 210),
+            ]
+        );
+        assert!(r.unreadable.is_empty(), "{:?}", r.unreadable);
     }
 
     #[test]
